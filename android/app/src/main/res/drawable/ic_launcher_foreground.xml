@@ -1,0 +1,22 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <!-- "Lectable" mark: an open page with a folded-corner bookmark and two text lines -
+         matches the app icon mockup design (2026-09-17), viewport kept at the design's
+         native 48x48 so its path data (including arcs/smooth-curves) is copied verbatim. -->
+    <path
+        android:fillColor="#C4B5FD"
+        android:pathData="M10.5 9H34.5a3 3 0 0 1 3 3V36q-3.375 4-6.75 0t-6.75 0t-6.75 0t-6.75 0V12a3 3 0 0 1 3-3Z" />
+    <path
+        android:fillColor="#2A2930"
+        android:pathData="M14.5 14H19.5V27H31.5V32H14.5Z" />
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#2A2930"
+        android:strokeAlpha="0.45"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:pathData="M23.5 15.5H32.5M23.5 21.5H29.5" />
+</vector>

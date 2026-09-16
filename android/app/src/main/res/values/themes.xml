@@ -1,0 +1,11 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Only used as the pre-Compose window theme (splash background /
+         status bar) - all actual UI is Compose Material3 (see ui/theme).
+         Plain framework Theme.Material, not a DayNight variant: DayNight
+         resolution is an AppCompat/MaterialComponents library feature and
+         this project has no such dependency - light/dark switching is
+         handled by Compose's isSystemInDarkTheme() in ui/theme/Theme.kt. -->
+    <style name="Theme.Lectable" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor" tools:targetApi="l">@color/ic_launcher_background</item>
+    </style>
+</resources>

@@ -1,0 +1,497 @@
+package httpapi
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+
+	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/epub"
+	"github.com/rhino1998/lectable/backend/internal/store"
+)
+
+type bookSummaryDTO struct {
+	ID                    string  `json:"id"`
+	Title                 string  `json:"title"`
+	Author                string  `json:"author"`
+	SeriesName            string  `json:"seriesName,omitempty"`
+	SeriesIndex           float64 `json:"seriesIndex,omitempty"`
+	CoverURL              string  `json:"coverUrl,omitempty"`
+	ChapterCount          int     `json:"chapterCount"`
+	PosChapterIdx         int     `json:"posChapterIdx"`
+	PosParagraphIdx       int     `json:"posParagraphIdx"`
+	PosSeconds            float64 `json:"posSeconds"`
+	ProgressPercent       float64 `json:"progressPercent"`
+	Finished              bool    `json:"finished"`
+	EstimatedTotalSeconds float64 `json:"estimatedTotalSeconds"`
+	EstimateCalibrated    bool    `json:"estimateCalibrated"`
+	GeneratedPercent      float64 `json:"generatedPercent"`
+	// Preprocessing mirrors jobs.Manager.IsPipelineRunning - true while the
+	// preprocessing pipeline (POST .../preprocess) is still working
+	// through this book's attribution/characterization/voice-provisioning/
+	// direction-tagging sequence. Set by buildBookSummary/handleListBooks,
+	// not toBookSummary itself (a plain function with no Server access) -
+	// see their own call sites.
+	Preprocessing bool `json:"preprocessing"`
+	// MusicEnabled mirrors store.Book.MusicEnabled - included here (not
+	// just on voiceSettingsDTO, which is what actually reads/writes it)
+	// purely as a read convenience so pages already holding a BookDetail/
+	// BookSummary (the reader, the library) don't need a separate voice-
+	// settings fetch just to know whether background music is on.
+	MusicEnabled bool `json:"musicEnabled"`
+}
+
+// Generic fallback narration rate (~150 words/minute at ~6 characters per
+// word including a trailing space), used only until a book has at least
+// one really-generated paragraph to calibrate from.
+const fallbackSecondsPerChar = 0.0667
+
+// estimateTotalSeconds extrapolates the book's total narration length from
+// the best calibration currently available, in order:
+//
+//  1. seconds-per-character for this book's own paragraphs that already
+//     have real audio, applied to the book's total character count - the
+//     most accurate tier, since it's the book's own actual voice/pace, but
+//     only available once some of that voice's audio is ready.
+//  2. fastSecPerChar (jobs.Manager.EnqueueLengthEstimate's own PocketTTS-
+//     calibrated sample, store.Book.EstimateSecPerChar) - a real,
+//     generated-audio measurement too, just not in this book's own voice,
+//     so it's a strictly better guess than the generic WPM fallback below
+//     without needing this book's own (possibly much slower) engine to
+//     have rendered anything yet.
+//  3. fallbackSecondsPerChar, a generic ~150wpm guess, reported
+//     uncalibrated - only reached before either real sample above exists.
+func estimateTotalSeconds(stats store.NarrationStats, fastSecPerChar float64) (seconds float64, calibrated bool) {
+	if stats.TotalChars == 0 {
+		return 0, false
+	}
+	if stats.ReadyChars > 0 {
+		secPerChar := stats.ReadySeconds / float64(stats.ReadyChars)
+		return secPerChar * float64(stats.TotalChars), true
+	}
+	if fastSecPerChar > 0 {
+		return fastSecPerChar * float64(stats.TotalChars), true
+	}
+	return fallbackSecondsPerChar * float64(stats.TotalChars), false
+}
+
+// toBookSummary derives reading progress from the book's saved position
+// plus each chapter's paragraph count, rather than storing a redundant
+// progress value: percent-through-book is (paragraphs before the current
+// chapter + paragraphs into the current chapter) / total paragraphs.
+// "Finished" means the saved position is on (or past) the last paragraph
+// of the last chapter.
+func toBookSummary(b store.Book, chapters []store.ChapterSummary, stats store.NarrationStats) bookSummaryDTO {
+	dto := bookSummaryDTO{
+		ID:              b.ID,
+		Title:           b.Title,
+		Author:          b.Author,
+		SeriesName:      b.SeriesName,
+		SeriesIndex:     b.SeriesIndex,
+		ChapterCount:    len(chapters),
+		PosChapterIdx:   b.PosChapterIdx,
+		PosParagraphIdx: b.PosParagraphIdx,
+		PosSeconds:      b.PosSeconds,
+		MusicEnabled:    b.MusicEnabled,
+	}
+	if b.CoverExt != "" {
+		dto.CoverURL = "/api/books/" + b.ID + "/cover"
+	}
+
+	totalParagraphs := 0
+	completedParagraphs := 0
+	for i, c := range chapters {
+		totalParagraphs += c.ParagraphCount
+		switch {
+		case c.Idx < b.PosChapterIdx:
+			completedParagraphs += c.ParagraphCount
+		case c.Idx == b.PosChapterIdx:
+			n := b.PosParagraphIdx
+			if n > c.ParagraphCount {
+				n = c.ParagraphCount
+			}
+			completedParagraphs += n
+			if i == len(chapters)-1 && b.PosParagraphIdx >= c.ParagraphCount-1 {
+				dto.Finished = true
+			}
+		}
+	}
+	if totalParagraphs > 0 {
+		dto.ProgressPercent = float64(completedParagraphs) / float64(totalParagraphs) * 100
+		if dto.ProgressPercent > 100 {
+			dto.ProgressPercent = 100
+		}
+	}
+
+	dto.EstimatedTotalSeconds, dto.EstimateCalibrated = estimateTotalSeconds(stats, b.EstimateSecPerChar)
+
+	if stats.TotalChars > 0 {
+		dto.GeneratedPercent = float64(stats.ReadyChars) / float64(stats.TotalChars) * 100
+		if dto.GeneratedPercent > 100 {
+			dto.GeneratedPercent = 100
+		}
+	}
+	return dto
+}
+
+// buildBookSummary computes the book's current voice (a hash of its
+// preset/instruct/language) and fetches everything toBookSummary needs
+// scoped to that voice, returning the chapter list too since most callers
+// need it anyway (e.g. for a full chapter listing, or to find the first
+// chapter's id). Chapter readiness and narration stats are inherently
+// per-voice - a different voice for the same book has its own, separately
+// cached generation progress.
+func (s *Server) buildBookSummary(b store.Book) (bookSummaryDTO, []store.ChapterSummary, error) {
+	voiceID := store.VoiceID(b.VoicePresetID, b.VoiceInstruct, b.VoiceLanguage)
+
+	chapters, err := s.Store.ListChapterSummaries(b.ID, voiceID)
+	if err != nil {
+		return bookSummaryDTO{}, nil, err
+	}
+	stats, err := s.Store.BookNarrationStats(b.ID, voiceID)
+	if err != nil {
+		return bookSummaryDTO{}, nil, err
+	}
+	dto := toBookSummary(b, chapters, stats)
+	dto.Preprocessing = s.isPreprocessing(b.ID)
+	return dto, chapters, nil
+}
+
+func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(200 << 20); err != nil { // up to 200MB epub
+		writeError(w, http.StatusBadRequest, "could not parse upload: "+err.Error())
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing 'file' field")
+		return
+	}
+	defer file.Close()
+
+	tmp, err := os.CreateTemp("", "upload-*.epub")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
+	size, err := io.Copy(tmp, file)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to buffer upload")
+		return
+	}
+
+	book, err := epub.Parse(tmp, size)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not parse epub: "+err.Error())
+		return
+	}
+	if book.Title == "Untitled" {
+		if base := strings.TrimSuffix(header.Filename, ".epub"); base != "" {
+			book.Title = base
+		}
+	}
+
+	// imageBytes runs parallel to the image blocks across all chapters, in
+	// the same order CreateBook will insert them in, so its returned
+	// CreatedImage IDs can be zipped back up with the actual bytes below.
+	var imageBytes [][]byte
+	chapterInputs := make([]store.ChapterInput, len(book.Chapters))
+	for i, ch := range book.Chapters {
+		blocks := make([]store.BlockInput, len(ch.Blocks))
+		for j, b := range ch.Blocks {
+			switch b.Kind {
+			case epub.BlockImage:
+				blocks[j] = store.BlockInput{Kind: store.BlockImage, Ext: b.ImageExt}
+				imageBytes = append(imageBytes, b.ImageData)
+			case epub.BlockBreak:
+				blocks[j] = store.BlockInput{Kind: store.BlockBreak}
+			default:
+				blocks[j] = store.BlockInput{Kind: store.BlockText, Text: b.Text, Inline: b.Inline, IsQuote: b.IsQuote, Emphasis: b.Emphasis}
+			}
+		}
+		chapterInputs[i] = store.ChapterInput{Title: ch.Title, Blocks: blocks}
+	}
+
+	coverExt := ""
+	if len(book.CoverData) > 0 {
+		coverExt = extensionForMediaType(book.CoverMediaType)
+	}
+
+	bookID, createdImages, err := s.Store.CreateBook(book.Title, book.Author, book.Language, coverExt, book.SeriesName, book.SeriesIndex, chapterInputs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
+		return
+	}
+
+	if coverExt != "" {
+		if err := audiopath.EnsureCoverDir(s.DataDir); err == nil {
+			_ = os.WriteFile(audiopath.CoverFile(s.DataDir, bookID, coverExt), book.CoverData, 0o644)
+		}
+	}
+	for i, img := range createdImages {
+		if i >= len(imageBytes) {
+			break // defensive; should always match len(imageBytes)
+		}
+		if err := audiopath.EnsureImageDir(s.DataDir, bookID, img.ChapterID); err == nil {
+			_ = os.WriteFile(audiopath.ImageFile(s.DataDir, bookID, img.ChapterID, img.ImageID, img.Ext), imageBytes[i], 0o644)
+		}
+	}
+
+	b, err := s.Store.GetBook(bookID)
+	if err != nil || b == nil {
+		writeError(w, http.StatusInternalServerError, "book saved but could not be reloaded")
+		return
+	}
+
+	summary, chapters, err := s.buildBookSummary(*b)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if len(chapters) > 0 {
+		// Real narration in the book's own voice, so the reader has
+		// something to listen to immediately - this alone used to also be
+		// what calibrated the length estimate below, which meant that
+		// estimate's own accuracy was hostage to however slow the book's
+		// selected engine happens to be.
+		s.Jobs.EnqueueSample(bookID, chapters[0].ID, chapters[0].Idx, 1000)
+		// A separate, much cheaper PocketTTS-cloned sample (see
+		// jobs.Manager.EnqueueLengthEstimate) so the library page can show
+		// a real, generated-audio-calibrated length estimate right away
+		// regardless of the line above - it's superseded the moment the
+		// book's own voice has ready audio of its own (see
+		// estimateTotalSeconds's own tiering).
+		s.Jobs.EnqueueLengthEstimate(bookID, chapters[0].ID, 300)
+	}
+
+	writeJSON(w, http.StatusCreated, summary)
+}
+
+func extensionForMediaType(mt string) string {
+	switch mt {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ""
+	}
+}
+
+// handleListBooks batch-fetches every book's chapter summaries and
+// narration stats in two queries total (one per store.ListChapterSummariesForBooks/
+// BookNarrationStatsForBooks call), not two queries per book -
+// buildBookSummary's own per-book pair of queries is fine for the
+// single-book callers (upload, get-book), but looping it once per book
+// here meant 2*N serialized whole-book scans on the single shared DuckDB
+// connection (internal/store's own doc comment) every time the library
+// page loaded, stalling every other concurrent request behind whichever
+// scan was running.
+func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
+	books, err := s.Store.ListBooks()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	bookVoices := make([]store.BookVoice, len(books))
+	for i, b := range books {
+		bookVoices[i] = store.BookVoice{BookID: b.ID, VoiceID: store.VoiceID(b.VoicePresetID, b.VoiceInstruct, b.VoiceLanguage)}
+	}
+	chaptersByBook, err := s.Store.ListChapterSummariesForBooks(bookVoices)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	statsByBook, err := s.Store.BookNarrationStatsForBooks(bookVoices)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	out := make([]bookSummaryDTO, 0, len(books))
+	for _, b := range books {
+		dto := toBookSummary(b, chaptersByBook[b.ID], statsByBook[b.ID])
+		dto.Preprocessing = s.isPreprocessing(b.ID)
+		out = append(out, dto)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+type chapterSummaryDTO struct {
+	Idx            int    `json:"idx"`
+	Title          string `json:"title"`
+	ParagraphCount int    `json:"paragraphCount"`
+	ReadyCount     int    `json:"readyCount"`
+	// Passes is the chapter's own store.Passes, passed straight through -
+	// see that type's own doc comment. Replaces the old separate
+	// attributed bool/directed map[string]bool DTO fields (a holdover from
+	// when direction-tagging was tracked per-clone-model); a client reads
+	// passes.attribution/passes.direction directly instead.
+	Passes store.Passes `json:"passes"`
+}
+
+type bookDetailDTO struct {
+	bookSummaryDTO
+	Chapters []chapterSummaryDTO `json:"chapters"`
+}
+
+func (s *Server) handleGetBook(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, err := s.Store.GetBook(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if b == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	summary, chapters, err := s.buildBookSummary(*b)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	dto := bookDetailDTO{bookSummaryDTO: summary}
+	for _, c := range chapters {
+		dto.Chapters = append(dto.Chapters, chapterSummaryDTO{
+			Idx: c.Idx, Title: c.Title, ParagraphCount: c.ParagraphCount, ReadyCount: c.ReadyCount,
+			Passes: c.Passes,
+		})
+	}
+	writeJSON(w, http.StatusOK, dto)
+}
+
+func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, err := s.Store.GetBook(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if b == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	// Stop a running preprocess pipeline (POST .../preprocess) before it
+	// keeps working through a book that's about to stop existing - see
+	// Server.cancelPipeline/jobs.Manager.CancelPipeline. Best-effort: it
+	// only removes not-yet-dispatched phases and cancels whichever phase
+	// is currently in flight, not whatever real per-item work that phase
+	// already dispatched into a poolLLM/poolDesign slot.
+	s.cancelPipeline(id)
+	if err := s.Store.DeleteBook(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s", s.DataDir, id))
+	if b.CoverExt != "" {
+		_ = os.Remove(audiopath.CoverFile(s.DataDir, id, b.CoverExt))
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteBookAudio deletes every generated audio file for book - the
+// reader's own "Delete generated audio" button, for reclaiming disk space
+// or forcing a full regenerate, without touching the book's text,
+// chapters, speaker attribution, or voice settings (unlike handleDeleteBook,
+// which removes the whole book, or handleDeleteBookSpeakerData, which
+// clears attribution/characters instead of audio). Every paragraph reports
+// pending again on the next fetch - store.DeleteBookAudio drops every
+// paragraph_audio row for this book across every voice_id it's ever been
+// generated under, not just the book's current one, and the actual .wav
+// files live under one shared per-book directory regardless of voice_id
+// (see audiopath.ParagraphFile/VoiceDir), so removing that directory
+// wholesale - same call handleDeleteBook itself uses - covers all of them
+// in one step rather than needing to enumerate voice_ids.
+func (s *Server) handleDeleteBookAudio(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, err := s.Store.GetBook(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if b == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	if err := s.Store.DeleteBookAudio(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// This book's own music regions' generated clips just went away too
+	// (RemoveAll below wipes each chapter's audio dir wholesale, which
+	// nests audiopath.MusicDir the same way it nests SFXDir/VoiceDir) - a
+	// region's target duration is derived from narration that's about to
+	// be regenerated, so it's stale regardless (see store.MusicRegion's
+	// own doc comment). Scored mood/prompt/transition stay untouched.
+	if err := s.Store.ResetAllChapterMusicAudioForBook(id); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s", s.DataDir, id))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleDeleteChapterAudio is handleDeleteBookAudio's single-chapter
+// counterpart - the reader-facing chapter-header "Clear generation" button,
+// for resetting just one chapter's narration (e.g. after reassigning
+// speakers, or to force a clean re-render) without wiping the whole book's
+// progress.
+func (s *Server) handleDeleteChapterAudio(w http.ResponseWriter, r *http.Request) {
+	bookID := r.PathValue("id")
+	idx, err := strconv.Atoi(r.PathValue("idx"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid chapter index")
+		return
+	}
+	ch, err := s.Store.GetChapterByIdx(bookID, idx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if ch == nil {
+		writeError(w, http.StatusNotFound, "chapter not found")
+		return
+	}
+	if err := s.Store.DeleteChapterAudio(ch.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// See handleDeleteBookAudio's own identical comment - this chapter's
+	// own music regions' generated clips are about to be wiped along with
+	// the rest of its audio dir, and their target durations are stale
+	// regardless once narration regenerates.
+	if _, err := s.Store.ResetChapterMusicAudio(ch.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s/%s", s.DataDir, bookID, ch.ID))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) handleGetCover(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, err := s.Store.GetBook(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if b == nil || b.CoverExt == "" {
+		writeError(w, http.StatusNotFound, "no cover")
+		return
+	}
+	http.ServeFile(w, r, audiopath.CoverFile(s.DataDir, id, b.CoverExt))
+}

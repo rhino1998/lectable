@@ -1,0 +1,2286 @@
+:root {
+  --text: #3f3d45;
+  --text-h: #08060d;
+  --bg: #fff;
+  --bg-subtle: #f7f6f9;
+  --border: #e5e4e7;
+  --accent: #7c3aed;
+  --accent-hover: #6d28d9;
+  --error: #dc2626;
+  /* Annotations view (ReaderPage) - narrator/speaker/description
+     highlight colors, deliberately distinct from --accent (the
+     currently-playing-paragraph highlight), so the two can coexist on
+     the same paragraph without one reading as the other. */
+  --annotation-narrator: #6b7280;
+  --annotation-speaker: #2563eb;
+  --annotation-description: #d97706;
+  /* Inline delivery-tag carets (ParagraphText) - one color per Higgs tag
+     category, distinct from the annotation-* trio above (a different kind
+     of fact: "how this is delivered," not "who/what this is") and from
+     each other, so a reader can tell an emotion shift from a sound effect
+     at a glance without reading the tooltip. */
+  --direction-emotion: #dc2626;
+  --direction-style: #0891b2;
+  --direction-prosody: #16a34a;
+  --direction-sfx: #db2777;
+  /* Pronunciation strikeout (ParagraphText.PronunciationStrike) - its own hue,
+     distinct from every direction-* color above and from --accent (the
+     currently-playing-paragraph highlight), since it marks a different
+     kind of fact again: "this word is read differently than written,"
+     not a delivery-tag category. */
+  --pronunciation-caret: #0d9488;
+  /* Scare-quote underline (ChapterSection/.annotation-scare-quote) - its
+     own hue, distinct from every color above: an orthogonal "this looks
+     like dialogue but isn't actually spoken" fact layered on top of
+     whichever annotation-* kind color a segment already has, the same
+     relationship pronunciation-caret has to the narrator/speaker/
+     description trio. */
+  --scare-quote-mark: #ea580c;
+  /* Background-music region boundary marker (ChapterSection.
+     MusicRegionBoundary, annotations view only) - its own hue, distinct
+     from every color above: a chapter-scoped fact about generated
+     background music, not a per-paragraph narration/delivery/pronunciation
+     one. */
+  --music-region: #c026d3;
+
+  color-scheme: light dark;
+  font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* System preference applies dark vars unless a manual choice (useTheme.ts,
+   via data-theme on <html>) says otherwise; :root[data-theme="dark"] below
+   applies the same vars unconditionally for an explicit dark choice even
+   on a light-preferring system. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --text: #d1d0d6;
+    --text-h: #f3f4f6;
+    --bg: #16171d;
+    --bg-subtle: #1e1f27;
+    --border: #2e303a;
+    --accent: #a78bfa;
+    --accent-hover: #c4b5fd;
+    --error: #f87171;
+    --annotation-narrator: #9ca3af;
+    --annotation-speaker: #60a5fa;
+    --annotation-description: #fbbf24;
+    --direction-emotion: #f87171;
+    --direction-style: #22d3ee;
+    --direction-prosody: #4ade80;
+    --direction-sfx: #f472b6;
+    --pronunciation-caret: #2dd4bf;
+    --scare-quote-mark: #fb923c;
+    --music-region: #e879f9;
+  }
+}
+:root[data-theme='dark'] {
+  --text: #d1d0d6;
+  --text-h: #f3f4f6;
+  --bg: #16171d;
+  --bg-subtle: #1e1f27;
+  --border: #2e303a;
+  --accent: #a78bfa;
+  --accent-hover: #c4b5fd;
+  --error: #f87171;
+  --annotation-narrator: #9ca3af;
+  --annotation-speaker: #60a5fa;
+  --annotation-description: #fbbf24;
+  --direction-emotion: #f87171;
+  --direction-style: #22d3ee;
+  --direction-prosody: #4ade80;
+  --direction-sfx: #f472b6;
+  --pronunciation-caret: #2dd4bf;
+  --scare-quote-mark: #fb923c;
+  --music-region: #e879f9;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+h1,
+h2 {
+  color: var(--text-h);
+  font-weight: 600;
+}
+
+.app-shell-sidebar {
+  height: 100svh;
+  display: flex;
+}
+
+.app-sidebar {
+  flex-shrink: 0;
+  width: 200px;
+  padding: 1.25rem 1rem;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  overflow-y: auto;
+}
+
+.app-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+  font-size: 1.1rem;
+  color: var(--text-h);
+  margin-bottom: 0.75rem;
+}
+.app-title img {
+  border-radius: 5px;
+  flex-shrink: 0;
+}
+
+.sidebar-tab {
+  display: block;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.sidebar-tab:hover {
+  background: var(--bg-subtle);
+}
+.sidebar-tab-active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+
+.app-sidebar-spacer {
+  flex: 1;
+}
+
+.theme-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-align: left;
+}
+.theme-toggle:hover {
+  background: var(--bg-subtle);
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  max-width: 860px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 1.5rem;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.muted {
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  font-size: 0.9rem;
+}
+
+.error-text {
+  color: var(--error);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 0.55rem 1.1rem;
+  font-weight: 600;
+}
+.primary-button:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+select,
+textarea,
+input[type='number'] {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.checkbox-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 400;
+}
+
+/* Library */
+
+.library-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+}
+
+.library-stats {
+  margin-bottom: 1.5rem;
+}
+
+.book-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 1.25rem;
+  margin-bottom: 1.75rem;
+}
+
+.library-series-group {
+  margin-bottom: 1.75rem;
+}
+.library-series-heading {
+  font-size: 1rem;
+  margin: 0 0 0.75rem;
+}
+.library-series-group .book-grid {
+  margin-bottom: 0;
+}
+
+.book-card {
+  position: relative;
+}
+
+.book-card-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.book-cover {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+.book-finished-badge {
+  position: absolute;
+  bottom: 0.4rem;
+  left: 0.4rem;
+  background: color-mix(in srgb, var(--accent) 85%, black);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+}
+.book-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.book-cover-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: var(--text-h);
+}
+
+.book-meta {
+  padding-top: 0.5rem;
+}
+.book-title {
+  font-weight: 600;
+  color: var(--text-h);
+  font-size: 0.95rem;
+}
+.book-author {
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+}
+.book-series {
+  font-size: 0.75rem;
+  margin-top: 0.1rem;
+}
+
+.book-progress-track {
+  position: relative;
+  margin-top: 0.4rem;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+/* How much of the book's text has TTS audio generated so far - drawn
+   behind the read-progress fill, same layering as PlayerBar's
+   buffered-ahead bar (.player-track-buffered), so a partly-narrated book
+   shows both "how far you've read" and "how far the narrator has caught
+   up" on one bar. */
+.book-progress-generated {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.book-progress-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  height: 100%;
+  background: var(--accent);
+}
+.book-progress-label {
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+}
+
+.icon-button {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  background: rgba(0, 0, 0, 0.55);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.book-card:hover .icon-button,
+.book-card:focus-within .icon-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+.icon-button-speakers {
+  top: 2.05rem;
+}
+.icon-button-preprocess {
+  top: 3.7rem;
+}
+.icon-button-preprocess:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+/* .book-generate-menu wraps the library card's "Generate audio" toggle +
+   its All/Remaining popover (see LibraryPage.tsx) - takes over the plain
+   .icon-button's absolute position/hover-visibility at this same spot, so
+   the popover panel below has a positioned parent to anchor against. The
+   toggle button inside stays .icon-button for its circle styling, just
+   overridden to position: static since this wrapper is already placed
+   where that button used to sit directly. */
+.book-generate-menu {
+  position: absolute;
+  top: 5.35rem;
+  right: 0.4rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+.book-card:hover .book-generate-menu,
+.book-card:focus-within .book-generate-menu {
+  opacity: 1;
+  pointer-events: auto;
+}
+.book-generate-menu .icon-button {
+  position: static;
+  opacity: 1;
+  pointer-events: auto;
+}
+.book-generate-menu .icon-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.book-generate-menu-panel {
+  width: min(150px, 60vw);
+  padding: 0.4rem;
+  gap: 0.3rem;
+}
+
+/* Dims the cover and shows a spinning loader while the backend's whole-book
+   preprocess meta-task (attribution -> characterization -> voice
+   provisioning -> direction tagging) is running - see
+   BookSummary.preprocessing. Always visible (not gated behind :hover the
+   way .icon-button is), since this reflects real background state, not an
+   on-hover action affordance. */
+.book-cover-processing {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  font-size: 1.75rem;
+}
+
+/* Jobs dashboard */
+
+.jobs-section {
+  margin-top: 1.5rem;
+}
+.jobs-section h2 {
+  font-size: 1rem;
+  margin: 0 0 0.6rem;
+}
+
+.jobs-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.jobs-table th {
+  text-align: left;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.jobs-table td {
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+}
+.jobs-table tbody tr:last-child td {
+  border-bottom: none;
+}
+.jobs-table td:last-child {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.job-tier-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+}
+.job-tier-badge-lookahead {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
+.job-tier-badge-urgent {
+  background: color-mix(in srgb, var(--error) 15%, transparent);
+  color: var(--error);
+}
+
+/* A tier badge rendered as a <button> (a task not already at "urgent" -
+   see JobsPage's own TierBadge) is clickable, opening job-tier-menu below
+   to raise its priority - the same pill look as the plain, non-interactive
+   badge above, plus a pointer cursor and a hover/disabled treatment. */
+.job-tier-badge-button {
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+}
+.job-tier-badge-button:hover:not(:disabled) {
+  filter: brightness(1.15);
+}
+.job-tier-badge-button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.jobs-truncated {
+  margin-top: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.jobs-paused-banner {
+  margin: 0.75rem 0 0;
+  padding: 0.5rem 0.8rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--error) 12%, transparent);
+  color: var(--error);
+}
+
+/* Reader */
+
+.reader-header {
+  margin-bottom: 1rem;
+}
+.reader-header h1 {
+  margin: 0 0 0.15rem;
+  font-size: 1.6rem;
+}
+.reader-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.book-search,
+.sleep-timer,
+.bookmarks-panel {
+  position: relative;
+  flex-shrink: 0;
+}
+/* Not folded into the group above - those are all block-level div
+   containers; this anchors a <button> sitting inline inside a table cell
+   (JobsPage's own TierBadge), so it needs inline-block instead. */
+.job-tier-menu-container {
+  position: relative;
+  display: inline-block;
+}
+
+/* Shared shell for a toggle button's dropdown - used by book search and the
+   sleep timer menu. Anchored to the toggle button itself (its parent has
+   position: relative), opening downward by default; .popover-panel-above
+   flips it to open upward for instances docked near the bottom of the
+   viewport (the player bar). */
+.popover-panel {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  width: min(420px, 80vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  padding: 0.75rem;
+  z-index: 10;
+}
+.popover-panel-above {
+  top: auto;
+  bottom: calc(100% + 0.5rem);
+}
+
+.book-search-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.book-search-input-row input {
+  flex: 1;
+}
+.book-search-close {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  padding: 0.2rem;
+}
+.book-search-results {
+  margin-top: 0.6rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.book-search-result {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 0.4rem 0.5rem;
+  color: var(--text);
+}
+.book-search-result:hover {
+  background: var(--bg-subtle);
+}
+.book-search-result-chapter {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-h);
+}
+.book-search-result-snippet {
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.book-search-result-snippet mark {
+  background: var(--accent);
+  color: var(--bg);
+  border-radius: 3px;
+  padding: 0 0.1rem;
+}
+.book-search-truncated {
+  text-align: center;
+  font-size: 0.75rem;
+  margin-top: 0.25rem;
+}
+
+.bookmark-item {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--border);
+}
+.bookmark-item:last-child {
+  border-bottom: none;
+}
+.bookmark-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.5rem 0.4rem;
+}
+.bookmark-note {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.8rem;
+  font-style: italic;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bookmark-note-edit {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0 0.5rem 0.4rem;
+}
+.bookmark-note-edit input {
+  flex: 1;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.4rem;
+}
+
+.sleep-timer-panel {
+  width: min(260px, 80vw);
+}
+.sleep-timer-cancel {
+  display: block;
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.sleep-timer-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+/* TierBadge's own popover-panel instance (JobsPage) - a row of the other
+   tier badges themselves (not generic option-chip buttons) at their
+   normal, content-sized width (same as the Tier column's own badge),
+   rather than popover-panel's own column layout, which would stretch
+   each one to the panel's full width (align-items' default stretch,
+   under flex-direction: column). Placed after .popover-panel/
+   .popover-panel-above above (same specificity - source order decides),
+   not next to .job-tier-badge's own rules, specifically so it wins that
+   cascade rather than being silently overridden by them - the bug an
+   earlier version of this rule had, defined before .popover-panel in the
+   stylesheet. */
+.job-tier-menu {
+  width: auto;
+  min-width: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.35rem;
+  padding: 0.5rem;
+}
+.job-tier-menu-option {
+  font-size: 0.7rem;
+}
+
+/* Generic small toggle-chip button, for a row of mutually-exclusive quick
+   picks - the sleep timer's duration options and the voice editor's speed
+   presets both use it. */
+.option-chip {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.option-chip:hover {
+  border-color: var(--accent);
+}
+.option-chip-active {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Custom-styled range slider (the voice editor's speed control) - a thin
+   number-line track with a round thumb, plus tick marks/labels below at
+   each SPEED_PRESETS value. Each browser hides a differently-prefixed set
+   of pseudo-elements for range input parts, so Chrome/Safari (-webkit-)
+   and Firefox (-moz-) each get their own track/thumb rules; the "filled"
+   portion left of the thumb uses --fill (set inline per-render from the
+   current value) for WebKit's gradient trick, and Firefox's own
+   ::-moz-range-progress for the same effect natively. */
+.speed-slider {
+  position: relative;
+  padding-bottom: 1.1rem;
+}
+.speed-slider input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  margin: 0.5rem 0 0;
+  background: transparent;
+  cursor: pointer;
+}
+.speed-slider input[type='range']:focus {
+  outline: none;
+}
+.speed-slider input[type='range']::-webkit-slider-runnable-track {
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(to right, var(--accent) var(--fill, 0%), var(--border) var(--fill, 0%));
+}
+.speed-slider input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -6px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+.speed-slider input[type='range']::-moz-range-track {
+  height: 2px;
+  border-radius: 1px;
+  background: var(--border);
+}
+.speed-slider input[type='range']::-moz-range-progress {
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+.speed-slider input[type='range']::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+}
+.speed-slider-ticks {
+  position: relative;
+  height: 6px;
+  margin-top: 0.3rem;
+}
+.speed-slider-tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 100%;
+  background: var(--border);
+  transform: translateX(-50%);
+}
+.speed-slider-labels {
+  position: relative;
+  height: 0.9rem;
+  margin-top: 0.15rem;
+}
+.speed-slider-label {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  white-space: nowrap;
+}
+.speed-slider-label-start {
+  transform: translateX(0);
+}
+.speed-slider-label-end {
+  transform: translateX(-100%);
+}
+
+.player-sleep-remaining {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.voice-panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  background: var(--bg-subtle);
+}
+.voice-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-h);
+}
+.voice-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+.voice-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.text-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.text-button:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+/* Groups a Roster header's "Recharacterize all" text-button with its
+   icon-action-button (delete) so .library-header's own space-between
+   only splits the heading from this whole cluster, not the two actions
+   from each other. */
+.speakers-roster-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Icon-only sibling of .text-button - same accent coloring, sized/centered
+   for a bare icon instead of a text label (relies on title="" for the
+   accessible name). Used for compact per-row list actions (voices list). */
+.icon-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0.2rem;
+  color: var(--accent);
+  font-size: 1rem;
+  line-height: 1;
+}
+.icon-action-button:hover:not(:disabled) {
+  color: var(--accent-hover);
+}
+.icon-action-button:disabled {
+  opacity: 0.5;
+}
+/* Marks an icon-action-button that toggles an open panel (e.g. "Customize
+   voice") as currently open - same active treatment .text-button-icon
+   gives its own toggle state. */
+.icon-action-button-active {
+  color: var(--accent-hover);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-radius: 4px;
+}
+/* Danger variant of .icon-action-button - destructive/cancel actions
+   (job-queue cancel, "cancel all") get the same error-red treatment
+   .error-text already uses elsewhere, instead of the default accent
+   color. */
+.icon-action-button-danger {
+  color: var(--error);
+}
+.icon-action-button-danger:hover:not(:disabled) {
+  color: var(--error);
+  opacity: 0.8;
+}
+
+/* Spins an icon while an action tied to it is in flight (e.g. a manual
+   refresh) - applied directly to the icon element, not its button, so the
+   button itself (and any disabled dimming) stays static. */
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+
+.custom-voice-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border);
+}
+
+.custom-voice-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.custom-voice-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+}
+.custom-voice-list li span:first-child {
+  flex: 1;
+}
+.custom-voice-list li audio {
+  height: 28px;
+  max-width: 220px;
+}
+
+.custom-voice-group {
+  margin-top: 0.75rem;
+}
+.custom-voice-group h3 {
+  margin: 0 0 0.35rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.inline-voice-test {
+  display: flex;
+  flex-basis: 100%;
+  align-items: center;
+  gap: 0.5rem;
+  padding-top: 0.35rem;
+}
+.inline-voice-test input {
+  flex: 1;
+  min-width: 0;
+}
+.inline-voice-test audio {
+  height: 28px;
+  max-width: 200px;
+}
+.voice-model-badge {
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.custom-voice-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* Speakers page (per-book character roster + attribution) */
+
+.speakers-page section {
+  margin-bottom: 1.75rem;
+}
+.speakers-page h2 {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+}
+.speakers-multivoice p.muted {
+  margin-top: 0.4rem;
+}
+
+.chapter-attribute-table {
+  width: 100%;
+  margin: 0.6rem 0 0;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.chapter-attribute-table th {
+  text-align: left;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  font-size: 0.8rem;
+  padding: 0 0.6rem 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.chapter-attribute-table td {
+  padding: 0.45rem 0.6rem 0.45rem 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.chapter-attribute-table th:last-child,
+.chapter-attribute-table td:last-child {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+}
+.chapter-attribute-table tr:last-child td {
+  border-bottom: none;
+}
+.chapter-attribute-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: nowrap;
+}
+.chapter-attribute-status {
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  white-space: nowrap;
+}
+.chapter-attribute-status-done {
+  color: var(--accent);
+}
+
+.speaker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.speaker-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.speaker-row-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-weight: 600;
+}
+.speaker-row-summary {
+  margin: 0;
+}
+.speaker-row-refline {
+  margin: 0;
+  font-size: 0.85em;
+}
+.speaker-row-refline em {
+  font-style: italic;
+}
+.speaker-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+.speaker-row-actions audio {
+  height: 28px;
+  max-width: 220px;
+}
+.speaker-row-audio {
+  display: flex;
+  /* Anchors the audio sample to the left of .speaker-row-actions - an auto
+     margin here consumes the row's free space directly, pushing every
+     button after it to the right, regardless of how many buttons wrap. */
+  margin-right: auto;
+}
+.speaker-appearances {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--border);
+  max-height: 240px;
+  overflow-y: auto;
+}
+.speaker-voice-editor {
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+.speaker-merge-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+.speaker-merge-panel label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+.speaker-appearance-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.speaker-appearance-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.voice-test-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--border);
+}
+.voice-test-box audio {
+  height: 32px;
+}
+
+.voice-ref-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.voice-ref-preview audio {
+  height: 32px;
+}
+
+.chapter-select {
+  margin-bottom: 1rem;
+}
+.chapter-select select {
+  width: 100%;
+}
+
+.scroll-reader {
+  padding-bottom: 6rem;
+}
+
+.scroll-sentinel {
+  height: 1px;
+}
+
+.chapter-block {
+  margin-bottom: 2rem;
+}
+
+.chapter-heading-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin: 0 0 0.75rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.chapter-heading {
+  font-size: 1.15rem;
+  margin: 0;
+  color: var(--text-h);
+}
+
+.chapter-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.paragraph-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.chapter-image {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  align-self: center;
+  display: block;
+}
+
+/* A scene/section break (backend's contentItemDTO kind "break") - the
+   source epub's own <hr/>, or a text-only marker like "* * *" that used to
+   be read aloud literally. Rendered as a plain typographic divider rather
+   than the source's own glyphs, so it reads the same regardless of which
+   marker the original epub happened to use. */
+.chapter-scene-break {
+  align-self: center;
+  width: 100%;
+  max-width: 6rem;
+  height: 1px;
+  margin: 0.6rem 0;
+  background: var(--border);
+}
+
+/* Marks where a chapter background-music region starts (annotations view
+   only - ChapterSection.MusicRegionBoundary) - a labeled divider, not an
+   invisible-until-hover badge like paragraph-speaker-hint/
+   paragraph-direction-hint below, since it's chapter structure (where does
+   this region begin) rather than a per-paragraph fact worth hiding by
+   default. title carries the region's own full prompt text (too long for
+   this one-line label) as an ordinary tooltip. */
+.chapter-music-boundary {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.75rem 0 0.4rem;
+  padding: 0.3rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--music-region) 35%, transparent);
+  background: color-mix(in srgb, var(--music-region) 10%, transparent);
+  color: var(--music-region);
+  font-size: 0.75rem;
+  font-weight: 600;
+  width: fit-content;
+  max-width: 100%;
+}
+.chapter-music-boundary svg {
+  flex-shrink: 0;
+}
+.chapter-music-boundary-mood {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chapter-music-boundary-meta {
+  color: color-mix(in srgb, var(--music-region) 70%, var(--text));
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+/* Previews this region's own generated clip in isolation (see
+   MusicRegionPreviewButton) - .icon-action-button's own sizing/centering,
+   just smaller and colored to match the pill it sits inside instead of
+   --accent, so it reads as part of the boundary marker rather than an
+   unrelated page-level action. */
+.chapter-music-boundary-preview {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 0.15rem;
+  color: var(--music-region);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.chapter-music-boundary-preview:hover {
+  color: var(--accent-hover);
+}
+
+/* Generates/regenerates this region's own clip (see backend
+   httpapi.handleRegenerateMusicRegion) - chapter-music-boundary-preview's
+   own exact sizing/coloring, just its own sibling button rather than
+   reusing that one for two different actions. */
+.chapter-music-boundary-regenerate {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 0;
+  margin-left: 0.15rem;
+  color: var(--music-region);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.chapter-music-boundary-regenerate:hover:not(:disabled) {
+  color: var(--accent-hover);
+}
+.chapter-music-boundary-regenerate:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.paragraph {
+  margin: 0;
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  cursor: pointer;
+  border-left: 3px solid transparent;
+  transition: background 0.15s ease;
+  /* Reader text size/family (ReaderPage's useReaderTypography, the web
+     analogue of android's ReadingSettingsRepository) - set as custom
+     properties on .scroll-reader so every loaded chapter's paragraph text
+     picks them up through the cascade without threading them down as
+     props. line-height is left at the browser's own `normal` (already
+     proportional to font-size) rather than a fixed value, so it scales
+     right along with font-size the same way android's own
+     lineHeightRatio preserves its ratio at any chosen size. Falls back to
+     the ordinary inherited size/family when unset (e.g. server-rendered
+     markup before the first client render sets the variables). */
+  font-size: var(--reader-font-size, inherit);
+  font-family: var(--reader-font-family, inherit);
+}
+.paragraph:hover {
+  background: var(--bg-subtle);
+}
+.paragraph-active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-left-color: var(--accent);
+}
+.paragraph-error {
+  color: var(--error);
+}
+/* Per-segment, not per-paragraph (see ChapterSection.tsx's own
+   segments.map): a merged/inline paragraph's own segments can each be at a
+   different audioStatus, so only the not-yet-generated span itself dims -
+   a sibling segment that's already ready stays full-opacity. */
+.segment-pending {
+  opacity: 0.6;
+}
+
+/* Small bookmark toggle trailing each paragraph's text - invisible until
+   the paragraph is hovered, except when already bookmarked (then it stays
+   visible as the accent-colored filled icon, so a bookmarked paragraph is
+   recognizable while just scrolling past, not only on hover). */
+.paragraph-bookmark-toggle {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 0.4rem;
+  background: none;
+  border: none;
+  padding: 0.1rem;
+  /* rem, not inherited - this icon's own glyph size stays constant
+     regardless of the reader's chosen text size (.paragraph's own
+     font-size, above), same reasoning .paragraph-regenerate-toggle/
+     .paragraph-generation-toggle pin theirs too. */
+  font-size: 1rem;
+  color: color-mix(in srgb, var(--text) 45%, transparent);
+  opacity: 0;
+  /* These trailing controls sit inline inside .paragraph's own <p>, right
+     alongside the narrated text - without this, a drag-select or
+     select-all over the paragraph sweeps them up too (an empty glyph cell
+     at best, "false" flags in the react-icons SVG's own metadata at
+     worst) and pastes garbage ahead of/after the real text. */
+  user-select: none;
+}
+.paragraph:hover .paragraph-bookmark-toggle {
+  opacity: 1;
+}
+.paragraph-bookmark-toggle-active {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.paragraph-regenerate-toggle {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 0.2rem;
+  background: none;
+  border: none;
+  padding: 0.1rem;
+  font-size: 1rem;
+  color: color-mix(in srgb, var(--text) 45%, transparent);
+  opacity: 0;
+  user-select: none;
+}
+.paragraph:hover .paragraph-regenerate-toggle {
+  opacity: 1;
+}
+.paragraph-regenerate-toggle:hover:not(:disabled) {
+  color: var(--accent);
+}
+.paragraph-regenerate-toggle:disabled {
+  cursor: default;
+}
+.paragraph:hover .paragraph-regenerate-toggle:disabled {
+  opacity: 0.5;
+}
+
+/* Annotations-view-only toggle showing the exact text sent to the voice
+   clone (tags/pronunciation substitutions actually spliced in, not just
+   the carets/strikeouts overlaid on the on-screen text) - same invisible-
+   until-hover treatment as the bookmark/regenerate toggles it sits
+   beside, plus an accent-colored active state while expanded (matching
+   .paragraph-bookmark-toggle-active's own "stays visible once engaged"
+   convention). */
+.paragraph-generation-toggle {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 0.2rem;
+  background: none;
+  border: none;
+  padding: 0.1rem;
+  font-size: 1rem;
+  color: color-mix(in srgb, var(--text) 45%, transparent);
+  opacity: 0;
+  user-select: none;
+}
+.paragraph:hover .paragraph-generation-toggle {
+  opacity: 1;
+}
+.paragraph-generation-toggle-active {
+  color: var(--accent);
+  opacity: 1;
+}
+
+/* The expanded block itself - one line per segment (a multi-segment
+   visual paragraph - see ContentGroup - has one independently-generated
+   clip, and therefore one independently-resolved generation text, per
+   segment). Monospace and left-aligned like a code/diff block, since this
+   is meant to be read as raw model input, not prose. */
+.paragraph-generation-text {
+  margin: -0.4rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-subtle);
+  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text);
+}
+.paragraph-generation-text-segment + .paragraph-generation-text-segment {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
+}
+
+/* SFX (sound-effect, ControlFoley) test toggle (see backend/CLAUDE.md's
+   "SFX sound effects" section) - same invisible-until-hover treatment as
+   the bookmark/regenerate/generation toggles it sits beside, plus its own
+   "ready" accent state (independent of sfxOpen) so a paragraph with a
+   generated clip stays recognizable while scrolling past, the same
+   reasoning .paragraph-bookmark-toggle-active's always-visible state
+   follows. */
+.paragraph-sfx-toggle {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 0.2rem;
+  background: none;
+  border: none;
+  padding: 0.1rem;
+  font-size: 1rem;
+  color: color-mix(in srgb, var(--text) 45%, transparent);
+  opacity: 0;
+  user-select: none;
+}
+.paragraph:hover .paragraph-sfx-toggle {
+  opacity: 1;
+}
+.paragraph-sfx-toggle-active,
+.paragraph-sfx-toggle-ready {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.paragraph-sfx-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin: -0.4rem 0 0;
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-subtle);
+}
+.paragraph-sfx-prompt {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.paragraph-sfx-trigger-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+}
+.paragraph-sfx-trigger-words {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+.paragraph-sfx-trigger-word {
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.paragraph-sfx-trigger-word-active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg));
+  color: var(--accent);
+}
+.paragraph-sfx-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.paragraph-sfx-generate {
+  padding: 0.3rem 0.7rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.paragraph-sfx-generate:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.paragraph-sfx-preview {
+  height: 2rem;
+  max-width: 16rem;
+}
+
+/* Who's attributed to speak this paragraph (Narrator or a character name,
+   possibly several for a merged narration+dialogue block - see
+   groupContent in ReaderPage.tsx) - invisible until hover, same as the
+   bookmark/regenerate toggles it sits beside. */
+.paragraph-speaker-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  vertical-align: middle;
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+  opacity: 0;
+  /* Trailing badge, not narrated text - see paragraph-bookmark-toggle's
+     own user-select: none for why it needs to be excluded from selection. */
+  user-select: none;
+}
+.paragraph:hover .paragraph-speaker-hint,
+.paragraph-speaker-hint-visible {
+  opacity: 1;
+}
+
+/* This paragraph's own inline delivery tag(s) (e.g. "Anger", "Whispering" -
+   see ReaderPage's formatDirectionTag) - same invisible-until-hover/
+   annotations-view treatment as paragraph-speaker-hint just above, with its
+   own accent color so the two badges stay visually distinct when a
+   paragraph shows both at once. */
+.paragraph-direction-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  vertical-align: middle;
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--accent) 65%, transparent);
+  opacity: 0;
+  user-select: none;
+}
+.paragraph:hover .paragraph-direction-hint,
+.paragraph-direction-hint-visible {
+  opacity: 1;
+}
+
+/* Annotations view (ReaderPage's "Annotations" toggle) - colors each
+   paragraph segment by narration role instead of leaving that distinction
+   to the speaker-hint badge alone. Background wash + matching left border,
+   same visual language paragraph-active already uses for the
+   currently-playing highlight, just per narration-role color instead of
+   --accent - the two compose fine since paragraph-active's own border
+   lives on the outer <p>, this one on the inline segment <span>. */
+.annotation-narrator {
+  background: color-mix(in srgb, var(--annotation-narrator) 12%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--annotation-narrator) 60%, transparent);
+}
+.annotation-speaker {
+  background: color-mix(in srgb, var(--annotation-speaker) 18%, transparent);
+  border-bottom: 2px solid var(--annotation-speaker);
+}
+.annotation-description {
+  background: color-mix(in srgb, var(--annotation-description) 18%, transparent);
+  border-bottom: 2px solid var(--annotation-description);
+}
+
+/* Inline delivery-tag caret (ParagraphText.DirectionCaret) - a small
+   insertion mark (‸) at the exact point a Higgs delivery tag was inserted,
+   tinted per tag category (see directionTagCategory). Rendered inside a
+   .paragraph's own text regardless of whether that segment also has an
+   annotation-* class - an orthogonal "how it's delivered" fact, not a
+   narration-role color. */
+.direction-caret {
+  cursor: help;
+}
+.direction-caret-emotion {
+  color: var(--direction-emotion);
+}
+.direction-caret-style {
+  color: var(--direction-style);
+}
+.direction-caret-prosody {
+  color: var(--direction-prosody);
+}
+.direction-caret-sfx {
+  color: var(--direction-sfx);
+}
+.direction-caret-other {
+  color: var(--annotation-narrator);
+}
+
+/* Reading-view marker only (ParagraphText.DirectionCaret) - zero-width so
+   inserting it never shifts surrounding text or line spacing, unlike an
+   inline glyph mixed into the text flow. The actual icon is pulled out of
+   flow entirely (absolute) and drawn just below the baseline, at the
+   insertion point, rather than pushing text apart. */
+.direction-caret-mark {
+  position: relative;
+  display: inline-block;
+  width: 0;
+  height: 0;
+  overflow: visible;
+  vertical-align: baseline;
+}
+.direction-caret-mark svg {
+  position: absolute;
+  top: -0.15em;
+  left: -0.5em;
+  font-size: 1.3em;
+}
+
+/* Legend swatch (PlayerBar's floating panel) - fixed-width and centered so
+   the caret icon's own label lines up with the annotation-legend-swatch/
+   pronunciation-legend-swatch/scare-quote-legend-swatch labels beside it,
+   rather than each label sitting at whatever offset the icon's own
+   (variable-width) glyph happens to leave. */
+.annotation-legend-item .direction-caret {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: var(--annotation-legend-marker-width);
+  height: 0.7rem;
+  overflow: visible;
+}
+.annotation-legend-item .direction-caret svg {
+  font-size: 2.4em;
+  vertical-align: middle;
+  /* Without this, the flex-row parent's fixed (small) width shrinks the
+     svg's width down to fit while its height (the cross axis, unaffected
+     by flex-shrink) stays at the full font-size-driven intrinsic size -
+     squashing the icon into a tall skinny sliver instead of scaling it
+     up evenly. */
+  flex-shrink: 0;
+}
+
+/* Pronunciation strikeout (ParagraphText.PronunciationStrike) - a line straight through the word
+   itself rather than a caret sitting near it, in the same --pronunciation-caret color the caret
+   version used. Plain text-decoration, not an absolute-positioned element, so this needs no
+   wrapper/positioning tricks the way the caret version did. */
+.pronunciation-strike {
+  text-decoration: line-through;
+  text-decoration-color: var(--pronunciation-caret);
+  text-decoration-thickness: 0.14em;
+  cursor: help;
+}
+
+/* Legend swatch (PlayerBar's floating panel) - a short static line in the same color/thickness,
+   standing in for the strikeout itself since there's no single word to draw it through here. */
+.pronunciation-legend-swatch {
+  display: inline-block;
+  width: var(--annotation-legend-marker-width);
+  border-bottom: 0.14em solid var(--pronunciation-caret);
+  vertical-align: middle;
+}
+
+/* Scare-quote underline (ChapterSection) - a dashed underline on the
+   flagged span itself, layered on top of whichever annotation-* kind
+   background it already has (almost always .annotation-speaker, since
+   only an IsQuote segment can ever be flagged) rather than replacing it -
+   the segment still IS structurally a quote, this just marks it as not
+   actually spoken aloud. Plain text-decoration, same no-wrapper approach
+   .pronunciation-strike already uses. */
+.annotation-scare-quote {
+  text-decoration: underline dashed;
+  text-decoration-color: var(--scare-quote-mark);
+  text-decoration-thickness: 0.14em;
+  text-underline-offset: 0.2em;
+  cursor: help;
+}
+
+/* Legend swatch (PlayerBar's floating panel) - a short dashed line in the
+   same color/thickness, standing in for the underline itself. */
+.scare-quote-legend-swatch {
+  display: inline-block;
+  width: var(--annotation-legend-marker-width);
+  border-bottom: 0.14em dashed var(--scare-quote-mark);
+  vertical-align: middle;
+}
+
+/* Layers on top of whichever annotation-* kind class a segment already
+   has (selecting a speaker in PlayerBar's list sets this alongside it,
+   never instead of it - see ReaderPage's selectedSpeaker) - an inset ring
+   rather than swapping the background, so the underlying narrator/
+   speaker/description color stays visible while this speaker's own lines
+   stand out from same-kind neighbors too. */
+.annotation-selected-speaker {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  border-radius: 3px;
+}
+
+/* Custom hover tooltip for an annotated segment (ReaderPage's
+   hoverTooltip), replacing the browser's own native title="..." popup -
+   anchored top-center off the hovered segment's own rect (see
+   showAnnotationTooltip), not the cursor. pointer-events: none so it
+   never itself becomes the mouseleave target. */
+/* Anchored top-center off the specific hovered word's own rect (see
+   showAnnotationTooltip) - same panel look (bg/border/shadow) as this
+   app's other floating elements (.bottom-popover, .speaker-context-menu,
+   .annotation-legend-float) rather than a high-contrast inverted tooltip,
+   so it matches light/dark theme the same way they do. */
+.annotation-tooltip {
+  position: fixed;
+  transform: translate(-50%, calc(-100% - 10px));
+  z-index: 30;
+  pointer-events: none;
+  /* Wraps rather than truncating - most callers (annotationTitle: a
+     speaker name, a short describes-characters list) are short enough to
+     never wrap in practice, but a music region's own full generation
+     prompt (MusicRegionBoundary) can run to a full sentence or two, and
+     silently ellipsis-cutting that off gave no way to ever read the rest. */
+  max-width: 320px;
+  padding: 0.3rem 0.55rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: normal;
+}
+.annotation-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 8px;
+  height: 8px;
+  margin-top: -5px;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  rotate: 45deg;
+}
+
+/* Floats above the player bar's left edge while the Annotations toggle is
+   on - same "detached panel above a fixed bottom bar" pattern
+   jump-to-current-button/bottom-popover already use (both anchored via
+   `bottom: calc(100% + ...)` off .player-bar's own position: fixed),
+   just left-anchored and shaped as a plain row instead of a circular
+   button or a scrollable popover. */
+.annotation-legend-float {
+  /* Shared marker column width - annotation-legend-swatch, the
+     direction-caret icon, and the pronunciation/scare-quote swatches all
+     use this so every legend row's label starts at the same x position
+     regardless of which kind of marker precedes it. */
+  --annotation-legend-marker-width: 0.7rem;
+  position: absolute;
+  /* .player-bar is fixed with left: 0/right: 0, spanning the full
+     viewport under .app-sidebar's own width rather than just .app-main's
+     own (centered, variable-width) column - these left/max-width values
+     are only the fallback for the first frame, before PlayerBar's own
+     useLayoutEffect measures .app-sidebar/.app-main's real live positions
+     and overrides both via inline style (legendBounds), so the panel
+     actually sits in the real gap between the sidebar and the reader
+     text rather than this fixed guess. */
+  left: calc(200px + 1.5rem);
+  bottom: calc(100% + 0.75rem);
+  display: flex;
+  flex-direction: column;
+  /* stretch, not flex-start - a fixed width (below) fills the whole
+     available gap regardless of content, so the panel doesn't visibly
+     resize switching between "this chapter" and the whole book, or as
+     search narrows the result count; children stretch to match rather
+     than shrink-wrapping their own content. */
+  align-items: stretch;
+  gap: 0.5rem;
+  width: min(360px, calc(100vw - 200px - 3rem));
+  /* No max-height/overflow here - the title/search box and the legend
+     rows below must always stay fully visible; only
+     .annotation-speaker-list-names (the name rows themselves) scrolls,
+     see below. */
+  padding: 0.5rem 0.7rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+}
+.annotation-legend-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+}
+.annotation-speaker-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.annotation-legend-divider {
+  align-self: stretch;
+  border-top: 1px solid var(--border);
+}
+.annotation-speaker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  align-self: stretch;
+}
+/* A plain search line, not a boxed field - no border/background of its
+   own, just an underline that brightens on focus, consistent with this
+   being a lightweight filter inside an already-bordered panel rather than
+   a standalone form control. */
+.annotation-speaker-search {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.15rem 0.1rem;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: none;
+  color: var(--text);
+}
+.annotation-speaker-search:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+/* The only scrollable part of the panel - bounded so a book with many
+   characters doesn't push the always-visible title/search/legend off
+   screen or grow the panel past a reasonable height. */
+.annotation-speaker-list-names {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  /* A fixed height, not just a max-height - so switching between "this
+     chapter" (usually a short list) and the whole book (often a long
+     one), or narrowing the search filter's result count, never grows or
+     shrinks the panel itself; a short list just leaves blank space below
+     it instead. */
+  height: 180px;
+  overflow-y: auto;
+  /* Reserves the scrollbar's own track (plus a little breathing room) so
+     it doesn't sit on top of - and make unclickable - each row's
+     flush-right merge button. box-sizing: border-box (global) keeps this
+     padding inside the element's existing width rather than growing it. */
+  scrollbar-gutter: stable;
+  padding-right: 0.4rem;
+}
+.annotation-speaker-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.15rem 0;
+}
+.annotation-speaker-row-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+/* A button, not static text - clicking one selects that speaker, which
+   highlights their own lines in the reader (see ReaderPage's
+   selectedSpeaker/matchesSelectedSpeaker and .annotation-selected-speaker
+   below). */
+.annotation-speaker-list-item {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+.annotation-speaker-list-item:hover {
+  color: var(--accent);
+}
+.annotation-speaker-list-item-active {
+  color: var(--accent);
+  font-weight: 700;
+}
+.annotation-speaker-merge {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  padding-left: 0.2rem;
+}
+.annotation-speaker-merge select {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.35rem;
+}
+.annotation-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.annotation-legend-swatch {
+  width: var(--annotation-legend-marker-width);
+  height: 0.7rem;
+  border-radius: 3px;
+  border: none;
+  flex-shrink: 0;
+}
+.annotation-legend-swatch.annotation-narrator {
+  background: var(--annotation-narrator);
+}
+.annotation-legend-swatch.annotation-speaker {
+  background: var(--annotation-speaker);
+}
+.annotation-legend-swatch.annotation-description {
+  background: var(--annotation-description);
+}
+
+/* Individually clickable, seeks the active paragraph's audio to roughly
+   that word (see ParagraphText's wordTime) - underline-on-hover is the
+   only visible affordance otherwise, since a border/background on every
+   word of playing text would be far too busy. */
+.word {
+  cursor: pointer;
+}
+.word:hover {
+  text-decoration: underline;
+}
+.word-active {
+  background: var(--accent);
+  color: white;
+  border-radius: 3px;
+  padding: 0 0.1em;
+  margin: 0 -0.1em;
+}
+
+/* Player bar */
+
+.player-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem 1.5rem 0.75rem;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+
+.player-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.player-bar-row-meta {
+  gap: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.player-chapter-select {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.4rem;
+}
+
+.text-button-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+.text-button-icon-active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.player-percent {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.player-wpm {
+  white-space: nowrap;
+}
+
+/* Right-click "reassign speaker" menu (ReaderPage, annotations view only)
+   - position: fixed at the click's own clientX/clientY (set inline), not
+   anchored to any particular element the way .bottom-popover/
+   .annotation-legend-float are - a real context menu tracks the cursor. */
+.speaker-context-menu {
+  position: fixed;
+  z-index: 20;
+  min-width: 160px;
+  max-width: 260px;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  padding: 0.35rem;
+  display: flex;
+  flex-direction: column;
+}
+.speaker-context-menu-title {
+  padding: 0.3rem 0.6rem 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+}
+.speaker-context-menu-current {
+  padding: 0 0.6rem 0.3rem;
+  margin-bottom: 0.2rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  color: var(--text);
+}
+/* "Nearby"/"All characters" sub-headers splitting the "Reassign speaker"
+   target list - same small-caps treatment as .speaker-context-menu-title,
+   but with its own top spacing since it appears mid-list rather than at
+   the menu's very top (see ReaderPage's nearbyReassignTargets). */
+.speaker-context-menu-section {
+  padding: 0.3rem 0.6rem 0.2rem;
+  margin-top: 0.2rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+}
+.speaker-context-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.speaker-context-menu-item:hover:not(:disabled) {
+  background: var(--bg-subtle);
+}
+.speaker-context-menu-item:disabled {
+  color: var(--accent);
+  font-weight: 600;
+  cursor: default;
+}
+.speaker-context-menu-empty {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--text) 55%, transparent);
+  max-width: 220px;
+}
+/* One character's own reassign-target list within the description-reassign
+   menu (ReaderPage's contextMenu.describesCharacters can have more than one
+   name - a paragraph describing two people gets one of these per name) -
+   separated from the next group the same way .speaker-context-menu-current
+   already separates the title from the first group. */
+.speaker-context-menu-group + .speaker-context-menu-group {
+  margin-top: 0.3rem;
+  padding-top: 0.3rem;
+  border-top: 1px solid var(--border);
+}
+
+.bottom-popover {
+  position: absolute;
+  bottom: calc(100% + 0.75rem);
+  right: 1rem;
+  left: 1rem;
+  max-width: 420px;
+  margin-left: auto;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  padding: 1rem;
+}
+
+.play-button {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: none;
+  background: var(--accent);
+  color: white;
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.play-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.jump-to-current-button {
+  position: absolute;
+  right: 1.5rem;
+  bottom: calc(100% + 0.75rem);
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent), 0 2px 8px rgba(0, 0, 0, 0.15);
+  font-size: 1.05rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.player-progress {
+  flex: 1;
+  min-width: 0;
+}
+.player-status {
+  font-size: 0.8rem;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  margin-bottom: 0.25rem;
+}
+.player-track {
+  position: relative;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--bg-subtle);
+  overflow: hidden;
+}
+.player-track-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  height: 100%;
+  background: var(--accent);
+}
+/* Paragraphs already generated but not yet played - a run of ready audio
+   immediately ahead of the current position, so the reader can see how
+   much runway there is before playback would have to wait on generation. */
+.player-track-buffered {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  height: 100%;
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.player-times {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.15rem 0.75rem;
+  font-size: 0.75rem;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  margin-top: 0.15rem;
+}
+.player-times-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+}
+/* Chapter-remaining (RiBookmarkLine) and book-remaining (RiBookOpenLine)
+   read-outs - icon-only labeling instead of text, since "left in
+   chapter"/"left in book" ran long in this already-cramped row. */
+.player-remaining {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.player-speed {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+}

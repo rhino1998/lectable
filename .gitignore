@@ -1,0 +1,29 @@
+# backend
+backend/data/
+backend/server
+backend/ttsworker
+backend/benchattr
+backend/*.duckdb
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+
+# tts-service
+tts-service/__pycache__/
+tts-service/*.pyc
+tts-service/**/__pycache__/
+tts-service/voice_refs/
+
+# android
+android/local.properties
+android/.gradle/
+android/*/build/
+android/build/
+android/.idea/
+android/*.iml
+android/captures/
+android/.cxx/
+
+# editors / OS
+.DS_Store
