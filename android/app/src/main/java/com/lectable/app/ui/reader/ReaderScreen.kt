@@ -98,6 +98,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
@@ -599,7 +600,7 @@ fun ReaderScreen(
             onDownload = viewModel::downloadChapter,
             onLongPressDownload = viewModel::cancelOrDeleteDownload,
             onGenerateChapter = viewModel::generateChapter,
-            onAttributeChapter = viewModel::attributeChapter,
+            onChapterPass = viewModel::runChapterPass,
         )
     }
 
@@ -2247,7 +2248,7 @@ private fun ChapterPickerSheet(
     onDownload: (idx: Int) -> Unit,
     onLongPressDownload: (idx: Int) -> Unit,
     onGenerateChapter: (idx: Int) -> Unit,
-    onAttributeChapter: (idx: Int) -> Unit,
+    onChapterPass: (idx: Int, pass: ChapterPass) -> Unit,
 ) {
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (currentChapterIdx - 3).coerceAtLeast(0))
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -2343,11 +2344,13 @@ private fun ChapterPickerSheet(
                             leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null) },
                             onClick = { onGenerateChapter(chapter.idx); showChapterMenu = false },
                         )
-                        DropdownMenuItem(
-                            text = { Text("Attribute & tag chapter") },
-                            leadingIcon = { Icon(Icons.Filled.RecordVoiceOver, contentDescription = null) },
-                            onClick = { onAttributeChapter(chapter.idx); showChapterMenu = false },
-                        )
+                        ChapterPass.entries.forEach { pass ->
+                            DropdownMenuItem(
+                                text = { Text(pass.label) },
+                                leadingIcon = { Icon(pass.icon, contentDescription = null) },
+                                onClick = { onChapterPass(chapter.idx, pass); showChapterMenu = false },
+                            )
+                        }
                         if (state?.status == DownloadStatus.DOWNLOADING || state?.status == DownloadStatus.COMPLETE) {
                             DropdownMenuItem(
                                 text = { Text("Delete downloaded data") },
@@ -2640,3 +2643,14 @@ private fun SleepTimerSheet(
         }
     }
 }
+
+/** [ChapterPass]'s menu icon - kept here, next to the only UI that shows it, rather than on the
+ *  enum itself (which lives with the ViewModel and stays free of Compose types). */
+private val ChapterPass.icon: ImageVector
+    get() = when (this) {
+        ChapterPass.SCARE_QUOTES -> Icons.Filled.FormatQuote
+        ChapterPass.ATTRIBUTION -> Icons.Filled.RecordVoiceOver
+        ChapterPass.DESCRIPTIONS -> Icons.Filled.Person
+        ChapterPass.DIRECTIONS -> Icons.Filled.Mood
+        ChapterPass.MUSIC -> Icons.Filled.MusicNote
+    }

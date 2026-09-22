@@ -926,25 +926,25 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    /** The chapter picker's long-press "Attribute & tag chapter" action - fires this one
-     *  chapter's own speaker attribution, description tagging, and speech-direction/
-     *  pronunciation tagging, the per-chapter equivalent of the web Speakers page's three
-     *  individual buttons (see android/CLAUDE.md's scaffold limitations - there's still no
-     *  Android roster UI, just this explicit trigger). Issued in the same order the backend's own
-     *  whole-book preprocess pipeline runs them in, but - like that pipeline - each is
-     *  best-effort/independent: attribute-speakers and tag-directions are fire-and-forget queued
-     *  work anyway, so one failing (e.g. tag-directions 400ing on a non-Higgs voice, or the
-     *  feature being unconfigured server-side) doesn't stop the others from being requested. */
-    fun attributeChapter(chapterIdx: Int) {
+    /** The chapter picker's long-press LLM-pass actions - one [ChapterPass] per item, each the
+     *  per-chapter equivalent of one of the web Speakers page's own buttons (see
+     *  android/CLAUDE.md's scaffold limitations - there's still no Android roster UI, just these
+     *  explicit triggers). Every one is a separate fire-and-forget backend job; ordering between
+     *  them is the backend's own business (a chapter's attribution and description tagging both
+     *  wait on its scare-quote tagging, queuing it themselves if it's never run), so nothing here
+     *  sequences them. A failure (e.g. tag-directions 400ing on a non-Higgs voice, or the LLM
+     *  being unconfigured server-side) surfaces as the reader's error banner. */
+    fun runChapterPass(chapterIdx: Int, pass: ChapterPass) {
         viewModelScope.launch {
-            val errors = mutableListOf<String>()
-            runCatching { libraryRepository.attributeSpeakers(bookId, chapterIdx) }
-                .onFailure { e -> errors += e.message ?: "Speaker attribution failed" }
-            runCatching { libraryRepository.retagDescriptions(bookId, chapterIdx) }
-                .onFailure { e -> errors += e.message ?: "Description tagging failed" }
-            runCatching { libraryRepository.tagDirections(bookId, chapterIdx) }
-                .onFailure { e -> errors += e.message ?: "Direction tagging failed" }
-            if (errors.isNotEmpty()) _uiState.update { it.copy(error = errors.joinToString("; ")) }
+            runCatching {
+                when (pass) {
+                    ChapterPass.SCARE_QUOTES -> libraryRepository.retagScareQuotes(bookId, chapterIdx)
+                    ChapterPass.ATTRIBUTION -> libraryRepository.attributeSpeakers(bookId, chapterIdx)
+                    ChapterPass.DESCRIPTIONS -> libraryRepository.retagDescriptions(bookId, chapterIdx)
+                    ChapterPass.DIRECTIONS -> libraryRepository.tagDirections(bookId, chapterIdx)
+                    ChapterPass.MUSIC -> libraryRepository.scoreChapterMusic(bookId, chapterIdx)
+                }
+            }.onFailure { e -> _uiState.update { it.copy(error = e.message ?: "${pass.label} failed") } }
         }
     }
 
@@ -1025,3 +1025,14 @@ class ReaderViewModel @Inject constructor(
 
 private fun List<BookmarkDto>.toBookmarksByKey(): Map<Pair<Int, Int>, String> =
     associate { (it.chapterIdx to it.paragraphIdx) to it.id }
+
+/** One of the chapter picker's long-press LLM passes - see [ReaderViewModel.runChapterPass].
+ *  Declared in the order a chapter's passes run on the backend (scare quotes first, since
+ *  attribution and description tagging wait on it), which is also the menu's order. */
+enum class ChapterPass(val label: String) {
+    SCARE_QUOTES("Tag scare quotes"),
+    ATTRIBUTION("Attribute speakers"),
+    DESCRIPTIONS("Tag descriptions"),
+    DIRECTIONS("Tag speech directions"),
+    MUSIC("Score background music"),
+}

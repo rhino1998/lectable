@@ -250,6 +250,7 @@ private fun TierBadge(tier: String) {
     val color = when (tier) {
         "urgent" -> MaterialTheme.colorScheme.error
         "lookahead" -> MaterialTheme.colorScheme.primary
+        "normal" -> MaterialTheme.colorScheme.tertiary
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
     Text(

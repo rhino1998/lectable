@@ -151,10 +151,5 @@ data class ChapterDetailDto(
 @Serializable
 data class QueuedResponseDto(val queued: Boolean)
 
-/** `{"ok": true}` - the shape a handful of endpoints that block and return a real (not just
- *  queued) result reply with, e.g. retag-descriptions. */
-@Serializable
-data class OkResponseDto(val ok: Boolean)
-
 @Serializable
 data class LookaheadRequestDto(val chapterIdx: Int, val paragraphIdx: Int)

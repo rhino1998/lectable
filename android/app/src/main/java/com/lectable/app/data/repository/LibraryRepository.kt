@@ -86,7 +86,10 @@ class LibraryRepository @Inject constructor(
     suspend fun attributeSpeakers(bookId: String, idx: Int): Boolean = api.attributeSpeakers(bookId, idx).queued
 
     /** [LectableApi.retagDescriptions] - see its own doc comment. */
-    suspend fun retagDescriptions(bookId: String, idx: Int): Boolean = api.retagDescriptions(bookId, idx).ok
+    suspend fun retagDescriptions(bookId: String, idx: Int): Boolean = api.retagDescriptions(bookId, idx).queued
+
+    /** [LectableApi.retagScareQuotes] - see its own doc comment. */
+    suspend fun retagScareQuotes(bookId: String, idx: Int): Boolean = api.retagScareQuotes(bookId, idx).queued
 
     /** [LectableApi.tagDirections] - see its own doc comment. */
     suspend fun tagDirections(bookId: String, idx: Int): Boolean = api.tagDirections(bookId, idx).queued

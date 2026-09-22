@@ -50,7 +50,7 @@ data class VoiceSettingsDto(
     // Opts this book into waiting for speech-direction tagging before generating its audio - see
     // backend's voiceSettingsDTO.SpeechDirection. Off by default; no Android UI toggles this yet
     // (tagging itself IS reachable, via the reader's own chapter-picker long-press menu - see
-    // ReaderViewModel.attributeChapter) - carried here purely so a PUT from this app doesn't
+    // ReaderViewModel.runChapterPass) - carried here purely so a PUT from this app doesn't
     // silently clobber it if the web UI already turned it on for this book.
     val speechDirection: Boolean = false,
     // Reader-facing background-music toggle - book-wide (unlike a chapter's own scoring

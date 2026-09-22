@@ -66,7 +66,7 @@ data class SpeakerUiState(
  *  once satisfied with the assignments. Deliberately scoped down from the web page: no per-chapter
  *  attribution/description/direction-tag status/individual buttons here (preprocess already
  *  covers the common "just run everything" path, and the reader's own chapter picker long-press
- *  menu covers attribution/tagging one chapter directly - see ReaderViewModel.attributeChapter)
+ *  menu covers attribution/tagging one chapter directly - see ReaderViewModel.runChapterPass)
  *  - see android/CLAUDE.md for the fuller reasoning. */
 @HiltViewModel
 class SpeakerViewModel @Inject constructor(

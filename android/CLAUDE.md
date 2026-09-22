@@ -247,8 +247,10 @@ compiled-in default in place if nothing answers in time.
   frontend's `ReaderPage.tsx` (a `{range}` chapter-index window grown via
   `LazyListState.layoutInfo` instead of `IntersectionObserver`), plus a
   "jump to chapter" sheet (each row itself long-press-able for a
-  chapter-scoped menu: "Generate chapter audio", "Attribute & tag chapter"
-  - `ReaderViewModel.generateChapter`/`attributeChapter` - and, once
+  chapter-scoped menu: "Generate chapter audio", then one item per LLM pass
+  - "Tag scare quotes", "Attribute speakers", "Tag descriptions", "Tag
+  speech directions", "Score background music" -
+  `ReaderViewModel.generateChapter`/`runChapterPass(idx, ChapterPass)` - and, once
   something's downloaded, "Delete downloaded data"), bookmarks/search
   sheets, and a long-press paragraph menu (regenerate/bookmark/copy/set
   speaker). Book-level
@@ -333,9 +335,10 @@ compiled-in default in place if nothing answers in time.
   (web's "Tag directions" button, which also runs pronunciation resolution
   server-side) *is* reachable here too, just not from this screen - the
   reader's own chapter picker ("Jump to chapter" sheet) has a long-press
-  menu per chapter with "Generate chapter audio" and "Attribute & tag
-  chapter" (`ReaderViewModel.attributeChapter`, firing attribute-speakers/
-  retag-descriptions/tag-directions together for that one chapter) - see
+  menu per chapter with "Generate chapter audio" and one item per LLM pass
+  (`ReaderViewModel.runChapterPass`, each queuing its own backend job -
+  the backend orders attribution/description tagging after scare-quote
+  tagging itself) - see
   `ui/reader/` below. Both survive offline downloads
   (`OfflineParagraph.directionMarks`/`.pronunciationMarks`).
 - **Annotations mode**: a palette-icon toggle in the bottom playback bar

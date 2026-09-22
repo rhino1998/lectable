@@ -17,7 +17,6 @@ import com.lectable.app.data.remote.dto.LanguagesResponseDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.MergeCharacterRequestDto
-import com.lectable.app.data.remote.dto.OkResponseDto
 import com.lectable.app.data.remote.dto.PausedResponseDto
 import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.QueuedResponseDto
@@ -124,11 +123,18 @@ interface LectableApi {
     @POST("api/books/{id}/chapters/{idx}/attribute-speakers")
     suspend fun attributeSpeakers(@Path("id") bookId: String, @Path("idx") idx: Int): QueuedResponseDto
 
-    /** Force re-runs description-tagging for one chapter - unlike [attributeSpeakers], this
-     *  blocks on the actual (small/fast) LLM run and returns its real result. See backend's
-     *  handleRetagDescriptions. */
+    /** Enqueues description tagging for one chapter - fire-and-forget, 202 immediately, like
+     *  [attributeSpeakers]; the backend job waits on the chapter's scare-quote tagging first. See
+     *  backend's handleRetagDescriptions. */
     @POST("api/books/{id}/chapters/{idx}/retag-descriptions")
-    suspend fun retagDescriptions(@Path("id") bookId: String, @Path("idx") idx: Int): OkResponseDto
+    suspend fun retagDescriptions(@Path("id") bookId: String, @Path("idx") idx: Int): QueuedResponseDto
+
+    /** Enqueues scare-quote tagging for one chapter - fire-and-forget, 202 immediately. The
+     *  backend runs this before a chapter's attribution/description tagging (both wait on it),
+     *  queuing it itself if needed, so this is only an explicit re-run. See backend's
+     *  handleRetagScareQuotes. */
+    @POST("api/books/{id}/chapters/{idx}/retag-scare-quotes")
+    suspend fun retagScareQuotes(@Path("id") bookId: String, @Path("idx") idx: Int): QueuedResponseDto
 
     /** Enqueues speech-direction tagging and pronunciation resolution for one chapter -
      *  fire-and-forget, 202 immediately (503 if unconfigured, 400 if this book's resolved clone
