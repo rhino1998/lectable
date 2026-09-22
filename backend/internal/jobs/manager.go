@@ -3109,6 +3109,20 @@ func (m *Manager) EnqueueReattribution(bookID, chapterID string, chapterIdx int,
 	})
 }
 
+// RunReattribution is EnqueueReattribution's blocking sibling,
+// RunAttribution's exact counterpart for "Auto Split" - used by the
+// per-chapter fan-out inside an EnqueueAutoSplit run (the one caller), a
+// background pipeline task rather than an HTTP handler, so blocking is
+// safe for the same reason RunAttribution's own doc comment gives. Same
+// (chapter, speaker)-scoped dedup key as EnqueueReattribution, so a
+// paused chapter's own fire-and-forget continuation (see
+// httpapi.reattributeChapterSpeaker) joins/collides with it exactly as
+// before. tier is caller-supplied (the wrapping task's own live tier -
+// see PipelinePhaseFunc).
+func (m *Manager) RunReattribution(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, speakerKey, label string, fn ReattributionFunc) (int, error) {
+	return m.runLLMTaskDirect(ctx, KindSpeakerReattribution, tier, bookID, chapterID, chapterIdx, chapterID+"|"+speakerKey, label, fn)
+}
+
 // EnqueueDirection queues fn as a KindSpeechDirection task - EnqueueAttribution's
 // exact fire-and-forget shape (same dedup-by-chapter, same poolLLM
 // dispatch, same defaultAttributionTier), for speech-direction tagging
@@ -4106,6 +4120,8 @@ func (m *Manager) PromoteTier(id string, newTier int) error {
 			m.cascadePipelinePromotion(promoted.bookID, promoted.phase, newTier)
 		case pipelineTaskGenerateChapter:
 			m.cascadeChapterGeneratePromotion(promoted.bookID, promoted.chapterID, newTier)
+		case pipelineTaskAutoSplit:
+			m.cascadeAutoSplitPromotion(promoted.bookID, promoted.speakerKey, newTier)
 		}
 		// pipelineTaskGenerateBook/pipelineTaskGenerateRemaining aren't
 		// cascaded - both walk every chapter in the book (or from the
@@ -4192,6 +4208,29 @@ func (m *Manager) cascadeChapterGeneratePromotion(bookID, chapterID string, newT
 		func(c taskqueue.Task) bool {
 			ct, ok := c.(*task)
 			return ok && ct.bookID == bookID && ct.chapterID == chapterID
+		},
+		func(c taskqueue.Task) {
+			if newTier < c.Tier() {
+				c.Promote(newTier)
+			}
+		},
+	)
+}
+
+// cascadeAutoSplitPromotion is PromoteTier's own follow-up for a promoted
+// pipelineTaskAutoSplit task - cascadePipelinePromotion's counterpart for
+// one speaker's Auto Split run: every KindSpeakerReattribution task
+// already dispatched for this book under this exact speakerKey (matched by
+// llmKey's own "<chapterID>|<speakerKey>" suffix - see
+// EnqueueReattribution) gets the same bump, including a paused chapter's
+// detached continuation, which the wrapping task's own live tier() can't
+// otherwise reach.
+func (m *Manager) cascadeAutoSplitPromotion(bookID, speakerKey string, newTier int) {
+	suffix := "|" + speakerKey
+	m.queue.WithEachTask(
+		func(c taskqueue.Task) bool {
+			ct, ok := c.(*task)
+			return ok && ct.kind == KindSpeakerReattribution && ct.bookID == bookID && strings.HasSuffix(ct.llmKey, suffix)
 		},
 		func(c taskqueue.Task) {
 			if newTier < c.Tier() {

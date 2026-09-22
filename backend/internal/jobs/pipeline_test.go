@@ -380,3 +380,61 @@ func TestPromoteTierUpgradesQueuedPipelinePhase(t *testing.T) {
 		t.Fatalf("expected phase %q to still be queued", id)
 	}
 }
+
+// TestAutoSplitWrapsAsOneCancelablePipelineRow checks EnqueueAutoSplit's
+// own contract: one "pipeline_auto_split" row labeled with the speaker's
+// name, whose run sees a promotion through its live tier(), which never
+// counts toward IsPipelineRunning (not a preprocessing run), and which the
+// dashboard's per-row Cancel reaches by its own ID.
+func TestAutoSplitWrapsAsOneCancelablePipelineRow(t *testing.T) {
+	mgr := newTestManager()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	mgr.Start(ctx)
+
+	started := make(chan func() int, 1)
+	canceled := make(chan struct{})
+	mgr.EnqueueAutoSplit("book-1", "char-1", "Bogus", func(ctx context.Context, tier func() int) error {
+		started <- tier
+		<-ctx.Done()
+		close(canceled)
+		return ctx.Err()
+	})
+	tier := <-started
+
+	var found QueueTask
+	waitFor(t, time.Second, func() bool {
+		inFlight, _ := mgr.Snapshot()
+		for _, qt := range inFlight {
+			if qt.Kind == "pipeline_auto_split" {
+				found = qt
+				return true
+			}
+		}
+		return false
+	})
+	if found.ID != "pipeline:book-1:auto_split:char-1" || found.Label != "Bogus" || found.BookID != "book-1" {
+		t.Fatalf("unexpected auto split row: %+v", found)
+	}
+	if mgr.IsPipelineRunning("book-1") {
+		t.Fatalf("expected an Auto Split run not to count as a preprocessing run")
+	}
+	if got := tier(); got != TierBackground {
+		t.Fatalf("expected initial tier TierBackground, got %d", got)
+	}
+	if err := mgr.PromoteTier(found.ID, TierUrgent); err != nil {
+		t.Fatalf("PromoteTier: %v", err)
+	}
+	if got := tier(); got != TierUrgent {
+		t.Fatalf("expected run's live tier to reflect promotion to TierUrgent, got %d", got)
+	}
+
+	if !mgr.Cancel(found.ID) {
+		t.Fatalf("expected Cancel(%q) to report true", found.ID)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatalf("expected Cancel to cancel the Auto Split run's ctx")
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -471,7 +472,8 @@ type reattributeSpeakerRequest struct {
 // sentinel itself, e.g. after a reader manually renamed/deleted the wrong
 // speaker upstream - it re-judges every one of that speaker's own
 // paragraphs in this book (chapter by chapter, one KindSpeakerReattribution
-// task per chapter - see jobs.Manager.EnqueueReattribution) and
+// task per chapter, all grouped under one pipeline_auto_split task - see
+// jobs.Manager.EnqueueAutoSplit/RunReattribution) and
 // redistributes them to whichever real character/Narrator/Unknown they
 // actually belong to, using the exact same chapter-wide LLM pass
 // attribution itself already runs (reattributeChapterSpeaker reuses
@@ -554,7 +556,11 @@ func (s *Server) handleReattributeSpeaker(w http.ResponseWriter, r *http.Request
 		targetByChapter[p.ChapterID][p.Idx] = true
 	}
 
-	queued := 0
+	type chapterTarget struct {
+		ch        *store.Chapter
+		targetIdx map[int]bool
+	}
+	var targets []chapterTarget
 	for chapterID, targetIdx := range targetByChapter {
 		ch, err := s.Store.GetChapterByID(chapterID)
 		if err != nil {
@@ -564,13 +570,34 @@ func (s *Server) handleReattributeSpeaker(w http.ResponseWriter, r *http.Request
 		if ch == nil {
 			continue
 		}
-		s.Jobs.EnqueueReattribution(book.ID, ch.ID, ch.Idx, speakerKey, name, func(ctx context.Context) (int, func(), error) {
-			return s.reattributeChapterSpeaker(ctx, book, ch, speakerKey, name, targetIdx)
+		targets = append(targets, chapterTarget{ch: ch, targetIdx: targetIdx})
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].ch.Idx < targets[j].ch.Idx })
+
+	// One pipeline_auto_split task wraps every chapter's own
+	// KindSpeakerReattribution task, so the whole click shows up (and can
+	// be canceled/promoted) as a single Jobs-dashboard row - see
+	// jobs.Manager.EnqueueAutoSplit.
+	if len(targets) > 0 {
+		s.Jobs.EnqueueAutoSplit(book.ID, speakerKey, name, func(ctx context.Context, tier func() int) error {
+			var wg sync.WaitGroup
+			for _, t := range targets {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if _, err := s.Jobs.RunReattribution(ctx, book.ID, t.ch.ID, t.ch.Idx, tier(), speakerKey, name, func(ctx context.Context) (int, func(), error) {
+						return s.reattributeChapterSpeaker(ctx, book, t.ch, speakerKey, name, t.targetIdx)
+					}); err != nil {
+						log.Printf("httpapi: auto split %q in book %s: chapter %d: %v", name, book.ID, t.ch.Idx, err)
+					}
+				}()
+			}
+			wg.Wait()
+			return nil
 		})
-		queued++
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]any{"queued": queued})
+	writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(targets)})
 }
 
 type setCharacterVoiceRequest struct {

@@ -122,7 +122,8 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 // IsPipelineRunning (see isPipelineRunningLocked's own kind check), which
 // specifically means "book-preprocessing run in progress" (the library
 // page's preprocessing spinner) - a different concept from "generating
-// audio" that a caller must be able to tell apart.
+// audio" that a caller must be able to tell apart. pipelineTaskAutoSplit
+// is the same idea for one "Auto Split" click - see EnqueueAutoSplit.
 type pipelineTaskKind int
 
 const (
@@ -130,6 +131,7 @@ const (
 	pipelineTaskGenerateChapter
 	pipelineTaskGenerateBook
 	pipelineTaskGenerateRemaining
+	pipelineTaskAutoSplit
 )
 
 // PipelinePhaseFunc is one phase's own real work for one book - fan out
@@ -190,9 +192,18 @@ type pipelineTask struct {
 	// a wrong title.
 	chapterIdx int
 	chapterID  string
-	tier       int
-	run        PipelinePhaseFunc
-	cancel     context.CancelFunc
+	// speakerKey/speakerName identify which speaker an Auto Split run
+	// covers - only meaningful when kind == pipelineTaskAutoSplit.
+	// speakerKey (a character's own ID, or the "unknown" sentinel - see
+	// EnqueueReattribution) namespaces Key() so two different speakers'
+	// runs on the same book stay independent; speakerName is the Jobs
+	// dashboard's own Label, the same name each child
+	// KindSpeakerReattribution row already carries.
+	speakerKey  string
+	speakerName string
+	tier        int
+	run         PipelinePhaseFunc
+	cancel      context.CancelFunc
 }
 
 // pipelineOutcome is a dispatched pipelineTask's real result, delivered
@@ -212,7 +223,7 @@ func pipelineKey(bookID string, phase int) string {
 	return "pipeline:" + bookID + ":" + pipelinePhaseNames[phase]
 }
 
-// currentPipelineTier safely reads bookID/phase's own pipelineTask's
+// currentPipelineTier safely reads the pipelineTask keyed key's own
 // current tier, under pipelineQueue's own lock (via WithTask) - the
 // lock-safe way for a phase's own dispatch goroutine (running with no
 // lock of its own) to read whatever tier Manager.PromoteTier most
@@ -225,10 +236,10 @@ func pipelineKey(bookID string, phase int) string {
 // calls this from inside its own still-running PipelinePhaseFunc, so this
 // is only ever a narrow, harmless race against the task's own imminent
 // completion, never a real "phase not found" case.
-func (m *Manager) currentPipelineTier(bookID string, phase int) int {
+func (m *Manager) currentPipelineTier(key string) int {
 	tier := defaultAttributionTier
 	m.pipelineQueue.WithTask(
-		func(c taskqueue.Task) bool { return c.Key() == pipelineKey(bookID, phase) },
+		func(c taskqueue.Task) bool { return c.Key() == key },
 		func(c taskqueue.Task) { tier = c.Tier() },
 	)
 	return tier
@@ -271,6 +282,9 @@ func toPipelineQueueTask(t *pipelineTask, tier int) QueueTask {
 	case pipelineTaskGenerateRemaining:
 		kind = "pipeline_generate_remaining"
 		label = "Remaining"
+	case pipelineTaskAutoSplit:
+		kind = "pipeline_auto_split"
+		label = t.speakerName
 	}
 	return QueueTask{
 		ID:         t.Key(),
@@ -299,6 +313,8 @@ func (t *pipelineTask) Key() string {
 		return "pipeline:" + t.bookID + ":generate_book"
 	case pipelineTaskGenerateRemaining:
 		return "pipeline:" + t.bookID + ":generate_remaining"
+	case pipelineTaskAutoSplit:
+		return "pipeline:" + t.bookID + ":auto_split:" + t.speakerKey
 	default:
 		return pipelineKey(t.bookID, t.phase)
 	}
@@ -677,6 +693,34 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 	}
 }
 
+// EnqueueAutoSplit queues one "Auto Split" click (httpapi.
+// handleReattributeSpeaker) as a single cancelable poolPipeline task
+// (pipelineTaskAutoSplit, Kind "pipeline_auto_split") wrapping every
+// per-chapter KindSpeakerReattribution task that click fans out into -
+// the same "one Jobs-dashboard row for the whole action" grouping
+// EnqueueBookGenerate already gives "Generate audio" -> "All", so a
+// reader can see (and cancel, or promote) a whole speaker's split at
+// once instead of hunting down one row per chapter. run is the caller's
+// own fan-out (RunReattribution per chapter, blocking until each
+// finishes - see PipelinePhaseFunc), since this package has no Store/
+// Speaker access to build the per-chapter work itself. Canceling this row
+// cancels run's ctx, which RunReattribution's own blocked waits and any
+// not-yet-dispatched chapters observe; a chapter's already-dispatched
+// child task keeps running, the same guarantee CancelPipeline gives a
+// preprocessing phase. Idempotent per (bookID, speakerKey): a second click
+// while the first run is still queued/in flight is a harmless no-op (see
+// pushGenerateTask's own doc comment).
+func (m *Manager) EnqueueAutoSplit(bookID, speakerKey, speakerName string, run PipelinePhaseFunc) {
+	m.pushGenerateTask(&pipelineTask{
+		bookID:      bookID,
+		kind:        pipelineTaskAutoSplit,
+		speakerKey:  speakerKey,
+		speakerName: speakerName,
+		tier:        defaultReattributionTier,
+		run:         run,
+	})
+}
+
 // pipelineWorker mirrors Manager.worker's own dispatch-loop shape almost
 // exactly (see that function's own doc comment for the reasoning behind
 // each piece) - fill() pops every currently-eligible phase task and
@@ -712,8 +756,8 @@ func (m *Manager) pipelineWorker(ctx context.Context) {
 			m.notifyChanged()
 			ch := make(chan pipelineOutcome, 1)
 			go func() {
-				bookID, phase := t.bookID, t.phase
-				ch <- pipelineOutcome{err: t.run(taskCtx, func() int { return m.currentPipelineTier(bookID, phase) })}
+				key := t.Key()
+				ch <- pipelineOutcome{err: t.run(taskCtx, func() int { return m.currentPipelineTier(key) })}
 			}()
 			dispatched[t.Key()] = &inflight{task: t, ch: ch}
 		}
