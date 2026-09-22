@@ -10,11 +10,12 @@ model can be hosted directly inside a Go binary.
 
 This module lives in the `lectable` repo but is a
 self-contained binding for a separate, external project, the same way
-[`audiocpp-go`](../audiocpp-go) is for audio.cpp. It is currently
-**standalone** -- nothing in `backend` imports it yet. It exists for a new,
-non-TTS text-generation feature to build against later; the existing
-audio.cpp-based TTS pipeline (`backend/internal/audioworker`,
-`backend/cmd/ttsworker`) is unrelated and unaffected.
+[`audiocpp-go`](../audiocpp-go) is for audio.cpp. It is imported by
+`backend/internal/llmworker`, which runs the speaker-attribution LLM and is
+built only into the separate `backend/cmd/ttsworker` binary, alongside
+`backend/internal/audioworker`'s audio.cpp models, so both share one
+process's VRAM budget (see `backend/CLAUDE.md`). `cmd/server` never links
+it.
 
 ## What's vendored and what isn't
 
