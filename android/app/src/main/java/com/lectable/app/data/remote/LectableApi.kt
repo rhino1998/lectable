@@ -364,9 +364,8 @@ interface LectableApi {
     @POST("api/voices/design-test")
     suspend fun testVoiceDesign(@Body body: TestVoiceDesignRequestDto): ResponseBody
 
-    /** One-off snapshot of the job queue - JobsSocket's GET api/jobs/ws pushes this same shape
-     *  live on connect and after every change, so this REST call is only actually used as a
-     *  fallback for whatever might land before the socket connects. */
+    /** One-off snapshot of the job queue - screens watch it live via LiveClient's "jobs"
+     *  topic instead; this is for point-in-time checks (see ReaderViewModel.onChapterMusic). */
     @GET("api/jobs")
     suspend fun jobsSnapshot(): JobsSnapshotDto
 

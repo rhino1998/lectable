@@ -2,15 +2,17 @@ package com.lectable.app.ui.jobs
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.lectable.app.data.remote.JobsSocket
+import com.lectable.app.data.remote.LiveClient
+import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.JobsSnapshotDto
 import com.lectable.app.data.remote.dto.QueueTaskDto
 import com.lectable.app.data.repository.JobsRepository
-import com.lectable.app.data.repository.VoiceRepository
+import com.lectable.app.data.remote.dto.VoicePresetsDto
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -27,7 +29,7 @@ data class JobsUiState(
     // the two LLM kinds) falls back to a preview of its own instruct text instead.
     val presetNames: Map<String, String> = emptyMap(),
     // True for the whole duration of a pause/resume call - covers the (usually brief) gap
-    // before JobsSocket's own push of the new paused state arrives, same reasoning
+    // before the jobs topic's own push of the new paused state arrives, same reasoning
     // frontend's usePauseJobs/useResumeJobs give for their own invalidation.
     val togglingPause: Boolean = false,
     // True for the whole duration of a restartWorker call, which blocks server-side until the
@@ -38,16 +40,14 @@ data class JobsUiState(
 
 /**
  * Live view of the backend's shared job queue (backend/internal/jobs.Manager) - the Android
- * analogue of frontend/src/pages/JobsPage.tsx. Real-time via [JobsSocket] (GET /api/jobs/ws,
- * which pushes the complete current state on connect and after every change - see its own doc
- * comment), with one REST [JobsRepository.snapshot] call up front purely so the screen has
- * something to show before the socket's own first push lands, not as an ongoing poll.
+ * analogue of frontend/src/pages/JobsPage.tsx. The queue and both preset lists (for friendly
+ * voice names) are live topics (see [LiveClient]), so every change - a task starting,
+ * finishing, a pause/resume from anywhere - shows up without polling.
  */
 @HiltViewModel
 class JobsViewModel @Inject constructor(
     private val repository: JobsRepository,
-    private val voiceRepository: VoiceRepository,
-    private val socket: JobsSocket,
+    liveClient: LiveClient,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(JobsUiState())
@@ -55,21 +55,27 @@ class JobsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            runCatching { repository.snapshot() }
-                .onSuccess { snap -> _uiState.update { it.copy(snapshot = snap, loading = false) } }
-                .onFailure { e -> _uiState.update { it.copy(loading = false, error = e.message) } }
+            liveClient.observe<JobsSnapshotDto>("jobs").collect { result ->
+                _uiState.update {
+                    it.copy(
+                        snapshot = result.data ?: it.snapshot,
+                        loading = result.loading,
+                        error = result.error?.message ?: it.error,
+                    )
+                }
+            }
         }
         viewModelScope.launch {
-            val builtins = runCatching { voiceRepository.presets().presets }.getOrDefault(emptyList())
-            val customs = runCatching { voiceRepository.customPresets() }.getOrDefault(emptyList())
-            val names = buildMap {
-                builtins.forEach { put(it.id, it.name) }
-                customs.forEach { put(it.id, it.name) }
-            }
-            _uiState.update { it.copy(presetNames = names) }
+            combine(
+                liveClient.observe<VoicePresetsDto>("voicePresets"),
+                liveClient.observe<List<CustomVoicePresetDto>>("customVoicePresets"),
+            ) { builtins, customs ->
+                buildMap {
+                    builtins.data?.presets?.forEach { put(it.id, it.name) }
+                    customs.data?.forEach { put(it.id, it.name) }
+                }
+            }.collect { names -> _uiState.update { it.copy(presetNames = names) } }
         }
-        socket.onSnapshot = { snap -> _uiState.update { it.copy(snapshot = snap, loading = false) } }
-        socket.connect()
     }
 
     fun cancelJob(task: QueueTaskDto) {
@@ -122,10 +128,6 @@ class JobsViewModel @Inject constructor(
         _uiState.update { it.copy(error = null) }
     }
 
-    override fun onCleared() {
-        socket.release()
-        super.onCleared()
-    }
 }
 
 /** Friendly display name for a target/voice column - mirrors JobsPage.tsx's targetLabel/

@@ -40,20 +40,14 @@ object NetworkModule {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(60, TimeUnit.SECONDS)
-            // This client also backs BookUpdatesSocket's long-lived GET .../ws connection
-            // (built as an ordinary Request, so it shares this client rather than getting its
-            // own) - without a pingInterval, OkHttp's WebSocket support falls back to treating
-            // readTimeout above as a plain idle-read timeout: a book that goes 60s with no
-            // paragraph-status push (nothing generating, or just a normal gap between them) gets
-            // its socket killed with onFailure, and BookUpdatesSocket's own reconnect (2s delay,
-            // see its RECONNECT_DELAY_MS) has no way to redeliver whatever wshub push landed
-            // during that dead window - wshub fans updates out only to sockets connected at the
-            // moment they're sent, with no backlog/replay. That's what made a paragraph finishing
-            // generation while the socket happened to be down look "stuck" until the next full
-            // REST refetch (e.g. leaving and reopening the book) resynced actual state. A
-            // pingInterval well under readTimeout keeps the socket's read timeout continuously
-            // satisfied by pong frames instead, so it only actually disconnects on a real network
-            // problem.
+            // This client also backs LiveClient's long-lived GET /api/events WebSocket (built as
+            // an ordinary Request, so it shares this client). Without a pingInterval, OkHttp
+            // treats readTimeout above as a plain idle-read timeout on a WebSocket too: a quiet
+            // 60s (nothing changing server-side) would kill the socket with onFailure. A
+            // pingInterval well under readTimeout keeps it satisfied by pong frames instead, so
+            // it only disconnects on a real network problem. (A disconnect is recoverable anyway -
+            // LiveClient resubscribes and gets fresh snapshots - but churning it every quiet
+            // minute is pointless.)
             .pingInterval(20, TimeUnit.SECONDS)
             .build()
 

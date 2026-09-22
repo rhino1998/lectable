@@ -4,7 +4,10 @@ import android.media.MediaPlayer
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.lectable.app.data.remote.LiveClient
 import com.lectable.app.data.remote.MediaUrlResolver
+import com.lectable.app.data.remote.dto.BookDetailDto
+import com.lectable.app.data.remote.dto.VoicePresetsDto
 import com.lectable.app.data.remote.dto.CHARACTER_VOICE_MODE_ASSIGNED
 import com.lectable.app.data.remote.dto.CHARACTER_VOICE_MODE_NARRATOR
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
@@ -17,16 +20,12 @@ import com.lectable.app.data.repository.SpeakerRepository
 import com.lectable.app.data.repository.VoiceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-
-// Matches LibraryViewModel's own PREPROCESSING_POLL_INTERVAL_MS (and frontend's useBooks) -
-// clears this book's own preprocessing spinner once its run finishes without a manual refresh.
-private const val PREPROCESSING_POLL_INTERVAL_MS = 3_000L
 
 data class SpeakerUiState(
     val bookTitle: String = "",
@@ -76,6 +75,7 @@ class SpeakerViewModel @Inject constructor(
     private val speakerRepository: SpeakerRepository,
     private val voiceRepository: VoiceRepository,
     private val mediaUrlResolver: MediaUrlResolver,
+    private val liveClient: LiveClient,
 ) : ViewModel() {
 
     private val bookId: String = checkNotNull(savedStateHandle["bookId"])
@@ -130,55 +130,42 @@ class SpeakerViewModel @Inject constructor(
         player = null
     }
 
+    // The expanded appearances/descriptions lists' own live subscriptions - cancelled on
+    // collapse, so a closed list stops costing the backend anything.
+    private var appearancesJob: Job? = null
+    private var descriptionsJob: Job? = null
+
+    /** Everything this screen shows is a live topic (see [LiveClient]) - the roster's counts
+     *  climbing as audio generates, a preprocessing run finishing, a characterization landing,
+     *  and every mutation below all arrive on their own, with no poll or refetch. */
     init {
-        refresh()
         viewModelScope.launch {
-            while (isActive) {
-                delay(PREPROCESSING_POLL_INTERVAL_MS)
-                if (_uiState.value.preprocessing) refresh()
-            }
-        }
-    }
-
-    fun refresh() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(loading = it.speakers.isEmpty(), error = null) }
-            runCatching {
-                val book = libraryRepository.getBook(bookId)
-                val voice = voiceRepository.getVoice(bookId)
-                val builtins = runCatching { voiceRepository.presets().presets }.getOrDefault(emptyList())
-                val customs = runCatching { voiceRepository.customPresets() }.getOrDefault(emptyList())
-                val speakers = libraryRepository.listSpeakers(bookId)
-                RefreshResult(book.title, book.preprocessing, voice, speakers, builtins, customs)
-            }
-                .onSuccess { result ->
-                    val voiceName = result.builtins.find { it.id == result.voice.presetId }?.name
-                        ?: result.customs.find { it.id == result.voice.presetId }?.name
-                    _uiState.update {
-                        it.copy(
-                            bookTitle = result.title,
-                            bookVoiceName = voiceName,
-                            multiVoice = result.voice.characterVoiceMode != CHARACTER_VOICE_MODE_NARRATOR,
-                            preprocessing = result.preprocessing,
-                            speakers = result.speakers,
-                            builtinPresets = result.builtins,
-                            customPresets = result.customs,
-                            loading = false,
-                        )
-                    }
+            combine(
+                liveClient.observe<BookDetailDto>("book", mapOf("bookId" to bookId)),
+                liveClient.observe<VoiceSettingsDto>("voice", mapOf("bookId" to bookId)),
+                liveClient.observe<List<SpeakerDto>>("speakers", mapOf("bookId" to bookId)),
+                liveClient.observe<VoicePresetsDto>("voicePresets"),
+                liveClient.observe<List<CustomVoicePresetDto>>("customVoicePresets"),
+            ) { book, voice, speakers, builtins, customs ->
+                val builtinList = builtins.data?.presets ?: emptyList()
+                val customList = customs.data ?: emptyList()
+                val v = voice.data
+                _uiState.update { state ->
+                    state.copy(
+                        bookTitle = book.data?.title ?: state.bookTitle,
+                        bookVoiceName = v?.let { vs -> builtinList.find { it.id == vs.presetId }?.name ?: customList.find { it.id == vs.presetId }?.name },
+                        multiVoice = v?.let { it.characterVoiceMode != CHARACTER_VOICE_MODE_NARRATOR } ?: state.multiVoice,
+                        preprocessing = book.data?.preprocessing ?: state.preprocessing,
+                        speakers = speakers.data ?: state.speakers,
+                        builtinPresets = builtinList,
+                        customPresets = customList,
+                        loading = speakers.loading && state.speakers.isEmpty(),
+                        error = (book.error ?: speakers.error)?.message,
+                    )
                 }
-                .onFailure { e -> _uiState.update { it.copy(loading = false, error = e.message) } }
+            }.collect {}
         }
     }
-
-    private data class RefreshResult(
-        val title: String,
-        val preprocessing: Boolean,
-        val voice: VoiceSettingsDto,
-        val speakers: List<SpeakerDto>,
-        val builtins: List<VoicePresetDto>,
-        val customs: List<CustomVoicePresetDto>,
-    )
 
     fun toggleMultiVoice(enabled: Boolean) {
         viewModelScope.launch {
@@ -199,11 +186,10 @@ class SpeakerViewModel @Inject constructor(
 
     /** Mirrors the library's own long-press "Preprocess", just reachable without leaving this
      *  screen - see LibraryViewModel.preprocessBook's own doc comment for the optimistic-flag/
-     *  poll-to-clear reasoning, mirrored here via [preprocessing]/init's own poll loop. */
+     *  reasoning - [SpeakerUiState.preprocessing] flips on and off via the live book topic. */
     fun preprocess() {
         viewModelScope.launch {
             runCatching { libraryRepository.preprocessBook(bookId) }
-                .onSuccess { _uiState.update { it.copy(preprocessing = true) } }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -212,7 +198,6 @@ class SpeakerViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(characterizingIds = it.characterizingIds + characterId) }
             runCatching { speakerRepository.characterize(bookId, characterId) }
-                .onSuccess { refresh() }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             _uiState.update { it.copy(characterizingIds = it.characterizingIds - characterId) }
         }
@@ -222,7 +207,6 @@ class SpeakerViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(generatingVoiceIds = it.generatingVoiceIds + characterId) }
             runCatching { speakerRepository.generateVoice(bookId, characterId) }
-                .onSuccess { refresh() }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             _uiState.update { it.copy(generatingVoiceIds = it.generatingVoiceIds - characterId) }
         }
@@ -231,7 +215,6 @@ class SpeakerViewModel @Inject constructor(
     fun setCharacterVoice(characterId: String, voicePresetId: String) {
         viewModelScope.launch {
             runCatching { speakerRepository.setCharacterVoice(bookId, characterId, voicePresetId) }
-                .onSuccess { refresh() }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -243,7 +226,6 @@ class SpeakerViewModel @Inject constructor(
                 .onSuccess {
                     if (_uiState.value.appearancesFor == characterId) closeAppearances()
                     if (_uiState.value.descriptionsFor == characterId) closeDescriptions()
-                    refresh()
                 }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             _uiState.update { it.copy(deletingIds = it.deletingIds - characterId) }
@@ -256,7 +238,6 @@ class SpeakerViewModel @Inject constructor(
                 .onSuccess {
                     if (_uiState.value.appearancesFor == characterId) closeAppearances()
                     if (_uiState.value.descriptionsFor == characterId) closeDescriptions()
-                    refresh()
                 }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
@@ -268,7 +249,6 @@ class SpeakerViewModel @Inject constructor(
                 .onSuccess {
                     closeAppearances()
                     closeDescriptions()
-                    refresh()
                 }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
@@ -287,50 +267,46 @@ class SpeakerViewModel @Inject constructor(
     }
 
     private fun closeAppearances() {
+        appearancesJob?.cancel()
+        appearancesJob = null
         _uiState.update { it.copy(appearancesFor = null, appearances = emptyList(), appearancesLoading = false) }
     }
 
     private fun loadAppearances(characterId: String) {
-        viewModelScope.launch {
-            runCatching { speakerRepository.appearances(bookId, characterId) }
-                .onSuccess { list ->
-                    // The expanded character may have changed (or the sheet closed) while this
-                    // was in flight - only apply a result that's still relevant.
-                    if (_uiState.value.appearancesFor == characterId) {
-                        _uiState.update { it.copy(appearances = list, appearancesLoading = false) }
-                    }
+        appearancesJob?.cancel()
+        appearancesJob = viewModelScope.launch {
+            liveClient.observe<List<SpeakerAppearanceDto>>(
+                "characterAppearances",
+                mapOf("bookId" to bookId, "characterId" to characterId),
+            ).collect { result ->
+                _uiState.update {
+                    it.copy(
+                        appearances = result.data ?: it.appearances,
+                        appearancesLoading = result.loading,
+                        error = result.error?.message ?: it.error,
+                    )
                 }
-                .onFailure { e ->
-                    if (_uiState.value.appearancesFor == characterId) {
-                        _uiState.update { it.copy(appearancesLoading = false, error = e.message) }
-                    }
-                }
+            }
         }
     }
 
-    /** An appearance row's own "Regenerate"/"Generate" action - re-fetches this character's
-     *  appearances right after so the row reflects the reset-to-pending status immediately,
-     *  same reload-after-mutation reasoning as ReaderViewModel.regenerateParagraph. */
+    /** An appearance row's own "Regenerate"/"Generate" action - the row's reset-to-pending
+     *  status (and later its new audio) arrives on the live appearances topic. */
     fun regenerateAppearance(chapterIdx: Int, paragraphIdx: Int) {
-        val characterId = _uiState.value.appearancesFor ?: return
+        if (_uiState.value.appearancesFor == null) return
         viewModelScope.launch {
             runCatching { libraryRepository.regenerateParagraph(bookId, chapterIdx, paragraphIdx) }
-                .onSuccess { loadAppearances(characterId) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
 
     /** An appearance row's own "Reassign to…" action - the reassigned line is no longer this
-     *  character's, so it drops out of the list on reload; also refreshes the roster since
-     *  paragraph counts moved between two rows. */
+     *  character's, so it drops out of the live appearances list, and the roster's paragraph
+     *  counts move between the two rows, both on their own. */
     fun reassignAppearance(chapterIdx: Int, paragraphIdx: Int, speaker: String) {
-        val characterId = _uiState.value.appearancesFor ?: return
+        if (_uiState.value.appearancesFor == null) return
         viewModelScope.launch {
             runCatching { libraryRepository.setParagraphSpeaker(bookId, chapterIdx, paragraphIdx, speaker) }
-                .onSuccess {
-                    loadAppearances(characterId)
-                    refresh()
-                }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -349,22 +325,26 @@ class SpeakerViewModel @Inject constructor(
     }
 
     private fun closeDescriptions() {
+        descriptionsJob?.cancel()
+        descriptionsJob = null
         _uiState.update { it.copy(descriptionsFor = null, descriptions = emptyList(), descriptionsLoading = false) }
     }
 
     private fun loadDescriptions(characterId: String) {
-        viewModelScope.launch {
-            runCatching { speakerRepository.descriptions(bookId, characterId) }
-                .onSuccess { list ->
-                    if (_uiState.value.descriptionsFor == characterId) {
-                        _uiState.update { it.copy(descriptions = list, descriptionsLoading = false) }
-                    }
+        descriptionsJob?.cancel()
+        descriptionsJob = viewModelScope.launch {
+            liveClient.observe<List<SpeakerAppearanceDto>>(
+                "characterDescriptions",
+                mapOf("bookId" to bookId, "characterId" to characterId),
+            ).collect { result ->
+                _uiState.update {
+                    it.copy(
+                        descriptions = result.data ?: it.descriptions,
+                        descriptionsLoading = result.loading,
+                        error = result.error?.message ?: it.error,
+                    )
                 }
-                .onFailure { e ->
-                    if (_uiState.value.descriptionsFor == characterId) {
-                        _uiState.update { it.copy(descriptionsLoading = false, error = e.message) }
-                    }
-                }
+            }
         }
     }
 
@@ -373,17 +353,13 @@ class SpeakerViewModel @Inject constructor(
      *  clears it, describing no one), the same [chapterIdx]/[paragraphIdx]-addressed shape
      *  [reassignAppearance] uses. Looks the current character's own name up from the roster
      *  (the backend call is name-keyed, not id-keyed - see LibraryRepository.setParagraphDescription).
-     *  The reassigned paragraph is no longer this character's, so it drops out of the list on
-     *  reload; also refreshes the roster since this can register a brand-new character. */
+     *  The reassigned paragraph is no longer this character's, so it drops out of the live
+     *  list (and a brand-new target character shows up in the roster) on its own. */
     fun reassignDescription(chapterIdx: Int, paragraphIdx: Int, targetName: String) {
         val characterId = _uiState.value.descriptionsFor ?: return
         val fromName = _uiState.value.speakers.find { it.id == characterId }?.name ?: return
         viewModelScope.launch {
             runCatching { libraryRepository.setParagraphDescription(bookId, chapterIdx, paragraphIdx, fromName, targetName) }
-                .onSuccess {
-                    loadDescriptions(characterId)
-                    refresh()
-                }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }

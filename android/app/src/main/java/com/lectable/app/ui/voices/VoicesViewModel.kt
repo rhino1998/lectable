@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.MediaPlayer
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.lectable.app.data.remote.LiveClient
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetInputDto
@@ -36,6 +37,7 @@ class VoicesViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val voiceRepository: VoiceRepository,
     private val mediaUrlResolver: MediaUrlResolver,
+    liveClient: LiveClient,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(VoicesUiState())
@@ -47,20 +49,24 @@ class VoicesViewModel @Inject constructor(
     // <audio> elements naturally get from the browser.
     private var player: MediaPlayer? = null
 
+    // Both lists are live topics (see LiveClient) - a save/delete here, or an edit from the web
+    // UI, shows up without refetching.
     init {
-        refresh()
         viewModelScope.launch {
-            runCatching { voiceRepository.getDefaultVoice() }
-                .onSuccess { settings -> _uiState.update { it.copy(defaultPresetId = settings.presetId) } }
+            liveClient.observe<List<CustomVoicePresetDto>>("customVoicePresets").collect { result ->
+                _uiState.update {
+                    it.copy(
+                        loading = result.loading,
+                        presets = result.data ?: it.presets,
+                        error = result.error?.message,
+                    )
+                }
+            }
         }
-    }
-
-    fun refresh() {
         viewModelScope.launch {
-            _uiState.update { it.copy(loading = true) }
-            runCatching { voiceRepository.customPresets() }
-                .onSuccess { presets -> _uiState.update { it.copy(loading = false, presets = presets, error = null) } }
-                .onFailure { e -> _uiState.update { it.copy(loading = false, error = e.message) } }
+            liveClient.observe<VoiceSettingsDto>("defaultVoice").collect { result ->
+                result.data?.let { settings -> _uiState.update { it.copy(defaultPresetId = settings.presetId) } }
+            }
         }
     }
 
@@ -77,7 +83,7 @@ class VoicesViewModel @Inject constructor(
     fun createPreset(input: CustomVoicePresetInputDto, onSuccess: () -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
             runCatching { voiceRepository.createCustomPreset(input) }
-                .onSuccess { refresh(); onSuccess() }
+                .onSuccess { onSuccess() }
                 .onFailure { e -> onError(e.message ?: "Could not save voice") }
         }
     }
@@ -85,7 +91,7 @@ class VoicesViewModel @Inject constructor(
     fun updatePreset(id: String, input: CustomVoicePresetInputDto, onSuccess: () -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
             runCatching { voiceRepository.updateCustomPreset(id, input) }
-                .onSuccess { refresh(); onSuccess() }
+                .onSuccess { onSuccess() }
                 .onFailure { e -> onError(e.message ?: "Could not save voice") }
         }
     }

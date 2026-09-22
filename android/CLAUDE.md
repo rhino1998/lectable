@@ -107,18 +107,29 @@ compiled-in default in place if nothing answers in time.
   (last-picked speed).
 - `data/discovery/NsdDiscoveryRepository.kt` - mDNS backend discovery, see
   "Server address" above.
-- `data/remote/BookUpdatesSocket.kt` - the Android analogue of
-  `../frontend/src/hooks/useBookUpdates.ts`: an OkHttp WebSocket to
-  `GET /api/books/{id}/ws` pushing real-time paragraph status/word-timing
-  updates in place of polling. Auto-reconnects after 2s; the shared
-  `OkHttpClient` (`di/NetworkModule.kt`) sets a `pingInterval` so this
-  long-lived connection isn't killed by its own `readTimeout` during a
-  quiet stretch. `@ViewModelScoped`, one connection per mounted
-  `ReaderViewModel`. Since backend's `wshub` only fans a push out to
-  sockets connected at the exact moment it's sent (no backlog/replay),
-  `ReaderViewModel` also runs a `CHAPTER_POLL_INTERVAL_MS` (1.5s) fallback
-  poll of any currently-loaded chapter with a pending paragraph - a
-  genuine safety net for a missed push, not the primary mechanism.
+- `data/remote/LiveClient.kt` - the Android counterpart of
+  `../frontend/src/api/live.ts`: the app's only source of server *state*.
+  One app-scoped OkHttp WebSocket to `GET /api/events` (backend
+  `internal/live`); `observe<T>(topic, params)` returns a cold
+  `Flow<LiveResult<T>>` that subscribes on collect and releases on cancel.
+  The first value is a full snapshot, then a new one after every backend
+  patch (JSON ops applied to immutable `JsonElement` trees in `applyLiveOps`,
+  then decoded into the usual DTOs on `Dispatchers.Default`). Subscriptions
+  are ref-counted per (topic, params) and linger 5s after the last
+  collector goes. The socket is open only while something is subscribed,
+  reconnects with backoff (resubscribing everything), and on a Settings
+  server-address change drops every cached value and re-points. When the
+  backend can't be reached before a topic ever got a value, that topic
+  reports `LiveError.isNetwork` (status 0) - what `LibraryViewModel`/
+  `ReaderViewModel`/`DownloadRepository` key their offline fallbacks on;
+  values already received stay visible across a reconnect. Every screen
+  (Library, Reader, Speakers, Voices, Jobs) and `ChapterDownloadWorker`'s
+  wait-for-generation loop read state this way - there is no polling and no
+  "refetch after mutation" anywhere; a mutation's own write is what
+  produces the update. REST (`LectableApi`) remains for mutations and
+  one-off reads (search, pickers, the voice-language list). The shared
+  `OkHttpClient`'s `pingInterval` keeps the socket from tripping its
+  `readTimeout` during quiet stretches.
 - `playback/ParagraphPlayer.kt` - the Android analogue of
   `../frontend/src/hooks/usePlayback.ts`: one ExoPlayer instance advancing
   through a book's paragraphs one `.wav` at a time. **App-scoped
@@ -159,12 +170,12 @@ compiled-in default in place if nothing answers in time.
   window, not just a same-instant crossfade. This overlap works across a
   chapter boundary too, not just between two regions of the same chapter:
   `tick()` checks `chapterParagraphCounts` (fed by `ReaderViewModel
-  .fetchAndMergeChapter` unconditionally, same as `ParagraphPlayer
+  .mergeChapter` unconditionally, same as `ParagraphPlayer
   .setChapter`) to tell "paragraphIdx is this chapter's real last
   paragraph" apart from merely "the last one some region happens to cover"
   (an unscored trailing paragraph must never trigger this early), and if
   so looks at the *next* chapter's own first region (already present in
-  `chapterMusic` - every loaded chapter's regions are fetched regardless of
+  `chapterMusic` - every loaded chapter's regions are live regardless of
   which one is currently playing) for the pre-roll target instead of
   bailing out at the chapter's own edge. A region's own transition never
   actually spans chapters in practice (scoring has no cross-chapter
@@ -174,16 +185,14 @@ compiled-in default in place if nothing answers in time.
   `ParagraphPlayer`** - owns its own tick loop observing `ParagraphPlayer
   .state`/`.positionMs()`/`.durationMs()` directly (constructor-injects
   `ParagraphPlayer`) rather than requiring a ViewModel to push per-tick
-  updates. `ReaderViewModel.refreshChapterMusic` polls
-  `GET .../chapters/{idx}/music` (every `CHAPTER_MUSIC_POLL_INTERVAL_MS`,
-  no websocket push for this yet, matching the backend) for every loaded
-  chapter while `VoiceSettingsDto.musicEnabled` (the reader-facing,
-  book-wide toggle - `VoicePickerSheet`'s "Background music" switch,
-  alongside its existing multi-voice one) is on, feeding fresh regions to
-  the player via `setChapterMusic` and lazily triggering
-  `POST .../score-music` once per chapter (`scoringMusicChapters` guards
-  against re-triggering it - scoring always rescans a chapter from
-  scratch server-side). The reader's own per-region "Generate"/
+  updates. `ReaderViewModel.syncMusicSubscriptions` keeps a live
+  `chapterMusic` topic subscription per loaded chapter while
+  `VoiceSettingsDto.musicEnabled` (the reader-facing, book-wide toggle -
+  `VoicePickerSheet`'s "Background music" switch, alongside its existing
+  multi-voice one) is on; `onChapterMusic` feeds each value to the player
+  via `setChapterMusic` and lazily triggers `POST .../score-music` once
+  per chapter (`scoringMusicChapters` plus a job-queue check guard against
+  re-triggering it). The reader's own per-region "Generate"/
   "Regenerate" and preview-clip actions live in annotations mode's
   `MusicRegionBoundaryRow` (`ui/reader/ReaderScreen.kt`) - see below.
 - `playback/PlaybackService.kt` - a `MediaSessionService` hosting
@@ -209,8 +218,8 @@ compiled-in default in place if nothing answers in time.
   `LibraryUiState.downloadedBookIds` says there's a local copy)/Delete.
   Preprocess kicks off the whole-book meta-task
   (`POST /api/books/{id}/preprocess`) and shows a dimmed spinner overlay
-  while `BookSummaryDto.preprocessing` is set, polled every 3s while any
-  book has it set. Download book enqueues every chapter via
+  while `BookSummaryDto.preprocessing` is set (live, via the `books`
+  topic). Download book enqueues every chapter via
   `ChapterDownloadWorker` (pinned, `ExistingWorkPolicy.KEEP`), fire-and-forget.
 - `ui/reader/` - `ReaderScreen`: an infinite-scroll reader like the web
   frontend's `ReaderPage.tsx` (a `{range}` chapter-index window grown via
@@ -224,8 +233,11 @@ compiled-in default in place if nothing answers in time.
   settings (Narrator voice, Speakers, offline-download controls) live
   behind one `⋮` overflow menu rather than always-visible icons - occasional
   settings a reader dips into, unlike Play/Pause which stays in the bottom
-  `PlaybackBar`. `ReaderViewModel` owns `BookUpdatesSocket`, throttled
-  position sync (`POSITION_SAVE_MIN_INTERVAL_MS`), and injects the
+  `PlaybackBar`. `ReaderViewModel` subscribes to the book, voice,
+  bookmarks, every loaded chapter (`subscribeChapter`/`awaitChapter` -
+  jumps cancel and resubscribe, which replays the lingering value) and,
+  while music is on, every loaded chapter's music; it also owns throttled
+  position sync (`POSITION_SAVE_MIN_INTERVAL_MS`) and injects the
   app-scoped `ParagraphPlayer`.
 - `ui/settings/` - `SettingsScreen` for backend URL, theme, reader font
   size/family, an offline-storage summary + "Delete all downloads"
@@ -235,11 +247,8 @@ compiled-in default in place if nothing answers in time.
   links to Voices and Jobs.
 - `ui/jobs/` - `JobsScreen`/`JobsViewModel`, the Android analogue of
   `../frontend/src/pages/JobsPage.tsx`: a live view of the backend's
-  shared job queue (`backend/internal/jobs.Manager`). Live via
-  `data/remote/JobsSocket.kt` (`GET /api/jobs/ws`) - unlike
-  `BookUpdatesSocket`'s incremental patches, every jobs message already
-  *is* the complete queue state, so the ViewModel replaces its state
-  wholesale. `QueueTaskDto.kind` is a plain `String`, not a closed enum -
+  shared job queue (`backend/internal/jobs.Manager`), live via the `jobs`
+  topic (`LiveClient`). `QueueTaskDto.kind` is a plain `String`, not a closed enum -
   `backend/internal/jobs.Kind` has grown before and an unrecognized value
   would fail to deserialize the whole snapshot; `kindLabel()` falls back
   to the raw string instead. Reachable from Settings, not a bottom-level
@@ -356,8 +365,9 @@ above) - check here before trusting otherwise if this list drifts.
 
 ## Testing
 
-`app/src/test/` has one pure-JVM unit test (`ServerSettingsRepositoryTest.kt`)
-- runs and passes via `./gradlew test`. `app/src/androidTest/` has one
+`app/src/test/` has pure-JVM unit tests (`ServerSettingsRepositoryTest.kt`,
+and `LiveOpsTest.kt` for `applyLiveOps` against the backend's patch wire
+format) - run and pass via `./gradlew test`. `app/src/androidTest/` has one
 Compose smoke test that launches `MainActivity` and checks the app title
 renders - needs a device/emulator. `./gradlew connectedAndroidTest` run
 from WSL finds and uses the real device over wireless ADB (the WSL-side

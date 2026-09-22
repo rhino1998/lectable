@@ -5,10 +5,10 @@ import com.lectable.app.data.remote.dto.JobsSnapshotDto
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Thin wrapper over [LectableApi]'s job-queue endpoints - mirrors client.ts. Live updates come
- *  from [com.lectable.app.data.remote.JobsSocket], not this repository; these are just the
- *  fallback initial snapshot and the mutating actions (cancel one/all, pause/resume, restart
- *  worker). */
+/** Thin wrapper over [LectableApi]'s job-queue endpoints - mirrors client.ts. The live queue
+ *  comes from the "jobs" topic ([com.lectable.app.data.remote.LiveClient]), not this
+ *  repository; these are the mutating actions (cancel one/all, pause/resume, restart worker)
+ *  plus a one-off [snapshot] for point-in-time checks. */
 @Singleton
 class JobsRepository @Inject constructor(
     private val api: LectableApi,

@@ -158,28 +158,3 @@ data class OkResponseDto(val ok: Boolean)
 
 @Serializable
 data class LookaheadRequestDto(val chapterIdx: Int, val paragraphIdx: Int)
-
-/** One message from `GET /api/books/{id}/ws` (see backend/internal/httpapi/ws.go) - a
- *  real-time push of a single paragraph's status, replacing polling for it. */
-@Serializable
-data class ParagraphUpdateDto(
-    val chapterIdx: Int,
-    val paragraphIdx: Int,
-    val audioStatus: AudioStatus,
-    val audioError: String? = null,
-    val durationSeconds: Double? = null,
-    val audioUrl: String? = null,
-    // Mirrors ParagraphDto.audioPointerSeconds - see its own doc comment. Omitted (0.0 default)
-    // on the wire for any update that isn't "this paragraph just became ready" (per
-    // wshub.ParagraphUpdate.AudioPointerSeconds's own omitempty), same as [durationSeconds]/
-    // [audioUrl] above - applyParagraphUpdate applies it unconditionally alongside those, not
-    // merged/preserved the way [words] is, since a paragraph's own pointer offset only ever
-    // means something at the exact moment its audioUrl/audioStatus also change together.
-    val audioPointerSeconds: Double = 0.0,
-    // Null (omitted on the wire, per wshub.ParagraphUpdate.Words' omitempty) for a
-    // "generating"/"error" update that isn't about alignment - callers should merge this as
-    // `update.words ?: existingWords`, not overwrite, so an unrelated status push doesn't wipe
-    // out alignment a paragraph already had (alignment runs as a separate, later push after the
-    // paragraph is already marked ready - see jobs.Manager.alignParagraph).
-    val words: List<WordTimingDto>? = null,
-)

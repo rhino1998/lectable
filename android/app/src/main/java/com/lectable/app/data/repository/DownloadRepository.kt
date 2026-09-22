@@ -11,6 +11,7 @@ import com.lectable.app.data.download.PendingPosition
 import com.lectable.app.data.download.PendingPositionDao
 import com.lectable.app.data.remote.BackendIdentityRepository
 import com.lectable.app.data.remote.LectableApi
+import com.lectable.app.data.remote.LiveClient
 import com.lectable.app.data.remote.dto.AudioStatus
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
@@ -20,17 +21,18 @@ import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.ParagraphDto
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -38,7 +40,6 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-private const val POLL_INTERVAL_MS = 2_000L
 
 /**
  * presetId+instruct+language, exactly what backend/internal/store/store.go's VoiceID hashes
@@ -76,6 +77,7 @@ class DownloadRepository @Inject constructor(
     private val positionDao: PendingPositionDao,
     private val backendIdentity: BackendIdentityRepository,
     private val json: Json,
+    private val liveClient: LiveClient,
 ) {
     private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -319,13 +321,18 @@ class DownloadRepository @Inject constructor(
         try {
             val fetchedIdx = mutableSetOf<Int>()
             // Paragraphs a regenerate has already been requested for, this attempt - guards
-            // against asking again on every 2s poll while it's re-generating.
+            // against asking again on every live update while it's re-generating.
             val regeneratedIdx = mutableSetOf<Int>()
             var totalBytes = 0L
             var total = 0
             var lastChapter: ChapterDetailDto? = null
-            while (true) {
-                val chapter = api.getChapter(bookId, chapterIdx)
+            // The chapter's live topic (see LiveClient) delivers a fresh value every time one of
+            // its paragraphs changes; each is scanned for newly-ready audio until everything's
+            // fetched. An error only arrives before any value did (backend unreachable, chapter
+            // gone) - thrown so the worker fails the same way a failed fetch always has.
+            liveClient.observe<ChapterDetailDto>("chapter", mapOf("bookId" to bookId, "chapterIdx" to chapterIdx)).first { result ->
+                result.error?.let { e -> if (result.data == null) throw IOException(e.message) }
+                val chapter = result.data ?: return@first false
                 lastChapter = chapter
                 total = chapter.paragraphs.size
                 for (p in chapter.paragraphs) {
@@ -362,14 +369,12 @@ class DownloadRepository @Inject constructor(
                         ),
                     )
                 }
-                if (total > 0 && fetchedIdx.size >= total) break
                 // No timeout here, deliberately: a background-tier chapter can sit behind a lot
-                // of other generation work on a single-GPU backend (see tts-service/CLAUDE.md)
-                // and legitimately take a long time - the ring should just keep reflecting real
-                // progress for as long as that takes, not flip back to "not downloaded" because
-                // it was slow. WorkManager itself is what actually stops this running if the app
-                // process is killed - it isn't left spinning forever unsupervised.
-                delay(POLL_INTERVAL_MS)
+                // of other generation work on a single-GPU backend and legitimately take a long
+                // time - the ring should just keep reflecting real progress for as long as that
+                // takes, not flip back to "not downloaded" because it was slow. WorkManager
+                // itself is what actually stops this running if the app process is killed.
+                total > 0 && fetchedIdx.size >= total
             }
 
             // Images don't depend on voice/generation the way paragraph audio does - they're

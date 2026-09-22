@@ -10,7 +10,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-import com.lectable.app.data.remote.BookUpdatesSocket
+import com.lectable.app.data.remote.LiveClient
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.AudioStatus
 import com.lectable.app.data.remote.dto.BookDetailDto
@@ -20,7 +20,6 @@ import com.lectable.app.data.remote.dto.CHARACTER_VOICE_MODE_NARRATOR
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
-import com.lectable.app.data.remote.dto.ParagraphUpdateDto
 import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.data.remote.dto.SpeakerDto
@@ -45,25 +44,21 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 private const val POSITION_SAVE_MIN_INTERVAL_MS = 3_000L
 
-// Matches frontend's chapterQueryOptions poll interval (see frontend/CLAUDE.md) - the safety
-// net's own tick rate, see the poll loop in init below for why one exists at all.
-private const val CHAPTER_POLL_INTERVAL_MS = 1_500L
-
-// Background-music regions are few per chapter and generate slowly - no websocket push for this
-// yet (see backend httpapi.handleGetChapterMusic's own doc comment), so a slower poll than
-// [CHAPTER_POLL_INTERVAL_MS] is fine, mirroring frontend's own chapterMusicQueryOptions.
-private const val CHAPTER_MUSIC_POLL_INTERVAL_MS = 3_000L
+// How long after asking the backend to generate a chapter before asking again - a live
+// chapter update can arrive several times a second while it's pending, and the backend's own
+// `generating` flag only flips once the enqueue has landed.
+private const val GENERATE_RETRIGGER_MS = 5_000L
 
 data class ReaderUiState(
     val loading: Boolean = true,
@@ -90,8 +85,8 @@ data class ReaderUiState(
     val musicEnabled: Boolean = false,
     // This book's own loaded chapters' background-music regions, keyed by chapterIdx - backs
     // annotations mode's boundary markers (mirrors frontend's ReaderPage.tsx chapterMusicRegions)
-    // and is also what feeds [BackgroundMusicPlayer] itself (see refreshChapterMusic). Populated
-    // (and kept polling) only while [musicEnabled] is on - see the poll loop in init.
+    // and is also what feeds [BackgroundMusicPlayer] itself (see onChapterMusic). Populated
+    // (and kept live) only while [musicEnabled] is on - see syncMusicSubscriptions.
     val chapterMusic: Map<Int, ChapterMusicDto> = emptyMap(),
     // Set while a region's own standalone preview clip (see previewMusicRegion) is playing - a
     // brand-new, independent player, not [player]/[BackgroundMusicPlayer] - so a reader can
@@ -130,7 +125,7 @@ class ReaderViewModel @Inject constructor(
     private val readingSettingsRepository: ReadingSettingsRepository,
     val player: ParagraphPlayer,
     private val backgroundMusicPlayer: BackgroundMusicPlayer,
-    private val bookUpdatesSocket: BookUpdatesSocket,
+    private val liveClient: LiveClient,
     private val downloadRepository: DownloadRepository,
     private val workManager: WorkManager,
     private val mediaUrlResolver: MediaUrlResolver,
@@ -147,9 +142,22 @@ class ReaderViewModel @Inject constructor(
     // auto-prefetch collector below knows which chapter playback just moved past (see init).
     private var previousChapterIdx: Int? = null
 
-    // Guards expandUp/expandDown against firing multiple overlapping fetches for the same edge
-    // chapter while scroll-position updates keep arriving before the first fetch finishes.
+    // Guards expandUp/expandDown against firing multiple overlapping loads for the same edge
+    // chapter while scroll-position updates keep arriving before the first one lands.
     private val loadingChapters = mutableSetOf<Int>()
+
+    // One live "chapter" topic subscription per loaded chapter (see subscribeChapter) - every
+    // paragraph status/word-timing/annotation change arrives through these.
+    private val chapterJobs = mutableMapOf<Int, Job>()
+    private val lastGenerateRequestAtMs = mutableMapOf<Int, Long>()
+
+    // Live "chapterMusic" subscriptions, one per loaded chapter while music is on - see
+    // syncMusicSubscriptions.
+    private val musicJobs = mutableMapOf<Int, Job>()
+
+    // Whether the first book value (live, or the offline fallback) has already set up the
+    // starting chapter/position - later book-topic updates only refresh uiState.book.
+    private var bookInitialized = false
 
     // The book's last-known-good voice settings as fetched/saved, kept around (rather than
     // re-derived from uiState's display-only voicePresetName/voiceKey - voiceKey is an opaque
@@ -159,15 +167,15 @@ class ReaderViewModel @Inject constructor(
     private var currentVoice: VoiceSettingsDto? = null
 
     // Guards against re-POSTing music scoring for the same chapter more than once per
-    // ViewModel lifetime - see refreshChapterMusic. Local-only, so it does NOT by itself prevent
+    // ViewModel lifetime - see onChapterMusic. Local-only, so it does NOT by itself prevent
     // two different ReaderViewModel instances (e.g. leaving and reopening the reader, or a
     // process/config-change recreation) from each independently triggering a scoring POST for
-    // the same chapter around the same time - refreshChapterMusic also checks the live job queue
+    // the same chapter around the same time - onChapterMusic also checks the live job queue
     // (via jobsRepository) for that, which is the real fix for a chapter whose scoring run is
-    // still genuinely in flight server-side when a fresh ViewModel starts polling it fresh with
+    // still genuinely in flight server-side when a fresh ViewModel starts watching it with
     // no memory of the earlier trigger. Once one of those checks says "already covered" (either
     // way), this set is what stops this same instance from asking again on every subsequent
-    // ~3s poll tick while backend/CLAUDE.md store.MusicRegion's own scoring is still working
+    // live update while backend/CLAUDE.md store.MusicRegion's own scoring is still working
     // through a long chapter (which now resumes from where it left off rather than restarting -
     // see backend httpapi.scoreChapterMusic's own doc comment - so a genuine retrigger across
     // instances is expected/harmless progress, not the bug; a *redundant concurrent* one is).
@@ -203,48 +211,14 @@ class ReaderViewModel @Inject constructor(
                 }
         }
 
-        // Real-time paragraph status pushes (see BookUpdatesSocket) - the Android analogue of
-        // frontend/src/hooks/useBookUpdates.ts, replacing the polling this used to do... in the
-        // common case. wshub (backend) fans a push out only to sockets connected at the exact
-        // moment it's sent, with no backlog/replay - so any single missed one (a brief
-        // reconnect window, or a chapter that wasn't in loadedChapters yet when the server sent
-        // it - see applyParagraphUpdate's own early-return) leaves that paragraph showing stale
-        // status indefinitely, since nothing else ever asks the server again. The web frontend
-        // never hits this: chapterQueryOptions (see frontend/CLAUDE.md) *also* polls every
-        // chapter query with anything still pending/generating, socket or no socket, so a missed
-        // push there just means the next 1.5s poll tick catches it instead. The loop below is
-        // that same safety net, ported here rather than assumed away - see fetchAndMergeChapter.
-        bookUpdatesSocket.onUpdate = { update -> applyParagraphUpdate(update) }
-        bookUpdatesSocket.connect(bookId)
+        // Background music: keeps one live chapterMusic subscription per loaded chapter while
+        // the book-wide toggle is on (and none while it's off). Not gated on annotations mode
+        // (local Compose state ReaderScreen owns) - the live mix itself (BackgroundMusicPlayer)
+        // needs this data whether or not the reader ever opens annotations mode to see it.
         viewModelScope.launch {
-            while (isActive) {
-                delay(CHAPTER_POLL_INTERVAL_MS)
-                _uiState.value.loadedChapters.values
-                    .filter { c -> c.paragraphs.any { it.audioStatus == AudioStatus.PENDING || it.audioStatus == AudioStatus.GENERATING } }
-                    .forEach { c -> launch { fetchAndMergeChapter(c.idx) } }
-            }
-        }
-
-        // Background-music polling: fetches (and, the first time, triggers scoring for) every
-        // loaded chapter's own regions while the book-wide toggle is on, and keeps polling any
-        // chapter that isn't fully settled yet (not yet scored, or a region still pending/
-        // generating) - mirrors frontend's own chapterMusicQueryOptions refetchInterval. Unlike
-        // [CHAPTER_POLL_INTERVAL_MS]'s own narration-audio poll, this isn't gated on annotations
-        // mode being on (that's local Compose state ReaderScreen owns, not this ViewModel) - the
-        // live background-music mix itself (BackgroundMusicPlayer) needs this data regardless of
-        // whether the reader ever opens annotations mode to see it drawn.
-        viewModelScope.launch {
-            while (isActive) {
-                delay(CHAPTER_MUSIC_POLL_INTERVAL_MS)
-                if (!_uiState.value.musicEnabled) continue
-                _uiState.value.loadedChapters.keys.forEach { idx ->
-                    val dto = _uiState.value.chapterMusic[idx]
-                    val stillWorking = dto == null || !dto.scored || dto.regions.any {
-                        it.status == AudioStatus.PENDING || it.status == AudioStatus.GENERATING
-                    }
-                    if (stillWorking) launch { refreshChapterMusic(idx) }
-                }
-            }
+            _uiState.map { if (it.musicEnabled) it.loadedChapters.keys else emptySet() }
+                .distinctUntilChanged()
+                .collect { syncMusicSubscriptions(it) }
         }
 
         viewModelScope.launch {
@@ -386,126 +360,101 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    /** Patches one paragraph's status into whichever loaded chapter it belongs to (both the UI
-     *  state and the player's cached copy) without a full re-fetch - see [BookUpdatesSocket]. */
-    private fun applyParagraphUpdate(update: ParagraphUpdateDto) {
-        val chapter = _uiState.value.loadedChapters[update.chapterIdx] ?: return
-        val updatedParagraphs = chapter.paragraphs.map { p ->
-            if (p.idx == update.paragraphIdx) {
-                p.copy(
-                    audioStatus = update.audioStatus,
-                    audioError = update.audioError,
-                    durationSeconds = update.durationSeconds,
-                    audioUrl = update.audioUrl,
-                    // Always applied alongside audioUrl/durationSeconds, not merged/preserved
-                    // the way words is below - a scare-quote merge group member's own pointer
-                    // offset only ever means something at the exact moment its audioUrl/
-                    // audioStatus change together, so a stale value must never survive past
-                    // this same update (see ParagraphUpdateDto.audioPointerSeconds's own doc
-                    // comment - this was the actual bug behind a merge-group member appearing
-                    // to play/seek wrong until the chapter was fully refetched from scratch).
-                    audioPointerSeconds = update.audioPointerSeconds,
-                    // Alignment arrives as a separate, later push after the paragraph is
-                    // already "ready" - null here means "not what this update is about", not
-                    // "no words", so it must not clobber whatever alignment already landed.
-                    words = update.words ?: p.words,
-                )
-            } else {
-                p
-            }
-        }
-        val updatedChapter = chapter.copy(paragraphs = updatedParagraphs)
-        player.setChapter(updatedChapter)
-        _uiState.update { it.copy(loadedChapters = it.loadedChapters + (update.chapterIdx to updatedChapter)) }
-    }
-
+    /** Subscribes to this book's live book/voice/bookmarks topics (see [LiveClient]). The first
+     *  book value sets up the starting chapter and position; if the backend can't be reached (or
+     *  the book can't be loaded) before that, falls back to a fully offline-downloaded copy -
+     *  and if the backend comes back later, the live values simply take over. */
     private fun loadBook() {
         viewModelScope.launch {
             syncPendingPosition()
-            runCatching {
-                // book/position are independent - fetched concurrently rather than one after
-                // another, since each round trip pays real network latency on a LAN connection
-                // (as opposed to the emulator's ~instant loopback), and stacking them serially
-                // is the main reason opening a book feels slow over a real network.
-                coroutineScope {
-                    val bookDeferred = async { libraryRepository.getBook(bookId) }
-                    val positionDeferred = async { runCatching { libraryRepository.getPosition(bookId) }.getOrNull() }
-                    bookDeferred.await() to positionDeferred.await()
-                }
-            }.onSuccess { (book, position) ->
-                val startChapterIdx = position?.chapterIdx ?: book.posChapterIdx
-                _uiState.update { it.copy(loading = false, book = book, range = startChapterIdx..startChapterIdx) }
-                player.setBookInfo(bookId, book.title, book.author, book.coverUrl)
-
-                // Chapter text and the voice/preset-name label (just for the subtitle under the
-                // book title) are unrelated - fetched concurrently so the reader isn't kept
-                // waiting on the slower, multi-call preset name lookup before any text shows.
-                launch {
-                    // Fetched (and fed to the player) before playFrom below, so playFrom finds
-                    // the chapter already loaded instead of racing a duplicate fetch via
-                    // onNeedChapter.
-                    fetchAndMergeChapter(startChapterIdx)
-                    val startParagraphIdx = position?.paragraphIdx ?: book.posParagraphIdx
-                    val startSeconds = position?.seconds ?: book.posSeconds
-                    // Seeks the player without auto-playing - the user presses play explicitly.
-                    player.playFrom(startChapterIdx, startParagraphIdx, startSeconds)
-                    player.pause()
-                }
-                launch {
-                    val voice = runCatching { voiceRepository.getVoice(bookId) }.getOrNull()
-                    currentVoice = voice
-                    _uiState.update {
-                        it.copy(
-                            multiVoice = voice?.let { v -> v.characterVoiceMode != CHARACTER_VOICE_MODE_NARRATOR } ?: false,
-                            musicEnabled = voice?.musicEnabled ?: false,
-                            voiceLanguage = voice?.language?.takeIf { lang -> lang.isNotBlank() } ?: "Auto",
-                        )
-                    }
-                    backgroundMusicPlayer.setMusicEnabled(voice?.musicEnabled ?: false)
-                    if (voice?.musicEnabled == true) {
-                        _uiState.value.loadedChapters.keys.forEach { idx -> launch { refreshChapterMusic(idx) } }
-                    }
-                    if (voice != null) {
-                        val key = voiceKeyOf(voice.presetId, voice.instruct, voice.language)
-                        player.setVoiceKey(key)
-                        _uiState.update { it.copy(voiceKey = key) }
-                    }
-                }
-                launch {
-                    val bookmarks = runCatching { libraryRepository.listBookmarks(bookId) }.getOrNull() ?: return@launch
-                    _uiState.update { it.copy(bookmarksByKey = bookmarks.toBookmarksByKey()) }
-                }
-            }.onFailure { e ->
-                // Backend unreachable - fall back to a fully offline-downloaded book if this one
-                // is (see DownloadRepository.cachedBook) rather than just showing an error for a
-                // book the device actually has a complete local copy of.
-                val cachedBook = downloadRepository.cachedBook(bookId)
-                if (cachedBook != null) {
-                    // Resume from a queued-but-not-yet-synced position (see
-                    // savePendingPosition/syncPendingPosition above) if there is one *and* it
-                    // points at a chapter actually downloaded - otherwise cachedBook.chapters
-                    // wouldn't have anything to fetch for it. Without this, opening a book while
-                    // still offline always restarted from its first downloaded chapter, even if
-                    // the reader had gotten further before losing signal.
-                    val pending = downloadRepository.pendingPosition(bookId)
-                        ?.takeIf { p -> cachedBook.chapters.any { it.idx == p.chapterIdx } }
-                    val startChapterIdx = pending?.chapterIdx ?: (cachedBook.chapters.firstOrNull()?.idx ?: 0)
-                    _uiState.update { it.copy(loading = false, book = cachedBook, range = startChapterIdx..startChapterIdx, error = null) }
-                    player.setBookInfo(bookId, cachedBook.title, cachedBook.author, cachedBook.coverUrl)
-                    launch {
-                        fetchAndMergeChapter(startChapterIdx)
-                        val voiceKey = downloadRepository.cachedChapterVoiceKey(bookId, startChapterIdx)
-                        if (voiceKey != null) {
-                            player.setVoiceKey(voiceKey)
-                            _uiState.update { it.copy(voiceKey = voiceKey) }
+            liveClient.observe<BookDetailDto>("book", mapOf("bookId" to bookId)).collect { result ->
+                val book = result.data
+                val error = result.error
+                when {
+                    book != null -> {
+                        _uiState.update { it.copy(loading = false, book = book) }
+                        if (!bookInitialized) {
+                            bookInitialized = true
+                            startFromLiveBook(book)
                         }
-                        player.playFrom(startChapterIdx, pending?.paragraphIdx ?: 0, pending?.seconds ?: 0.0)
-                        player.pause()
                     }
-                } else {
-                    _uiState.update { it.copy(loading = false, error = e.message) }
+                    error != null && !bookInitialized -> {
+                        bookInitialized = true
+                        startFromOfflineCopy(error.message)
+                    }
                 }
             }
+        }
+        viewModelScope.launch {
+            liveClient.observe<VoiceSettingsDto>("voice", mapOf("bookId" to bookId)).collect { result ->
+                result.data?.let(::applyVoice)
+            }
+        }
+        viewModelScope.launch {
+            liveClient.observe<List<BookmarkDto>>("bookmarks", mapOf("bookId" to bookId)).collect { result ->
+                result.data?.let { bookmarks -> _uiState.update { it.copy(bookmarksByKey = bookmarks.toBookmarksByKey()) } }
+            }
+        }
+    }
+
+    private fun startFromLiveBook(book: BookDetailDto) {
+        val startChapterIdx = book.posChapterIdx
+        _uiState.update { it.copy(range = startChapterIdx..startChapterIdx) }
+        player.setBookInfo(bookId, book.title, book.author, book.coverUrl)
+        viewModelScope.launch {
+            // Loaded (and fed to the player) before playFrom below, so playFrom finds the
+            // chapter already there instead of racing a duplicate load via onNeedChapter.
+            awaitChapter(startChapterIdx)
+            // Seeks the player without auto-playing - the user presses play explicitly.
+            player.playFrom(startChapterIdx, book.posParagraphIdx, book.posSeconds)
+            player.pause()
+        }
+    }
+
+    private suspend fun startFromOfflineCopy(errorMessage: String) {
+        val cachedBook = downloadRepository.cachedBook(bookId)
+        if (cachedBook == null) {
+            _uiState.update { it.copy(loading = false, error = errorMessage) }
+            return
+        }
+        // Resume from a queued-but-not-yet-synced position (see savePendingPosition/
+        // syncPendingPosition) if there is one *and* it points at a chapter actually
+        // downloaded - otherwise cachedBook.chapters wouldn't have anything to show for it.
+        val pending = downloadRepository.pendingPosition(bookId)
+            ?.takeIf { p -> cachedBook.chapters.any { it.idx == p.chapterIdx } }
+        val startChapterIdx = pending?.chapterIdx ?: (cachedBook.chapters.firstOrNull()?.idx ?: 0)
+        _uiState.update { it.copy(loading = false, book = cachedBook, range = startChapterIdx..startChapterIdx, error = null) }
+        player.setBookInfo(bookId, cachedBook.title, cachedBook.author, cachedBook.coverUrl)
+        awaitChapter(startChapterIdx)
+        val voiceKey = downloadRepository.cachedChapterVoiceKey(bookId, startChapterIdx)
+        if (voiceKey != null && _uiState.value.voiceKey == null) {
+            player.setVoiceKey(voiceKey)
+            _uiState.update { it.copy(voiceKey = voiceKey) }
+        }
+        player.playFrom(startChapterIdx, pending?.paragraphIdx ?: 0, pending?.seconds ?: 0.0)
+        player.pause()
+    }
+
+    /** Applies the live voice topic - from this screen's own voice/multi-voice/music changes or
+     *  anyone else's. A voice change resets this book's cached audio server-side, which the
+     *  loaded chapters' own live topics then reflect paragraph by paragraph; offline downloads
+     *  made under the old voice just stop matching the new voiceKey (see
+     *  ParagraphPlayer.playParagraph) and are cleaned up lazily by eviction. */
+    private fun applyVoice(voice: VoiceSettingsDto) {
+        val previous = currentVoice
+        currentVoice = voice
+        _uiState.update {
+            it.copy(
+                multiVoice = voice.characterVoiceMode != CHARACTER_VOICE_MODE_NARRATOR,
+                musicEnabled = voice.musicEnabled,
+                voiceLanguage = voice.language.takeIf { lang -> lang.isNotBlank() } ?: "Auto",
+            )
+        }
+        if (previous?.musicEnabled != voice.musicEnabled) backgroundMusicPlayer.setMusicEnabled(voice.musicEnabled)
+        val key = voiceKeyOf(voice.presetId, voice.instruct, voice.language)
+        if (key != _uiState.value.voiceKey) {
+            player.setVoiceKey(key)
+            _uiState.update { it.copy(voiceKey = key) }
         }
     }
 
@@ -529,19 +478,60 @@ class ReaderViewModel @Inject constructor(
         builtinDeferred.await() ?: customDeferred.await() ?: presetId
     }
 
-    /** Fetches a chapter and merges it into [ReaderUiState.loadedChapters] - callers are
-     *  responsible for widening [ReaderUiState.range] to include it if needed. Falls back to a
-     *  fully offline-downloaded copy (see DownloadRepository.cachedChapter) if the live fetch
-     *  fails - a cached chapter always reports every paragraph READY with no audioUrl, so
-     *  ensureGenerating below naturally no-ops for it (nothing pending to trigger generation
-     *  for) and playback resolves through ParagraphPlayer's local-file check instead. */
-    private suspend fun fetchAndMergeChapter(idx: Int): ChapterDetailDto? {
-        val liveResult = runCatching { libraryRepository.getChapter(bookId, idx) }
-        val chapter = liveResult.getOrNull() ?: downloadRepository.cachedChapter(bookId, idx)
-        if (chapter == null) {
-            liveResult.exceptionOrNull()?.let { e -> _uiState.update { it.copy(error = e.message, failedChapterIdx = idx) } }
-            return null
+    /** Starts (if not already running) this chapter's live subscription, which merges every
+     *  value it receives into [ReaderUiState.loadedChapters] - callers are responsible for
+     *  widening [ReaderUiState.range] to include it if needed. If the backend can't provide it
+     *  (unreachable, or an error) before any live value arrived, falls back to a fully
+     *  offline-downloaded copy (see DownloadRepository.cachedChapter) - a cached chapter always
+     *  reports every paragraph READY with no audioUrl, so playback resolves through
+     *  ParagraphPlayer's local-file check instead. */
+    private fun subscribeChapter(idx: Int) {
+        if (chapterJobs[idx]?.isActive == true) return
+        chapterJobs[idx] = viewModelScope.launch {
+            liveClient.observe<ChapterDetailDto>("chapter", mapOf("bookId" to bookId, "chapterIdx" to idx)).collect { result ->
+                val chapter = result.data
+                val error = result.error
+                when {
+                    chapter != null -> mergeChapter(idx, chapter, live = true)
+                    error != null && idx !in _uiState.value.loadedChapters -> {
+                        val cached = downloadRepository.cachedChapter(bookId, idx)
+                        if (cached != null) {
+                            mergeChapter(idx, cached, live = false)
+                        } else {
+                            _uiState.update { it.copy(error = error.message, failedChapterIdx = idx) }
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    /** [subscribeChapter], then suspends until the chapter is actually loaded (returning it) or
+     *  has failed to (returning null). */
+    private suspend fun awaitChapter(idx: Int): ChapterDetailDto? {
+        subscribeChapter(idx)
+        return _uiState.first { idx in it.loadedChapters || it.failedChapterIdx == idx }.loadedChapters[idx]
+    }
+
+    /** Drops every chapter subscription and loaded chapter - for jumps that reset the loaded
+     *  window. Resubscribing a chapter afterward replays its lingering value immediately (see
+     *  LiveClient), so a jump back into an already-seen chapter doesn't refetch it. */
+    private fun resetLoadedChapters(toIdx: Int) {
+        player.pause()
+        player.clearChapters()
+        loadingChapters.clear()
+        chapterJobs.values.forEach { it.cancel() }
+        chapterJobs.clear()
+        _uiState.update {
+            it.copy(
+                range = toIdx..toIdx,
+                loadedChapters = emptyMap(),
+                failedChapterIdx = if (it.failedChapterIdx == toIdx) null else it.failedChapterIdx,
+            )
+        }
+    }
+
+    private fun mergeChapter(idx: Int, chapter: ChapterDetailDto, live: Boolean) {
         player.setChapter(chapter)
         // Unconditional, like player.setChapter above - BackgroundMusicPlayer's own cross-chapter
         // pre-roll (see its tick()) needs to know a chapter's real paragraph count regardless of
@@ -554,21 +544,25 @@ class ReaderViewModel @Inject constructor(
                 failedChapterIdx = if (it.failedChapterIdx == idx) null else it.failedChapterIdx,
             )
         }
-        ensureGenerating(chapter)
-        return chapter
+        if (live) ensureGenerating(chapter)
     }
 
     /** The error snackbar's "Retry" action for a chapter that failed to load (see
-     *  ReaderUiState.failedChapterIdx) - just re-runs the same fetch that failed. */
+     *  ReaderUiState.failedChapterIdx) - restarts its subscription. (LiveClient already keeps
+     *  retrying an unreachable backend on its own; this just re-asks right away.) */
     fun retryChapter(idx: Int) {
-        viewModelScope.launch { fetchAndMergeChapter(idx) }
+        chapterJobs.remove(idx)?.cancel()
+        _uiState.update { if (it.failedChapterIdx == idx) it.copy(failedChapterIdx = null, error = null) else it }
+        subscribeChapter(idx)
     }
 
     private fun ensureGenerating(chapter: ChapterDetailDto) {
         val hasPending = chapter.paragraphs.any { it.audioStatus == AudioStatus.PENDING }
-        if (hasPending && !chapter.generating) {
-            viewModelScope.launch { runCatching { libraryRepository.generateChapter(bookId, chapter.idx) } }
-        }
+        if (!hasPending || chapter.generating) return
+        val now = SystemClock.elapsedRealtime()
+        if (now - (lastGenerateRequestAtMs[chapter.idx] ?: 0L) < GENERATE_RETRIGGER_MS) return
+        lastGenerateRequestAtMs[chapter.idx] = now
+        viewModelScope.launch { runCatching { libraryRepository.generateChapter(bookId, chapter.idx) } }
     }
 
     /** Grows the loaded window downward by one chapter - called when the reader scrolls near
@@ -580,7 +574,7 @@ class ReaderViewModel @Inject constructor(
         if (next >= book.chapterCount) return
         if (!loadingChapters.add(next)) return
         viewModelScope.launch {
-            fetchAndMergeChapter(next)
+            awaitChapter(next)
             _uiState.update { it.copy(range = it.range.first..maxOf(it.range.last, next)) }
             loadingChapters.remove(next)
         }
@@ -594,7 +588,7 @@ class ReaderViewModel @Inject constructor(
         if (prev < 0) return
         if (!loadingChapters.add(prev)) return
         viewModelScope.launch {
-            fetchAndMergeChapter(prev)
+            awaitChapter(prev)
             _uiState.update { it.copy(range = minOf(it.range.first, prev)..it.range.last) }
             loadingChapters.remove(prev)
         }
@@ -607,7 +601,7 @@ class ReaderViewModel @Inject constructor(
         if (idx in _uiState.value.range && _uiState.value.loadedChapters.containsKey(idx)) return
         if (!loadingChapters.add(idx)) return
         viewModelScope.launch {
-            fetchAndMergeChapter(idx)
+            awaitChapter(idx)
             _uiState.update { it.copy(range = minOf(it.range.first, idx)..maxOf(it.range.last, idx)) }
             loadingChapters.remove(idx)
         }
@@ -651,12 +645,9 @@ class ReaderViewModel @Inject constructor(
      *  its first paragraph, mirroring ReaderPage.tsx's jumpToChapter exactly (setRange +
      *  playback.playAt(idx, 0)) rather than only changing what's displayed. */
     fun goToChapter(idx: Int) {
-        player.pause()
-        player.clearChapters()
-        loadingChapters.clear()
-        _uiState.update { it.copy(range = idx..idx, loadedChapters = emptyMap()) }
+        resetLoadedChapters(idx)
         viewModelScope.launch {
-            fetchAndMergeChapter(idx)
+            awaitChapter(idx)
             player.playFrom(idx, 0)
         }
     }
@@ -681,16 +672,14 @@ class ReaderViewModel @Inject constructor(
      *  audio untouched, same as the web action - hearing the new voice still needs a follow-up
      *  "Regenerate paragraph" tap. [paragraphIndices] must already be filtered to this block's own
      *  isQuote segments (see ReaderScreen.kt's ParagraphRow) - the backend 400s on a non-quote
-     *  paragraph, since narration/description can't be "spoken" by a character. Refetches the
-     *  chapter on success so the long-press menu's "Speaker: …" row updates immediately, same
-     *  reload-after-mutation pattern as [regenerateParagraph]/[deleteBookAudio]. */
+     *  paragraph, since narration/description can't be "spoken" by a character. The long-press
+     *  menu's "Speaker: …" row updates via the chapter's live topic. */
     fun setParagraphSpeaker(chapterIdx: Int, paragraphIndices: List<Int>, speaker: String) {
         if (paragraphIndices.isEmpty()) return
         viewModelScope.launch {
             runCatching {
                 paragraphIndices.forEach { idx -> libraryRepository.setParagraphSpeaker(bookId, chapterIdx, idx, speaker) }
             }
-                .onSuccess { fetchAndMergeChapter(chapterIdx) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -701,15 +690,14 @@ class ReaderViewModel @Inject constructor(
      *  [setParagraphSpeaker]'s own doc comment - same gating, since only quoted dialogue can be
      *  marked a scare quote). Unlike [setParagraphSpeaker], the backend call itself immediately
      *  invalidates each paragraph's own already-generated audio - a live correction, not a
-     *  passive attribute edit - so this refetch also picks up the reset-to-pending status right
-     *  away, same as [regenerateParagraph]. */
+     *  passive attribute edit - and the reset-to-pending status arrives on the chapter's live
+     *  topic, same as [regenerateParagraph]. */
     fun setScareQuote(chapterIdx: Int, paragraphIndices: List<Int>, scareQuote: Boolean) {
         if (paragraphIndices.isEmpty()) return
         viewModelScope.launch {
             runCatching {
                 paragraphIndices.forEach { idx -> libraryRepository.setParagraphScareQuote(bookId, chapterIdx, idx, scareQuote) }
             }
-                .onSuccess { fetchAndMergeChapter(chapterIdx) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -719,15 +707,14 @@ class ReaderViewModel @Inject constructor(
      *  [from] - see ReaderScreen.kt's DescriptionPickerTarget) narrate a description of, from
      *  [from] to [to] ("" clears it, describing no one). Leaves any *other* character one of
      *  these segments might also describe untouched - see LibraryRepository
-     *  .setParagraphDescription. Refetches the chapter on success, same reload-after-mutation
-     *  pattern as [setParagraphSpeaker]. */
+     *  .setParagraphDescription. The change arrives on the chapter's live topic, same as
+     *  [setParagraphSpeaker]. */
     fun reassignDescription(chapterIdx: Int, paragraphIndices: List<Int>, from: String, to: String) {
         if (paragraphIndices.isEmpty()) return
         viewModelScope.launch {
             runCatching {
                 paragraphIndices.forEach { idx -> libraryRepository.setParagraphDescription(bookId, chapterIdx, idx, from, to) }
             }
-                .onSuccess { fetchAndMergeChapter(chapterIdx) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -768,18 +755,9 @@ class ReaderViewModel @Inject constructor(
                         voiceLanguage = language,
                     )
                 }
-                // Changing voice invalidates this book's cached audio (see backend/CLAUDE.md) -
-                // reload every currently-loaded chapter so paragraph statuses reflect the reset,
-                // not just whichever one is currently playing. Also invalidates any offline
-                // downloads made under the old voice - they simply stop matching the new
-                // voiceKey (see ParagraphPlayer.playParagraph) rather than needing an explicit
-                // purge; stale files are cleaned up lazily the next time eviction runs for them.
-                val key = voiceKeyOf(presetId, instruct, language)
-                player.setVoiceKey(key)
-                _uiState.update { it.copy(voiceKey = key) }
-                _uiState.value.loadedChapters.keys.forEach { idx ->
-                    launch { fetchAndMergeChapter(idx) }
-                }
+                // Applied right away rather than waiting for the voice topic's own push (which
+                // arrives too, and is idempotent) - see applyVoice for what a voice change resets.
+                applyVoice(updated)
             }.onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -803,13 +781,23 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    /** Fetches one chapter's own background-music regions, merges them into [ReaderUiState
-     *  .chapterMusic], feeds them to [BackgroundMusicPlayer], and - the first time this ViewModel
-     *  sees this chapter reported not-yet-scored - triggers scoring for it once (see
-     *  [scoringMusicChapters]'s own doc comment). Called both from the poll loop in init and
-     *  directly after an explicit mutation (toggling music on, regenerating a region) for
-     *  immediate feedback, same "reload after mutation" pattern [fetchAndMergeChapter]'s own
-     *  callers use.
+    /** Starts/stops live chapterMusic subscriptions so exactly [wanted] chapters have one -
+     *  driven from init by the loaded chapters while music is enabled. */
+    private fun syncMusicSubscriptions(wanted: Set<Int>) {
+        (musicJobs.keys - wanted).forEach { idx -> musicJobs.remove(idx)?.cancel() }
+        (wanted - musicJobs.keys).forEach { idx ->
+            musicJobs[idx] = viewModelScope.launch {
+                liveClient.observe<ChapterMusicDto>("chapterMusic", mapOf("bookId" to bookId, "chapterIdx" to idx)).collect { result ->
+                    result.data?.let { onChapterMusic(idx, it) }
+                }
+            }
+        }
+    }
+
+    /** Handles one live value of a chapter's background-music regions: merges them into
+     *  [ReaderUiState.chapterMusic], feeds them to [BackgroundMusicPlayer], and - the first time
+     *  this ViewModel sees this chapter reported not-yet-scored - triggers scoring for it once
+     *  (see [scoringMusicChapters]'s own doc comment).
      *
      *  Before actually POSTing a scoring trigger, checks the live job queue ([jobsRepository]) for
      *  an already in-flight/queued "music_scoring" task for this exact (book, chapter) - not just
@@ -825,8 +813,7 @@ class ReaderViewModel @Inject constructor(
      *  retriggers music gen sometimes" - a genuine *fresh* retrigger of a chapter that paused and
      *  is no longer queued anywhere is correct, expected behavior (that's exactly how a busy box
      *  eventually finishes scoring a long chapter), not this bug. */
-    private suspend fun refreshChapterMusic(idx: Int) {
-        val dto = runCatching { libraryRepository.getChapterMusic(bookId, idx) }.getOrNull() ?: return
+    private suspend fun onChapterMusic(idx: Int, dto: ChapterMusicDto) {
         _uiState.update { it.copy(chapterMusic = it.chapterMusic + (idx to dto)) }
         backgroundMusicPlayer.setChapterMusic(idx, dto)
         if (dto.scored || idx in scoringMusicChapters) return
@@ -836,7 +823,7 @@ class ReaderViewModel @Inject constructor(
         if (alreadyInFlight) {
             // Someone else (another instance, or this book open elsewhere) already has this
             // chapter's scoring queued/running - just remember that locally so the next several
-            // poll ticks (while it's still in flight) don't re-check the job queue every time.
+            // updates (while it's still in flight) don't re-check the job queue every time.
             scoringMusicChapters.add(idx)
             return
         }
@@ -855,25 +842,18 @@ class ReaderViewModel @Inject constructor(
             runCatching {
                 voiceRepository.updateVoice(bookId, voice.copy(musicEnabled = enabled))
             }.onSuccess { updated ->
-                currentVoice = updated
-                _uiState.update { it.copy(musicEnabled = updated.musicEnabled) }
-                backgroundMusicPlayer.setMusicEnabled(updated.musicEnabled)
-                if (updated.musicEnabled) {
-                    _uiState.value.loadedChapters.keys.forEach { idx -> launch { refreshChapterMusic(idx) } }
-                }
+                applyVoice(updated)
             }.onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
 
     /** Annotations mode's per-region "Generate"/"Regenerate" action (see backend httpapi
      *  .handleRegenerateMusicRegion) - always allowed regardless of the region's current status.
-     *  Refetches this chapter's music afterward so the boundary marker's own status/preview
-     *  button reflect the reset immediately, same reload-after-mutation pattern as
-     *  [regenerateParagraph]. */
+     *  The boundary marker's own status/preview button follow the chapterMusic topic.
+     *  [chapterIdx] isn't needed by the request itself (the region is addressed by id). */
     fun regenerateMusicRegion(chapterIdx: Int, regionId: String) {
         viewModelScope.launch {
             runCatching { libraryRepository.regenerateMusicRegion(regionId) }
-                .onSuccess { refreshChapterMusic(chapterIdx) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -923,14 +903,11 @@ class ReaderViewModel @Inject constructor(
     /** Forces one already-generated paragraph to be reset and re-rendered from scratch - unlike
      *  [libraryRepository]'s lookahead call (used elsewhere for "not generated yet" paragraphs),
      *  this hits the dedicated regenerate endpoint, which unconditionally resets the paragraph's
-     *  audio status server-side even when it's already AudioReady. Refetches the chapter on
-     *  success so the local copy immediately reflects the reset-to-pending status (and stale
-     *  cached audioUrl) instead of waiting on BookUpdatesSocket/the poll fallback to notice,
-     *  mirroring [deleteBookAudio]'s own post-mutation reload. */
+     *  audio status server-side even when it's already AudioReady. The reset-to-pending status
+     *  (and later the new audio) arrives on the chapter's live topic. */
     fun regenerateParagraph(chapterIdx: Int, paragraphIdx: Int) {
         viewModelScope.launch {
             runCatching { libraryRepository.regenerateParagraph(bookId, chapterIdx, paragraphIdx) }
-                .onSuccess { fetchAndMergeChapter(chapterIdx) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -939,13 +916,12 @@ class ReaderViewModel @Inject constructor(
      *  off background generation for a chapter that isn't necessarily loaded or currently
      *  playing, unlike [ensureGenerating]'s own automatic call for whatever chapter is actually
      *  visible. Idempotent server-side (see LibraryRepository.generateChapter's own doc), so this
-     *  is harmless even if generation for it is already running. Only refetches if the chapter
-     *  happens to already be loaded - one that isn't just starts generating invisibly in the
-     *  background until the reader actually scrolls/jumps to it. */
+     *  is harmless even if generation for it is already running. A loaded chapter shows the
+     *  progress via its live topic; one that isn't just generates invisibly in the background
+     *  until the reader actually scrolls/jumps to it. */
     fun generateChapter(chapterIdx: Int) {
         viewModelScope.launch {
             runCatching { libraryRepository.generateChapter(bookId, chapterIdx) }
-                .onSuccess { if (chapterIdx in _uiState.value.loadedChapters) fetchAndMergeChapter(chapterIdx) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -973,15 +949,11 @@ class ReaderViewModel @Inject constructor(
     }
 
     /** Wipes this book's every generated audio file (any voice) - the reader-facing "Delete
-     *  generated audio" action, mirroring frontend's VoicePanel. Every currently-loaded chapter
-     *  is refetched afterward so paragraph statuses reflect the reset immediately, same as
-     *  setVoicePreset's own reload after a voice change. */
+     *  generated audio" action, mirroring frontend's VoicePanel. Every loaded chapter's paragraphs
+     *  flip back to pending via their live topics. */
     fun deleteBookAudio() {
         viewModelScope.launch {
             runCatching { libraryRepository.deleteBookAudio(bookId) }
-                .onSuccess {
-                    _uiState.value.loadedChapters.keys.forEach { idx -> launch { fetchAndMergeChapter(idx) } }
-                }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -1023,12 +995,9 @@ class ReaderViewModel @Inject constructor(
      *  loaded window to just that chapter and starts playback at the exact bookmarked
      *  paragraph, not just the chapter's first one (unlike goToChapter). */
     fun jumpToParagraph(chapterIdx: Int, paragraphIdx: Int) {
-        player.pause()
-        player.clearChapters()
-        loadingChapters.clear()
-        _uiState.update { it.copy(range = chapterIdx..chapterIdx, loadedChapters = emptyMap()) }
+        resetLoadedChapters(chapterIdx)
         viewModelScope.launch {
-            fetchAndMergeChapter(chapterIdx)
+            awaitChapter(chapterIdx)
             player.playFrom(chapterIdx, paragraphIdx)
         }
     }
@@ -1045,7 +1014,6 @@ class ReaderViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        bookUpdatesSocket.release()
         musicPreviewPlayer?.release()
         musicPreviewPlayer = null
         // player/backgroundMusicPlayer are deliberately NOT released here - both are app-scoped

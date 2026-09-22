@@ -9,6 +9,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.lectable.app.data.discovery.NsdDiscoveryRepository
 import com.lectable.app.data.download.DownloadedBook
+import com.lectable.app.data.remote.LiveClient
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.BookSummaryDto
 import com.lectable.app.data.repository.DownloadRepository
@@ -20,12 +21,11 @@ import com.lectable.app.playback.ChapterDownloadWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.File
 import javax.inject.Inject
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -36,9 +36,6 @@ import kotlinx.coroutines.withTimeoutOrNull
 // first launch before giving up and falling back to the compiled-in default.
 private const val AUTO_DISCOVERY_TIMEOUT_MS = 4_000L
 
-// Matches frontend's useBooks own refetchInterval while any book is preprocessing.
-private const val PREPROCESSING_POLL_INTERVAL_MS = 3_000L
-
 data class BookListItem(val summary: BookSummaryDto, val cover: Any?)
 
 data class LibraryUiState(
@@ -47,7 +44,7 @@ data class LibraryUiState(
     val isUploading: Boolean = false,
     val error: String? = null,
     // True when `books` came from the offline downloaded-book cache (see DownloadRepository)
-    // rather than a live listBooks() call - only downloaded books show up, and their
+    // rather than the live books topic - only downloaded books show up, and their
     // progress/generation figures are unknown offline (zeroed, see toOfflineSummary).
     val offline: Boolean = false,
     // Book ids with at least one chapter downloaded locally (see DownloadRepository
@@ -66,24 +63,18 @@ class LibraryViewModel @Inject constructor(
     private val discoveryRepository: NsdDiscoveryRepository,
     private val voiceRepository: VoiceRepository,
     private val workManager: WorkManager,
+    private val liveClient: LiveClient,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(LibraryUiState())
     val uiState: StateFlow<LibraryUiState> = _uiState
 
+    private var booksJob: Job? = null
+
     init {
         viewModelScope.launch {
             autoConfigureServerIfNeeded()
             refresh()
-        }
-        // Clears a book's own preprocessing spinner once its run finishes, same "poll only while
-        // something's actually unsettled" shape as frontend's useBooks - a plain condition check
-        // each tick, not a live push, so this costs nothing once nothing's running.
-        viewModelScope.launch {
-            while (isActive) {
-                delay(PREPROCESSING_POLL_INTERVAL_MS)
-                if (_uiState.value.books.any { it.summary.preprocessing }) refresh()
-            }
         }
         viewModelScope.launch {
             downloadRepository.observeDownloadedBooks().collect { downloaded ->
@@ -93,7 +84,7 @@ class LibraryViewModel @Inject constructor(
     }
 
     /** On a fresh install (no server URL ever saved - see ServerSettingsRepository.isConfigured),
-     *  tries a short mDNS discovery burst before this screen's very first listBooks() call, so a
+     *  tries a short mDNS discovery burst before this screen first subscribes to the book list, so a
      *  real device on the same LAN as a lectable backend can just open the app and go, instead of
      *  needing a manual trip to Settings to type in an IP first - the same discovery Settings
      *  already offers there (NsdDiscoveryRepository), just run once automatically here instead of
@@ -116,35 +107,39 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    /** (Re)subscribes to the live `books` topic (see [LiveClient]) - every upload, delete,
+     *  preprocessing run finishing, or generation progress tick afterward arrives on its own, so
+     *  this only needs calling once (and from pull-to-refresh, as a manual retry). */
     fun refresh() {
-        viewModelScope.launch {
+        booksJob?.cancel()
+        booksJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             // Show whatever's already downloaded immediately, rather than leaving the reader
-            // staring at a blank loading spinner for however long a slow/unreachable network
-            // fetch takes - LibraryScreen's own `isLoading && books.isEmpty()` full-screen
-            // spinner check already steps aside the moment `books` is non-empty, so this alone
-            // is enough to get the list on screen right away. Replaced by the live list the
-            // moment it actually arrives (see onSuccess below); this used to be shown only as a
-            // post-failure fallback, not eagerly like this.
+            // staring at a blank loading spinner for however long a slow/unreachable backend
+            // takes - LibraryScreen's own `isLoading && books.isEmpty()` full-screen spinner
+            // check already steps aside the moment `books` is non-empty. Replaced by the live
+            // list the moment it actually arrives.
             val downloaded = downloadRepository.observeDownloadedBooks().first()
-            if (downloaded.isNotEmpty()) {
+            if (downloaded.isNotEmpty() && _uiState.value.books.isEmpty()) {
                 _uiState.update { it.copy(books = downloaded.toBookListItems(), offline = true) }
             }
-            runCatching { repository.listBooks() }
-                .onSuccess { books ->
-                    val items = books.map { BookListItem(it, mediaUrlResolver.resolve(it.coverUrl)) }
-                    _uiState.update { it.copy(books = items, isLoading = false, offline = false) }
-                }
-                .onFailure { e ->
+            liveClient.observe<List<BookSummaryDto>>("books").collect { result ->
+                val books = result.data
+                val error = result.error
+                when {
+                    books != null -> {
+                        val items = books.map { BookListItem(it, mediaUrlResolver.resolve(it.coverUrl)) }
+                        _uiState.update { it.copy(books = items, isLoading = false, offline = false, error = null) }
+                    }
                     // Backend unreachable (offline, or just down) - the eager display above
                     // already covers "something's downloaded"; a real error only needs
-                    // reporting when there was nothing to show at all.
-                    if (downloaded.isEmpty()) {
-                        _uiState.update { it.copy(isLoading = false, error = e.message, offline = false) }
-                    } else {
-                        _uiState.update { it.copy(isLoading = false) }
+                    // reporting when there was nothing to show at all. LiveClient keeps
+                    // retrying, so the live list replaces this once the backend's back.
+                    error != null -> _uiState.update {
+                        if (downloaded.isEmpty()) it.copy(isLoading = false, error = error.message, offline = false) else it.copy(isLoading = false)
                     }
                 }
+            }
         }
     }
 
@@ -152,7 +147,6 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isUploading = true, error = null) }
             runCatching { repository.uploadBook(contentResolver, uri, cacheDir) }
-                .onSuccess { refresh() }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             _uiState.update { it.copy(isUploading = false) }
         }
@@ -169,7 +163,6 @@ class LibraryViewModel @Inject constructor(
                     // either way, so a failure here just leaves local files to be caught by
                     // Settings' "Delete all downloads" instead of blocking the deletion.
                     runCatching { downloadRepository.deleteBookDownloads(id) }
-                    refresh()
                 }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
@@ -177,22 +170,11 @@ class LibraryViewModel @Inject constructor(
 
     /** Long-press menu's "Preprocess" - kicks off the whole-book meta-task (attribution ->
      *  characterization -> voice provisioning -> direction-tagging) server-side, mirroring the
-     *  web Library page's own preprocess button. Optimistically flips this book's own
-     *  `preprocessing` flag on success so its spinner shows immediately rather than waiting for
-     *  the next poll tick (see init) to notice - that poll then clears it again once the server
-     *  actually finishes. */
+     *  web Library page's own preprocess button. The book's `preprocessing` spinner flips on (and
+     *  later off) via the live books topic. */
     fun preprocessBook(bookId: String) {
         viewModelScope.launch {
             runCatching { repository.preprocessBook(bookId) }
-                .onSuccess {
-                    _uiState.update { state ->
-                        state.copy(
-                            books = state.books.map { item ->
-                                if (item.summary.id == bookId) item.copy(summary = item.summary.copy(preprocessing = true)) else item
-                            },
-                        )
-                    }
-                }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -200,7 +182,7 @@ class LibraryViewModel @Inject constructor(
     /** Long-press menu's "Generate audio" - enqueues server-side TTS generation for every chapter
      *  at once, so a reader can have a whole book ready to listen to without opening it chapter
      *  by chapter first. Fire-and-forget, no local state to update: unlike [preprocessBook], the
-     *  backend has no book-level "is generating" flag to poll - progress shows up the same way
+     *  backend has no book-level "is generating" flag - progress shows up the same way
      *  any other generation does, via each paragraph's own status once the book is actually
      *  opened. Distinct from [downloadBook] below: this makes the server *render* the audio in
      *  the first place; downloadBook only fetches already-generated audio to this device. */
