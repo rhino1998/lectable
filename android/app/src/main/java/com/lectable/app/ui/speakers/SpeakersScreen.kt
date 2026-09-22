@@ -139,7 +139,7 @@ fun SpeakersScreen(
                         if (uiState.preprocessing) CircularProgressIndicator(modifier = Modifier.size(20.dp))
                     }
                     Text(
-                        "Runs attribution, characterization, voice provisioning, and direction-tagging for the " +
+                        "Runs attribution, characterization, voice provisioning, direction-tagging, and pronunciation for the " +
                             "whole book in one pass, adding any newly-found character to the roster below.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

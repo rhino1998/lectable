@@ -332,8 +332,8 @@ compiled-in default in place if nothing answers in time.
   pronunciation fixes: a strikeout through the exact word - matching
   frontend's `DirectionCaret`/`PronunciationStrike` exactly) and as entries
   in the long-press menu. `POST .../chapters/{idx}/tag-directions` itself
-  (web's "Tag directions" button, which also runs pronunciation resolution
-  server-side) *is* reachable here too, just not from this screen - the
+  (web's "Tag directions" button), and `POST .../resolve-pronunciation`
+  (its own pass now), *are* reachable here too, just not from this screen - the
   reader's own chapter picker ("Jump to chapter" sheet) has a long-press
   menu per chapter with "Generate chapter audio" and one item per LLM pass
   (`ReaderViewModel.runChapterPass`, each queuing its own backend job -

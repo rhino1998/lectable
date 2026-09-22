@@ -35,6 +35,12 @@ data class VoiceSettingsDto(
     val instruct: String,
     val language: String,
     val seed: Int? = null,
+    // Which clone model narrates this book - every voice in it (backend store.Book.CloneModel;
+    // a property of the book, never of a voice). "" on PUT leaves the book's current value
+    // unchanged server-side, so a bare VoiceSettingsDto(...) built without it can't reset it; no
+    // Android UI changes it yet (the web reader's voice panel does). Changing it server-side
+    // deletes the book's generated audio.
+    val cloneModel: String = "",
     // Which of backend's four store.CharacterVoiceMode values this book uses for per-character
     // narration voices (see internal/narration.Resolver) - CHARACTER_VOICE_MODE_NARRATOR by
     // default, matching backend's own store.DefaultCharacterVoiceMode. This DTO is a full
@@ -72,7 +78,6 @@ data class CustomVoicePresetDto(
     val refText: String,
     val seed: Int,
     val speedMultiplier: Double,
-    val cloneModel: String,
     val createdAt: Long,
     val audioUrl: String,
     val refError: String? = null,

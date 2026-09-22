@@ -942,6 +942,7 @@ class ReaderViewModel @Inject constructor(
                     ChapterPass.ATTRIBUTION -> libraryRepository.attributeSpeakers(bookId, chapterIdx)
                     ChapterPass.DESCRIPTIONS -> libraryRepository.retagDescriptions(bookId, chapterIdx)
                     ChapterPass.DIRECTIONS -> libraryRepository.tagDirections(bookId, chapterIdx)
+                    ChapterPass.PRONUNCIATION -> libraryRepository.resolvePronunciation(bookId, chapterIdx)
                     ChapterPass.MUSIC -> libraryRepository.scoreChapterMusic(bookId, chapterIdx)
                 }
             }.onFailure { e -> _uiState.update { it.copy(error = e.message ?: "${pass.label} failed") } }
@@ -1034,5 +1035,6 @@ enum class ChapterPass(val label: String) {
     ATTRIBUTION("Attribute speakers"),
     DESCRIPTIONS("Tag descriptions"),
     DIRECTIONS("Tag speech directions"),
+    PRONUNCIATION("Resolve pronunciation"),
     MUSIC("Score background music"),
 }

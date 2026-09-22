@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Spellcheck
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -2652,5 +2653,6 @@ private val ChapterPass.icon: ImageVector
         ChapterPass.ATTRIBUTION -> Icons.Filled.RecordVoiceOver
         ChapterPass.DESCRIPTIONS -> Icons.Filled.Person
         ChapterPass.DIRECTIONS -> Icons.Filled.Mood
+        ChapterPass.PRONUNCIATION -> Icons.Filled.Spellcheck
         ChapterPass.MUSIC -> Icons.Filled.MusicNote
     }

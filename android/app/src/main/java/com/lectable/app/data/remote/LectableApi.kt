@@ -136,11 +136,17 @@ interface LectableApi {
     @POST("api/books/{id}/chapters/{idx}/retag-scare-quotes")
     suspend fun retagScareQuotes(@Path("id") bookId: String, @Path("idx") idx: Int): QueuedResponseDto
 
-    /** Enqueues speech-direction tagging and pronunciation resolution for one chapter -
-     *  fire-and-forget, 202 immediately (503 if unconfigured, 400 if this book's resolved clone
-     *  model isn't Higgs). See backend's handleTagDirections. */
+    /** Enqueues speech-direction tagging for one chapter - fire-and-forget, 202 immediately
+     *  (503 if unconfigured, 400 if this book's clone model isn't Higgs). See backend's
+     *  handleTagDirections. */
     @POST("api/books/{id}/chapters/{idx}/tag-directions")
     suspend fun tagDirections(@Path("id") bookId: String, @Path("idx") idx: Int): QueuedResponseDto
+
+    /** Enqueues pronunciation resolution (ambiguous abbreviations like "Dr." -> "Doctor") for one
+     *  chapter - fire-and-forget, 202 immediately (503 if unconfigured). Unlike [tagDirections],
+     *  works for every clone model. See backend's handleResolvePronunciation. */
+    @POST("api/books/{id}/chapters/{idx}/resolve-pronunciation")
+    suspend fun resolvePronunciation(@Path("id") bookId: String, @Path("idx") idx: Int): QueuedResponseDto
 
     /** This chapter's own background-music tone regions (mood, generation status, clip once
      *  ready) - the reader's own background-music mixer ([BackgroundMusicPlayer]) polls this

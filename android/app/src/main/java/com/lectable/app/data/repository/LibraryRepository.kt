@@ -94,6 +94,9 @@ class LibraryRepository @Inject constructor(
     /** [LectableApi.tagDirections] - see its own doc comment. */
     suspend fun tagDirections(bookId: String, idx: Int): Boolean = api.tagDirections(bookId, idx).queued
 
+    /** [LectableApi.resolvePronunciation] - see its own doc comment. */
+    suspend fun resolvePronunciation(bookId: String, idx: Int): Boolean = api.resolvePronunciation(bookId, idx).queued
+
     suspend fun lookahead(bookId: String, chapterIdx: Int, paragraphIdx: Int): Boolean =
         api.lookahead(bookId, LookaheadRequestDto(chapterIdx, paragraphIdx)).queued
 
