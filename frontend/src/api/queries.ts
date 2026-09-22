@@ -353,9 +353,14 @@ export function useReattributeSpeaker(bookId: string) {
 // Which of bookId's speakers (by name - QueueTask.label is the only
 // identifier a speaker-reattribute task carries, same as
 // speaker_characterization's own label) currently have an "Auto Split"
-// task queued/in-flight.
+// task queued/in-flight - either the whole-click pipeline_auto_split
+// wrapper or any of its per-chapter children (a paused chapter's own
+// continuation can outlive the wrapper - see backend
+// jobs.Manager.RunReattribution).
 export function useReattributingSpeakers(bookId: string): Set<string> {
-  return useLabelSet(bookId, 'speaker-reattribute')
+  const wrappers = useLabelSet(bookId, 'pipeline_auto_split')
+  const chapters = useLabelSet(bookId, 'speaker-reattribute')
+  return useMemo(() => new Set([...wrappers, ...chapters]), [wrappers, chapters])
 }
 
 export function useGenerateCharacterVoice(bookId: string) {

@@ -44,6 +44,9 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pipeline_generate_chapter: 'Generate: Chapter',
   pipeline_generate_book: 'Generate: All',
   pipeline_generate_remaining: 'Generate: Remaining',
+  // One whole "Auto Split" click, wrapping its per-chapter
+  // 'speaker-reattribute' rows - see backend jobs.Manager.EnqueueAutoSplit.
+  pipeline_auto_split: 'Auto Split: All Chapters',
   sfx_generation: 'SFX',
   sfx_preview: 'SFX/Music Preview',
   llm_preview: 'LLM Preview',

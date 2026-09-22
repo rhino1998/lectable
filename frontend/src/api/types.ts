@@ -534,6 +534,11 @@ export interface QueueTask {
     | 'pipeline_generate_chapter'
     | 'pipeline_generate_book'
     | 'pipeline_generate_remaining'
+    // One "Auto Split" click (see backend jobs.Manager.EnqueueAutoSplit) -
+    // a single cancelable row wrapping every per-chapter
+    // 'speaker-reattribute' task that click fans out into. label carries
+    // the speaker's own name, same as its per-chapter children.
+    | 'pipeline_auto_split'
   // label is a human-readable identifier for a kind that isn't chapter/
   // paragraph-scoped - the character's name for "speaker_characterization"
   // and "voice_provision" (see jobs.EnqueueVoiceProvision), a "preview #N"
