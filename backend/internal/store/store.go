@@ -2277,6 +2277,15 @@ func (s *Store) SetParagraphDescriptions(chapterID string, byDescribesIdx map[in
 // previously-set flag (e.g. a reader's own manual "not a scare quote after
 // all" correction) - unlike SetParagraphDescriptions, which only ever
 // receives entries worth setting, this can carry either direction.
+//
+// Also rewrites speaker to match: setting the flag forces "Narrator" (a
+// scare quote is part of the narration, so whatever attribution assigned
+// it as if it were dialogue no longer applies - and scare-quote merging
+// needs it narration-voiced, see jobs.Manager.scareQuoteMergeGroup);
+// clearing it turns a "Narrator" speaker back into "" (unattributed) so
+// the next attribution run picks the now-real dialogue line up again,
+// since "Narrator" is never valid for dialogue. Any other speaker is left
+// alone on clear.
 func (s *Store) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) error {
 	if len(byIdx) == 0 {
 		return nil
@@ -2287,7 +2296,9 @@ func (s *Store) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) er
 	}
 	defer tx.Rollback()
 	for idx, scareQuote := range byIdx {
-		if _, err := tx.Exec(`UPDATE paragraphs SET scare_quote = ? WHERE chapter_id = ? AND idx = ?`, scareQuote, chapterID, idx); err != nil {
+		if _, err := tx.Exec(`UPDATE paragraphs SET scare_quote = ?,
+			speaker = CASE WHEN ? THEN 'Narrator' WHEN speaker = 'Narrator' THEN '' ELSE speaker END
+			WHERE chapter_id = ? AND idx = ?`, scareQuote, scareQuote, chapterID, idx); err != nil {
 			return fmt.Errorf("set scare_quote for paragraph idx %d: %w", idx, err)
 		}
 	}

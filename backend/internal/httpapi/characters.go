@@ -1004,12 +1004,14 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		}
 		// Only an actual quoted-dialogue span may be attributed to a
 		// character - narration/description about someone isn't them
-		// speaking, whatever the model itself decided. Enforced here,
-		// deterministically, rather than left to the model's own prompt
-		// adherence (see speakerattr's own system prompt, which already
-		// asks for this but can't guarantee it).
+		// speaking, whatever the model itself decided, and neither is a
+		// quoted span already flagged as a scare quote (see
+		// Store.SetParagraphScareQuotes, which forces those to Narrator
+		// too). Enforced here, deterministically, rather than left to the
+		// model's own prompt adherence (see speakerattr's own system
+		// prompt, which already asks for this but can't guarantee it).
 		if name != "Narrator" {
-			if p, ok := paragraphByIdx[idx]; ok && !p.IsQuote {
+			if p, ok := paragraphByIdx[idx]; ok && (!p.IsQuote || p.ScareQuote) {
 				name = "Narrator"
 			}
 		}
@@ -1150,7 +1152,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 
 	inputs := make([]speakerattr.ParagraphInput, len(all))
 	for i, p := range all {
-		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote}
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
 	}
 
 	// nil, not s.Jobs.HasHigherPriorityWork - see the first AttributeChapter
@@ -1169,7 +1171,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 			continue
 		}
 		if name != "Narrator" {
-			if p, ok := paragraphByIdx[idx]; ok && !p.IsQuote {
+			if p, ok := paragraphByIdx[idx]; ok && (!p.IsQuote || p.ScareQuote) {
 				name = "Narrator"
 			}
 		}
@@ -1518,7 +1520,7 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 
 	inputs := make([]speakerattr.ParagraphInput, len(paragraphs))
 	for i, p := range paragraphs {
-		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote}
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
 	}
 
 	// Three independent LLM passes - sentence-level (emotion/style/prosody

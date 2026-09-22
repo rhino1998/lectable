@@ -444,6 +444,52 @@ func TestParagraphSpeakerTagsAndDescriptions(t *testing.T) {
 	}
 }
 
+// TestSetParagraphScareQuotesRewritesSpeaker covers SetParagraphScareQuotes'
+// speaker side effect: flagging forces Narrator over whatever attribution
+// assigned, and clearing turns that Narrator back into "" (unattributed)
+// rather than leaving a real dialogue line stuck on Narrator.
+func TestSetParagraphScareQuotesRewritesSpeaker(t *testing.T) {
+	s := openTestStore(t)
+	_, chapterID := oneChapterBook(t, s, "", 0, `"Hi,"`, `"Bye,"`)
+
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatalf("ListParagraphsRaw: %v", err)
+	}
+	if err := s.SetParagraphSpeakers(chapterID, map[int]string{0: "Alice", 1: "Bob"}); err != nil {
+		t.Fatalf("SetParagraphSpeakers: %v", err)
+	}
+
+	speaker := func(i int) (string, bool) {
+		t.Helper()
+		p, err := s.GetParagraph(paragraphs[i].ID)
+		if err != nil {
+			t.Fatalf("GetParagraph(%d): %v", i, err)
+		}
+		return p.Speaker, p.ScareQuote
+	}
+
+	if err := s.SetParagraphScareQuotes(chapterID, map[int]bool{0: true}); err != nil {
+		t.Fatalf("SetParagraphScareQuotes(true): %v", err)
+	}
+	if got, sq := speaker(0); got != "Narrator" || !sq {
+		t.Fatalf("after flagging: speaker %q scareQuote %v, want Narrator true", got, sq)
+	}
+	if got, _ := speaker(1); got != "Bob" {
+		t.Fatalf("unflagged paragraph's speaker changed to %q", got)
+	}
+
+	if err := s.SetParagraphScareQuotes(chapterID, map[int]bool{0: false, 1: false}); err != nil {
+		t.Fatalf("SetParagraphScareQuotes(false): %v", err)
+	}
+	if got, sq := speaker(0); got != "" || sq {
+		t.Fatalf("after clearing: speaker %q scareQuote %v, want \"\" false", got, sq)
+	}
+	if got, _ := speaker(1); got != "Bob" {
+		t.Fatalf("clearing a never-flagged paragraph changed its speaker to %q", got)
+	}
+}
+
 // TestQuotesForBooksContextOnlyFromInlineNarration covers QuoteContext's
 // own Inline requirement on the "next" self-join: a quote's Context should
 // only ever be the attribution tag glued to it as a later segment of the
