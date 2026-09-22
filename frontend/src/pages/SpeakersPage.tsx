@@ -719,14 +719,6 @@ export function SpeakersPage() {
             </button>
             <button
               className="text-button"
-              onClick={runGenerateMissingMusic}
-              disabled={generatingMusicIdxs.size > 0 || missingMusicChapters.length === 0}
-              title="Generate background music for every scored, fully-narrated chapter that's missing any, retrying failed regions"
-            >
-              Generate missing music
-            </button>
-            <button
-              className="text-button"
               onClick={runGenerateUngenerated}
               disabled={generatingIdxs.size > 0 || !hasUngenerated}
               title="Generate audio for every chapter that isn't fully generated yet, skipping ones already done"
@@ -735,6 +727,14 @@ export function SpeakersPage() {
             </button>
             <button className="text-button" onClick={runGenerateAll} disabled={generatingIdxs.size > 0}>
               Generate all audio
+            </button>
+            <button
+              className="text-button"
+              onClick={runGenerateMissingMusic}
+              disabled={generatingMusicIdxs.size > 0 || missingMusicChapters.length === 0}
+              title="Generate background music for every scored, fully-narrated chapter that's missing any, retrying failed regions"
+            >
+              Generate missing music
             </button>
           </div>
         </div>
@@ -891,6 +891,20 @@ export function SpeakersPage() {
                       </button>
                       <button
                         className="icon-action-button"
+                        disabled={generating}
+                        onClick={() => runGenerate(c.idx)}
+                        title={
+                          generating
+                            ? 'Generating…'
+                            : isGenerated(c)
+                              ? 'Already fully generated — click to check for background music if it was turned on since'
+                              : 'Generate audio for this chapter'
+                        }
+                      >
+                        <RiVoiceprintLine className={generating ? 'spin' : undefined} />
+                      </button>
+                      <button
+                        className="icon-action-button"
                         disabled={generatingMusic || !canGenerateMusic(c)}
                         onClick={() => runGenerateMusic(c.idx)}
                         title={
@@ -906,20 +920,6 @@ export function SpeakersPage() {
                         }
                       >
                         <RiDiscLine className={generatingMusic ? 'spin' : undefined} />
-                      </button>
-                      <button
-                        className="icon-action-button"
-                        disabled={generating}
-                        onClick={() => runGenerate(c.idx)}
-                        title={
-                          generating
-                            ? 'Generating…'
-                            : isGenerated(c)
-                              ? 'Already fully generated — click to check for background music if it was turned on since'
-                              : 'Generate audio for this chapter'
-                        }
-                      >
-                        <RiVoiceprintLine className={generating ? 'spin' : undefined} />
                       </button>
                     </div>
                   </td>
