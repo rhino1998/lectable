@@ -6,76 +6,13 @@ import (
 	"testing"
 )
 
-// applyOps is a Go port of the frontend's applyOps (src/api/live.ts), used
-// to check Diff's output round-trips: apply(prev, Diff(prev, next)) == next.
 func applyOps(t *testing.T, doc any, opsJSON []byte) any {
 	t.Helper()
-	var ops []struct {
-		Op    string            `json:"op"`
-		Path  []any             `json:"path"`
-		Value json.RawMessage   `json:"value"`
-		Items []json.RawMessage `json:"items"`
+	out, err := Apply(doc, opsJSON)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
 	}
-	if err := json.Unmarshal(opsJSON, &ops); err != nil {
-		t.Fatalf("unmarshal ops: %v", err)
-	}
-	for _, op := range ops {
-		parentPath, last := op.Path, any(nil)
-		if len(op.Path) > 0 {
-			parentPath, last = op.Path[:len(op.Path)-1], op.Path[len(op.Path)-1]
-		}
-		var newVal any
-		switch op.Op {
-		case "set":
-			v, _ := decode(op.Value)
-			newVal = v
-		case "arr":
-			prev := get(doc, op.Path).([]any)
-			out := []any{}
-			for _, it := range op.Items {
-				var pair [2]int
-				if json.Unmarshal(it, &pair) == nil {
-					out = append(out, prev[pair[0]:pair[1]]...)
-					continue
-				}
-				var lit struct{ V json.RawMessage }
-				if err := json.Unmarshal(it, &lit); err != nil {
-					t.Fatalf("bad item %s", it)
-				}
-				v, _ := decode(lit.V)
-				out = append(out, v)
-			}
-			newVal = out
-		}
-		if last == nil {
-			doc = newVal
-			continue
-		}
-		parent := get(doc, parentPath)
-		switch p := parent.(type) {
-		case map[string]any:
-			if op.Op == "del" {
-				delete(p, last.(string))
-			} else {
-				p[last.(string)] = newVal
-			}
-		case []any:
-			p[int(last.(float64))] = newVal
-		}
-	}
-	return doc
-}
-
-func get(doc any, path []any) any {
-	for _, k := range path {
-		switch d := doc.(type) {
-		case map[string]any:
-			doc = d[k.(string)]
-		case []any:
-			doc = d[int(k.(float64))]
-		}
-	}
-	return doc
+	return out
 }
 
 func mustDecode(t *testing.T, s string) any {

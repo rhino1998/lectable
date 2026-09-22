@@ -3,6 +3,7 @@ package live
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"reflect"
 )
 
@@ -239,4 +240,105 @@ func clonePath(path []any) []any {
 		return []any{}
 	}
 	return append([]any(nil), path...)
+}
+
+// Apply is the inverse of Diff for a client holding a topic's value:
+// applies a patch message's raw "ops" array to doc (a generic decode as
+// produced by Decode), returning the new value. Containers along each
+// changed path are copied, never mutated in place. The frontend's
+// src/api/live.ts applyOps is the same algorithm.
+func Apply(doc any, opsJSON []byte) (any, error) {
+	var ops []struct {
+		Op    string            `json:"op"`
+		Path  []any             `json:"path"`
+		Value json.RawMessage   `json:"value"`
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(opsJSON, &ops); err != nil {
+		return nil, err
+	}
+	for _, op := range ops {
+		var err error
+		doc, err = applyAt(doc, op.Op, op.Path, op.Value, op.Items)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return doc, nil
+}
+
+// Decode parses raw JSON into the generic form Apply works on.
+func Decode(raw []byte) (any, error) { return decode(raw) }
+
+func applyAt(node any, kind string, path []any, value json.RawMessage, items []json.RawMessage) (any, error) {
+	if len(path) == 0 {
+		switch kind {
+		case "set":
+			return decode(value)
+		case "arr":
+			prev, ok := node.([]any)
+			if !ok {
+				return nil, fmt.Errorf("live: arr op on %T", node)
+			}
+			out := []any{}
+			for _, it := range items {
+				var pair [2]int
+				if json.Unmarshal(it, &pair) == nil {
+					if pair[0] < 0 || pair[1] > len(prev) || pair[0] > pair[1] {
+						return nil, fmt.Errorf("live: arr range %v out of bounds", pair)
+					}
+					out = append(out, prev[pair[0]:pair[1]]...)
+					continue
+				}
+				var lit struct {
+					V json.RawMessage `json:"v"`
+				}
+				if err := json.Unmarshal(it, &lit); err != nil {
+					return nil, err
+				}
+				v, err := decode(lit.V)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, v)
+			}
+			return out, nil
+		}
+		return nil, fmt.Errorf("live: %s op with empty path", kind)
+	}
+	switch n := node.(type) {
+	case map[string]any:
+		k, ok := path[0].(string)
+		if !ok {
+			return nil, fmt.Errorf("live: non-string key %v into object", path[0])
+		}
+		out := make(map[string]any, len(n)+1)
+		for kk, vv := range n {
+			out[kk] = vv
+		}
+		if kind == "del" && len(path) == 1 {
+			delete(out, k)
+			return out, nil
+		}
+		v, err := applyAt(n[k], kind, path[1:], value, items)
+		if err != nil {
+			return nil, err
+		}
+		out[k] = v
+		return out, nil
+	case []any:
+		f, ok := path[0].(float64)
+		i := int(f)
+		if !ok || i < 0 || i >= len(n) {
+			return nil, fmt.Errorf("live: bad array index %v", path[0])
+		}
+		out := append([]any(nil), n...)
+		v, err := applyAt(n[i], kind, path[1:], value, items)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = v
+		return out, nil
+	}
+	return nil, fmt.Errorf("live: path through %T", node)
 }

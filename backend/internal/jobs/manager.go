@@ -30,7 +30,6 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 	"github.com/rhino1998/lectable/backend/internal/wav"
-	"github.com/rhino1998/lectable/backend/internal/wshub"
 )
 
 // LookaheadParagraphCount is how far ahead of the reader's current position
@@ -446,7 +445,7 @@ const (
 	// pool/concurrency limit (see poolFor), but is its own Kind rather
 	// than reusing KindVoiceDesign directly: a real KindVoiceDesign task is
 	// always paragraph-scoped (chapterIdx/paragraphIdx meaningful, gets
-	// persisted to the store and published over wshub on completion - see
+	// persisted to the store on completion - see
 	// Manager.handleResult), none of which applies to a preview that was
 	// never asked to be saved anywhere. Blocks its caller like
 	// RunCharacterization, not fire-and-forget like KindVoiceClone/
@@ -500,7 +499,7 @@ const (
 	// Stable Audio SFX sound-effect clip (see EnqueueSFXGeneration,
 	// httpapi.handleGenerateParagraphSFX) - poolSFX, fire-and-forget like
 	// KindVoiceProvision's own explicit callers (the closure httpapi
-	// supplies does its own Store/audiopath persistence and wshub publish;
+	// supplies does its own Store/audiopath persistence;
 	// this package has none of that access itself), dedup-keyed by
 	// paragraph.ID like an ordinary KindVoiceClone task (the default
 	// dedupKey case) since a paragraph can only usefully have one SFX
@@ -601,7 +600,7 @@ const (
 type task struct {
 	kind       Kind
 	tier       int
-	chapterIdx int // this task's chapter's index in the book - wshub updates need it
+	chapterIdx int // this task's chapter's index in the book
 
 	// skipDependencies opts t out of resolveDependencies entirely (see
 	// that function's own early check) - set on KindLengthEstimate tasks,
@@ -1117,7 +1116,7 @@ type CharacterizationFunc func(ctx context.Context) error
 // task.llmWaiters by handleResult so each RunCharacterization caller can
 // block on it - unlike KindVoiceClone/KindVoiceDesign tasks, which are
 // dispatched fire-and-forget by the Enqueue* methods and whose outcome
-// only ever needs to reach the store/wshub, not a waiting caller.
+// only ever needs to reach the store, not a waiting caller.
 // KindSpeakerAttribution tasks are fire-and-forget too now (see
 // EnqueueAttribution) and so never populate llmWaiters, but still report
 // attributed through this same struct on their way to handleResult's
@@ -1250,7 +1249,6 @@ type Manager struct {
 	store        *store.Store
 	tts          *ttsworker.Manager
 	dataDir      string
-	hub          *wshub.Hub
 	narration    *narration.Resolver
 	provision    CharacterVoiceProvisioner
 	characterize CharacterCharacterizer
@@ -1322,12 +1320,11 @@ type Manager struct {
 	pipelineMu sync.Mutex
 }
 
-func NewManager(s *store.Store, tts *ttsworker.Manager, dataDir string, hub *wshub.Hub) *Manager {
+func NewManager(s *store.Store, tts *ttsworker.Manager, dataDir string) *Manager {
 	m := &Manager{
 		store:          s,
 		tts:            tts,
 		dataDir:        dataDir,
-		hub:            hub,
 		narration:      narration.NewResolver(s),
 		chapterPending: make(map[string]int),
 		wake:           make(chan struct{}, 1),
@@ -1384,7 +1381,7 @@ func (m *Manager) UnsubscribeChanges(ch chan struct{}) {
 }
 
 // notifyChanged signals every SubscribeChanges subscriber - buffered
-// (size 1) + non-blocking send, same reasoning as wshub.Hub.Publish: a
+// (size 1) + non-blocking send, so a slow subscriber can never block the queue: a
 // subscriber that hasn't consumed the previous signal yet just coalesces
 // into one pending "something changed," which is fine since the next
 // Snapshot call always reflects the full current state regardless of how
@@ -2125,16 +2122,6 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 		log.Printf("jobs: reset paragraph %s for regenerate: %v", paragraph.ID, err)
 		return
 	}
-	// Immediate feedback - popTask/startTask will publish "generating" too
-	// once dispatched, but that can be a beat away behind whatever's
-	// already in flight; this avoids the reader seeing the stale "ready"
-	// state linger in the meantime.
-	if m.hub != nil {
-		m.hub.Publish(bookID, wshub.ParagraphUpdate{
-			ChapterIdx: chapterIdx, ParagraphIdx: paragraph.Idx, AudioStatus: store.AudioPending,
-		})
-	}
-
 	m.pushResolvedTask(bookID, chapterID, chapterIdx, TierUrgent, resolvedParagraph{paragraph: paragraph, voice: v})
 }
 
@@ -3961,7 +3948,7 @@ func deliverCanceled(t *task) {
 // pipelineTask's own Key() - see cancelPipelineTask) - httpapi's DELETE
 // /api/jobs/{id}, the Jobs dashboard's per-row "Cancel" button. A
 // still-queued task is removed from the heap outright (it never ran at
-// all - store/wshub state is untouched, same as if it had never been
+// all - store state is untouched, same as if it had never been
 // enqueued) and its own waiters, if any, are delivered a canceled outcome
 // directly (see deliverCanceled). An in-flight task can't be un-dispatched
 // - a worker slot is already running it - so this instead cancels its own
@@ -4250,7 +4237,7 @@ func (m *Manager) startLLMTask(ctx context.Context, t *task) chan taskResult {
 func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskResult {
 	ch := make(chan taskResult, 1)
 	// KindVoiceDesignPreview has no backing paragraph at all - none of the
-	// store/wshub bookkeeping below applies (see handleResult's own early
+	// store bookkeeping below applies (see handleResult's own early
 	// branch for this kind), just run the caller-supplied render directly.
 	if t.kind == KindVoiceDesignPreview {
 		go func() {
@@ -4279,7 +4266,7 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 	}
 	// KindSFXGeneration does carry a backing paragraph (for dedup and the
 	// Jobs dashboard - see EnqueueSFXGeneration), but none of the
-	// narration-specific store/wshub bookkeeping below applies to it: the
+	// narration-specific store bookkeeping below applies to it: the
 	// caller-supplied closure does its own persistence entirely (see
 	// runSFXGen's own doc comment).
 	if t.kind == KindSFXGeneration {
@@ -4326,11 +4313,6 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 		if err := m.store.SetParagraphGenerating(p.ID, t.voiceID); err != nil {
 			log.Printf("jobs: mark generating: %v", err)
 		}
-		m.publish(t, wshub.ParagraphUpdate{
-			ChapterIdx:   t.chapterIdx,
-			ParagraphIdx: p.Idx,
-			AudioStatus:  store.AudioGenerating,
-		})
 	}
 	go func() {
 		audio, err := m.generate(ctx, t)
@@ -4662,12 +4644,6 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 func (m *Manager) failParagraph(t *task, paragraph store.Paragraph, err error) {
 	log.Printf("jobs: synthesize paragraph %s: %v", paragraph.ID, err)
 	_ = m.store.SetParagraphError(paragraph.ID, t.voiceID, err.Error())
-	m.publish(t, wshub.ParagraphUpdate{
-		ChapterIdx:   t.chapterIdx,
-		ParagraphIdx: paragraph.Idx,
-		AudioStatus:  store.AudioError,
-		AudioError:   err.Error(),
-	})
 }
 
 // saveParagraphAudio persists one paragraph's own finished clip - file on
@@ -4681,12 +4657,6 @@ func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio [
 	if err := os.WriteFile(outPath, audio, 0o644); err != nil {
 		log.Printf("jobs: write audio file: %v", err)
 		_ = m.store.SetParagraphError(paragraph.ID, t.voiceID, "failed to save audio: "+err.Error())
-		m.publish(t, wshub.ParagraphUpdate{
-			ChapterIdx:   t.chapterIdx,
-			ParagraphIdx: paragraph.Idx,
-			AudioStatus:  store.AudioError,
-			AudioError:   "failed to save audio: " + err.Error(),
-		})
 		return
 	}
 	dur, err := wav.Duration(audio)
@@ -4696,13 +4666,6 @@ func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio [
 	if err := m.store.SetParagraphReady(paragraph.ID, t.voiceID, dur.Seconds()); err != nil {
 		log.Printf("jobs: mark ready: %v", err)
 	}
-	m.publish(t, wshub.ParagraphUpdate{
-		ChapterIdx:      t.chapterIdx,
-		ParagraphIdx:    paragraph.Idx,
-		AudioStatus:     store.AudioReady,
-		DurationSeconds: dur.Seconds(),
-		AudioURL:        "/api/paragraphs/" + paragraph.ID + "/audio",
-	})
 	// This paragraph's own narration may be the last piece some chapter
 	// tone region needed before it can start generating - see
 	// MaybeAdvanceChapterMusic's own doc comment. Cheap no-op for the
@@ -4745,14 +4708,6 @@ func (m *Manager) alignParagraph(t *task, paragraph store.Paragraph, audio []byt
 		log.Printf("jobs: save word timings for %s: %v", paragraph.ID, err)
 		return
 	}
-	m.publish(t, wshub.ParagraphUpdate{
-		ChapterIdx:      t.chapterIdx,
-		ParagraphIdx:    paragraph.Idx,
-		AudioStatus:     store.AudioReady,
-		DurationSeconds: durationSeconds,
-		AudioURL:        "/api/paragraphs/" + paragraph.ID + "/audio",
-		Words:           wordsJSON,
-	})
 }
 
 // handleMergedResult saves mergedAudio - one shared clip generate already
@@ -4856,15 +4811,6 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte) {
 		if err := m.store.SetParagraphWordTimings(p.ID, t.voiceID, string(wordsJSON)); err != nil {
 			log.Printf("jobs: save word timings for %s: %v", p.ID, err)
 		}
-		m.publish(t, wshub.ParagraphUpdate{
-			ChapterIdx:          t.chapterIdx,
-			ParagraphIdx:        p.Idx,
-			AudioStatus:         store.AudioReady,
-			DurationSeconds:     duration,
-			AudioURL:            "/api/paragraphs/" + anchor.ID + "/audio",
-			AudioPointerSeconds: start,
-			Words:               wordsJSON,
-		})
 	}
 	// Same reasoning as saveParagraphAudio's own identical call - any of
 	// this group's members finishing may be the last piece some chapter
@@ -4959,16 +4905,6 @@ func (m *Manager) generateIndependently(t *task) {
 		}
 		m.saveParagraphAudio(t, p, audio)
 	}
-}
-
-// publish pushes a paragraph status update to any reader clients currently
-// watching t's book over WebSocket - see package wshub. A nil hub (e.g. in
-// tests that construct a Manager directly) is a silent no-op.
-func (m *Manager) publish(t *task, u wshub.ParagraphUpdate) {
-	if m.hub == nil {
-		return
-	}
-	m.hub.Publish(t.bookID, u)
 }
 
 // totalSlots is every worker slot across all pools - see taskPool. Slots

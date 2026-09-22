@@ -683,7 +683,7 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 // dispatches it into its own goroutine, then reflect.Select blocks on
 // ctx.Done, a fresh push (m.pipelineWake), or any dispatched phase
 // finishing, looping back to fill() after any of those. The one thing
-// this doesn't need that worker() does is retry/store/wshub bookkeeping
+// this doesn't need that worker() does is retry/store bookkeeping
 // (handleResult's own job) - a phase task has no persisted state of its
 // own to update and is never retried (PipelinePhaseFunc's own doc comment
 // covers why a non-nil return doesn't block later phases either), so

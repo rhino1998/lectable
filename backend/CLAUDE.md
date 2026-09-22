@@ -942,9 +942,9 @@ building/running `ttsworker` does, since both now link into that binary.
   DuckDB connection. A subscriber whose outbound buffer fills is dropped
   (it reconnects and resnapshots) rather than risk a lost patch. **A new
   topic, or a builder reading a new table, must list that table in its
-  deps** or it'll only update on the 30s resync. The older
-  `GET /api/books/{id}/ws` / `GET /api/jobs/ws` endpoints remain for
-  Android and `cmd/jobswatch`.
+  deps** or it'll only update on the 30s resync. Every client (web, Android, `cmd/jobswatch` - which applies
+  patches with `live.Apply`) uses only this; the older per-book and
+  jobs-only WebSocket routes are gone.
 - `internal/mdnsadvert/` — advertises the backend on the LAN via mDNS/DNS-SD
   (`_lectable._tcp`, using `github.com/hashicorp/mdns`) so `android` can
   find it instead of requiring the user to type in an IP. Started from

@@ -23,7 +23,6 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
 	"github.com/rhino1998/lectable/backend/internal/voices"
-	"github.com/rhino1998/lectable/backend/internal/wshub"
 )
 
 func getenv(key, fallback string) string {
@@ -90,8 +89,7 @@ func main() {
 		log.Fatalf("start ttsworker: %v", err)
 	}
 
-	hub := wshub.New()
-	jobManager := jobs.NewManager(st, ttsMgr, dataDir, hub)
+	jobManager := jobs.NewManager(st, ttsMgr, dataDir)
 	jobManager.Start(ctx)
 
 	// Live state push (GET /api/events): every committed store write and
@@ -138,7 +136,6 @@ func main() {
 		Jobs:        jobManager,
 		DataDir:     dataDir,
 		AllowOrigin: allowOrigin,
-		Hub:         hub,
 		Live:        liveHub,
 		Narration:   narration.NewResolver(st),
 		Speaker:     speakerClient,

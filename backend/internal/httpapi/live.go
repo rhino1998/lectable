@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/rhino1998/lectable/backend/internal/live"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -164,4 +167,20 @@ func characterTopic(kind string, deps []string, minInterval time.Duration, build
 			Build: func() (any, error) { return build(p.BookID, p.CharacterID) },
 		}, nil
 	}
+}
+
+// wsAcceptOptions mirrors withCORS's origin policy for WebSocket upgrades:
+// restrict to AllowOrigin's host when one is configured, or skip the check
+// entirely when it's unset - consistent with withCORS itself not setting
+// any CORS headers (and so not restricting anything) in that case. This
+// app has no auth and is meant for single-user local/LAN use, so the
+// exposure from a permissive origin check is the same as the REST API's.
+func wsAcceptOptions(allowOrigin string) *websocket.AcceptOptions {
+	if allowOrigin == "" {
+		return &websocket.AcceptOptions{InsecureSkipVerify: true}
+	}
+	if u, err := url.Parse(allowOrigin); err == nil && u.Host != "" {
+		return &websocket.AcceptOptions{OriginPatterns: []string{u.Host}}
+	}
+	return &websocket.AcceptOptions{InsecureSkipVerify: true}
 }

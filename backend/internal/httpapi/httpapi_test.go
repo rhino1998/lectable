@@ -35,7 +35,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store, *ttsworkertest.Server, 
 	fake := ttsworkertest.New(t)
 	dataDir := t.TempDir()
 	tts := fake.Manager()
-	mgr := jobs.NewManager(s, tts, dataDir, nil)
+	mgr := jobs.NewManager(s, tts, dataDir)
 
 	srv := &Server{
 		Store:       s,

@@ -33,7 +33,7 @@ func newLiveTestServer(t *testing.T) (*store.Store, *httptest.Server) {
 	fake := ttsworkertest.New(t)
 	dataDir := t.TempDir()
 	tts := fake.Manager()
-	mgr := jobs.NewManager(s, tts, dataDir, nil)
+	mgr := jobs.NewManager(s, tts, dataDir)
 
 	hub := live.New(live.Config{Debounce: 10 * time.Millisecond})
 	s.OnChange(func(tables []string) {

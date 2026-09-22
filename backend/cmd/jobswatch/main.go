@@ -1,7 +1,6 @@
-// Command jobswatch streams the Jobs dashboard's own live feed
-// (GET /api/jobs/ws - see httpapi.handleJobsWS/buildJobsSnapshot) to the
-// terminal as a readable diff instead of the full-snapshot-per-change JSON
-// the frontend consumes, for exactly the kind of "what's actually happening
+// Command jobswatch streams the Jobs dashboard's own live feed (the "jobs"
+// topic of GET /api/events - see package live and httpapi.buildJobsSnapshot)
+// to the terminal as a readable per-task diff instead of raw JSON, for exactly the kind of "what's actually happening
 // to this task" debugging that otherwise means grepping server.log by hand
 // for a task's own dedup key (e.g. "direction:b4e3cd5f...") across however
 // many restarts have happened since - slow, and easy to miss a transition
@@ -41,6 +40,8 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
+
+	"github.com/rhino1998/lectable/backend/internal/live"
 )
 
 // task mirrors httpapi.queueTaskDTO field-for-field (JSON tags only - that
@@ -80,7 +81,7 @@ type seen struct {
 }
 
 func main() {
-	addr := flag.String("addr", "ws://127.0.0.1:8080/api/jobs/ws", "jobs websocket URL (see backend's PORT env var if not the default 8080)")
+	addr := flag.String("addr", "ws://127.0.0.1:8080/api/events", "live events websocket URL (see backend's PORT env var if not the default 8080)")
 	bookFilter := flag.String("book", "", "only show tasks whose bookId has this prefix")
 	kindFilter := flag.String("kind", "", "only show tasks whose kind is in this comma-separated list (e.g. speech_direction,speaker_characterization)")
 	grepFilter := flag.String("grep", "", "only show tasks whose printed line contains this substring (case-insensitive)")
@@ -151,6 +152,8 @@ func (w *watcher) connectAndStream(ctx context.Context) error {
 		return err
 	}
 	defer conn.CloseNow()
+	// A full queue snapshot easily exceeds the library's 32KiB default.
+	conn.SetReadLimit(64 << 20)
 	logf("connected")
 
 	// Every reconnect starts from a blank slate - a snapshot right after
@@ -161,9 +164,45 @@ func (w *watcher) connectAndStream(ctx context.Context) error {
 	w.known = map[string]seen{}
 	w.pausedKnown = false
 
+	if err := wsjson.Write(ctx, conn, map[string]string{"type": "subscribe", "id": "jobs", "topic": "jobs"}); err != nil {
+		return err
+	}
+	// The server sends the full queue once, then patches against it (see
+	// live.Op) - doc is this client's copy, kept current with live.Apply.
+	var doc any
 	for {
+		var msg struct {
+			Type  string          `json:"type"`
+			Data  json.RawMessage `json:"data"`
+			Ops   json.RawMessage `json:"ops"`
+			Error string          `json:"error"`
+		}
+		if err := wsjson.Read(ctx, conn, &msg); err != nil {
+			return err
+		}
+		switch msg.Type {
+		case "snapshot":
+			if doc, err = live.Decode(msg.Data); err != nil {
+				return err
+			}
+		case "patch":
+			if doc == nil {
+				continue
+			}
+			if doc, err = live.Apply(doc, msg.Ops); err != nil {
+				return fmt.Errorf("apply patch: %w", err)
+			}
+		case "error":
+			return fmt.Errorf("server: %s", msg.Error)
+		default:
+			continue
+		}
+		raw, err := json.Marshal(doc)
+		if err != nil {
+			return err
+		}
 		var snap snapshot
-		if err := wsjson.Read(ctx, conn, &snap); err != nil {
+		if err := json.Unmarshal(raw, &snap); err != nil {
 			return err
 		}
 		w.handleSnapshot(snap)

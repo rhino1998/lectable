@@ -71,10 +71,8 @@ type jobsSnapshotDTO struct {
 // to a worker slot right now (voice cloning/design generation, or a
 // speaker-attribution/characterization/provision run - see
 // internal/jobs.Kind) and what's still waiting - as the same DTO shape
-// both handleJobsSnapshot (GET /api/jobs, the initial fetch) and
-// handleJobsWS (the live-updates WebSocket, which pushes this same shape
-// on connect and again after every change) use, so the two can never
-// silently drift apart. Book/chapter titles are resolved once per unique
+// both handleJobsSnapshot (GET /api/jobs) and the "jobs" live topic (see
+// registerLiveTopics) use, so the two can never silently drift apart. Book/chapter titles are resolved once per unique
 // id seen (cached within one call), not once per task, since the same
 // book and chapter often account for most of a lookahead burst.
 func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {

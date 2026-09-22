@@ -17,7 +17,6 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
-	"github.com/rhino1998/lectable/backend/internal/wshub"
 )
 
 type Server struct {
@@ -26,7 +25,6 @@ type Server struct {
 	Jobs        *jobs.Manager
 	DataDir     string
 	AllowOrigin string
-	Hub         *wshub.Hub
 	// Live serves GET /api/events, the subscribe-to-topics WebSocket the
 	// frontend keeps its state in sync through (see package live and
 	// registerLiveTopics). nil leaves the route unregistered.
@@ -165,7 +163,6 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/preprocess", s.handlePreprocessBook)
 	mux.HandleFunc("DELETE /api/books/{id}/chapters/{idx}/audio", s.handleDeleteChapterAudio)
 	mux.HandleFunc("POST /api/books/{id}/lookahead", s.handleLookahead)
-	mux.HandleFunc("GET /api/books/{id}/ws", s.handleBookWS)
 
 	mux.HandleFunc("GET /api/books/{id}/speakers", s.handleListSpeakers)
 	mux.HandleFunc("DELETE /api/books/{id}/speakers", s.handleDeleteBookSpeakerData)
@@ -182,7 +179,6 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/characters/characterize", s.handleCharacterizeSpeakers)
 
 	mux.HandleFunc("GET /api/jobs", s.handleJobsSnapshot)
-	mux.HandleFunc("GET /api/jobs/ws", s.handleJobsWS)
 	mux.HandleFunc("DELETE /api/jobs", s.handleCancelAllJobs)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleCancelJob)
 	mux.HandleFunc("PUT /api/jobs/{id}/tier", s.handleSetJobTier)

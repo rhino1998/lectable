@@ -194,7 +194,7 @@ func TestPipelineRunsConcurrentlyWithGenerationPool(t *testing.T) {
 	fake := ttsworkertest.New(t)
 	s := openTestStore(t)
 	dataDir := t.TempDir()
-	mgr := NewManager(s, fake.Manager(), dataDir, nil)
+	mgr := NewManager(s, fake.Manager(), dataDir)
 
 	book, chapterID := createBookAndChapter(t, s, "", 0, "First paragraph.", "Second paragraph.")
 	ctx, cancel := context.WithCancel(t.Context())

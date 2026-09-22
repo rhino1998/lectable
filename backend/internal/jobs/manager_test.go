@@ -184,7 +184,7 @@ func TestManagerGeneratesChapterEndToEnd(t *testing.T) {
 	fake := ttsworkertest.New(t)
 	s := openTestStore(t)
 	dataDir := t.TempDir()
-	mgr := NewManager(s, fake.Manager(), dataDir, nil)
+	mgr := NewManager(s, fake.Manager(), dataDir)
 
 	book, chapterID := createBookAndChapter(t, s, "", 0, "First paragraph.", "Second paragraph, a bit longer than the first.")
 
@@ -253,7 +253,7 @@ func TestManagerFullyCustomInstructUsesDesignNotClone(t *testing.T) {
 	fake := ttsworkertest.New(t)
 	s := openTestStore(t)
 	dataDir := t.TempDir()
-	mgr := NewManager(s, fake.Manager(), dataDir, nil)
+	mgr := NewManager(s, fake.Manager(), dataDir)
 
 	book, chapterID := createBookAndChapter(t, s, "", 0, "Only paragraph.")
 	if err := s.UpdateVoice(book.ID, "", "speak like a robot", "English", 0, store.CharacterVoiceModeNarrator, false, false); err != nil {
@@ -288,7 +288,7 @@ func TestManagerRegenerateParagraphReRenders(t *testing.T) {
 	fake := ttsworkertest.New(t)
 	s := openTestStore(t)
 	dataDir := t.TempDir()
-	mgr := NewManager(s, fake.Manager(), dataDir, nil)
+	mgr := NewManager(s, fake.Manager(), dataDir)
 
 	book, chapterID := createBookAndChapter(t, s, "", 0, "The only paragraph.")
 	ctx, cancel := context.WithCancel(t.Context())
@@ -338,7 +338,7 @@ func TestManagerUrgentColdCacheCloneDoesNotDeadlock(t *testing.T) {
 	fake := ttsworkertest.New(t)
 	s := openTestStore(t)
 	dataDir := t.TempDir()
-	mgr := NewManager(s, fake.Manager(), dataDir, nil)
+	mgr := NewManager(s, fake.Manager(), dataDir)
 
 	book, chapterID := createBookAndChapter(t, s, "", 0, "Only paragraph.")
 
@@ -1398,7 +1398,7 @@ func TestUrgentGenerationDispatchesDespitePoolLLMBacklog(t *testing.T) {
 func TestCancelRemovesQueuedTask(t *testing.T) {
 	s := openTestStore(t)
 	fake := ttsworkertest.New(t)
-	mgr := NewManager(s, fake.Manager(), t.TempDir(), nil)
+	mgr := NewManager(s, fake.Manager(), t.TempDir())
 
 	book, chapterID := createBookAndChapter(t, s, "", 0, "p1", "p2")
 	mgr.enqueueChapter(t.Context(), book.ID, chapterID, 0, 0) // synchronous, no worker started to drain it
@@ -1432,7 +1432,7 @@ func TestCancelRemovesQueuedTask(t *testing.T) {
 func TestCancelAllClearsEverythingQueued(t *testing.T) {
 	s := openTestStore(t)
 	fake := ttsworkertest.New(t)
-	mgr := NewManager(s, fake.Manager(), t.TempDir(), nil)
+	mgr := NewManager(s, fake.Manager(), t.TempDir())
 
 	book, chapterID := createBookAndChapter(t, s, "", 0, "p1", "p2", "p3")
 	mgr.enqueueChapter(t.Context(), book.ID, chapterID, 0, 0)
@@ -1522,7 +1522,7 @@ func TestPauseStopsNewDispatchButNotInFlight(t *testing.T) {
 	fake := ttsworkertest.New(t)
 	s := openTestStore(t)
 	dataDir := t.TempDir()
-	mgr := NewManager(s, fake.Manager(), dataDir, nil)
+	mgr := NewManager(s, fake.Manager(), dataDir)
 
 	book, chapterID := createBookAndChapter(t, s, "", 0, "First paragraph.", "Second paragraph.")
 	ctx, cancel := context.WithCancel(t.Context())
@@ -1824,7 +1824,7 @@ func TestManagerMergesScareQuoteGroupIntoOneGenerateCall(t *testing.T) {
 	wordConsistentTTS(t, fake)
 	s := openTestStore(t)
 	dataDir := t.TempDir()
-	mgr := NewManager(s, fake.Manager(), dataDir, nil)
+	mgr := NewManager(s, fake.Manager(), dataDir)
 
 	book, chapterID := createBookWithBlocks(t, s, scareQuoteTestBlocks()...)
 	if err := s.SetParagraphScareQuotes(chapterID, map[int]bool{1: true}); err != nil {
@@ -1928,7 +1928,7 @@ func TestManagerFallsBackToIndependentGenerationWhenAlignmentFails(t *testing.T)
 	}
 	s := openTestStore(t)
 	dataDir := t.TempDir()
-	mgr := NewManager(s, fake.Manager(), dataDir, nil)
+	mgr := NewManager(s, fake.Manager(), dataDir)
 
 	book, chapterID := createBookWithBlocks(t, s, scareQuoteTestBlocks()...)
 	if err := s.SetParagraphScareQuotes(chapterID, map[int]bool{1: true}); err != nil {
