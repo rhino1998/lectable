@@ -36,7 +36,7 @@ func oneChapterBook(t *testing.T, s *Store, seriesName string, seriesIndex float
 	if err != nil {
 		t.Fatalf("CreateBook: %v", err)
 	}
-	chapters, err := s.ListChapterSummaries(bookID, "voice-x")
+	chapters, err := s.ListChapterSummaries(bookID, "voice-x", nil)
 	if err != nil {
 		t.Fatalf("ListChapterSummaries: %v", err)
 	}
@@ -44,6 +44,82 @@ func oneChapterBook(t *testing.T, s *Store, seriesName string, seriesIndex float
 		t.Fatalf("expected 1 chapter, got %d", len(chapters))
 	}
 	return bookID, chapters[0].ID
+}
+
+// TestListChapterSummariesSpeakerVoiceOverrides covers the bug where a
+// character's dialogue, already generated and cached under that
+// character's own voice_id (internal/narration.Resolver.ForParagraph, the
+// real generation/playback path), was never counted as "ready" by
+// ListChapterSummaries because it only ever joined paragraph_audio against
+// one shared, book-wide voice_id - undercounting readyCount for any
+// multi-voice book with attributed dialogue, forever, regardless of how
+// much audio was actually generated. Without the overrides argument, only
+// the Narrator paragraph should count; with it, Alice's own voice_id
+// should be picked up too.
+func TestListChapterSummariesSpeakerVoiceOverrides(t *testing.T) {
+	s := openTestStore(t)
+	bookID, chapterID := oneChapterBook(t, s, "", 0,
+		"The room was quiet.", `"Hello there," Alice said.`)
+
+	if err := s.SetParagraphSpeakers(chapterID, map[int]string{1: "Alice"}); err != nil {
+		t.Fatalf("SetParagraphSpeakers: %v", err)
+	}
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatalf("ListParagraphsRaw: %v", err)
+	}
+	if len(paragraphs) != 2 {
+		t.Fatalf("expected 2 paragraphs, got %d", len(paragraphs))
+	}
+	var narratorID, aliceID string
+	for _, p := range paragraphs {
+		switch p.Idx {
+		case 0:
+			narratorID = p.ID
+		case 1:
+			aliceID = p.ID
+		}
+	}
+
+	const bookVoiceID = "book-voice"
+	const aliceVoiceID = "alice-voice"
+	if err := s.SetParagraphReady(narratorID, bookVoiceID, 1.5); err != nil {
+		t.Fatalf("SetParagraphReady(narrator): %v", err)
+	}
+	// Alice's line was generated under her own assigned voice, never the
+	// book's own voiceID - exactly what a character-voice assignment
+	// actually produces.
+	if err := s.SetParagraphReady(aliceID, aliceVoiceID, 1.2); err != nil {
+		t.Fatalf("SetParagraphReady(alice): %v", err)
+	}
+
+	withoutOverrides, err := s.ListChapterSummaries(bookID, bookVoiceID, nil)
+	if err != nil {
+		t.Fatalf("ListChapterSummaries (no overrides): %v", err)
+	}
+	if len(withoutOverrides) != 1 || withoutOverrides[0].ReadyCount != 1 || withoutOverrides[0].ParagraphCount != 2 {
+		t.Fatalf("expected 1/2 ready with no overrides (Alice's own voice_id unmatched), got %+v", withoutOverrides)
+	}
+
+	withOverrides, err := s.ListChapterSummaries(bookID, bookVoiceID, []SpeakerVoice{
+		{Speaker: "Alice", VoiceID: aliceVoiceID},
+	})
+	if err != nil {
+		t.Fatalf("ListChapterSummaries (with overrides): %v", err)
+	}
+	if len(withOverrides) != 1 || withOverrides[0].ReadyCount != 2 || withOverrides[0].ParagraphCount != 2 {
+		t.Fatalf("expected 2/2 ready once Alice's own voice_id is matched via overrides, got %+v", withOverrides)
+	}
+
+	stats, err := s.BookNarrationStats(bookID, bookVoiceID, []SpeakerVoice{
+		{Speaker: "Alice", VoiceID: aliceVoiceID},
+	})
+	if err != nil {
+		t.Fatalf("BookNarrationStats (with overrides): %v", err)
+	}
+	if stats.ReadySeconds != 2.7 {
+		t.Fatalf("expected both paragraphs' 1.5+1.2=2.7 ready seconds counted, got %v", stats.ReadySeconds)
+	}
 }
 
 func TestOpenSeedsDefaultVoice(t *testing.T) {
@@ -389,7 +465,7 @@ func TestQuotesForBooksContextOnlyFromInlineNarration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateBook: %v", err)
 	}
-	chapters, err := s.ListChapterSummaries(bookID, "voice-x")
+	chapters, err := s.ListChapterSummaries(bookID, "voice-x", nil)
 	if err != nil {
 		t.Fatalf("ListChapterSummaries: %v", err)
 	}
@@ -432,7 +508,7 @@ func TestQuotesAndDescriptionsForBooksSingleQuery(t *testing.T) {
 		book1: {0: "Alice", 2: "Carol"},
 		book2: {0: "Alice"},
 	} {
-		chapters, err := s.ListChapterSummaries(bookID, "voice-x")
+		chapters, err := s.ListChapterSummaries(bookID, "voice-x", nil)
 		if err != nil {
 			t.Fatalf("ListChapterSummaries(%s): %v", bookID, err)
 		}
@@ -444,7 +520,7 @@ func TestQuotesAndDescriptionsForBooksSingleQuery(t *testing.T) {
 		book1: {1: {"Bob"}},
 		book2: {1: {"Bob"}},
 	} {
-		chapters, err := s.ListChapterSummaries(bookID, "voice-x")
+		chapters, err := s.ListChapterSummaries(bookID, "voice-x", nil)
 		if err != nil {
 			t.Fatalf("ListChapterSummaries(%s): %v", bookID, err)
 		}
@@ -904,7 +980,7 @@ func TestParagraphEmphasisRoundTripsAndAppliesAtGenerationTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateBook: %v", err)
 	}
-	chapters, err := s.ListChapterSummaries(bookID, "voice-x")
+	chapters, err := s.ListChapterSummaries(bookID, "voice-x", nil)
 	if err != nil {
 		t.Fatalf("ListChapterSummaries: %v", err)
 	}
@@ -974,5 +1050,58 @@ func TestResolveGenerationTextFiltersStaleDeliveryTags(t *testing.T) {
 	want2 := "<|style:shouting|>She walked in and sat down."
 	if got2 != want2 {
 		t.Fatalf("ResolveGenerationText = %q, want the stale tag dropped but the valid one kept: %q", got2, want2)
+	}
+}
+
+// TestClearMusicRegionsResetsPassesMusic is the regression test for a
+// real, observed bug: ClearMusicRegions used to delete music_regions rows
+// only, never touching chapters.passes.music - so a chapter already
+// marked fully scored (SetChapterMusicScored) that then got wiped for a
+// fresh rescore kept reporting Passes.Music == true even with zero
+// regions left. httpapi.scoreChapterMusic's own "resume vs wipe" decision
+// (resumeMusicScoring) branches on exactly that flag, so a stuck true
+// value meant every subsequent rescore attempt re-took the wipe-and-
+// restart-from-paragraph-0 branch instead of ever reaching the resume
+// branch - a chapter whose fresh run itself paused partway (real
+// scheduling contention) could stall hitting the very same pause point on
+// every single retry, no net progress no matter how many times it was
+// retriggered.
+func TestClearMusicRegionsResetsPassesMusic(t *testing.T) {
+	s := openTestStore(t)
+	_, chapterID := oneChapterBook(t, s, "", 0, "Paragraph one.", "Paragraph two.")
+
+	if _, err := s.AppendMusicRegions(chapterID, []MusicRegionInput{{StartIdx: 0, Mood: "calm", Prompt: "calm music"}}, 1); err != nil {
+		t.Fatalf("AppendMusicRegions: %v", err)
+	}
+	if err := s.SetChapterMusicScored(chapterID); err != nil {
+		t.Fatalf("SetChapterMusicScored: %v", err)
+	}
+
+	ch, err := s.GetChapterByID(chapterID)
+	if err != nil {
+		t.Fatalf("GetChapterByID: %v", err)
+	}
+	if !ch.Passes.Music {
+		t.Fatalf("expected Passes.Music true before ClearMusicRegions")
+	}
+
+	if _, err := s.ClearMusicRegions(chapterID); err != nil {
+		t.Fatalf("ClearMusicRegions: %v", err)
+	}
+
+	ch, err = s.GetChapterByID(chapterID)
+	if err != nil {
+		t.Fatalf("GetChapterByID: %v", err)
+	}
+	if ch.Passes.Music {
+		t.Fatalf("expected Passes.Music false after ClearMusicRegions, got true")
+	}
+
+	regions, err := s.ListMusicRegions(chapterID)
+	if err != nil {
+		t.Fatalf("ListMusicRegions: %v", err)
+	}
+	if len(regions) != 0 {
+		t.Fatalf("expected 0 regions after ClearMusicRegions, got %d", len(regions))
 	}
 }

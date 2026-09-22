@@ -3615,20 +3615,31 @@ func (m *Manager) MaybeAdvanceChapterMusic(bookID, chapterID string) {
 // AudioPending) if ctx is canceled between regions - a preempted/paused
 // batch simply gets picked up again by a later MaybeAdvanceChapterMusic
 // call, the same "cooperative pause, not a failure" shape every other
-// batched pass in this package follows; retryEligible already excludes
-// context.Canceled from its own retry decision, so this never wastes a
-// retry attempt on a cancellation. A genuine per-region generation error
-// is deliberately NOT swallowed here - it's returned immediately, which
-// (via handleResult's own retryEligible/requeueCopy path) retries this
-// whole batch, including whatever regions before the failing one already
-// succeeded. That re-generates an already-Ready region's clip needlessly
-// on retry, but harmlessly so (the region's own clip generates fast, the
-// same "generates fast anyway" reasoning behind batching in the first
-// place) - simpler and more robust than threading per-region retry state
-// through a batch, and every region's own Status (Ready/Error) is set by
-// generateMusicRegion itself regardless of whether this call ultimately
-// returns nil or an error, so the DB always ends up correct even if the
-// batch as a whole is eventually reported as a permanent failure.
+// batched pass in this package follows.
+//
+// A single region's own generation failure no longer aborts the rest of
+// the batch the way an earlier version of this function did (return err
+// immediately, relying on handleResult's own retryEligible/requeueCopy to
+// retry the *whole* batch from its own first item). That shape was fine
+// for a small, per-region task, but got statistically much worse once
+// music generation moved to one task per chapter covering every one of
+// its currently-eligible regions at once (splitLongRegions can put 15-20+
+// regions in a single long chapter's own batch): one region hitting a
+// purely transient failure (e.g. ttsworker mid-restart) meant every region
+// after it in dispatch order got zero attempts that round, not just the
+// one that actually failed, and a persistent failure on an early region
+// could burn through the whole task's own maxTaskAttempts budget - three
+// full-batch retries, each one needlessly re-generating every already-
+// Ready region before ever reaching the one still broken - while every
+// later region sat untouched the entire time. generateMusicRegionWithRetry
+// below now retries an individual region's own generation in place (its
+// own bounded maxTaskAttempts budget, independent of every other region's
+// and of this task's own outer retry), logs whatever it ultimately can't
+// recover from, and this loop then moves on to the next region regardless
+// - so one region's bad luck can no longer starve its siblings. Every
+// region's own Status (Ready/Error) is set by generateMusicRegion itself
+// on every attempt, so the DB always ends up correct regardless of how
+// this loop as a whole concludes.
 func (m *Manager) generateChapterMusicBatch(ctx context.Context, bookID, chapterID string, batch []pendingMusicRegion, initialSeedRegionID string) error {
 	prevRegionID := initialSeedRegionID
 	for _, item := range batch {
@@ -3641,12 +3652,65 @@ func (m *Manager) generateChapterMusicBatch(ctx context.Context, bookID, chapter
 				seed = data
 			}
 		}
-		if err := m.generateMusicRegion(ctx, bookID, chapterID, item.region, item.targetDuration, seed); err != nil {
-			return err
+		if err := m.generateMusicRegionWithRetry(ctx, bookID, chapterID, item.region, item.targetDuration, seed); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			// Already logged (and persisted as AudioError) inside
+			// generateMusicRegionWithRetry - move on rather than let this
+			// one region's exhausted retries starve every region after it.
+			continue
 		}
 		prevRegionID = item.region.ID
 	}
 	return nil
+}
+
+// musicRegionRetryDelay is the pause generateMusicRegionWithRetry takes
+// between one region's own failed attempt and its next - long enough to
+// give a crashed/restarting ttsworker (see internal/ttsworker's own
+// watchdog) a real chance to be back up by the next attempt, short enough
+// not to noticeably slow a batch down when the failure is something else
+// entirely (a bad prompt, a genuinely broken request).
+const musicRegionRetryDelay = 2 * time.Second
+
+// generateMusicRegionWithRetry retries generateMusicRegion up to
+// maxTaskAttempts times for region alone - see generateChapterMusicBatch's
+// own doc comment for why this now lives at the individual-region level
+// instead of the whole chapter-batch task retrying from its own first
+// item. A cancellation is never retried (mirrors retryEligible's own
+// exclusion) and returns immediately so the caller's own ctx.Err() check
+// treats this the same cooperative-pause way as everywhere else. Every
+// attempt after the first, and the final permanent failure if every
+// attempt is exhausted, gets its own explicit log line - previously only
+// the outer whole-task failure was ever logged, which (now that a batch
+// can cover 15-20+ regions) made an individual region's own permanent
+// failure easy to lose track of.
+func (m *Manager) generateMusicRegionWithRetry(ctx context.Context, bookID, chapterID string, region store.MusicRegion, targetDuration float64, seed []byte) error {
+	var err error
+	for attempt := 0; attempt < maxTaskAttempts; attempt++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		err = m.generateMusicRegion(ctx, bookID, chapterID, region, targetDuration, seed)
+		if err == nil {
+			return nil
+		}
+		if errors.Is(err, context.Canceled) {
+			return err
+		}
+		if attempt+1 >= maxTaskAttempts {
+			break
+		}
+		log.Printf("jobs: music region %s (chapter %s) generation failed (attempt %d/%d), retrying: %v", region.ID, chapterID, attempt+1, maxTaskAttempts, err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(musicRegionRetryDelay):
+		}
+	}
+	log.Printf("jobs: music region %s (chapter %s) generation permanently failed after %d attempts: %v", region.ID, chapterID, maxTaskAttempts, err)
+	return err
 }
 
 // generateMusicRegion is generateChapterMusicBatch's own per-region work:

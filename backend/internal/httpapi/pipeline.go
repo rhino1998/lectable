@@ -117,7 +117,7 @@ func (s *Server) handlePreprocessBook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
-	chapters, err := s.Store.ListChapterSummaries(book.ID, "")
+	chapters, err := s.Store.ListChapterSummaries(book.ID, "", nil)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

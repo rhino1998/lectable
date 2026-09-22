@@ -528,15 +528,27 @@ var aceStepPoolSize = envIntOr("LECTABLE_AUDIOCPP_ACE_STEP_POOL_SIZE", 1)
 // registerAuxEngines in worker.go) - see docs/models/stable_audio.md in
 // the local audio.cpp checkout. Small/Music by default (not Medium - see
 // Worker.StableAudioMusic's own doc comment for why only the plain
-// text-to-audio path is wired at all), q8_0, pool size 2 - raised from
-// every other family's default of 1 to let two concurrent Stable Audio
-// calls (any mix of its three variations) run without one queuing behind
-// the other.
+// text-to-audio path is wired at all), q8_0.
+//
+// Pool size 1, not 2: confirmed live (two SIGSEGV crashes, both inside
+// audiocpp.(*Session).Run -> audiocpp_session_run, both right after a
+// fresh stable_audio load, both under concurrent Stable Audio traffic -
+// see server.log) that running 2 pooled sessions concurrently against
+// this family segfaults ttsworker - almost certainly the same general
+// class of native audio.cpp bug this repo already has one confirmed,
+// root-caused, locally-patched instance of for a completely different
+// mechanism (higgs_audio_tts's HIP-graph-cache eviction, see
+// backend/CLAUDE.md's "ttsworker / audioworker / llmworker" section) -
+// but this one hasn't been root-caused yet, just contained. Reverted from
+// 2 (which let two concurrent Stable Audio calls run without one queuing
+// behind the other) back to every other family's own default of 1 to
+// unblock; raise it again only once the concurrency bug itself is found
+// and fixed upstream in /home/rhino/audio.cpp.
 var stableAudioMusicModelPath = envOr(
 	"LECTABLE_AUDIOCPP_STABLE_AUDIO_MUSIC_MODEL_PATH",
 	"/home/rhino/audio.cpp/models/Stable-Audio-3-Small-Music-GGUF/stable-audio-3-small-music-q8_0.gguf",
 )
-var stableAudioMusicPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_MUSIC_POOL_SIZE", 2)
+var stableAudioMusicPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_MUSIC_POOL_SIZE", 1)
 
 // stableAudioSFXModelPath/stableAudioSFXPoolSize configure the
 // "stable_audio_sfx" auxEngine - the Small/SFX package, same family/task
@@ -545,11 +557,17 @@ var stableAudioMusicPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_MUSIC_PO
 // task, intended for SFX prompts instead of music prompts" framing) but a
 // genuinely different checkpoint, so it gets its own auxEngine entry/
 // model slot rather than being a request-time switch on one shared engine.
+//
+// Pool size 1 - see stableAudioMusicPoolSize's own doc comment: the
+// confirmed-live concurrent-session SIGSEGV is in the shared
+// "stable_audio" family's own native session/Run path, not anything
+// specific to which checkpoint is loaded, so every stable_audio auxEngine
+// gets the same reduced pool size until it's root-caused.
 var stableAudioSFXModelPath = envOr(
 	"LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_MODEL_PATH",
 	"/home/rhino/audio.cpp/models/Stable-Audio-3-Small-SFX-GGUF/stable-audio-3-small-sfx-q8_0.gguf",
 )
-var stableAudioSFXPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_POOL_SIZE", 2)
+var stableAudioSFXPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_POOL_SIZE", 1)
 
 // stableAudioMediumModelPath/stableAudioMediumPoolSize configure the
 // "stable_audio_medium" auxEngine - the larger Stable Audio 3 Medium
@@ -558,11 +576,17 @@ var stableAudioSFXPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_POOL_S
 // music path" framing for the Medium package), just a bigger DiT - so it
 // gets its own auxEngine entry/model slot the same way stable_audio_sfx
 // does, not a request-time switch on the Small/Music engine.
+//
+// Pool size 1 - this is the checkpoint the two confirmed-live SIGSEGV
+// crashes actually happened against (both under concurrent
+// /stable-audio-medium traffic); see stableAudioMusicPoolSize's own doc
+// comment for why every stable_audio auxEngine gets the same reduction
+// rather than just this one.
 var stableAudioMediumModelPath = envOr(
 	"LECTABLE_AUDIOCPP_STABLE_AUDIO_MEDIUM_MODEL_PATH",
 	"/home/rhino/audio.cpp/models/Stable-Audio-3-Medium-GGUF/stable-audio-3-medium-q8_0.gguf",
 )
-var stableAudioMediumPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_MEDIUM_POOL_SIZE", 2)
+var stableAudioMediumPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_MEDIUM_POOL_SIZE", 1)
 
 var alignerModelPath = envOr(
 	"LECTABLE_ALIGNER_MODEL_PATH",

@@ -965,14 +965,17 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: inline}
 	}
 
-	// HasHigherPriorityWork, checked by AttributeChapter between
-	// batches, is how a long TierBackground run (defaultAttributionTier)
-	// yields to a just-arrived, more urgent task in either pool (typically
-	// an explicit "Regenerate characterization" click, or a reader's own
-	// urgent paragraph) instead of making it wait out however many
-	// batches are left - see jobs.Manager.HasHigherPriorityWork's own doc
-	// comment.
-	speakers, roleNames, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, known, knownDescriptions, knownRoles, inputs, s.Jobs.HasHigherPriorityWork)
+	// nil, not s.Jobs.HasHigherPriorityWork: every LLM pass (attribution,
+	// direction, sfx, pronunciation, music) now runs each dispatched batch
+	// through to completion instead of yielding mid-run - see this
+	// package's own removal-of-pausing note by the direction/sfx/
+	// pronunciation call site in directChapter for the full reasoning
+	// (a whole-book preprocess phase dispatches each chapter's own pass
+	// exactly once, with no automatic retry loop of its own, so a pause
+	// under real contention could leave most of a bulk run's chapters
+	// silently stuck half-done with nothing left in the queue to ever
+	// pick them back up).
+	speakers, roleNames, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, known, knownDescriptions, knownRoles, inputs, nil)
 
 	paragraphByIdx := make(map[int]store.Paragraph, len(all))
 	for _, p := range all {
@@ -1135,7 +1138,9 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote}
 	}
 
-	speakers, roleNames, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, known, knownDescriptions, knownRoles, inputs, s.Jobs.HasHigherPriorityWork)
+	// nil, not s.Jobs.HasHigherPriorityWork - see the first AttributeChapter
+	// call site's own doc comment above.
+	speakers, roleNames, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, known, knownDescriptions, knownRoles, inputs, nil)
 
 	paragraphByIdx := make(map[int]store.Paragraph, len(all))
 	for _, p := range all {
@@ -1418,19 +1423,22 @@ func (s *Server) invalidateParagraphAudio(book *store.Book, paragraphs []store.P
 // chapter level - so the continuation instead carries forward exactly
 // which paragraphs speakerattr itself reported as not yet reached.
 //
-// HasHigherPriorityWork-based pausing matters here specifically because
-// SpeakersPage's "Tag all"/"Tag undirected" buttons (runDirectionAll/
-// runDirectionUndirected) can queue a whole book's worth of chapters at
-// TierBackground at once, the same bulk shape attributeChapter's own
-// pausing was built for - without this, that bulk run could make a
-// just-arrived, more urgent task (an explicit "Regenerate
-// characterization" click, still TierUrgent, or - since this now checks
-// poolGeneration too - a reader's own urgent paragraph) wait out however
-// many chapters/batches are left before this cooperative between-batches
-// check next runs. This is the *only* line of defense for that case now -
-// jobs.Manager no longer force-cancels in-flight background generation
-// work at all (see its own urgentElsewhereQueued doc comment for why), so
-// there's no second, independent mechanism backstopping this one.
+// Every LLM pass below is passed nil, not s.Jobs.HasHigherPriorityWork,
+// for its own shouldPause parameter - pausing used to let a long
+// TierBackground run (SpeakersPage's "Tag all"/"Tag undirected" buttons,
+// runDirectionAll/runDirectionUndirected, can queue a whole book's worth
+// of chapters at once) yield to a just-arrived, more urgent task instead
+// of making it wait out however many chapters/batches were left. Disabled
+// now for a real, observed problem it caused instead: a whole-book
+// preprocess phase (httpapi.preprocessDirectionPhase, the music-scoring
+// pipeline's own identical Phase 5 shape) dispatches each chapter's own
+// pass exactly once, with no automatic retry loop of its own - under real
+// contention (many chapters' worth of these same passes all competing for
+// poolLLM's single shared slot at once), most chapters would pause after
+// just their first batch and never get automatically retried, so the
+// queue could drain to empty while the vast majority of the book was
+// still nowhere near actually tagged. Every dispatched batch now runs
+// straight through to completion instead.
 // clearStaleDirectionTags returns tagged with an explicit "" entry added
 // for every paragraph in paragraphs that this run actually processed
 // (i.e. not left in remaining for a later continuation via onlyIdx) but
@@ -1508,11 +1516,11 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 	// independent storage (Store.SetParagraphSentenceTags/
 	// SetParagraphInlineTags/SetParagraphPronunciation), so there's
 	// nothing for one pass's failure to corrupt in another's output. Each
-	// also independently decides whether to pause (HasHigherPriorityWork,
-	// poolLLM's own single shared slot) and reports its own remaining
-	// paragraphs if it does - the passes can pause at different points, so
-	// the requeue built below carries forward the union of all of them
-	// rather than assuming they align.
+	// also independently reports its own remaining paragraphs if it stops
+	// partway on a genuine error (shouldPause is nil for all three now -
+	// see this function's own doc comment above) - the passes can stop at
+	// different points, so the requeue built below carries forward the
+	// union of all of them rather than assuming they align.
 	//
 	// DirectChapter/TagSfx are Higgs-only (higgsTags): their tag vocabulary
 	// is baked into Higgs's own tokenizer and means nothing to any other
@@ -1529,10 +1537,10 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 		inlineErr         error
 	)
 	if higgsTags {
-		sentenceTags, sentenceRemaining, sentenceErr = s.Speaker.DirectChapter(ctx, book.Title, ch.Title, inputs, s.Jobs.HasHigherPriorityWork)
-		inlineTags, inlineRemaining, inlineErr = s.Speaker.TagSfx(ctx, book.Title, ch.Title, inputs, s.Jobs.HasHigherPriorityWork)
+		sentenceTags, sentenceRemaining, sentenceErr = s.Speaker.DirectChapter(ctx, book.Title, ch.Title, inputs, nil)
+		inlineTags, inlineRemaining, inlineErr = s.Speaker.TagSfx(ctx, book.Title, ch.Title, inputs, nil)
 	}
-	pronunciation, pronunciationRemaining, pronunciationErr := s.Speaker.ResolvePronunciation(ctx, book.Title, ch.Title, inputs, s.Jobs.HasHigherPriorityWork)
+	pronunciation, pronunciationRemaining, pronunciationErr := s.Speaker.ResolvePronunciation(ctx, book.Title, ch.Title, inputs, nil)
 
 	if higgsTags {
 		// A paragraph absent from sentenceTags/inlineTags means "this pass

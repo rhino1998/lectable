@@ -13,20 +13,24 @@ import (
 // validSentenceTags is the "sentence-level" half of Higgs Audio v3 TTS's
 // own inline delivery-tag vocabulary (verified directly against the local
 // Higgs-Audio-v3-TTS-4B-GGUF checkout's own embedded PROMPTING.md and
-// tokenizer.json: 14 emotion (of the model's own full 21 -
+// tokenizer.json: 12 emotion (of the model's own full 21 -
 // <|emotion:longing|>, <|emotion:arousal|>, <|emotion:affection|>,
-// <|emotion:fear|>, <|emotion:contentment|>, <|emotion:confusion|>, and
-// <|emotion:sadness|> are deliberately excluded from this app's own valid
-// set: longing first, then the other six after live use found them
-// unreliable enough in practice - inconsistent, sometimes actively
-// worse-sounding delivery for a given emotion tag - that asking for them
-// was doing more harm than good; see the "Emotion:" line in
-// directionSystemPrompt below) + 2 style (of the model's own 3 -
-// <|style:whispering|> is deliberately excluded too, the same "unreliable
-// enough in practice" reasoning) + 10 prosody + 9 sfx = 35 tags this app
-// actually asks for or accepts, plus 2 undocumented <|env:...|> tokens
-// also present in its vocab) - emotion,
-// style, and prosody's speed/pitch/expressive family, all of which color a
+// <|emotion:fear|>, <|emotion:contentment|>, <|emotion:confusion|>,
+// <|emotion:sadness|>, <|emotion:enthusiasm|>, and <|emotion:elation|> are
+// deliberately excluded from this app's own valid set: longing first,
+// then the other eight after live use found them unreliable enough in
+// practice - inconsistent, sometimes actively worse-sounding delivery for
+// a given emotion tag - that asking for them was doing more harm than
+// good; see the "Emotion:" line in directionSystemPrompt below) + 1 style
+// (of the model's own 3 - <|style:whispering|> and <|style:singing|> are
+// deliberately excluded too, the same "unreliable enough in practice"
+// reasoning) + 8 prosody combined across both passes (6 of this file's own
+// 8 sentence-level ones - <|prosody:pitch_low|> and <|prosody:pitch_high|>
+// deliberately excluded, same reasoning - plus validInlineTags' own 2
+// pause/long_pause, unaffected) + 9 sfx = 30 tags this app actually asks
+// for or accepts, plus 2 undocumented
+// <|env:...|> tokens also present in its vocab) - emotion,
+// style, and prosody's speed/expressive family, all of which color a
 // whole sentence/clause from wherever they're inserted, per the model's
 // own PROMPTING.md.
 // validInlineTags (sfx.go) is the other half - prosody's pause/long_pause
@@ -55,21 +59,16 @@ var validSentenceTags = map[string]bool{
 	"<|emotion:contemplation|>":   true,
 	"<|emotion:determination|>":   true,
 	"<|emotion:disgust|>":         true,
-	"<|emotion:elation|>":         true,
-	"<|emotion:enthusiasm|>":      true,
 	"<|emotion:helplessness|>":    true,
 	"<|emotion:pride|>":           true,
 	"<|emotion:relief|>":          true,
 	"<|emotion:shame|>":           true,
 	"<|emotion:surprise|>":        true,
-	"<|style:singing|>":           true,
 	"<|style:shouting|>":          true,
 	"<|prosody:speed_very_slow|>": true,
 	"<|prosody:speed_slow|>":      true,
 	"<|prosody:speed_fast|>":      true,
 	"<|prosody:speed_very_fast|>": true,
-	"<|prosody:pitch_low|>":       true,
-	"<|prosody:pitch_high|>":      true,
 	"<|prosody:expressive_high|>": true,
 	"<|prosody:expressive_low|>":  true,
 }
@@ -146,16 +145,16 @@ CRITICAL RULE: the text after "<line number>: " must be the line's own original 
 
 A tag is inserted immediately before the sentence, clause, or quoted phrase whose delivery it colors. Most lines need at most one tag, placed at the very start of the line. A longer line whose tone genuinely shifts partway through - dialogue that turns from calm to angry mid-sentence, a quote that starts warm and pivots to fear - may have a second tag inserted right at the point where the shift happens, still leaving every word exactly where it was.
 
-A single position may get more than one tag, back-to-back with nothing between them (e.g. "<|emotion:anger|><|style:shouting|>He slammed the door"), when that moment genuinely has more than one independent quality at once - an emotion together with a vocal style ("<|emotion:awe|><|style:singing|>"), an emotion together with a pacing/pitch cue ("<|emotion:anger|><|prosody:speed_fast|>"), or a style together with a pacing/pitch cue. Only stack tags from genuinely different categories (Emotion, Style, Pacing) this way; never stack two tags from the same category at one position (e.g. two emotions) - pick the single best one for that category instead. When stacking, always order them Emotion, then Style, then Pacing, regardless of the order those qualities occur to you.
+A single position may get more than one tag, back-to-back with nothing between them (e.g. "<|emotion:anger|><|style:shouting|>He slammed the door"), when that moment genuinely has more than one independent quality at once - an emotion together with a vocal style ("<|emotion:awe|><|style:shouting|>"), an emotion together with a pacing cue ("<|emotion:anger|><|prosody:speed_fast|>"), or a style together with a pacing cue. Only stack tags from genuinely different categories (Emotion, Style, Pacing) this way; never stack two tags from the same category at one position (e.g. two emotions) - pick the single best one for that category instead. When stacking, always order them Emotion, then Style, then Pacing, regardless of the order those qualities occur to you.
 
 Only these exact tag strings are valid - copy one verbatim, never invent a new one, never combine two into one, never change the wording inside the pipes:
-Emotion: <|emotion:amusement|>, <|emotion:anger|>, <|emotion:awe|>, <|emotion:bitterness|>, <|emotion:contemplation|>, <|emotion:determination|>, <|emotion:disgust|>, <|emotion:elation|>, <|emotion:enthusiasm|>, <|emotion:helplessness|>, <|emotion:pride|>, <|emotion:relief|>, <|emotion:shame|>, <|emotion:surprise|>
-Style: <|style:singing|>, <|style:shouting|>
-Pacing: <|prosody:speed_very_slow|>, <|prosody:speed_slow|>, <|prosody:speed_fast|>, <|prosody:speed_very_fast|>, <|prosody:pitch_low|>, <|prosody:pitch_high|>, <|prosody:expressive_high|>, <|prosody:expressive_low|>
+Emotion: <|emotion:amusement|>, <|emotion:anger|>, <|emotion:awe|>, <|emotion:bitterness|>, <|emotion:contemplation|>, <|emotion:determination|>, <|emotion:disgust|>, <|emotion:helplessness|>, <|emotion:pride|>, <|emotion:relief|>, <|emotion:shame|>, <|emotion:surprise|>
+Style: <|style:shouting|>
+Pacing: <|prosody:speed_very_slow|>, <|prosody:speed_slow|>, <|prosody:speed_fast|>, <|prosody:speed_very_fast|>, <|prosody:expressive_high|>, <|prosody:expressive_low|>
 
 Rules:
-- For dialogue, base the tag on how the line is actually spoken - the words themselves, any dialogue tag right after it ("she whispered," "he shouted," "Maya said, fighting back tears"), and the surrounding scene. A dialogue tag naming a manner of speaking is strong evidence: "she screamed" -> <|style:shouting|>, "he sang" -> <|style:singing|>.
-- Emotion and Style tags are dialogue-only - never apply either to narration, even a genuinely emotional passage or one describing a shout/whisper/song (any emotion or style tag placed on narration is discarded automatically, so don't spend effort on it). Of the Pacing tags, narration may ONLY ever get <|prosody:expressive_low|> or <|prosody:expressive_high|> (a controlled shift in the narrator's own overall vocal expressiveness) - speed_*/pitch_* tags alter the narrator's consistent voice too much and are likewise discarded automatically if placed on narration, so don't spend effort on those there either. Reserve expressive_low/high for a span whose own delivery genuinely calls for it (e.g. a tense passage read with more expression, a flat/somber passage read with less) - plain descriptive or plot-advancing narration gets no tag at all, even if the scene it's part of is emotional overall.
+- For dialogue, base the tag on how the line is actually spoken - the words themselves, any dialogue tag right after it ("she whispered," "he shouted," "Maya said, fighting back tears"), and the surrounding scene. A dialogue tag naming a manner of speaking is strong evidence: "she screamed" -> <|style:shouting|>.
+- Emotion and Style tags are dialogue-only - never apply either to narration, even a genuinely emotional passage or one describing a shout/whisper/song (any emotion or style tag placed on narration is discarded automatically, so don't spend effort on it). Of the Pacing tags, narration may ONLY ever get <|prosody:expressive_low|> or <|prosody:expressive_high|> (a controlled shift in the narrator's own overall vocal expressiveness) - speed_* tags alter the narrator's consistent voice too much and are likewise discarded automatically if placed on narration, so don't spend effort on those there either. Reserve expressive_low/high for a span whose own delivery genuinely calls for it (e.g. a tense passage read with more expression, a flat/somber passage read with less) - plain descriptive or plot-advancing narration gets no tag at all, even if the scene it's part of is emotional overall.
 - Non-narrative content: a line that isn't really part of the story - a copyright notice, publisher's legal boilerplate, an ISBN, a dedication line ("For my mother"), a table-of-contents entry, an index entry, or a bare epigraph attribution ("-Robert Frost") - gets <|prosody:expressive_low|> at its very start, so it reads in a flatter, more administrative voice than ordinary narration. This is a content-type judgment, not an emotional one: apply it even to a line with no feeling in it at all. But only to genuinely non-narrative material - never to ordinary expository or descriptive prose just because it happens to be calm, and never to the quoted work of an epigraph itself (the poem or line being epigraphed is still narrated normally; only a bare trailing attribution line gets flattened).
 - The bar is high: only tag a span where the emotion/style/pacing/non-narrative judgment is clear and strong, not merely plausible. An ordinary, calm line of dialogue or narration should get no tag - most lines in any chapter get none, and that's expected, not a sign you're being too conservative.
 - Never tag a line just because a character's name or a strong word appears in it - judge the line's own actual delivery, not its topic.
@@ -196,7 +195,7 @@ func (c *Client) directionBatch(ctx context.Context, bookTitle, chapterTitle str
 // either pass's own regex heuristic backstop - addHeuristicSentenceTags/
 // addHeuristicSfxTags) - see restrictNonQuoteTags, which enforces this.
 // Every other tag - every <|emotion:...|>, every <|style:...|>, the
-// speed_*/pitch_* half of prosody, and the crying/screaming/burping/sneeze
+// speed_* half of prosody, and the crying/screaming/burping/sneeze
 // sfx tags - colors a line's delivery a step beyond what the narrator's
 // own consistent voice can take without sounding jarring or "in character"
 // when it isn't; a quiet vocalization (a hum, a sigh, a soft laugh, a

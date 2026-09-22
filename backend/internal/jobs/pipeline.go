@@ -595,7 +595,7 @@ func (m *Manager) EnqueueBookGenerate(bookID string) {
 }
 
 func (m *Manager) enqueueBookGenerate(ctx context.Context, bookID string) {
-	chapters, err := m.store.ListChapterSummaries(bookID, "")
+	chapters, err := m.store.ListChapterSummaries(bookID, "", nil)
 	if err != nil {
 		log.Printf("jobs: generate book %s: list chapters: %v", bookID, err)
 		return

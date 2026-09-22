@@ -117,7 +117,11 @@ func (s *Server) handleGetChapterMusic(w http.ResponseWriter, r *http.Request) {
 // scored region's audio, not whether scoring itself can run. Re-running
 // this for an already-scored chapter re-scores it from scratch
 // (scoreChapterMusic's own Store.ClearMusicRegions), the same "always
-// allow a fresh run" shape the direction-tagging button already has.
+// allow a fresh run" shape the direction-tagging button already has - but
+// re-running (or auto-retriggering, e.g. maybeScoreChapterMusic) a chapter
+// that's only partially scored resumes from where the last attempt left
+// off instead, rather than wiping and redoing that real work; see
+// scoreChapterMusic's own doc comment for why.
 func (s *Server) handleScoreChapterMusic(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
 		writeError(w, http.StatusServiceUnavailable, "background music scoring is not configured (set SPEAKER_LLM_MODEL_PATH)")
@@ -166,44 +170,100 @@ func musicTransitionFromString(s string) store.MusicTransition {
 	return store.MusicTransitionCut
 }
 
+// resumeMusicScoring is scoreChapterMusic's own resume-vs-restart decision,
+// pulled out as a pure function purely so it's cheaply unit-testable
+// without a real Store/Speaker - see scoreChapterMusic's own doc comment
+// for the full reasoning. existing is that chapter's own currently-
+// persisted regions (empty for a true first-ever attempt); alreadyFullyScored
+// is ch.Passes.Music. Returns resumeFrom (the paragraph Idx to start
+// scoring from - 0 means "the very beginning") and wipeExisting (whether
+// the caller should clear existing regions before scoring at all).
+func resumeMusicScoring(existing []store.MusicRegion, alreadyFullyScored bool) (resumeFrom int, wipeExisting bool) {
+	if len(existing) == 0 {
+		return 0, false
+	}
+	if alreadyFullyScored {
+		return 0, true
+	}
+	return existing[len(existing)-1].EndIdx + 1, false
+}
+
 // scoreChapterMusic is the KindMusicScoring task's actual work (see
 // jobs.MusicScoreFunc), supplied as a closure from handleScoreChapterMusic.
-// Always starts from a clean slate (Store.ClearMusicRegions) - a chapter's
-// regions must fully partition its paragraphs with no gaps/overlaps (see
-// store.MusicRegion's own doc comment), so a partial old set can never
-// usefully coexist with a fresh run's own output.
+//
+// Wipes and restarts from scratch (Store.ClearMusicRegions) only for an
+// explicit, deliberate re-score of a chapter that's already fully scored
+// (Passes.Music already true - handleScoreChapterMusic's own doc comment
+// documents this as the "always allow a fresh run" button behavior) -
+// otherwise, a chapter with some already-persisted regions but
+// Passes.Music still false is a genuinely partial run from an earlier
+// interruption, and resumes from just past the last persisted region's
+// own EndIdx instead of wiping and redoing that real, already-completed
+// work.
+//
+// ScoreMusic's own shouldPause parameter is passed nil below (see its own
+// call site) - every LLM pass in this package now runs each dispatched
+// batch through to completion instead of yielding mid-run to
+// higher-priority work (see the direction/sfx/pronunciation call site in
+// characters.go's own doc comment for the full reasoning: a whole-book
+// preprocess phase dispatches each chapter's own pass exactly once, with
+// no automatic retry loop, so routine pausing under real contention left
+// most chapters permanently stuck half-scored with nothing left in the
+// queue to ever finish them). The resume machinery below still matters
+// regardless: a chapter can still be interrupted by a genuine batch error,
+// a task requeue, or the server restarting/crashing mid-run, and without
+// it every one of those would wipe and redo whatever that run had already
+// finished instead of building on it.
+//
+// The resumed run's own first region is forced to "cut" (see
+// musicSystemPrompt's own "always use cut for the very first region"
+// rule, and scoreMusicBoundaries' own identical forced-cut reasoning at a
+// batch seam) - speakerattr.Client.ScoreMusic has no visibility into the
+// previous run's own last region at all in a resumed call, so it can't
+// genuinely judge whether this one continues from it.
 //
 // Persists each batch's regions as speakerattr.Client.ScoreMusic produces
 // them (Store.AppendMusicRegions), not only once the whole chapter
-// finishes - so a pause partway through (s.Jobs.HasHigherPriorityWork,
-// checked between batches) still keeps whatever already scored, and
-// MaybeAdvanceChapterMusic can start generating those regions' own audio
-// immediately rather than waiting for the rest of the chapter to score
-// too. Unlike attributeChapter/directChapter, a pause here is never
-// auto-resumed via a requeue closure - ScoreMusic's own batches carry no
-// cross-batch context (see musicBatchParagraphs' own doc comment), so a
-// later resumed batch picking up mid-chapter would have no more basis for
-// judging its own first region's transition than a fresh run's later
-// batches already do; simplest and most honest to just leave
-// passes.music unset and let a reader-retriggered rescore (which clears
-// and restarts cleanly) finish the job, rather than adding resume
-// machinery that can't actually do better.
+// finishes - so an interrupted run still keeps whatever already scored,
+// and MaybeAdvanceChapterMusic can start generating those regions' own
+// audio immediately rather than waiting for the rest of the chapter to
+// score too. lastCoveredIdx (not simply this chapter's own true last
+// paragraph) is what AppendMusicRegions is told the run's own last region
+// actually ends at - critical for resume to work at all: whenever
+// ScoreMusic's own remaining return value is non-empty (now only a
+// genuine batch error, since shouldPause is nil - see this function's own
+// doc comment above), the true stopping point is whatever paragraph
+// immediately precedes remaining's own first entry,
+// not the chapter's real end. Getting this wrong would silently skip the
+// entire unscored middle of the chapter on the next resume (starting
+// straight from a bogus, too-late resume point) rather than merely being
+// a cosmetic inaccuracy.
 func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
-	oldRegions, err := s.Store.ClearMusicRegions(ch.ID)
+	existing, err := s.Store.ListMusicRegions(ch.ID)
 	if err != nil {
 		return 0, nil, err
 	}
-	// ClearMusicRegions never touches the filesystem itself (see its own
-	// doc comment) - a re-score deletes every region row for this chapter,
-	// including any already-AudioReady one, so their own on-disk clips
-	// are about to become unreachable (a fresh AppendMusicRegions below
-	// hands out new ids, never reusing an old one) - best-effort removal,
-	// same as DeleteChapterAudio's own disk-delete pairing: a clip that
-	// was never actually generated (still pending/generating) simply has
-	// no file to remove, not an error.
-	for _, r := range oldRegions {
-		_ = os.Remove(audiopath.MusicRegionFile(s.DataDir, book.ID, ch.ID, r.ID))
+
+	resumeFrom, wipeExisting := resumeMusicScoring(existing, ch.Passes.Music)
+	if wipeExisting {
+		// Already fully scored - an explicit reader-triggered rescore
+		// wants a genuinely fresh result, not a resume of a run that
+		// already finished once. ClearMusicRegions never touches the
+		// filesystem itself (see its own doc comment) - the region rows
+		// are about to disappear, including any already-AudioReady one,
+		// so their own on-disk clips are about to become unreachable
+		// (AppendMusicRegions below hands out new ids, never reusing an
+		// old one) - best-effort removal, same as DeleteChapterAudio's
+		// own disk-delete pairing: a clip that was never actually
+		// generated simply has no file to remove, not an error.
+		for _, r := range existing {
+			_ = os.Remove(audiopath.MusicRegionFile(s.DataDir, book.ID, ch.ID, r.ID))
+		}
+		if _, err := s.Store.ClearMusicRegions(ch.ID); err != nil {
+			return 0, nil, err
+		}
 	}
+
 	all, err := s.Store.ListParagraphsRaw(ch.ID)
 	if err != nil {
 		return 0, nil, err
@@ -214,14 +274,36 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 		}
 		return 0, nil, nil
 	}
+	toScore := all
+	if resumeFrom > 0 {
+		toScore = nil
+		for _, p := range all {
+			if p.Idx >= resumeFrom {
+				toScore = append(toScore, p)
+			}
+		}
+		if len(toScore) == 0 {
+			// Every paragraph is already covered by a persisted region,
+			// yet Passes.Music was somehow never set - shouldn't happen,
+			// but finish cleanly rather than looping forever on an empty
+			// ScoreMusic call.
+			if err := s.Store.SetChapterMusicScored(ch.ID); err != nil {
+				return 0, nil, err
+			}
+			return 0, nil, nil
+		}
+	}
 
-	inputs := make([]speakerattr.ParagraphInput, len(all))
-	for i, p := range all {
+	inputs := make([]speakerattr.ParagraphInput, len(toScore))
+	for i, p := range toScore {
 		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote}
 	}
 
-	regions, remaining, scoreErr := s.Speaker.ScoreMusic(ctx, book.Title, ch.Title, inputs, s.Jobs.HasHigherPriorityWork)
+	regions, remaining, scoreErr := s.Speaker.ScoreMusic(ctx, book.Title, ch.Title, inputs, nil)
 	if len(regions) > 0 {
+		if resumeFrom > 0 {
+			regions[0].Transition = "cut"
+		}
 		inputRegions := make([]store.MusicRegionInput, len(regions))
 		for i, region := range regions {
 			inputRegions[i] = store.MusicRegionInput{
@@ -231,11 +313,17 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 				Transition: musicTransitionFromString(region.Transition),
 			}
 		}
-		// all is ordered by Idx (ListParagraphsRaw), so its own last entry
-		// is this chapter's real last paragraph - AppendMusicRegions' own
-		// provisional EndIdx for whichever region turns out to be this
-		// batch's last one.
-		if _, serr := s.Store.AppendMusicRegions(ch.ID, inputRegions, all[len(all)-1].Idx); serr != nil {
+		// lastCoveredIdx is this run's own real stopping point - the
+		// chapter's true last paragraph if ScoreMusic finished everything
+		// it was given (remaining empty), or the paragraph immediately
+		// before wherever it paused otherwise. See this function's own
+		// doc comment for why using the chapter's true end unconditionally
+		// here would break resume.
+		lastCoveredIdx := toScore[len(toScore)-1].Idx
+		if len(remaining) > 0 {
+			lastCoveredIdx = remaining[0].Idx - 1
+		}
+		if _, serr := s.Store.AppendMusicRegions(ch.ID, inputRegions, lastCoveredIdx); serr != nil {
 			return 0, nil, serr
 		}
 		// This chapter's narration may already be fully (or partly)
@@ -249,7 +337,7 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 		return len(regions), nil, scoreErr
 	}
 	if len(remaining) > 0 {
-		log.Printf("httpapi: music scoring for chapter %s paused with %d paragraph(s) remaining - retrigger scoring to finish", ch.ID, len(remaining))
+		log.Printf("httpapi: music scoring for chapter %s paused with %d paragraph(s) remaining - will resume from where it left off next time it's triggered", ch.ID, len(remaining))
 		return len(regions), nil, nil
 	}
 	if err := s.Store.SetChapterMusicScored(ch.ID); err != nil {

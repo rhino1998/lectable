@@ -500,14 +500,17 @@ building/running `ttsworker` does, since both now link into that binary.
   only a Go-side prompt/storage/wiring addition. Split along the same
   "sentence-level" vs "inline" line the model's own embedded
   `PROMPTING.md` draws:
-    - `Client.DirectChapter`/`validSentenceTags` (24: 14 `emotion` (of the
+    - `Client.DirectChapter`/`validSentenceTags` (19: 12 `emotion` (of the
       model's own 21 - `<|emotion:longing|>`, `<|emotion:arousal|>`,
       `<|emotion:affection|>`, `<|emotion:fear|>`, `<|emotion:contentment|>`,
-      `<|emotion:confusion|>`, and `<|emotion:sadness|>` are deliberately
-      excluded from this app's own valid set, found unreliable enough in
-      practice to do more harm than good) + 2 `style` (of the model's own 3
-      - `<|style:whispering|>` is deliberately excluded too, same
-      reasoning) + 8 `prosody` speed/pitch/expressive) - each colors a whole
+      `<|emotion:confusion|>`, `<|emotion:sadness|>`, `<|emotion:enthusiasm|>`,
+      and `<|emotion:elation|>` are deliberately excluded from this app's
+      own valid set, found unreliable enough in practice to do more harm
+      than good) + 1 `style` (of the model's own 3 - `<|style:whispering|>`
+      and `<|style:singing|>` are deliberately excluded too, same
+      reasoning) + 6 `prosody` speed/expressive (of the model's own 8
+      sentence-level ones - `<|prosody:pitch_low|>`/`<|prosody:pitch_high|>`
+      deliberately excluded too, same reasoning)) - each colors a whole
       sentence/clause from wherever it's inserted; more than one can land
       in a single paragraph if the tone genuinely shifts partway through.
       `<|prosody:expressive_low|>` also has a second, non-emotional
@@ -520,7 +523,7 @@ building/running `ttsworker` does, since both now link into that binary.
       quoted one - only `<|sfx:humming/sigh/laughter/cough/sniff|>`,
       `<|prosody:pause/long_pause|>`, or
       `<|prosody:expressive_low/high|>` - never `<|emotion:*|>`,
-      `<|style:*|>`, `<|prosody:speed_*/pitch_*|>`, or
+      `<|style:*|>`, `<|prosody:speed_*|>`, or
       `<|sfx:crying/screaming/burping/sneeze|>`, since those alter the
       narrator's own consistent voice too much. `store.Paragraph.IsQuote`
       is what distinguishes the two, enforced in Go, not just asked for in
@@ -576,7 +579,7 @@ building/running `ttsworker` does, since both now link into that binary.
 
   `directionSystemPrompt` documents that a single position may carry more
   than one tag of different kinds at once (e.g.
-  `<|emotion:awe|><|style:singing|>`) - never two from the same
+  `<|emotion:awe|><|style:shouting|>`) - never two from the same
   category. `deliverytags.Merge`'s stable sort keeps insertions at the
   same offset in whatever order they were appended, so callers append in
   Emotion-then-Style-then-Pacing order to get that convention right;

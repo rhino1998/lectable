@@ -109,7 +109,7 @@ func createBookAndChapter(t *testing.T, s *store.Store, seriesName string, serie
 	if err != nil || book == nil {
 		t.Fatalf("GetBook: %v", err)
 	}
-	chapters, err := s.ListChapterSummaries(bookID, "unused-voice-id")
+	chapters, err := s.ListChapterSummaries(bookID, "unused-voice-id", nil)
 	if err != nil || len(chapters) != 1 {
 		t.Fatalf("ListChapterSummaries: %v (chapters=%d)", err, len(chapters))
 	}
@@ -132,7 +132,7 @@ func createBookWithBlocks(t *testing.T, s *store.Store, blocks ...store.BlockInp
 	if err != nil || book == nil {
 		t.Fatalf("GetBook: %v", err)
 	}
-	chapters, err := s.ListChapterSummaries(bookID, "unused-voice-id")
+	chapters, err := s.ListChapterSummaries(bookID, "unused-voice-id", nil)
 	if err != nil || len(chapters) != 1 {
 		t.Fatalf("ListChapterSummaries: %v (chapters=%d)", err, len(chapters))
 	}

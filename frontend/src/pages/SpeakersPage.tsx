@@ -34,6 +34,7 @@ import {
   useGenerateCharacterVoices,
   useGeneratingChapters,
   useMergeCharacter,
+  usePreprocessBook,
   useReattributeSpeaker,
   useReattributingSpeakers,
   useRegenerateCharacterVoices,
@@ -83,6 +84,7 @@ export function SpeakersPage() {
   const speakersQuery = useSpeakers(bookId)
   const builtinsQuery = useVoicePresets()
   const customPresetsQuery = useCustomVoicePresets()
+  const preprocessBook = usePreprocessBook()
   const attributeSpeakers = useAttributeSpeakers(bookId)
   const retagDescriptions = useRetagDescriptions(bookId)
   const retagScareQuotes = useRetagScareQuotes(bookId)
@@ -530,6 +532,18 @@ export function SpeakersPage() {
     })
   }
 
+  // Same "run everything" meta-task as the library page's own Preprocess
+  // button (attribution -> characterization -> voice provisioning ->
+  // direction tagging, POST .../preprocess) - offered here too since a
+  // reader already on this page tuning character voices is a natural
+  // place to kick it off, without having to go back to the library grid.
+  const handlePreprocess = () => {
+    preprocessBook.mutate(bookId, {
+      onError: (err) =>
+        alert(err instanceof ApiError ? err.message : 'Could not start preprocessing'),
+    })
+  }
+
   return (
     <div className="speakers-page">
       <div className="library-header">
@@ -537,9 +551,19 @@ export function SpeakersPage() {
           <h1>Speakers</h1>
           <p className="muted">{book.title}</p>
         </div>
-        <Link to="/books/$bookId" params={{ bookId }} className="text-button">
-          ← Back to book
-        </Link>
+        <div className="speakers-roster-actions">
+          <button
+            className="text-button"
+            onClick={handlePreprocess}
+            disabled={book.preprocessing || preprocessBook.isPending}
+            title="Preprocess: attribute speakers, characterize, provision voices, and tag directions for the whole book"
+          >
+            {book.preprocessing ? 'Preprocessing…' : 'Preprocess'}
+          </button>
+          <Link to="/books/$bookId" params={{ bookId }} className="text-button">
+            ← Back to book
+          </Link>
+        </div>
       </div>
 
       <section className="speakers-multivoice">

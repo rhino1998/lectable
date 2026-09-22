@@ -288,7 +288,7 @@ func (c *Client) scoreMusicBoundaries(ctx context.Context, bookTitle, chapterTit
 		out = append(out, regions...)
 		start = end
 	}
-	return mergeShortRegions(out), remaining, nil
+	return splitLongRegions(mergeShortRegions(out), paragraphs), remaining, nil
 }
 
 // minRegionParagraphs is mergeShortRegions' own floor on a region's own
@@ -348,6 +348,81 @@ func mergeShortRegions(regions []musicBoundary) []musicBoundary {
 		out = append(out, r)
 	}
 	out = append(out, regions[len(regions)-1])
+	return out
+}
+
+// maxRegionParagraphs caps how many logical paragraphs (a non-Inline
+// paragraph plus every Inline continuation folded onto it - the one
+// "complete narrated beat" the model is shown as a single numbered line,
+// see musicSystemPrompt's own doc comment) a single region may span before
+// splitLongRegions deterministically splits it, regardless of what the
+// model itself judged. mergeShortRegions' own minRegionParagraphs is the
+// floor this is the ceiling for - musicSystemPrompt's own "prefer far
+// fewer, far longer regions" guidance has no upper limit of its own, and a
+// single long, tonally-uniform stretch (one unbroken scene, a long stretch
+// of narration) can legitimately produce one very long region under it. A
+// long region costs more than just a long piece of music: pass 2's own
+// describeMusicRegion call has to read that whole span in one go, and - a
+// real, observed problem this constant exists to bound - a chapter whose
+// own regions run long enough takes long enough to fully score that a
+// higher-priority poolLLM task showing up mid-run (HasHigherPriorityWork)
+// pauses it before AppendMusicRegions ever persists anything past whatever
+// region was in progress, and (see scoreChapterMusic's own doc comment)
+// every retry starts over from paragraph 0 - so a chapter stuck with a few
+// very long regions can end up making close to zero net progress, retry
+// after retry, on a busy box. Smaller, more numerous regions checkpoint
+// (AppendMusicRegions persists per pass-1 batch) more often, so a pause
+// loses less work regardless of retry behavior.
+const maxRegionParagraphs = 10
+
+// splitLongRegions deterministically inserts a "continuation" boundary
+// after every maxRegionParagraphs-th logical paragraph within any region
+// that would otherwise run longer than that - a hard ceiling layered on
+// top of whatever scoreMusicBoundaries/mergeShortRegions already decided,
+// counted in the same logical-paragraph units musicSystemPrompt's own
+// numbered listing uses (an Inline paragraph is never itself a candidate
+// split point - see musicSystemPrompt's own "never start a region on an
+// Inline line" rule, the same reason parseMusicBoundaries already keeps a
+// hallucinated startIdx off one). Runs after mergeShortRegions, not
+// before: splitting first and merging second would risk mergeShortRegions
+// immediately folding a deterministically-split remainder back into its
+// own predecessor if that remainder came out shorter than
+// minRegionParagraphs, silently undoing the split it was never supposed
+// to touch. A split is always "continuation", never "cut" - a length cap
+// isn't a real musical event, and (see musicSystemPrompt's own doc
+// comment on why "cut" is deliberately rare) forcing one here would be
+// exactly the kind of choppy, unwarranted hard cross-fade this whole
+// package's transition bias exists to avoid.
+func splitLongRegions(regions []musicBoundary, paragraphs []ParagraphInput) []musicBoundary {
+	if len(regions) == 0 || len(paragraphs) == 0 {
+		return regions
+	}
+	logicalStarts := make([]int, 0, len(paragraphs))
+	for _, p := range paragraphs {
+		if !p.Inline {
+			logicalStarts = append(logicalStarts, p.Idx)
+		}
+	}
+	lastIdx := paragraphs[len(paragraphs)-1].Idx
+
+	out := make([]musicBoundary, 0, len(regions))
+	for i, r := range regions {
+		regionEnd := lastIdx
+		if i+1 < len(regions) {
+			regionEnd = regions[i+1].StartIdx - 1
+		}
+		out = append(out, r)
+		count := 0
+		for _, idx := range logicalStarts {
+			if idx < r.StartIdx || idx > regionEnd {
+				continue
+			}
+			count++
+			if count > 1 && (count-1)%maxRegionParagraphs == 0 {
+				out = append(out, musicBoundary{StartIdx: idx, Transition: "continuation"})
+			}
+		}
+	}
 	return out
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/epub"
+	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
 
@@ -145,19 +146,67 @@ func toBookSummary(b store.Book, chapters []store.ChapterSummary, stats store.Na
 // per-voice - a different voice for the same book has its own, separately
 // cached generation progress.
 func (s *Server) buildBookSummary(b store.Book) (bookSummaryDTO, []store.ChapterSummary, error) {
-	voiceID := store.VoiceID(b.VoicePresetID, b.VoiceInstruct, b.VoiceLanguage)
-
-	chapters, err := s.Store.ListChapterSummaries(b.ID, voiceID)
+	bookVoice, err := s.Narration.BookVoice(&b)
 	if err != nil {
 		return bookSummaryDTO{}, nil, err
 	}
-	stats, err := s.Store.BookNarrationStats(b.ID, voiceID)
+	voiceID := bookVoice.VoiceID()
+
+	overrides, err := s.characterVoiceOverrides(&b, bookVoice)
+	if err != nil {
+		return bookSummaryDTO{}, nil, err
+	}
+
+	chapters, err := s.Store.ListChapterSummaries(b.ID, voiceID, overrides)
+	if err != nil {
+		return bookSummaryDTO{}, nil, err
+	}
+	stats, err := s.Store.BookNarrationStats(b.ID, voiceID, overrides)
 	if err != nil {
 		return bookSummaryDTO{}, nil, err
 	}
 	dto := toBookSummary(b, chapters, stats)
 	dto.Preprocessing = s.isPreprocessing(b.ID)
 	return dto, chapters, nil
+}
+
+// characterVoiceOverrides resolves book's own character roster into
+// ListChapterSummaries/BookNarrationStats' SpeakerVoice form - one entry
+// per character, each mapping their name (exactly what paragraphs.speaker
+// stores for their dialogue) to their own fully-resolved voice_id, the
+// same resolution internal/narration.Resolver.ForParagraph/handleGetChapter
+// already apply per paragraph. nil for a book with book.MultiVoice() off -
+// every paragraph narrates in bookVoice regardless of speaker, so there's
+// nothing to override and callers should skip the extra JOIN entirely.
+func (s *Server) characterVoiceOverrides(book *store.Book, bookVoice narration.ResolvedVoice) ([]store.SpeakerVoice, error) {
+	if !book.MultiVoice() {
+		return nil, nil
+	}
+	characters, err := s.Store.ListCharacters(store.SeriesScope(book))
+	if err != nil {
+		return nil, err
+	}
+	if len(characters) == 0 {
+		return nil, nil
+	}
+	characterIDs := make([]string, len(characters))
+	for i, c := range characters {
+		characterIDs[i] = c.ID
+	}
+	cloneModel := narration.EffectiveCloneModel(bookVoice)
+	presetIDByChar, err := s.Store.CharacterVoicesForModel(characterIDs, cloneModel)
+	if err != nil {
+		return nil, err
+	}
+	overrides := make([]store.SpeakerVoice, len(characters))
+	for i, c := range characters {
+		resolved, err := s.Narration.ResolveCharacterVoice(book, bookVoice, c, cloneModel, presetIDByChar[c.ID])
+		if err != nil {
+			return nil, err
+		}
+		overrides[i] = store.SpeakerVoice{Speaker: c.Name, VoiceID: resolved.VoiceID()}
+	}
+	return overrides, nil
 }
 
 func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
@@ -306,15 +355,34 @@ func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bookVoices := make([]store.BookVoice, len(books))
+	var overrides []store.BookSpeakerVoice
 	for i, b := range books {
-		bookVoices[i] = store.BookVoice{BookID: b.ID, VoiceID: store.VoiceID(b.VoicePresetID, b.VoiceInstruct, b.VoiceLanguage)}
+		resolved, err := s.Narration.BookVoice(&b)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		bookVoices[i] = store.BookVoice{BookID: b.ID, VoiceID: resolved.VoiceID()}
+
+		// Only a MultiVoice book with an actual character roster pays for
+		// this - characterVoiceOverrides short-circuits to nil otherwise,
+		// so most libraries never issue these extra (small, character-table-
+		// scoped, not paragraph-scoped) queries at all.
+		bookOverrides, err := s.characterVoiceOverrides(&b, resolved)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, ov := range bookOverrides {
+			overrides = append(overrides, store.BookSpeakerVoice{BookID: b.ID, Speaker: ov.Speaker, VoiceID: ov.VoiceID})
+		}
 	}
-	chaptersByBook, err := s.Store.ListChapterSummariesForBooks(bookVoices)
+	chaptersByBook, err := s.Store.ListChapterSummariesForBooks(bookVoices, overrides)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	statsByBook, err := s.Store.BookNarrationStatsForBooks(bookVoices)
+	statsByBook, err := s.Store.BookNarrationStatsForBooks(bookVoices, overrides)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

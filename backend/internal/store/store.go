@@ -944,21 +944,73 @@ func (s *Store) UpdatePosition(bookID string, chapterIdx, paragraphIdx int, seco
 	return err
 }
 
+// SpeakerVoice pairs a paragraph's speaker attribution with its own
+// resolved voice_id, letting ListChapterSummaries/BookNarrationStats count
+// readiness per-paragraph-voice instead of assuming every paragraph in the
+// book shares its one book-level voice - true only when Book.MultiVoice is
+// off or no character has an assigned voice yet. store can't resolve this
+// itself (internal/narration, which owns that resolution chain - built-in
+// vs. custom presets, CharacterVoiceMode fallbacks, per-clone-model
+// assignment - already imports store, so the reverse would cycle); the
+// caller (httpapi) resolves it once per character and passes the result
+// in. A paragraph whose speaker isn't in the list (empty, "Narrator", or
+// simply unmatched) falls back to the book's own voiceID, same as before
+// this existed. Empty overrides (the common, non-multi-voice case) skips
+// the extra JOIN below entirely and costs nothing over the old query.
+type SpeakerVoice struct {
+	Speaker string
+	VoiceID string
+}
+
+// speakerVoiceValues builds a `VALUES (?, ?), (?, ?), ...` fragment plus
+// its matching args, mirroring bookVoiceValues below but keyed by speaker
+// name instead of book id.
+func speakerVoiceValues(overrides []SpeakerVoice) (fragment string, args []any) {
+	rows := make([]string, len(overrides))
+	args = make([]any, 0, len(overrides)*2)
+	for i, ov := range overrides {
+		rows[i] = "(?, ?)"
+		args = append(args, ov.Speaker, ov.VoiceID)
+	}
+	return strings.Join(rows, ", "), args
+}
+
 // ListChapterSummaries reports, per chapter, how many of its paragraphs
-// have ready audio *for voiceID specifically* - a chapter fully generated
-// under one voice shows as not-yet-generated when a different voice is
-// selected, since that voice's audio doesn't exist yet.
-func (s *Store) ListChapterSummaries(bookID, voiceID string) ([]ChapterSummary, error) {
-	rows, err := s.db.Query(`
-		SELECT c.id, c.book_id, c.idx, c.title, c.passes,
-			COUNT(p.id) AS total,
-			COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
-		FROM chapters c
-		LEFT JOIN paragraphs p ON p.chapter_id = c.id
-		LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = ?
-		WHERE c.book_id = ?
-		GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
-		ORDER BY c.idx ASC`, voiceID, bookID)
+// have ready audio *for voiceID specifically* (or, for a paragraph whose
+// speaker appears in overrides, for that speaker's own resolved voice
+// instead - see SpeakerVoice) - a chapter fully generated under one voice
+// shows as not-yet-generated when a different voice is selected, since
+// that voice's audio doesn't exist yet.
+func (s *Store) ListChapterSummaries(bookID, voiceID string, overrides []SpeakerVoice) ([]ChapterSummary, error) {
+	var rows *sql.Rows
+	var err error
+	if len(overrides) == 0 {
+		rows, err = s.db.Query(`
+			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
+				COUNT(p.id) AS total,
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
+			FROM chapters c
+			LEFT JOIN paragraphs p ON p.chapter_id = c.id
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = ?
+			WHERE c.book_id = ?
+			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
+			ORDER BY c.idx ASC`, voiceID, bookID)
+	} else {
+		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
+		args := append(append([]any{}, valuesArgs...), voiceID, bookID)
+		rows, err = s.db.Query(`
+			WITH speaker_voice(speaker, voice_id) AS (VALUES `+valuesFragment+`)
+			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
+				COUNT(p.id) AS total,
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
+			FROM chapters c
+			LEFT JOIN paragraphs p ON p.chapter_id = c.id
+			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(sv.voice_id, ?)
+			WHERE c.book_id = ?
+			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
+			ORDER BY c.idx ASC`, args...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -984,6 +1036,15 @@ type BookVoice struct {
 	VoiceID string
 }
 
+// BookSpeakerVoice is BookVoice's per-character counterpart for the batch
+// queries below - SpeakerVoice plus a BookID, since speaker names aren't
+// globally unique across an unrelated book/series.
+type BookSpeakerVoice struct {
+	BookID  string
+	Speaker string
+	VoiceID string
+}
+
 // bookVoiceValues builds a `VALUES (?, ?), (?, ?), ...` fragment plus its
 // matching args, shared by the two batch queries below.
 func bookVoiceValues(bookVoices []BookVoice) (fragment string, args []any) {
@@ -992,6 +1053,19 @@ func bookVoiceValues(bookVoices []BookVoice) (fragment string, args []any) {
 	for i, bv := range bookVoices {
 		rows[i] = "(?, ?)"
 		args = append(args, bv.BookID, bv.VoiceID)
+	}
+	return strings.Join(rows, ", "), args
+}
+
+// bookSpeakerVoiceValues is bookVoiceValues' per-character counterpart,
+// building a `VALUES (?, ?, ?), ...` fragment (book_id, speaker, voice_id)
+// for the batch queries' own speaker_voice CTE.
+func bookSpeakerVoiceValues(overrides []BookSpeakerVoice) (fragment string, args []any) {
+	rows := make([]string, len(overrides))
+	args = make([]any, 0, len(overrides)*3)
+	for i, ov := range overrides {
+		rows[i] = "(?, ?, ?)"
+		args = append(args, ov.BookID, ov.Speaker, ov.VoiceID)
 	}
 	return strings.Join(rows, ", "), args
 }
@@ -1008,24 +1082,47 @@ func bookVoiceValues(bookVoices []BookVoice) (fragment string, args []any) {
 // chapters/paragraphs/paragraph_audio, not one scan per book. Returns a map
 // keyed by book id, each chapter list already in idx order; a book with no
 // chapters is simply absent.
-func (s *Store) ListChapterSummariesForBooks(bookVoices []BookVoice) (map[string][]ChapterSummary, error) {
+// overrides is BookSpeakerVoice's flattened form (see SpeakerVoice's own
+// doc comment) - empty for a book with no multi-voice character
+// assignments, so most libraries pay nothing extra over the old query.
+func (s *Store) ListChapterSummariesForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string][]ChapterSummary, error) {
 	out := make(map[string][]ChapterSummary, len(bookVoices))
 	if len(bookVoices) == 0 {
 		return out, nil
 	}
-	valuesFragment, args := bookVoiceValues(bookVoices)
+	bvFragment, bvArgs := bookVoiceValues(bookVoices)
 
-	rows, err := s.db.Query(`
-		WITH book_voice(book_id, voice_id) AS (VALUES `+valuesFragment+`)
-		SELECT c.id, c.book_id, c.idx, c.title, c.passes,
-			COUNT(p.id) AS total,
-			COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
-		FROM chapters c
-		JOIN book_voice bv ON bv.book_id = c.book_id
-		LEFT JOIN paragraphs p ON p.chapter_id = c.id
-		LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = bv.voice_id
-		GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
-		ORDER BY c.book_id, c.idx ASC`, args...)
+	var rows *sql.Rows
+	var err error
+	if len(overrides) == 0 {
+		rows, err = s.db.Query(`
+			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`)
+			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
+				COUNT(p.id) AS total,
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
+			FROM chapters c
+			JOIN book_voice bv ON bv.book_id = c.book_id
+			LEFT JOIN paragraphs p ON p.chapter_id = c.id
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = bv.voice_id
+			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
+			ORDER BY c.book_id, c.idx ASC`, bvArgs...)
+	} else {
+		svFragment, svArgs := bookSpeakerVoiceValues(overrides)
+		args := append(append([]any{}, bvArgs...), svArgs...)
+		rows, err = s.db.Query(`
+			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`),
+				speaker_voice(book_id, speaker, voice_id) AS (VALUES `+svFragment+`)
+			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
+				COUNT(p.id) AS total,
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
+			FROM chapters c
+			JOIN book_voice bv ON bv.book_id = c.book_id
+			LEFT JOIN paragraphs p ON p.chapter_id = c.id
+			LEFT JOIN speaker_voice sv ON sv.book_id = c.book_id AND sv.speaker = p.speaker
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(sv.voice_id, bv.voice_id)
+			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
+			ORDER BY c.book_id, c.idx ASC`, args...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1042,27 +1139,48 @@ func (s *Store) ListChapterSummariesForBooks(bookVoices []BookVoice) (map[string
 }
 
 // BookNarrationStatsForBooks is BookNarrationStats' batch counterpart - see
-// ListChapterSummariesForBooks's doc comment for why. A book with no
-// paragraphs is simply absent from the returned map; callers should treat
-// that the same as a zero-value NarrationStats.
-func (s *Store) BookNarrationStatsForBooks(bookVoices []BookVoice) (map[string]NarrationStats, error) {
+// ListChapterSummariesForBooks's doc comment for why (both overrides and
+// the batching itself). A book with no paragraphs is simply absent from
+// the returned map; callers should treat that the same as a zero-value
+// NarrationStats.
+func (s *Store) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string]NarrationStats, error) {
 	out := make(map[string]NarrationStats, len(bookVoices))
 	if len(bookVoices) == 0 {
 		return out, nil
 	}
-	valuesFragment, args := bookVoiceValues(bookVoices)
+	bvFragment, bvArgs := bookVoiceValues(bookVoices)
 
-	rows, err := s.db.Query(`
-		WITH book_voice(book_id, voice_id) AS (VALUES `+valuesFragment+`)
-		SELECT c.book_id,
-			COALESCE(SUM(LENGTH(p.content)), 0),
-			COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
-		FROM chapters c
-		JOIN book_voice bv ON bv.book_id = c.book_id
-		JOIN paragraphs p ON p.chapter_id = c.id
-		LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = bv.voice_id
-		GROUP BY c.book_id`, args...)
+	var rows *sql.Rows
+	var err error
+	if len(overrides) == 0 {
+		rows, err = s.db.Query(`
+			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`)
+			SELECT c.book_id,
+				COALESCE(SUM(LENGTH(p.content)), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
+			FROM chapters c
+			JOIN book_voice bv ON bv.book_id = c.book_id
+			JOIN paragraphs p ON p.chapter_id = c.id
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = bv.voice_id
+			GROUP BY c.book_id`, bvArgs...)
+	} else {
+		svFragment, svArgs := bookSpeakerVoiceValues(overrides)
+		args := append(append([]any{}, bvArgs...), svArgs...)
+		rows, err = s.db.Query(`
+			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`),
+				speaker_voice(book_id, speaker, voice_id) AS (VALUES `+svFragment+`)
+			SELECT c.book_id,
+				COALESCE(SUM(LENGTH(p.content)), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
+			FROM chapters c
+			JOIN book_voice bv ON bv.book_id = c.book_id
+			JOIN paragraphs p ON p.chapter_id = c.id
+			LEFT JOIN speaker_voice sv ON sv.book_id = c.book_id AND sv.speaker = p.speaker
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(sv.voice_id, bv.voice_id)
+			GROUP BY c.book_id`, args...)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1120,23 +1238,58 @@ func (s *Store) SetChapterMusicScored(chapterID string) error {
 	return err
 }
 
-// ClearMusicRegions deletes every music_regions row for chapterID - called
-// once, up front, by httpapi.scoreChapterMusic before a (re)scoring run
-// starts: a chapter's regions must always fully partition its paragraphs
-// with no gaps/overlaps, so a partial old set can never usefully coexist
-// with a fresh run's own output the way, say, tts_tags accumulates
-// incrementally across reruns. Returns whatever existed before deleting
-// (same "read before delete, return refs" shape
-// DeleteParagraphAudioForSpeaker below already uses) so the caller can
-// remove each region's own on-disk audio file - this package never
-// touches the filesystem itself, see DeleteChapterAudio's own doc comment
-// for that DB-delete/disk-delete split.
+// ClearMusicRegions deletes every music_regions row for chapterID and
+// clears the chapter's own passes.music flag back to unset (same
+// json_merge_patch-null-deletes-the-key pattern ResetBookAttribution's own
+// bulk equivalent uses) - called once, up front, by
+// httpapi.scoreChapterMusic's own wipeExisting branch before a (re)scoring
+// run starts on a chapter that's already fully scored: a chapter's regions
+// must always fully partition its paragraphs with no gaps/overlaps, so a
+// partial old set can never usefully coexist with a fresh run's own output
+// the way, say, tts_tags accumulates incrementally across reruns.
+//
+// The passes.music reset is not just tidiness: scoreChapterMusic only
+// takes its "wipe and restart from paragraph 0" branch when
+// ch.Passes.Music is already true (resumeMusicScoring's own
+// alreadyFullyScored case) - its own "resume from the last persisted
+// region" branch, the one that actually accumulates progress across
+// retries, only ever triggers when passes.music is still false. Before
+// this reset existed, a fresh run dispatched from here that itself paused
+// partway (e.g. real scheduling contention - s.Jobs.HasHigherPriorityWork,
+// checked between ScoreMusic's own batches) left the chapter with a
+// leftover true flag and only its own newest partial region: every later
+// rescore attempt would see that same still-true flag, take this same
+// wipe-and-restart-from-0 branch again, and could stall hitting the same
+// pause point every single time - zero net progress across retries no
+// matter how many times it's retriggered, the exact failure mode
+// scoreChapterMusic's own resume path exists to prevent, just reached via
+// this wipe branch instead of the original always-wipe design it replaced.
+//
+// Returns whatever existed before deleting (same "read before delete,
+// return refs" shape DeleteParagraphAudioForSpeaker below already uses) so
+// the caller can remove each region's own on-disk audio file - this
+// package never touches the filesystem itself, see DeleteChapterAudio's
+// own doc comment for that DB-delete/disk-delete split.
 func (s *Store) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 	regions, err := s.ListMusicRegions(chapterID)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.db.Exec(`DELETE FROM music_regions WHERE chapter_id = ?`, chapterID); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM music_regions WHERE chapter_id = ?`, chapterID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(
+		`UPDATE chapters SET passes = json_merge_patch(passes, '{"music": null}') WHERE id = ?`,
+		chapterID,
+	); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return regions, nil
@@ -1158,12 +1311,15 @@ func (s *Store) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 // it once at write time is cheaper than recomputing it on every list).
 // Within this one batch, a region's EndIdx is simply its own next
 // sibling's StartIdx minus one; regions[len(regions)-1] instead gets
-// lastParagraphIdx (the chapter's own real last paragraph, which the
-// caller already has in hand - see httpapi.scoreChapterMusic) as a
-// provisional value, since whether anything comes after it depends on
-// whether a *later* batch gets appended too. If one does, that later
-// call's own first step fixes this batch's own last region back up to the
-// real boundary, before inserting anything new - see the UPDATE below.
+// lastParagraphIdx as a provisional value - the chapter's own real last
+// paragraph if this call's caller (httpapi.scoreChapterMusic) covered the
+// chapter all the way to its own end, or wherever that call's own attempt
+// actually stopped otherwise (a pause partway through, resumed by a later
+// call rather than restarted - see scoreChapterMusic's own doc comment),
+// since whether anything comes after it depends on whether a *later*
+// batch gets appended too. If one does, that later call's own first step
+// fixes this batch's own last region back up to the real boundary, before
+// inserting anything new - see the UPDATE below.
 func (s *Store) AppendMusicRegions(chapterID string, regions []MusicRegionInput, lastParagraphIdx int) ([]MusicRegion, error) {
 	if len(regions) == 0 {
 		return nil, nil
@@ -3015,19 +3171,38 @@ type NarrationStats struct {
 // BookNarrationStats is scoped to voiceID because narration pace is
 // voice-specific (different presets/instructs speak at different speeds) -
 // mixing another voice's generated seconds in would miscalibrate the
-// estimate for the one currently selected.
-func (s *Store) BookNarrationStats(bookID, voiceID string) (NarrationStats, error) {
+// estimate for the one currently selected. overrides is ListChapterSummaries'
+// own SpeakerVoice mechanism, for the same per-character-voice reason.
+func (s *Store) BookNarrationStats(bookID, voiceID string, overrides []SpeakerVoice) (NarrationStats, error) {
 	var stats NarrationStats
-	err := s.db.QueryRow(`
-		SELECT
-			COALESCE(SUM(LENGTH(p.content)), 0),
-			COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
-		FROM paragraphs p
-		JOIN chapters c ON c.id = p.chapter_id
-		LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = ?
-		WHERE c.book_id = ?`, voiceID, bookID).
-		Scan(&stats.TotalChars, &stats.ReadyChars, &stats.ReadySeconds)
+	var err error
+	if len(overrides) == 0 {
+		err = s.db.QueryRow(`
+			SELECT
+				COALESCE(SUM(LENGTH(p.content)), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
+			FROM paragraphs p
+			JOIN chapters c ON c.id = p.chapter_id
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = ?
+			WHERE c.book_id = ?`, voiceID, bookID).
+			Scan(&stats.TotalChars, &stats.ReadyChars, &stats.ReadySeconds)
+	} else {
+		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
+		args := append(append([]any{}, valuesArgs...), voiceID, bookID)
+		err = s.db.QueryRow(`
+			WITH speaker_voice(speaker, voice_id) AS (VALUES `+valuesFragment+`)
+			SELECT
+				COALESCE(SUM(LENGTH(p.content)), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
+			FROM paragraphs p
+			JOIN chapters c ON c.id = p.chapter_id
+			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(sv.voice_id, ?)
+			WHERE c.book_id = ?`, args...).
+			Scan(&stats.TotalChars, &stats.ReadyChars, &stats.ReadySeconds)
+	}
 	if err != nil {
 		return NarrationStats{}, err
 	}

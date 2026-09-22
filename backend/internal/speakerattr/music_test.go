@@ -96,3 +96,103 @@ func TestMergeShortRegionsNoOpBelowTwoRegions(t *testing.T) {
 		t.Fatalf("mergeShortRegions(one region) = %v, want unchanged", got)
 	}
 }
+
+// plainParagraphs builds n consecutive, all-non-Inline ParagraphInputs
+// (idx 0..n-1) - splitLongRegions' own simplest fixture shape, where every
+// paragraph is its own logical unit.
+func plainParagraphs(n int) []ParagraphInput {
+	out := make([]ParagraphInput, n)
+	for i := range out {
+		out[i] = ParagraphInput{Idx: i}
+	}
+	return out
+}
+
+func TestSplitLongRegionsSplitsAtMax(t *testing.T) {
+	// One region spanning 25 logical paragraphs (idx 0-24) must split into
+	// three: 0-9, 10-19, 20-24 - a boundary inserted at logical position 11
+	// (idx 10) and again at 21 (idx 20), both "continuation".
+	regions := []musicBoundary{regionAt(0, "cut")}
+	got := splitLongRegions(regions, plainParagraphs(25))
+	wantStarts := []int{0, 10, 20}
+	gotStarts := startIdxes(got)
+	if len(gotStarts) != len(wantStarts) {
+		t.Fatalf("splitLongRegions() = %v, want %v", gotStarts, wantStarts)
+	}
+	for i, want := range wantStarts {
+		if gotStarts[i] != want {
+			t.Fatalf("splitLongRegions() = %v, want %v", gotStarts, wantStarts)
+		}
+	}
+	if got[0].Transition != "cut" {
+		t.Fatalf("splitLongRegions() = %+v, want the original region's own transition preserved", got[0])
+	}
+	if got[1].Transition != "continuation" || got[2].Transition != "continuation" {
+		t.Fatalf("splitLongRegions() = %+v, want every inserted split to be \"continuation\", never \"cut\"", got)
+	}
+}
+
+func TestSplitLongRegionsLeavesShortRegionsAlone(t *testing.T) {
+	regions := []musicBoundary{regionAt(0, "cut")}
+	got := splitLongRegions(regions, plainParagraphs(maxRegionParagraphs))
+	if len(got) != 1 {
+		t.Fatalf("splitLongRegions() = %v, want the region left untouched at exactly maxRegionParagraphs", startIdxes(got))
+	}
+}
+
+func TestSplitLongRegionsCountsInlineContinuationsAsOneUnit(t *testing.T) {
+	// 11 logical units, but 5 of them carry an extra Inline continuation
+	// each (16 ParagraphInputs total) - the split must still land after the
+	// 10th *logical* unit, never on an Inline paragraph's own idx.
+	var paras []ParagraphInput
+	idx := 0
+	for unit := 0; unit < 11; unit++ {
+		paras = append(paras, ParagraphInput{Idx: idx})
+		idx++
+		if unit%2 == 0 {
+			paras = append(paras, ParagraphInput{Idx: idx, Inline: true})
+			idx++
+		}
+	}
+	regions := []musicBoundary{regionAt(0, "cut")}
+	got := splitLongRegions(regions, paras)
+	if len(got) != 2 {
+		t.Fatalf("splitLongRegions() = %v, want exactly one split for 11 logical units", startIdxes(got))
+	}
+	// The 11th logical unit (0-indexed unit 10) is the first paragraph
+	// after 10 non-Inline ones - find its own real idx and confirm the
+	// split landed exactly there, on a non-Inline paragraph.
+	logical := 0
+	var wantSplit int
+	for _, p := range paras {
+		if p.Inline {
+			continue
+		}
+		if logical == 10 {
+			wantSplit = p.Idx
+			break
+		}
+		logical++
+	}
+	if got[1].StartIdx != wantSplit {
+		t.Fatalf("splitLongRegions() split at idx %d, want %d (the 11th logical unit, never an Inline idx)", got[1].StartIdx, wantSplit)
+	}
+}
+
+func TestSplitLongRegionsHandlesMultipleRegionsIndependently(t *testing.T) {
+	// Two regions back to back: the first spans 15 logical paragraphs
+	// (idx 0-14, needs one split at idx 10), the second spans only 5
+	// (idx 15-19, left alone).
+	regions := []musicBoundary{regionAt(0, "cut"), regionAt(15, "continuation")}
+	got := splitLongRegions(regions, plainParagraphs(20))
+	want := []int{0, 10, 15}
+	gotStarts := startIdxes(got)
+	if len(gotStarts) != len(want) {
+		t.Fatalf("splitLongRegions() = %v, want %v", gotStarts, want)
+	}
+	for i := range want {
+		if gotStarts[i] != want[i] {
+			t.Fatalf("splitLongRegions() = %v, want %v", gotStarts, want)
+		}
+	}
+}

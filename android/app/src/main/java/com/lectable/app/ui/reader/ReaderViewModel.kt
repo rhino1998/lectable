@@ -29,6 +29,7 @@ import com.lectable.app.data.remote.dto.VoiceSettingsDto
 import com.lectable.app.data.download.DownloadStatus
 import com.lectable.app.data.repository.ChapterDownloadState
 import com.lectable.app.data.repository.DownloadRepository
+import com.lectable.app.data.repository.JobsRepository
 import com.lectable.app.data.repository.LibraryRepository
 import com.lectable.app.data.repository.VoiceRepository
 import com.lectable.app.data.repository.voiceKeyOf
@@ -124,6 +125,7 @@ data class ReaderUiState(
 class ReaderViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val libraryRepository: LibraryRepository,
+    private val jobsRepository: JobsRepository,
     private val voiceRepository: VoiceRepository,
     private val readingSettingsRepository: ReadingSettingsRepository,
     val player: ParagraphPlayer,
@@ -157,10 +159,18 @@ class ReaderViewModel @Inject constructor(
     private var currentVoice: VoiceSettingsDto? = null
 
     // Guards against re-POSTing music scoring for the same chapter more than once per
-    // ViewModel lifetime - see refreshChapterMusic. scoreChapterMusic always rescans a chapter's
-    // paragraphs from scratch server-side (see backend httpapi.scoreChapterMusic's own doc
-    // comment), so re-triggering it on every poll tick (as opposed to just re-fetching status)
-    // would be wasteful at best and would keep resetting a chapter's regions at worst.
+    // ViewModel lifetime - see refreshChapterMusic. Local-only, so it does NOT by itself prevent
+    // two different ReaderViewModel instances (e.g. leaving and reopening the reader, or a
+    // process/config-change recreation) from each independently triggering a scoring POST for
+    // the same chapter around the same time - refreshChapterMusic also checks the live job queue
+    // (via jobsRepository) for that, which is the real fix for a chapter whose scoring run is
+    // still genuinely in flight server-side when a fresh ViewModel starts polling it fresh with
+    // no memory of the earlier trigger. Once one of those checks says "already covered" (either
+    // way), this set is what stops this same instance from asking again on every subsequent
+    // ~3s poll tick while backend/CLAUDE.md store.MusicRegion's own scoring is still working
+    // through a long chapter (which now resumes from where it left off rather than restarting -
+    // see backend httpapi.scoreChapterMusic's own doc comment - so a genuine retrigger across
+    // instances is expected/harmless progress, not the bug; a *redundant concurrent* one is).
     private val scoringMusicChapters = mutableSetOf<Int>()
 
     // One ad-hoc player for whichever music region preview was most recently requested - see
@@ -799,14 +809,39 @@ class ReaderViewModel @Inject constructor(
      *  [scoringMusicChapters]'s own doc comment). Called both from the poll loop in init and
      *  directly after an explicit mutation (toggling music on, regenerating a region) for
      *  immediate feedback, same "reload after mutation" pattern [fetchAndMergeChapter]'s own
-     *  callers use. */
+     *  callers use.
+     *
+     *  Before actually POSTing a scoring trigger, checks the live job queue ([jobsRepository]) for
+     *  an already in-flight/queued "music_scoring" task for this exact (book, chapter) - not just
+     *  [scoringMusicChapters]'s own local memory. Real bug this fixes: without the job-queue
+     *  check, a *second* ReaderViewModel for the same book (leaving and reopening the reader, a
+     *  config change, process recreation - all common on Android, unlike a long-lived web tab)
+     *  starts with an empty [scoringMusicChapters] and no memory of an earlier trigger, so it
+     *  would see `!dto.scored` and fire a redundant POST for a chapter whose scoring run is still
+     *  genuinely in progress server-side - wasted LLM work contending for the same `poolLLM` slot
+     *  as the run already in flight, not a correctness bug (scoring itself is idempotent/resumable
+     *  now - see backend httpapi.scoreChapterMusic's own doc comment on why a pause no longer
+     *  wipes prior progress), but real waste, and the actual "sometimes" in "it erroneously
+     *  retriggers music gen sometimes" - a genuine *fresh* retrigger of a chapter that paused and
+     *  is no longer queued anywhere is correct, expected behavior (that's exactly how a busy box
+     *  eventually finishes scoring a long chapter), not this bug. */
     private suspend fun refreshChapterMusic(idx: Int) {
         val dto = runCatching { libraryRepository.getChapterMusic(bookId, idx) }.getOrNull() ?: return
         _uiState.update { it.copy(chapterMusic = it.chapterMusic + (idx to dto)) }
         backgroundMusicPlayer.setChapterMusic(idx, dto)
-        if (!dto.scored && scoringMusicChapters.add(idx)) {
-            runCatching { libraryRepository.scoreChapterMusic(bookId, idx) }
+        if (dto.scored || idx in scoringMusicChapters) return
+        val alreadyInFlight = runCatching { jobsRepository.snapshot() }.getOrNull()?.let { snapshot ->
+            (snapshot.inFlight + snapshot.queued).any { it.kind == "music_scoring" && it.bookId == bookId && it.chapterIdx == idx }
+        } ?: false
+        if (alreadyInFlight) {
+            // Someone else (another instance, or this book open elsewhere) already has this
+            // chapter's scoring queued/running - just remember that locally so the next several
+            // poll ticks (while it's still in flight) don't re-check the job queue every time.
+            scoringMusicChapters.add(idx)
+            return
         }
+        scoringMusicChapters.add(idx)
+        runCatching { libraryRepository.scoreChapterMusic(bookId, idx) }
     }
 
     /** Toggles book-wide background music (see [ReaderUiState.musicEnabled]/

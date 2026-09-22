@@ -105,13 +105,13 @@ func TestParseTaggedLinesIgnoresReasoningPreamble(t *testing.T) {
 	content := "Let me think through this line by line.\n" +
 		"Line 34: \"He shrugged.\" - no strong delivery cue here, no tag needed based on strict rules.\n" +
 		"Wait, on reflection this line does call for a tag after all.\n" +
-		"34: <|style:singing|>He shrugged.\n"
+		"34: <|prosody:speed_slow|>He shrugged.\n"
 
 	out, err := parseTaggedLines(content, orig, validSentenceTags)
 	if err != nil {
 		t.Fatalf("parseTaggedLines: %v", err)
 	}
-	if out[34] != "<|style:singing|>He shrugged." {
+	if out[34] != "<|prosody:speed_slow|>He shrugged." {
 		t.Fatalf("out[34] = %q", out[34])
 	}
 }
