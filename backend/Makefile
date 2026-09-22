@@ -2,19 +2,21 @@
 # ttsworker's cgo build actually needs (CGO_LDFLAGS/LD_LIBRARY_PATH pointed
 # at local audio.cpp/llama.cpp builds) and the newer Go toolchain this
 # module's go.mod requires (go-duckdb/v2's own dependency chain needs
-# go >= 1.24; see /home/rhino/go-toolchains) - see run.sh for the same env
+# go >= 1.24; see ~/go-toolchains, used only if present) - see run.sh for the same env
 # vars applied to actually launching the server, and backend/CLAUDE.md's
 # "Running everything locally" section for the underlying commands this
 # replaces. Override any var below on the command line, e.g.
 # `make build AUDIOCPP_DIR=/some/other/path`.
-AUDIOCPP_DIR ?= /home/rhino/audio.cpp/build/bin
-LLAMACPP_DIR ?= /home/rhino/llama-cpp-py-sync/vendor/llama.cpp/build/bin
-GO_TOOLCHAIN_DIR := /home/rhino/go-toolchains/go1.27.1/bin
+AUDIOCPP_DIR ?= $(HOME)/audio.cpp/build/bin
+LLAMACPP_DIR ?= $(HOME)/llama-cpp-py-sync/vendor/llama.cpp/build/bin
+GO_TOOLCHAIN_DIR ?= $(HOME)/go-toolchains/go1.27.1/bin
 
 export CGO_LDFLAGS := -L$(AUDIOCPP_DIR) -L$(LLAMACPP_DIR)
 export LD_LIBRARY_PATH := $(LLAMACPP_DIR):$(AUDIOCPP_DIR):$(LD_LIBRARY_PATH)
+ifneq ($(wildcard $(GO_TOOLCHAIN_DIR)),)
 export PATH := $(GO_TOOLCHAIN_DIR):$(PATH)
 export GOTOOLCHAIN := local
+endif
 
 .PHONY: build test vet tidy run
 

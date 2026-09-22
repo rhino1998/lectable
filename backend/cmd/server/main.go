@@ -32,6 +32,16 @@ func getenv(key, fallback string) string {
 	return fallback
 }
 
+// homePath joins elem onto the current user's home directory, falling
+// back to a path relative to the working directory if it can't be found.
+func homePath(elem ...string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(elem...)
+	}
+	return filepath.Join(append([]string{home}, elem...)...)
+}
+
 func main() {
 	portStr := getenv("PORT", "8080")
 	addr := ":" + portStr
@@ -49,7 +59,7 @@ func main() {
 	// separate Python service; TTS_WORKER_BIN/AUDIOCPP_LIB_DIR replace the
 	// old TTS_SERVICE_URL.
 	ttsWorkerBin := getenv("TTS_WORKER_BIN", "./ttsworker")
-	audiocppLibDir := getenv("AUDIOCPP_LIB_DIR", "/home/rhino/audio.cpp/build/bin")
+	audiocppLibDir := getenv("AUDIOCPP_LIB_DIR", homePath("audio.cpp", "build", "bin"))
 	ttsWorkerPort := 0
 	if v := os.Getenv("TTS_WORKER_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
@@ -118,14 +128,15 @@ func main() {
 	go liveHub.Run(ctx)
 
 	// speakerClient is nil (and speaker attribution's endpoint reports 503)
-	// unless SPEAKER_LLM_MODEL_PATH is set - see internal/speakerattr. The
+	// unless the model file (SPEAKER_LLM_MODEL_PATH, or
+	// speakerattr.DefaultModelPath) exists - see internal/speakerattr. The
 	// GGUF model itself is loaded and run inside the ttsworker process (see
 	// internal/llmworker and backend/CLAUDE.md's "ttsworker / audioworker"
 	// section) - speakerClient just proxies to it over the same loopback
 	// connection ttsMgr already maintains for TTS calls.
 	speakerClient := speakerattr.NewClientFromEnv(ttsMgr)
 	if speakerClient == nil {
-		log.Printf("speaker attribution: SPEAKER_LLM_MODEL_PATH not set, disabled")
+		log.Printf("speaker attribution: model %s not found (set SPEAKER_LLM_MODEL_PATH), disabled", speakerattr.ModelPathFromEnv())
 	} else {
 		defer speakerClient.Close()
 	}

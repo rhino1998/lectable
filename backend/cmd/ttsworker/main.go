@@ -91,13 +91,14 @@ func main() {
 		log.Fatalf("ttsworker: failed to start: %v", err)
 	}
 
-	// llmWorker's own model loads lazily on first use (SPEAKER_LLM_MODEL_PATH
-	// may legitimately be unset - speaker attribution is an optional
-	// feature, see backend/CLAUDE.md's "Speaker attribution" section), so
-	// an empty ModelPath here is not a startup error the way a bad
-	// defaultCloneModel above is.
+	// llmWorker's own model loads lazily on first use (the model file may
+	// legitimately be missing - speaker attribution is an optional
+	// feature, see backend/CLAUDE.md's "Speaker attribution" section, and
+	// cmd/server disables it when the file isn't there), so a missing
+	// model here is not a startup error the way a bad defaultCloneModel
+	// above is.
 	llmWorker := llmworker.New(llmworker.Config{
-		ModelPath:       strings.TrimSpace(os.Getenv("SPEAKER_LLM_MODEL_PATH")),
+		ModelPath:       speakerattr.ModelPathFromEnv(),
 		NGPULayers:      int32(envIntOr("SPEAKER_LLM_GPU_LAYERS", -1)),
 		NCtx:            uint32(envIntOr("SPEAKER_LLM_CTX", speakerattr.MaxOutputTokens())),
 		MaxConcurrent:   envIntOr("SPEAKER_LLM_MAX_CONCURRENT", 2),

@@ -3,6 +3,7 @@ package audioworker
 import (
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -97,6 +98,26 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// modelsDir is where every default GGUF path below lives - audio.cpp's own
+// models/ directory, by default in a checkout at ~/audio.cpp.
+var modelsDir = envOr("LECTABLE_AUDIOCPP_MODELS_DIR", homePath("audio.cpp", "models"))
+
+// homePath joins elem onto the current user's home directory, falling
+// back to a path relative to the working directory if it can't be found.
+func homePath(elem ...string) string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(elem...)
+	}
+	return filepath.Join(append([]string{home}, elem...)...)
+}
+
+// modelPath resolves rel (e.g. "Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf")
+// against modelsDir.
+func modelPath(rel string) string {
+	return filepath.Join(modelsDir, rel)
 }
 
 func envIntOr(key string, def int) int {
@@ -286,7 +307,7 @@ var cloneFamilies = map[string]cloneFamily{
 		family: "qwen3_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_QWEN3_MODEL_PATH",
-			"/home/rhino/audio.cpp/models/Qwen3-TTS-12Hz-0.6B-Base-GGUF/qwen3-tts-12hz-0.6b-base-q8_0.gguf",
+			modelPath("Qwen3-TTS-12Hz-0.6B-Base-GGUF/qwen3-tts-12hz-0.6b-base-q8_0.gguf"),
 		),
 		sessionOptions:   map[string]string{"qwen3_tts.voice_prompt_cache_slots": cloneCacheSlots},
 		poolSizeOverride: qwen3ClonePoolSize,
@@ -295,7 +316,7 @@ var cloneFamilies = map[string]cloneFamily{
 		family: "higgs_audio_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_HIGGS_MODEL_PATH",
-			"/home/rhino/audio.cpp/models/Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf",
+			modelPath("Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf"),
 		),
 		sessionOptions: map[string]string{
 			"higgs_audio_tts.reference_cache_slots": cloneCacheSlots,
@@ -316,7 +337,7 @@ var cloneFamilies = map[string]cloneFamily{
 		family: "pocket_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_POCKET_MODEL_PATH",
-			"/home/rhino/audio.cpp/models/PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf",
+			modelPath("PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf"),
 		),
 		sessionOptions: map[string]string{"pocket_tts.voice_state_cache_slots": cloneCacheSlots},
 		// English/German/Italian/Portuguese/Spanish are separate model
@@ -336,7 +357,7 @@ var cloneFamilies = map[string]cloneFamily{
 		family: "breeze_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_BREEZE_MODEL_PATH",
-			"/home/rhino/audio.cpp/models/Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf",
+			modelPath("Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf"),
 		),
 		sessionOptions:   map[string]string{"breeze_tts.reference_cache_slots": cloneCacheSlots},
 		noLanguageOption: true,
@@ -359,7 +380,7 @@ var cloneFamilies = map[string]cloneFamily{
 		family: "omnivoice",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_OMNIVOICE_MODEL_PATH",
-			"/home/rhino/audio.cpp/models/OmniVoice-GGUF/omnivoice-q8_0.gguf",
+			modelPath("OmniVoice-GGUF/omnivoice-q8_0.gguf"),
 		),
 		poolSizeOverride: omnivoiceClonePoolSize,
 	},
@@ -381,7 +402,7 @@ var cloneFamilies = map[string]cloneFamily{
 		family: "soprano_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_SOPRANO_MODEL_PATH",
-			"/home/rhino/audio.cpp/models/Soprano-1.1-80M-GGUF/soprano-1.1-80m-q8_0.gguf",
+			modelPath("Soprano-1.1-80M-GGUF/soprano-1.1-80m-q8_0.gguf"),
 		),
 		noLanguageOption: true,
 		noReference:      true,
@@ -433,7 +454,7 @@ var designEngines = map[string]designEngine{
 		family: "qwen3_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_QWEN3_DESIGN_MODEL_PATH",
-			"/home/rhino/audio.cpp/models/Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF/qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf",
+			modelPath("Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF/qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf"),
 		),
 		// weight_type left at its own "native" default (this checkpoint's
 		// own q8_0 quantization) - an earlier attempt forced f32 here as a
@@ -446,7 +467,7 @@ var designEngines = map[string]designEngine{
 		family: "breeze_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_BREEZE_DESIGN_MODEL_PATH",
-			"/home/rhino/audio.cpp/models/Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf",
+			modelPath("Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf"),
 		),
 		// guidance_scale: breeze_tts's own classifier-free guidance-scale
 		// request option (default 1.0 per its model spec) - raised well
@@ -467,7 +488,7 @@ var designEngines = map[string]designEngine{
 		family: "omnivoice",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_OMNIVOICE_MODEL_PATH",
-			"/home/rhino/audio.cpp/models/OmniVoice-GGUF/omnivoice-q8_0.gguf",
+			modelPath("OmniVoice-GGUF/omnivoice-q8_0.gguf"),
 		),
 		instructOption: "instruction",
 		designTask:     "tts",
@@ -519,7 +540,7 @@ func resolveDesignEngine(designModel string) designEngine {
 // spare.
 var aceStepModelPath = envOr(
 	"LECTABLE_AUDIOCPP_ACE_STEP_MODEL_PATH",
-	"/home/rhino/audio.cpp/models/ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf",
+	modelPath("ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf"),
 )
 var aceStepPoolSize = envIntOr("LECTABLE_AUDIOCPP_ACE_STEP_POOL_SIZE", 1)
 
@@ -543,10 +564,10 @@ var aceStepPoolSize = envIntOr("LECTABLE_AUDIOCPP_ACE_STEP_POOL_SIZE", 1)
 // 2 (which let two concurrent Stable Audio calls run without one queuing
 // behind the other) back to every other family's own default of 1 to
 // unblock; raise it again only once the concurrency bug itself is found
-// and fixed upstream in /home/rhino/audio.cpp.
+// and fixed upstream in the local audio.cpp checkout.
 var stableAudioMusicModelPath = envOr(
 	"LECTABLE_AUDIOCPP_STABLE_AUDIO_MUSIC_MODEL_PATH",
-	"/home/rhino/audio.cpp/models/Stable-Audio-3-Small-Music-GGUF/stable-audio-3-small-music-q8_0.gguf",
+	modelPath("Stable-Audio-3-Small-Music-GGUF/stable-audio-3-small-music-q8_0.gguf"),
 )
 var stableAudioMusicPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_MUSIC_POOL_SIZE", 1)
 
@@ -565,7 +586,7 @@ var stableAudioMusicPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_MUSIC_PO
 // gets the same reduced pool size until it's root-caused.
 var stableAudioSFXModelPath = envOr(
 	"LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_MODEL_PATH",
-	"/home/rhino/audio.cpp/models/Stable-Audio-3-Small-SFX-GGUF/stable-audio-3-small-sfx-q8_0.gguf",
+	modelPath("Stable-Audio-3-Small-SFX-GGUF/stable-audio-3-small-sfx-q8_0.gguf"),
 )
 var stableAudioSFXPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_POOL_SIZE", 1)
 
@@ -584,13 +605,13 @@ var stableAudioSFXPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_POOL_S
 // rather than just this one.
 var stableAudioMediumModelPath = envOr(
 	"LECTABLE_AUDIOCPP_STABLE_AUDIO_MEDIUM_MODEL_PATH",
-	"/home/rhino/audio.cpp/models/Stable-Audio-3-Medium-GGUF/stable-audio-3-medium-q8_0.gguf",
+	modelPath("Stable-Audio-3-Medium-GGUF/stable-audio-3-medium-q8_0.gguf"),
 )
 var stableAudioMediumPoolSize = envIntOr("LECTABLE_AUDIOCPP_STABLE_AUDIO_MEDIUM_POOL_SIZE", 1)
 
 var alignerModelPath = envOr(
 	"LECTABLE_ALIGNER_MODEL_PATH",
-	"/home/rhino/audio.cpp/models/Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf",
+	modelPath("Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf"),
 )
 
 // backendName picks which of audio.cpp's own GPU backends to run on -

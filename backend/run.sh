@@ -10,16 +10,15 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # llama.cpp (linked into server, for speaker attribution). Both binaries'
 # builds need both on CGO_LDFLAGS; both need audio.cpp's on LD_LIBRARY_PATH
 # at runtime for ttsworker's dynamic linking, llama.cpp's for server's own.
-AUDIOCPP_DIR="${AUDIOCPP_DIR:-/home/rhino/audio.cpp/build/bin}"
-LLAMACPP_DIR="${LLAMACPP_DIR:-/home/rhino/llama-cpp-py-sync/vendor/llama.cpp/build/bin}"
+AUDIOCPP_DIR="${AUDIOCPP_DIR:-$HOME/audio.cpp/build/bin}"
+LLAMACPP_DIR="${LLAMACPP_DIR:-$HOME/llama-cpp-py-sync/vendor/llama.cpp/build/bin}"
 export CGO_LDFLAGS="-L${AUDIOCPP_DIR} -L${LLAMACPP_DIR}"
 export LD_LIBRARY_PATH="${LLAMACPP_DIR}:${AUDIOCPP_DIR}:${LD_LIBRARY_PATH:-}"
 
 export DATA_DIR="${DATA_DIR:-$(pwd)/data}"
-export SPEAKER_LLM_MODEL_PATH="${SPEAKER_LLM_MODEL_PATH:-/home/rhino/llm-models/qwen3-4b-instruct-2507-q4_k_m.gguf}"
 export SPEAKER_LLM_GPU_LAYERS="${SPEAKER_LLM_GPU_LAYERS:--1}"
 
-GO_TOOLCHAIN_DIR="/home/rhino/go-toolchains/go1.27.1/bin"
+GO_TOOLCHAIN_DIR="${GO_TOOLCHAIN_DIR:-$HOME/go-toolchains/go1.27.1/bin}"
 if [ -d "$GO_TOOLCHAIN_DIR" ]; then
   export PATH="$GO_TOOLCHAIN_DIR:$PATH"
   export GOTOOLCHAIN=local

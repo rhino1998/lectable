@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -120,9 +121,9 @@ func MaxOutputTokens() int {
 // ConfigFromEnv reads SPEAKER_LLM_NO_THINK - see NewClientFromEnv. The
 // model-loading env vars (SPEAKER_LLM_MODEL_PATH/GPU_LAYERS/CTX/
 // MAX_CONCURRENT) are read by cmd/ttsworker/main.go instead now (see this
-// package's own doc comment) - NewClientFromEnv still reads
-// SPEAKER_LLM_MODEL_PATH itself, but only to decide whether the feature is
-// configured at all, the same gate as before.
+// package's own doc comment) - NewClientFromEnv still resolves the model
+// path itself (ModelPathFromEnv), but only to decide whether the feature is
+// available at all.
 func ConfigFromEnv() Config {
 	cfg := Config{}
 	if v := strings.TrimSpace(os.Getenv("SPEAKER_LLM_NO_THINK")); v != "" {
@@ -161,15 +162,42 @@ type Client struct {
 	llm llmBackend
 }
 
-// NewClientFromEnv returns nil if SPEAKER_LLM_MODEL_PATH isn't set -
+// DefaultModelFile is the GGUF speaker attribution loads from ~/llm-models
+// when SPEAKER_LLM_MODEL_PATH isn't set - Qwen3-4B-Instruct-2507, Q4_K_M.
+const DefaultModelFile = "qwen3-4b-instruct-2507-q4_k_m.gguf"
+
+// DefaultModelPath returns ~/llm-models/DefaultModelFile (or just
+// llm-models/DefaultModelFile, relative to the working directory, if the
+// home directory can't be determined).
+func DefaultModelPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join("llm-models", DefaultModelFile)
+	}
+	return filepath.Join(home, "llm-models", DefaultModelFile)
+}
+
+// ModelPathFromEnv returns SPEAKER_LLM_MODEL_PATH, or DefaultModelPath() if
+// it's unset. Shared by cmd/server (NewClientFromEnv's enablement gate) and
+// cmd/ttsworker (what llmworker actually loads) so the two can't disagree.
+func ModelPathFromEnv() string {
+	if v := strings.TrimSpace(os.Getenv("SPEAKER_LLM_MODEL_PATH")); v != "" {
+		return v
+	}
+	return DefaultModelPath()
+}
+
+// NewClientFromEnv returns nil if ModelPathFromEnv's file doesn't exist -
 // speaker attribution is an optional feature (see httpapi's s.Speaker ==
-// nil check), not a hard dependency of the rest of the app. Reading that
-// var here (rather than only inside cmd/ttsworker, which is what actually
-// loads the model - see the package doc comment) is deliberate: it lets
-// cmd/server decide whether the feature is enabled at startup, without a
-// round trip to ttsworker, the same gate this package always had.
+// nil check), not a hard dependency of the rest of the app, so a box
+// without the default model just runs with it disabled. Checking here
+// (rather than only inside cmd/ttsworker, which is what actually loads the
+// model - see the package doc comment) is deliberate: it lets cmd/server
+// decide whether the feature is enabled at startup, without a round trip
+// to ttsworker. Both processes run on the same machine, so the file check
+// is valid for the worker too.
 func NewClientFromEnv(llm llmBackend) *Client {
-	if strings.TrimSpace(os.Getenv("SPEAKER_LLM_MODEL_PATH")) == "" {
+	if _, err := os.Stat(ModelPathFromEnv()); err != nil {
 		return nil
 	}
 	return NewClient(ConfigFromEnv(), llm)
