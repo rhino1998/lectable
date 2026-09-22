@@ -15,6 +15,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.settings.ThemePreference
 import com.lectable.app.data.settings.ThemeSettingsRepository
 import com.lectable.app.ui.navigation.LectableNavHost
@@ -26,6 +27,7 @@ import javax.inject.Inject
 class MainActivity : ComponentActivity() {
 
     @Inject lateinit var themeSettingsRepository: ThemeSettingsRepository
+    @Inject lateinit var liveStore: LiveStore
 
     private val requestNotificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* no-op either way - PlaybackService just won't show a visible notification if denied */ }
@@ -54,5 +56,18 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    // The live store keeps library-wide state (the book list, voice lists) subscribed while the
+    // app is visible, so screens open onto current data - and lets go in the background, where
+    // an open socket would only cost battery. See LiveStore.
+    override fun onStart() {
+        super.onStart()
+        liveStore.setForeground(true)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        liveStore.setForeground(false)
     }
 }

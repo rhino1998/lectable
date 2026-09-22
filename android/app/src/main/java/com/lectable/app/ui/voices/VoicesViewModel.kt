@@ -4,7 +4,7 @@ import android.content.Context
 import android.media.MediaPlayer
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.lectable.app.data.remote.LiveClient
+import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetInputDto
@@ -37,7 +37,7 @@ class VoicesViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
     private val voiceRepository: VoiceRepository,
     private val mediaUrlResolver: MediaUrlResolver,
-    liveClient: LiveClient,
+    liveStore: LiveStore,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(VoicesUiState())
@@ -49,11 +49,11 @@ class VoicesViewModel @Inject constructor(
     // <audio> elements naturally get from the browser.
     private var player: MediaPlayer? = null
 
-    // Both lists are live topics (see LiveClient) - a save/delete here, or an edit from the web
+    // Both lists are live topics (see LiveStore) - a save/delete here, or an edit from the web
     // UI, shows up without refetching.
     init {
         viewModelScope.launch {
-            liveClient.observe<List<CustomVoicePresetDto>>("customVoicePresets").collect { result ->
+            liveStore.customVoicePresets().collect { result ->
                 _uiState.update {
                     it.copy(
                         loading = result.loading,
@@ -64,7 +64,7 @@ class VoicesViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            liveClient.observe<VoiceSettingsDto>("defaultVoice").collect { result ->
+            liveStore.defaultVoice().collect { result ->
                 result.data?.let { settings -> _uiState.update { it.copy(defaultPresetId = settings.presetId) } }
             }
         }

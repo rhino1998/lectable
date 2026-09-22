@@ -11,7 +11,7 @@ import com.lectable.app.data.download.PendingPosition
 import com.lectable.app.data.download.PendingPositionDao
 import com.lectable.app.data.remote.BackendIdentityRepository
 import com.lectable.app.data.remote.LectableApi
-import com.lectable.app.data.remote.LiveClient
+import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.dto.AudioStatus
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
@@ -77,7 +77,7 @@ class DownloadRepository @Inject constructor(
     private val positionDao: PendingPositionDao,
     private val backendIdentity: BackendIdentityRepository,
     private val json: Json,
-    private val liveClient: LiveClient,
+    private val liveStore: LiveStore,
 ) {
     private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -326,11 +326,11 @@ class DownloadRepository @Inject constructor(
             var totalBytes = 0L
             var total = 0
             var lastChapter: ChapterDetailDto? = null
-            // The chapter's live topic (see LiveClient) delivers a fresh value every time one of
+            // The chapter's live topic (see LiveStore) delivers a fresh value every time one of
             // its paragraphs changes; each is scanned for newly-ready audio until everything's
             // fetched. An error only arrives before any value did (backend unreachable, chapter
             // gone) - thrown so the worker fails the same way a failed fetch always has.
-            liveClient.observe<ChapterDetailDto>("chapter", mapOf("bookId" to bookId, "chapterIdx" to chapterIdx)).first { result ->
+            liveStore.chapter(bookId, chapterIdx).first { result ->
                 result.error?.let { e -> if (result.data == null) throw IOException(e.message) }
                 val chapter = result.data ?: return@first false
                 lastChapter = chapter

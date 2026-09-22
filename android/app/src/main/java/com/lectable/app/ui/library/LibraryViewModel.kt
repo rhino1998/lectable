@@ -9,7 +9,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.lectable.app.data.discovery.NsdDiscoveryRepository
 import com.lectable.app.data.download.DownloadedBook
-import com.lectable.app.data.remote.LiveClient
+import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.BookSummaryDto
 import com.lectable.app.data.repository.DownloadRepository
@@ -63,7 +63,7 @@ class LibraryViewModel @Inject constructor(
     private val discoveryRepository: NsdDiscoveryRepository,
     private val voiceRepository: VoiceRepository,
     private val workManager: WorkManager,
-    private val liveClient: LiveClient,
+    private val liveStore: LiveStore,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(LibraryUiState())
@@ -107,7 +107,7 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /** (Re)subscribes to the live `books` topic (see [LiveClient]) - every upload, delete,
+    /** (Re)subscribes to the live `books` topic (see [LiveStore]) - every upload, delete,
      *  preprocessing run finishing, or generation progress tick afterward arrives on its own, so
      *  this only needs calling once (and from pull-to-refresh, as a manual retry). */
     fun refresh() {
@@ -123,7 +123,7 @@ class LibraryViewModel @Inject constructor(
             if (downloaded.isNotEmpty() && _uiState.value.books.isEmpty()) {
                 _uiState.update { it.copy(books = downloaded.toBookListItems(), offline = true) }
             }
-            liveClient.observe<List<BookSummaryDto>>("books").collect { result ->
+            liveStore.books().collect { result ->
                 val books = result.data
                 val error = result.error
                 when {

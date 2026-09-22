@@ -2,7 +2,7 @@ package com.lectable.app.ui.jobs
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.lectable.app.data.remote.LiveClient
+import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.JobsSnapshotDto
 import com.lectable.app.data.remote.dto.QueueTaskDto
@@ -41,13 +41,13 @@ data class JobsUiState(
 /**
  * Live view of the backend's shared job queue (backend/internal/jobs.Manager) - the Android
  * analogue of frontend/src/pages/JobsPage.tsx. The queue and both preset lists (for friendly
- * voice names) are live topics (see [LiveClient]), so every change - a task starting,
+ * voice names) are live topics (see [LiveStore]), so every change - a task starting,
  * finishing, a pause/resume from anywhere - shows up without polling.
  */
 @HiltViewModel
 class JobsViewModel @Inject constructor(
     private val repository: JobsRepository,
-    liveClient: LiveClient,
+    liveStore: LiveStore,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(JobsUiState())
@@ -55,7 +55,7 @@ class JobsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            liveClient.observe<JobsSnapshotDto>("jobs").collect { result ->
+            liveStore.jobs().collect { result ->
                 _uiState.update {
                     it.copy(
                         snapshot = result.data ?: it.snapshot,
@@ -67,8 +67,8 @@ class JobsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             combine(
-                liveClient.observe<VoicePresetsDto>("voicePresets"),
-                liveClient.observe<List<CustomVoicePresetDto>>("customVoicePresets"),
+                liveStore.voicePresets(),
+                liveStore.customVoicePresets(),
             ) { builtins, customs ->
                 buildMap {
                     builtins.data?.presets?.forEach { put(it.id, it.name) }

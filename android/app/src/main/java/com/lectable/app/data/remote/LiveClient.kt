@@ -56,6 +56,9 @@ data class LiveResult<out T>(
     val data: T? = null,
     val error: LiveError? = null,
     val loading: Boolean = true,
+    // True on the value emitted when the configured server changes - anything held from before
+    // belongs to a different backend and must be dropped, not kept as last-known (see LiveStore).
+    val reset: Boolean = false,
 )
 
 /**
@@ -126,7 +129,7 @@ class LiveClient @Inject constructor(
 
     fun <T> observe(topic: String, params: Map<String, Any>, deserializer: DeserializationStrategy<T>): Flow<LiveResult<T>> =
         observeJson(topic, params).distinctUntilChanged().map { raw ->
-            val data = raw.data ?: return@map LiveResult(data = null, error = raw.error, loading = raw.loading)
+            val data = raw.data ?: return@map LiveResult(data = null, error = raw.error, loading = raw.loading, reset = raw.reset)
             runCatching { json.decodeFromJsonElement(deserializer, data) }.fold(
                 onSuccess = { LiveResult(data = it, error = raw.error, loading = false) },
                 onFailure = { e -> LiveResult(data = null, error = LiveError(500, "decode $topic: ${e.message}"), loading = false) },
@@ -243,7 +246,7 @@ class LiveClient @Inject constructor(
         reconnectDelayMs = RECONNECT_DELAY_MS
         for (entry in entries.values) {
             entry.awaitingSnapshot = true
-            entry.state.value = LiveResult()
+            entry.state.value = LiveResult(reset = true)
         }
         if (entries.isNotEmpty()) ensureSocketLocked()
     }

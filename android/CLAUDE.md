@@ -122,14 +122,36 @@ compiled-in default in place if nothing answers in time.
   backend can't be reached before a topic ever got a value, that topic
   reports `LiveError.isNetwork` (status 0) - what `LibraryViewModel`/
   `ReaderViewModel`/`DownloadRepository` key their offline fallbacks on;
-  values already received stay visible across a reconnect. Every screen
-  (Library, Reader, Speakers, Voices, Jobs) and `ChapterDownloadWorker`'s
-  wait-for-generation loop read state this way - there is no polling and no
+  values already received stay visible across a reconnect. Nothing reads
+  `LiveClient` directly except `LiveStore` (below) - there is no polling and no
   "refetch after mutation" anywhere; a mutation's own write is what
   produces the update. REST (`LectableApi`) remains for mutations and
   one-off reads (search, pickers, the voice-language list). The shared
   `OkHttpClient`'s `pingInterval` keeps the socket from tripping its
   `readTimeout` during quiet stretches.
+- `data/live/LiveStore.kt` - the app's single store of server state, on
+  top of `LiveClient`: one shared `StateFlow<LiveResult<T>>` per topic
+  instance (`books()`, `book(id)`, `chapter(id, idx)`, `jobs()`, ...), so
+  each push is decoded once and reaches every reader at the same moment.
+  Every screen and `DownloadRepository` read from it. Keeps the last-known
+  value across reconnects/restarts instead of flashing empty (dropped only
+  on a server-address change, `LiveResult.reset`). Library-wide topics
+  (`books`, built-in/custom presets, default voice) are **eager**: kept
+  subscribed while the app is in the foreground (`MainActivity.onStart`/
+  `onStop` -> `setForeground`) whether or not a screen shows them;
+  per-book/per-chapter topics and `jobs` are live only while read (each
+  subscription costs a backend rebuild on every relevant write), then
+  linger 5s; at most 64 non-eager instances are cached (LRU).
+- `data/live/OfflineCacheWriter.kt` - `LiveStore`'s write-through into the
+  Room offline cache: every `books` value refreshes downloaded books'
+  title/author/cover/chapter count, and every `chapter` value that passes
+  through the store refreshes that chapter's downloaded copy (title, text,
+  speakers, annotations, content/image order) if it's COMPLETE - keeping
+  each paragraph's stored `durationSeconds`/`audioPointerSeconds`, which
+  describe the downloaded .wav, not whatever the backend has since
+  re-generated. Only updates existing rows; what gets downloaded is still
+  `DownloadRepository`'s call. Uses the DAOs directly (not
+  `DownloadRepository`, which depends on `LiveStore` - a cycle).
 - `playback/ParagraphPlayer.kt` - the Android analogue of
   `../frontend/src/hooks/usePlayback.ts`: one ExoPlayer instance advancing
   through a book's paragraphs one `.wav` at a time. **App-scoped

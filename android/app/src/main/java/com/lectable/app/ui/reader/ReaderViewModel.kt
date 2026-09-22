@@ -10,7 +10,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
-import com.lectable.app.data.remote.LiveClient
+import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.AudioStatus
 import com.lectable.app.data.remote.dto.BookDetailDto
@@ -125,7 +125,7 @@ class ReaderViewModel @Inject constructor(
     private val readingSettingsRepository: ReadingSettingsRepository,
     val player: ParagraphPlayer,
     private val backgroundMusicPlayer: BackgroundMusicPlayer,
-    private val liveClient: LiveClient,
+    private val liveStore: LiveStore,
     private val downloadRepository: DownloadRepository,
     private val workManager: WorkManager,
     private val mediaUrlResolver: MediaUrlResolver,
@@ -360,14 +360,14 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    /** Subscribes to this book's live book/voice/bookmarks topics (see [LiveClient]). The first
+    /** Subscribes to this book's live book/voice/bookmarks topics (see [LiveStore]). The first
      *  book value sets up the starting chapter and position; if the backend can't be reached (or
      *  the book can't be loaded) before that, falls back to a fully offline-downloaded copy -
      *  and if the backend comes back later, the live values simply take over. */
     private fun loadBook() {
         viewModelScope.launch {
             syncPendingPosition()
-            liveClient.observe<BookDetailDto>("book", mapOf("bookId" to bookId)).collect { result ->
+            liveStore.book(bookId).collect { result ->
                 val book = result.data
                 val error = result.error
                 when {
@@ -386,12 +386,12 @@ class ReaderViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            liveClient.observe<VoiceSettingsDto>("voice", mapOf("bookId" to bookId)).collect { result ->
+            liveStore.voice(bookId).collect { result ->
                 result.data?.let(::applyVoice)
             }
         }
         viewModelScope.launch {
-            liveClient.observe<List<BookmarkDto>>("bookmarks", mapOf("bookId" to bookId)).collect { result ->
+            liveStore.bookmarks(bookId).collect { result ->
                 result.data?.let { bookmarks -> _uiState.update { it.copy(bookmarksByKey = bookmarks.toBookmarksByKey()) } }
             }
         }
@@ -488,7 +488,7 @@ class ReaderViewModel @Inject constructor(
     private fun subscribeChapter(idx: Int) {
         if (chapterJobs[idx]?.isActive == true) return
         chapterJobs[idx] = viewModelScope.launch {
-            liveClient.observe<ChapterDetailDto>("chapter", mapOf("bookId" to bookId, "chapterIdx" to idx)).collect { result ->
+            liveStore.chapter(bookId, idx).collect { result ->
                 val chapter = result.data
                 val error = result.error
                 when {
@@ -515,7 +515,7 @@ class ReaderViewModel @Inject constructor(
 
     /** Drops every chapter subscription and loaded chapter - for jumps that reset the loaded
      *  window. Resubscribing a chapter afterward replays its lingering value immediately (see
-     *  LiveClient), so a jump back into an already-seen chapter doesn't refetch it. */
+     *  LiveStore), so a jump back into an already-seen chapter doesn't refetch it. */
     private fun resetLoadedChapters(toIdx: Int) {
         player.pause()
         player.clearChapters()
@@ -787,7 +787,7 @@ class ReaderViewModel @Inject constructor(
         (musicJobs.keys - wanted).forEach { idx -> musicJobs.remove(idx)?.cancel() }
         (wanted - musicJobs.keys).forEach { idx ->
             musicJobs[idx] = viewModelScope.launch {
-                liveClient.observe<ChapterMusicDto>("chapterMusic", mapOf("bookId" to bookId, "chapterIdx" to idx)).collect { result ->
+                liveStore.chapterMusic(bookId, idx).collect { result ->
                     result.data?.let { onChapterMusic(idx, it) }
                 }
             }

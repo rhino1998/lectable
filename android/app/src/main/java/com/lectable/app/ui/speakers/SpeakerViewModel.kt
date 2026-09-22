@@ -4,7 +4,7 @@ import android.media.MediaPlayer
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.lectable.app.data.remote.LiveClient
+import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.VoicePresetsDto
@@ -75,7 +75,7 @@ class SpeakerViewModel @Inject constructor(
     private val speakerRepository: SpeakerRepository,
     private val voiceRepository: VoiceRepository,
     private val mediaUrlResolver: MediaUrlResolver,
-    private val liveClient: LiveClient,
+    private val liveStore: LiveStore,
 ) : ViewModel() {
 
     private val bookId: String = checkNotNull(savedStateHandle["bookId"])
@@ -135,17 +135,17 @@ class SpeakerViewModel @Inject constructor(
     private var appearancesJob: Job? = null
     private var descriptionsJob: Job? = null
 
-    /** Everything this screen shows is a live topic (see [LiveClient]) - the roster's counts
+    /** Everything this screen shows is a live topic (see [LiveStore]) - the roster's counts
      *  climbing as audio generates, a preprocessing run finishing, a characterization landing,
      *  and every mutation below all arrive on their own, with no poll or refetch. */
     init {
         viewModelScope.launch {
             combine(
-                liveClient.observe<BookDetailDto>("book", mapOf("bookId" to bookId)),
-                liveClient.observe<VoiceSettingsDto>("voice", mapOf("bookId" to bookId)),
-                liveClient.observe<List<SpeakerDto>>("speakers", mapOf("bookId" to bookId)),
-                liveClient.observe<VoicePresetsDto>("voicePresets"),
-                liveClient.observe<List<CustomVoicePresetDto>>("customVoicePresets"),
+                liveStore.book(bookId),
+                liveStore.voice(bookId),
+                liveStore.speakers(bookId),
+                liveStore.voicePresets(),
+                liveStore.customVoicePresets(),
             ) { book, voice, speakers, builtins, customs ->
                 val builtinList = builtins.data?.presets ?: emptyList()
                 val customList = customs.data ?: emptyList()
@@ -275,10 +275,7 @@ class SpeakerViewModel @Inject constructor(
     private fun loadAppearances(characterId: String) {
         appearancesJob?.cancel()
         appearancesJob = viewModelScope.launch {
-            liveClient.observe<List<SpeakerAppearanceDto>>(
-                "characterAppearances",
-                mapOf("bookId" to bookId, "characterId" to characterId),
-            ).collect { result ->
+            liveStore.characterAppearances(bookId, characterId).collect { result ->
                 _uiState.update {
                     it.copy(
                         appearances = result.data ?: it.appearances,
@@ -333,10 +330,7 @@ class SpeakerViewModel @Inject constructor(
     private fun loadDescriptions(characterId: String) {
         descriptionsJob?.cancel()
         descriptionsJob = viewModelScope.launch {
-            liveClient.observe<List<SpeakerAppearanceDto>>(
-                "characterDescriptions",
-                mapOf("bookId" to bookId, "characterId" to characterId),
-            ).collect { result ->
+            liveStore.characterDescriptions(bookId, characterId).collect { result ->
                 _uiState.update {
                     it.copy(
                         descriptions = result.data ?: it.descriptions,
