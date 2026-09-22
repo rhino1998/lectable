@@ -62,48 +62,44 @@ func musicRegionDTOFrom(r store.MusicRegion) musicRegionDTO {
 }
 
 // handleGetChapterMusic serves GET .../chapters/{idx}/music - the reader's
-// own background-music mixer polls this while scoring/generation is in
-// progress (no websocket push for this yet, unlike paragraph audio - music
-// regions are few enough per chapter, and generate slowly enough, that
-// polling is fine for a first version), and the Speakers page's chapter
+// own background-music mixer watches the same data live as the
+// "chapterMusic" topic (see registerLiveTopics), and the Speakers page's chapter
 // table reads book.chapters[idx].passes.music/store.Book.MusicEnabled
 // directly (already part of the book fetch it already has) rather than
 // this endpoint, which exists for the regions themselves.
 func (s *Server) handleGetChapterMusic(w http.ResponseWriter, r *http.Request) {
-	bookID := r.PathValue("id")
-	chapterIdx, err := strconv.Atoi(r.PathValue("idx"))
+	idx, err := strconv.Atoi(r.PathValue("idx"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid chapter index")
 		return
 	}
+	writeBuilt(w)(s.buildChapterMusic(r.PathValue("id"), idx))
+}
+
+func (s *Server) buildChapterMusic(bookID string, chapterIdx int) (any, error) {
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if book == nil {
-		writeError(w, http.StatusNotFound, "book not found")
-		return
+		return nil, httpError(http.StatusNotFound, "book not found")
 	}
 	ch, err := s.Store.GetChapterByIdx(bookID, chapterIdx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if ch == nil {
-		writeError(w, http.StatusNotFound, "chapter not found")
-		return
+		return nil, httpError(http.StatusNotFound, "chapter not found")
 	}
 	regions, err := s.Store.ListMusicRegions(ch.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	dto := chapterMusicDTO{Enabled: book.MusicEnabled, Scored: ch.Passes.Music, Regions: make([]musicRegionDTO, len(regions))}
 	for i, region := range regions {
 		dto.Regions[i] = musicRegionDTOFrom(region)
 	}
-	writeJSON(w, http.StatusOK, dto)
+	return dto, nil
 }
 
 // handleScoreChapterMusic is POST .../chapters/{idx}/score-music - triggers

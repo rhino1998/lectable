@@ -100,26 +100,25 @@ func presetAudioURL(presetID string) string {
 // assignment work the same regardless of book.MultiVoice; this table just
 // reports what would narrate if it's on (see internal/narration.Resolver).
 func (s *Server) handleListSpeakers(w http.ResponseWriter, r *http.Request) {
-	bookID := r.PathValue("id")
+	writeBuilt(w)(s.buildSpeakers(r.PathValue("id")))
+}
+
+func (s *Server) buildSpeakers(bookID string) (any, error) {
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if book == nil {
-		writeError(w, http.StatusNotFound, "book not found")
-		return
+		return nil, httpError(http.StatusNotFound, "book not found")
 	}
 
 	paragraphs, err := s.Store.ListParagraphsRawForBook(bookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	characters, err := s.Store.ListCharacters(store.SeriesScope(book))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	charByName := make(map[string]store.Character, len(characters))
 	characterIDs := make([]string, len(characters))
@@ -129,8 +128,7 @@ func (s *Server) handleListSpeakers(w http.ResponseWriter, r *http.Request) {
 	}
 	bookVoice, err := s.Narration.BookVoice(book)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	// Characters' voice assignments are per clone model (see
 	// store.Character's doc comment) - this table reports whichever
@@ -139,8 +137,7 @@ func (s *Server) handleListSpeakers(w http.ResponseWriter, r *http.Request) {
 	cloneModel := narration.EffectiveCloneModel(bookVoice)
 	presetIDByChar, err := s.Store.CharacterVoicesForModel(characterIDs, cloneModel)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	idsBySpeaker := map[string][]string{}
@@ -211,8 +208,7 @@ func (s *Server) handleListSpeakers(w http.ResponseWriter, r *http.Request) {
 		if len(ids) > 0 {
 			count, err := s.Store.CountReadyAudioForSpeaker(bookID, name, resolved.VoiceID())
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, err.Error())
-				return
+				return nil, httpError(http.StatusInternalServerError, err.Error())
 			}
 			row.ReadyCount = count
 		}
@@ -233,7 +229,7 @@ func (s *Server) handleListSpeakers(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, row)
 	}
-	writeJSON(w, http.StatusOK, rows)
+	return rows, nil
 }
 
 // handleDeleteBookSpeakerData clears every piece of speaker data visible
@@ -717,32 +713,29 @@ type speakerAppearanceDTO struct {
 // route); the character's own scope, not that one book, decides which
 // books are actually searched.
 func (s *Server) handleCharacterAppearances(w http.ResponseWriter, r *http.Request) {
-	bookID := r.PathValue("id")
-	characterID := r.PathValue("characterId")
+	writeBuilt(w)(s.buildCharacterAppearances(r.PathValue("id"), r.PathValue("characterId")))
+}
+
+func (s *Server) buildCharacterAppearances(bookID, characterID string) (any, error) {
 
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if book == nil {
-		writeError(w, http.StatusNotFound, "book not found")
-		return
+		return nil, httpError(http.StatusNotFound, "book not found")
 	}
 	char, err := s.Store.GetCharacter(characterID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if char == nil {
-		writeError(w, http.StatusNotFound, "character not found")
-		return
+		return nil, httpError(http.StatusNotFound, "character not found")
 	}
 
 	books, err := s.booksInScope(book)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	bookIDs := make([]string, len(books))
 	bookByID := make(map[string]*store.Book, len(books))
@@ -753,8 +746,7 @@ func (s *Server) handleCharacterAppearances(w http.ResponseWriter, r *http.Reque
 
 	appearances, err := s.Store.ParagraphsForSpeaker(bookIDs, char.Name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	out := make([]speakerAppearanceDTO, len(appearances))
 	for i, a := range appearances {
@@ -775,7 +767,7 @@ func (s *Server) handleCharacterAppearances(w http.ResponseWriter, r *http.Reque
 		}
 		out[i] = dto
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // resolveAppearanceAudioURL is handleCharacterAppearances/
@@ -815,32 +807,29 @@ func (s *Server) resolveAppearanceAudioURL(paragraphID, voiceID string) string {
 // own char.Name: it's previewing the narration itself, not this character's
 // own (nonexistent, for a paragraph they don't speak) dialogue.
 func (s *Server) handleCharacterDescriptions(w http.ResponseWriter, r *http.Request) {
-	bookID := r.PathValue("id")
-	characterID := r.PathValue("characterId")
+	writeBuilt(w)(s.buildCharacterDescriptions(r.PathValue("id"), r.PathValue("characterId")))
+}
+
+func (s *Server) buildCharacterDescriptions(bookID, characterID string) (any, error) {
 
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if book == nil {
-		writeError(w, http.StatusNotFound, "book not found")
-		return
+		return nil, httpError(http.StatusNotFound, "book not found")
 	}
 	char, err := s.Store.GetCharacter(characterID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if char == nil {
-		writeError(w, http.StatusNotFound, "character not found")
-		return
+		return nil, httpError(http.StatusNotFound, "character not found")
 	}
 
 	books, err := s.booksInScope(book)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	bookIDs := make([]string, len(books))
 	bookByID := make(map[string]*store.Book, len(books))
@@ -851,8 +840,7 @@ func (s *Server) handleCharacterDescriptions(w http.ResponseWriter, r *http.Requ
 
 	descriptions, err := s.Store.ParagraphsDescribing(bookIDs, char.Name)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	out := make([]speakerAppearanceDTO, len(descriptions))
 	for i, a := range descriptions {
@@ -868,7 +856,7 @@ func (s *Server) handleCharacterDescriptions(w http.ResponseWriter, r *http.Requ
 		}
 		out[i] = dto
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // attributeChapter runs speaker attribution (internal/speakerattr) over

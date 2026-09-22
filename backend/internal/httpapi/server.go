@@ -5,12 +5,14 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sync"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
+	"github.com/rhino1998/lectable/backend/internal/live"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -25,6 +27,10 @@ type Server struct {
 	DataDir     string
 	AllowOrigin string
 	Hub         *wshub.Hub
+	// Live serves GET /api/events, the subscribe-to-topics WebSocket the
+	// frontend keeps its state in sync through (see package live and
+	// registerLiveTopics). nil leaves the route unregistered.
+	Live *live.Hub
 	// Narration resolves a paragraph's effective narration voice (a
 	// character's assigned voice, when book.MultiVoice is on, overriding
 	// the book's own) - see internal/narration.
@@ -110,6 +116,11 @@ func NewRouter(s *Server) http.Handler {
 	}
 
 	mux := http.NewServeMux()
+
+	if s.Live != nil {
+		s.registerLiveTopics(s.Live)
+		mux.HandleFunc("GET /api/events", s.handleEvents)
+	}
 
 	mux.HandleFunc("GET /api/instance", s.handleGetInstance)
 
@@ -246,6 +257,30 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// httpError is how a build* function (the shared core of a GET handler and
+// its live topic - see live.go) reports a failure with a specific status;
+// any other error it returns is a 500.
+func httpError(status int, message string) error {
+	return &live.Error{Status: status, Message: message}
+}
+
+// writeBuilt writes a build* function's (value, error) result as a GET
+// response - usage: writeBuilt(w)(s.buildBook(id)).
+func writeBuilt(w http.ResponseWriter) func(any, error) {
+	return func(v any, err error) {
+		if err != nil {
+			var le *live.Error
+			if errors.As(err, &le) {
+				writeError(w, le.Status, le.Message)
+			} else {
+				writeError(w, http.StatusInternalServerError, err.Error())
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, v)
+	}
 }
 
 func writeLoggedWarning(r *http.Request, format string, args ...any) {

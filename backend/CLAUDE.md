@@ -920,6 +920,31 @@ building/running `ttsworker` does, since both now link into that binary.
 - `internal/httpapi/` — handlers, using Go 1.22+'s stdlib `http.ServeMux`
   method+path-parameter routing (`"GET /api/books/{id}"`). No router
   dependency.
+- `internal/live/` — the live-state push behind `GET /api/events` (the
+  frontend's only source of server state - see `../frontend/CLAUDE.md`).
+  Clients subscribe to *topics* (`{"type":"subscribe","id","topic",
+  "params"}`; topics and params listed in `httpapi.registerLiveTopics`,
+  each built by the same `build*` function as its REST GET handler) and
+  get a `snapshot`, then `patch`es (`live.Op`: `set`/`del`, plus `arr`,
+  which rebuilds an array from index runs of the previous one - id-keyed
+  when elements have a unique `"id"` - so a job queue shifting by one
+  costs a few bytes). Change detection: `store.Store.OnChange` wraps the
+  store's single `*sql.DB` and reports the table of every committed write
+  (`db:<table>`; `UpdatePosition` reports the pseudo-table
+  `books.position` so 3s position saves don't rebuild everything that
+  reads `books`), `jobs.Manager.SubscribeChanges` feeds `jobs`, and a 30s
+  resync catches anything else. One refresh loop (100ms debounce) rebuilds
+  only topics that someone is subscribed to *and* whose declared deps were
+  invalidated, compares marshaled bytes with the last value, and fans out a
+  patch only on a real change - computed once per topic regardless of
+  subscriber count. Whole-book topics (`books`, `speakers`, appearances)
+  carry a `MinInterval` so steady generation can't monopolize the single
+  DuckDB connection. A subscriber whose outbound buffer fills is dropped
+  (it reconnects and resnapshots) rather than risk a lost patch. **A new
+  topic, or a builder reading a new table, must list that table in its
+  deps** or it'll only update on the 30s resync. The older
+  `GET /api/books/{id}/ws` / `GET /api/jobs/ws` endpoints remain for
+  Android and `cmd/jobswatch`.
 - `internal/mdnsadvert/` — advertises the backend on the LAN via mDNS/DNS-SD
   (`_lectable._tcp`, using `github.com/hashicorp/mdns`) so `android` can
   find it instead of requiring the user to type in an IP. Started from

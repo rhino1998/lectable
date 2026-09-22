@@ -401,7 +401,7 @@ CREATE INDEX IF NOT EXISTS idx_paragraphs_speaker ON paragraphs(speaker);
 `
 
 type Store struct {
-	db *sql.DB
+	db *notifyDB
 }
 
 func Open(path string) (*Store, error) {
@@ -446,7 +446,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("seed default_voice: %w", err)
 	}
-	return &Store{db: db}, nil
+	return &Store{db: &notifyDB{DB: db}}, nil
 }
 
 // migrateCharactersRefLine is a narrow, one-off exception to this
@@ -936,8 +936,10 @@ func (s *Store) DeleteVoicePreset(id string) error {
 	return err
 }
 
+// UpdatePosition reports its write to OnChange as PositionTable rather than
+// "books" - see PositionTable.
 func (s *Store) UpdatePosition(bookID string, chapterIdx, paragraphIdx int, seconds float64) error {
-	_, err := s.db.Exec(
+	_, err := s.db.execAs(PositionTable,
 		`UPDATE books SET pos_chapter_idx = ?, pos_paragraph_idx = ?, pos_seconds = ? WHERE id = ?`,
 		chapterIdx, paragraphIdx, seconds, bookID,
 	)

@@ -348,10 +348,13 @@ func extensionForMediaType(mt string) string {
 // page loaded, stalling every other concurrent request behind whichever
 // scan was running.
 func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
+	writeBuilt(w)(s.buildBooks())
+}
+
+func (s *Server) buildBooks() (any, error) {
 	books, err := s.Store.ListBooks()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	bookVoices := make([]store.BookVoice, len(books))
@@ -359,8 +362,7 @@ func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
 	for i, b := range books {
 		resolved, err := s.Narration.BookVoice(&b)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, httpError(http.StatusInternalServerError, err.Error())
 		}
 		bookVoices[i] = store.BookVoice{BookID: b.ID, VoiceID: resolved.VoiceID()}
 
@@ -370,8 +372,7 @@ func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
 		// scoped, not paragraph-scoped) queries at all.
 		bookOverrides, err := s.characterVoiceOverrides(&b, resolved)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, httpError(http.StatusInternalServerError, err.Error())
 		}
 		for _, ov := range bookOverrides {
 			overrides = append(overrides, store.BookSpeakerVoice{BookID: b.ID, Speaker: ov.Speaker, VoiceID: ov.VoiceID})
@@ -379,13 +380,11 @@ func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
 	}
 	chaptersByBook, err := s.Store.ListChapterSummariesForBooks(bookVoices, overrides)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	statsByBook, err := s.Store.BookNarrationStatsForBooks(bookVoices, overrides)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	out := make([]bookSummaryDTO, 0, len(books))
@@ -394,7 +393,7 @@ func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
 		dto.Preprocessing = s.isPreprocessing(b.ID)
 		out = append(out, dto)
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 type chapterSummaryDTO struct {
@@ -416,20 +415,20 @@ type bookDetailDTO struct {
 }
 
 func (s *Server) handleGetBook(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	writeBuilt(w)(s.buildBook(r.PathValue("id")))
+}
+
+func (s *Server) buildBook(id string) (any, error) {
 	b, err := s.Store.GetBook(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if b == nil {
-		writeError(w, http.StatusNotFound, "book not found")
-		return
+		return nil, httpError(http.StatusNotFound, "book not found")
 	}
 	summary, chapters, err := s.buildBookSummary(*b)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	dto := bookDetailDTO{bookSummaryDTO: summary}
@@ -439,7 +438,7 @@ func (s *Server) handleGetBook(w http.ResponseWriter, r *http.Request) {
 			Passes: c.Passes,
 		})
 	}
-	writeJSON(w, http.StatusOK, dto)
+	return dto, nil
 }
 
 func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {

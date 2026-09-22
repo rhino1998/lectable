@@ -16,6 +16,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/httpapi"
 	"github.com/rhino1998/lectable/backend/internal/instanceid"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
+	"github.com/rhino1998/lectable/backend/internal/live"
 	"github.com/rhino1998/lectable/backend/internal/mdnsadvert"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
@@ -93,6 +94,31 @@ func main() {
 	jobManager := jobs.NewManager(st, ttsMgr, dataDir, hub)
 	jobManager.Start(ctx)
 
+	// Live state push (GET /api/events): every committed store write and
+	// every job-queue change invalidates the topics depending on it - see
+	// package live and httpapi.registerLiveTopics. The periodic resync is a
+	// safety net for anything that changes without either signal.
+	liveHub := live.New(live.Config{Resync: 30 * time.Second})
+	st.OnChange(func(tables []string) {
+		deps := make([]string, len(tables))
+		for i, t := range tables {
+			deps[i] = httpapi.DBDep(t)
+		}
+		liveHub.Invalidate(deps...)
+	})
+	jobChanges := jobManager.SubscribeChanges()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-jobChanges:
+				liveHub.Invalidate(httpapi.DepJobs)
+			}
+		}
+	}()
+	go liveHub.Run(ctx)
+
 	// speakerClient is nil (and speaker attribution's endpoint reports 503)
 	// unless SPEAKER_LLM_MODEL_PATH is set - see internal/speakerattr. The
 	// GGUF model itself is loaded and run inside the ttsworker process (see
@@ -113,6 +139,7 @@ func main() {
 		DataDir:     dataDir,
 		AllowOrigin: allowOrigin,
 		Hub:         hub,
+		Live:        liveHub,
 		Narration:   narration.NewResolver(st),
 		Speaker:     speakerClient,
 		InstanceID:  instanceID,

@@ -16,22 +16,22 @@ type bookmarkDTO struct {
 }
 
 func (s *Server) handleListBookmarks(w http.ResponseWriter, r *http.Request) {
-	bookID := r.PathValue("id")
+	writeBuilt(w)(s.buildBookmarks(r.PathValue("id")))
+}
+
+func (s *Server) buildBookmarks(bookID string) (any, error) {
 
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if book == nil {
-		writeError(w, http.StatusNotFound, "book not found")
-		return
+		return nil, httpError(http.StatusNotFound, "book not found")
 	}
 
 	bookmarks, err := s.Store.ListBookmarks(bookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	out := make([]bookmarkDTO, len(bookmarks))
@@ -41,7 +41,7 @@ func (s *Server) handleListBookmarks(w http.ResponseWriter, r *http.Request) {
 			ParagraphIdx: b.ParagraphIdx, Text: b.Text, Note: b.Note, CreatedAt: b.CreatedAt,
 		}
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 type createBookmarkRequest struct {

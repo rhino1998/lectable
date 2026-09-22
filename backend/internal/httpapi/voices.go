@@ -32,6 +32,10 @@ type voicePresetDTOOut struct {
 }
 
 func (s *Server) handleVoicePresets(w http.ResponseWriter, r *http.Request) {
+	writeBuilt(w)(s.buildVoicePresets())
+}
+
+func (s *Server) buildVoicePresets() (any, error) {
 	out := make([]voicePresetDTOOut, len(voices.Presets))
 	for i, p := range voices.Presets {
 		out[i] = voicePresetDTOOut{
@@ -42,7 +46,7 @@ func (s *Server) handleVoicePresets(w http.ResponseWriter, r *http.Request) {
 			AudioURL:        "/api/voices/presets/" + p.ID + "/audio",
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"default": voices.DefaultPresetID, "presets": out})
+	return map[string]any{"default": voices.DefaultPresetID, "presets": out}, nil
 }
 
 func (s *Server) handleVoiceLanguages(w http.ResponseWriter, r *http.Request) {
@@ -80,17 +84,18 @@ type voiceSettingsDTO struct {
 }
 
 func (s *Server) handleGetVoice(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	writeBuilt(w)(s.buildVoice(r.PathValue("id")))
+}
+
+func (s *Server) buildVoice(id string) (any, error) {
 	b, err := s.Store.GetBook(id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if b == nil {
-		writeError(w, http.StatusNotFound, "book not found")
-		return
+		return nil, httpError(http.StatusNotFound, "book not found")
 	}
-	writeJSON(w, http.StatusOK, voiceSettingsDTO{
+	return voiceSettingsDTO{
 		PresetID:           b.VoicePresetID,
 		Instruct:           b.VoiceInstruct,
 		Language:           b.VoiceLanguage,
@@ -98,7 +103,7 @@ func (s *Server) handleGetVoice(w http.ResponseWriter, r *http.Request) {
 		CharacterVoiceMode: string(b.CharacterVoiceMode),
 		SpeechDirection:    b.SpeechDirection,
 		MusicEnabled:       b.MusicEnabled,
-	})
+	}, nil
 }
 
 // resolveVoiceSeed looks up presetID's seed - first among the curated
@@ -302,12 +307,15 @@ func (s *Server) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
 
 // handleGetDefaultVoice reports the voice new books are created with.
 func (s *Server) handleGetDefaultVoice(w http.ResponseWriter, r *http.Request) {
+	writeBuilt(w)(s.buildDefaultVoice())
+}
+
+func (s *Server) buildDefaultVoice() (any, error) {
 	v, err := s.Store.GetDefaultVoice()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
-	writeJSON(w, http.StatusOK, voiceSettingsDTO{PresetID: v.PresetID, Instruct: v.Instruct, Language: v.Language, Seed: v.Seed})
+	return voiceSettingsDTO{PresetID: v.PresetID, Instruct: v.Instruct, Language: v.Language, Seed: v.Seed}, nil
 }
 
 // handleUpdateDefaultVoice sets the voice new books are created with -
@@ -377,22 +385,24 @@ func voicePresetDTO(p store.VoicePreset, refErr error) customVoicePresetDTO {
 }
 
 func (s *Server) handleListCustomVoicePresets(w http.ResponseWriter, r *http.Request) {
+	writeBuilt(w)(s.buildCustomVoicePresets())
+}
+
+func (s *Server) buildCustomVoicePresets() (any, error) {
 	presets, err := s.Store.ListVoicePresets()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	groups, err := s.Store.VoicePresetGroups()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	out := make([]customVoicePresetDTO, len(presets))
 	for i, p := range presets {
 		out[i] = voicePresetDTO(p, nil)
 		out[i].GroupLabel = groups[p.ID]
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 // DefaultCloneModel re-exports voices.DefaultCloneModel for existing call

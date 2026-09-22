@@ -269,47 +269,43 @@ type chapterDetailDTO struct {
 }
 
 func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
-	bookID := r.PathValue("id")
 	idx, err := strconv.Atoi(r.PathValue("idx"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid chapter index")
 		return
 	}
+	writeBuilt(w)(s.buildChapter(r.PathValue("id"), idx))
+}
+
+func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if book == nil {
-		writeError(w, http.StatusNotFound, "book not found")
-		return
+		return nil, httpError(http.StatusNotFound, "book not found")
 	}
 
 	ch, err := s.Store.GetChapterByIdx(bookID, idx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if ch == nil {
-		writeError(w, http.StatusNotFound, "chapter not found")
-		return
+		return nil, httpError(http.StatusNotFound, "chapter not found")
 	}
 
 	paragraphs, err := s.Store.ListParagraphsRaw(ch.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	images, err := s.Store.ListImages(ch.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	breaks, err := s.Store.ListBreaks(ch.ID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	// Resolve each paragraph's own effective voice (a character's assigned
@@ -319,13 +315,11 @@ func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
 	// necessarily share one voice the way a single JOIN could assume.
 	bookVoice, err := s.Narration.BookVoice(book)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	characters, err := s.Store.ListCharacters(store.SeriesScope(book))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	charByName := make(map[string]store.Character, len(characters))
 	characterIDs := make([]string, len(characters))
@@ -339,8 +333,7 @@ func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
 	effectiveCloneModel := narration.EffectiveCloneModel(bookVoice)
 	presetIDByChar, err := s.Store.CharacterVoicesForModel(characterIDs, effectiveCloneModel)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	resolvedVoiceCache := map[string]narration.ResolvedVoice{} // character id -> resolved, avoids repeat lookups
 	idsByVoice := map[string][]string{}
@@ -356,8 +349,7 @@ func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
 				if cached, ok := resolvedVoiceCache[c.ID]; ok {
 					v = cached
 				} else if resolved, err := s.Narration.ResolveCharacterVoice(book, bookVoice, c, effectiveCloneModel, presetIDByChar[c.ID]); err != nil {
-					writeError(w, http.StatusInternalServerError, err.Error())
-					return
+					return nil, httpError(http.StatusInternalServerError, err.Error())
 				} else {
 					resolvedVoiceCache[c.ID] = resolved
 					v = resolved
@@ -373,8 +365,7 @@ func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
 	for vid, ids := range idsByVoice {
 		states, err := s.Store.ParagraphAudioStatuses(ids, vid)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			return nil, httpError(http.StatusInternalServerError, err.Error())
 		}
 		for id, st := range states {
 			audioStates[id] = st
@@ -389,8 +380,7 @@ func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
 	}
 	sfxStates, err := s.Store.ParagraphSFXStates(paragraphIDs)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	dto := chapterDetailDTO{Idx: ch.Idx, Title: ch.Title, Generating: s.Jobs.IsGenerating(ch.ID)}
@@ -461,7 +451,7 @@ func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
 		dto.Content[i] = it.item
 	}
 
-	writeJSON(w, http.StatusOK, dto)
+	return dto, nil
 }
 
 // handleGenerateChapter enqueues background TTS generation for one
