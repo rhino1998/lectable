@@ -23,6 +23,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
@@ -92,11 +93,34 @@ class DownloadRepository @Inject constructor(
             .map { rows -> rows.associateBy { DownloadKey(it.libraryId, it.bookId, it.chapterIdx, it.voiceKey) } }
             .stateIn(repoScope, SharingStarted.Eagerly, emptyMap())
 
-    fun localAudioFile(bookId: String, chapterIdx: Int, voiceKey: String, paragraphIdx: Int): File? {
+    // Each COMPLETE row's decoded paragraphsJson, keyed by row and re-decoded only when that
+    // row's JSON actually changes (compared by reference - a new row from Room is a new string).
+    private val storedParagraphs = ConcurrentHashMap<DownloadKey, Pair<String, Map<Int, OfflineParagraph>>>()
+
+    /** The downloaded .wav for [paragraph], or null if there isn't one or it's stale. A live
+     *  [paragraph] (non-null audioUrl) is only matched to its local file while its current
+     *  duration/pointer are still what was downloaded: the file is keyed by the book's voice only,
+     *  but a paragraph's audio also depends on its speaker (and scare-quote merge group), so a
+     *  re-attribution after download regenerates it server-side while the local copy keeps the
+     *  old speaker. A cached (offline) chapter has no audioUrl and nothing newer to compare to. */
+    fun localAudioFile(bookId: String, chapterIdx: Int, voiceKey: String, paragraph: ParagraphDto): File? {
         val libraryId = backendIdentity.libraryId.value ?: return null
-        val entry = completeByKey.value[DownloadKey(libraryId, bookId, chapterIdx, voiceKey)] ?: return null
-        val file = File(entry.localDir, "%05d.wav".format(paragraphIdx))
+        val key = DownloadKey(libraryId, bookId, chapterIdx, voiceKey)
+        val entry = completeByKey.value[key] ?: return null
+        if (paragraph.audioUrl != null) {
+            val stored = storedParagraphs(key, entry)[paragraph.idx] ?: return null
+            if (stored.durationSeconds != paragraph.durationSeconds || stored.audioPointerSeconds != paragraph.audioPointerSeconds) return null
+        }
+        val file = File(entry.localDir, "%05d.wav".format(paragraph.idx))
         return file.takeIf { it.exists() }
+    }
+
+    private fun storedParagraphs(key: DownloadKey, entry: DownloadedChapter): Map<Int, OfflineParagraph> {
+        storedParagraphs[key]?.let { (raw, decoded) -> if (raw === entry.paragraphsJson) return decoded }
+        val decoded = runCatching { json.decodeFromString<List<OfflineParagraph>>(entry.paragraphsJson) }.getOrDefault(emptyList())
+            .associateBy { it.idx }
+        storedParagraphs[key] = entry.paragraphsJson to decoded
+        return decoded
     }
 
     fun isDownloaded(bookId: String, chapterIdx: Int, voiceKey: String): Boolean {
@@ -319,7 +343,10 @@ class DownloadRepository @Inject constructor(
         runCatching { api.generateChapter(bookId, chapterIdx) }
 
         try {
-            val fetchedIdx = mutableSetOf<Int>()
+            // The live paragraph each local file was fetched from - its duration/pointer are what
+            // the stored OfflineParagraph records (see localAudioFile), and a paragraph whose
+            // audio changes again mid-download (re-attributed, re-merged) gets fetched again.
+            val fetched = mutableMapOf<Int, ParagraphDto>()
             // Paragraphs a regenerate has already been requested for, this attempt - guards
             // against asking again on every live update while it's re-generating.
             val regeneratedIdx = mutableSetOf<Int>()
@@ -336,7 +363,11 @@ class DownloadRepository @Inject constructor(
                 lastChapter = chapter
                 total = chapter.paragraphs.size
                 for (p in chapter.paragraphs) {
-                    if (p.idx in fetchedIdx) continue
+                    val f = fetched[p.idx]
+                    if (f != null) {
+                        if (p.audioStatus == AudioStatus.READY && f.durationSeconds == p.durationSeconds && f.audioPointerSeconds == p.audioPointerSeconds) continue
+                        fetched.remove(p.idx)
+                    }
                     if (p.audioStatus == AudioStatus.ERROR) {
                         // A paragraph that failed generation isn't given up on - request it be
                         // regenerated (same mechanism ReaderViewModel.regenerateParagraph uses)
@@ -352,8 +383,8 @@ class DownloadRepository @Inject constructor(
                     totalBytes += api.downloadFile(url).use { body ->
                         File(dir, "%05d.wav".format(p.idx)).outputStream().use { out -> body.byteStream().copyTo(out) }
                     }
-                    fetchedIdx += p.idx
-                    onProgress(fetchedIdx.size, total)
+                    fetched[p.idx] = p
+                    onProgress(fetched.size, total)
                     dao.upsert(
                         DownloadedChapter(
                             libraryId = libraryId,
@@ -362,7 +393,7 @@ class DownloadRepository @Inject constructor(
                             voiceKey = voiceKey,
                             pinned = pinned,
                             status = DownloadStatus.DOWNLOADING,
-                            readyParagraphs = fetchedIdx.size,
+                            readyParagraphs = fetched.size,
                             totalParagraphs = total,
                             totalBytes = totalBytes,
                             localDir = dir.path,
@@ -374,7 +405,7 @@ class DownloadRepository @Inject constructor(
                 // time - the ring should just keep reflecting real progress for as long as that
                 // takes, not flip back to "not downloaded" because it was slow. WorkManager
                 // itself is what actually stops this running if the app process is killed.
-                total > 0 && fetchedIdx.size >= total
+                total > 0 && fetched.size >= total
             }
 
             // Images don't depend on voice/generation the way paragraph audio does - they're
@@ -398,10 +429,11 @@ class DownloadRepository @Inject constructor(
             }
 
             val offlineParagraphs = (lastChapter?.paragraphs ?: emptyList()).map { p ->
+                val f = fetched[p.idx] ?: p
                 OfflineParagraph(
                     idx = p.idx,
                     text = p.text,
-                    durationSeconds = p.durationSeconds ?: 0.0,
+                    durationSeconds = f.durationSeconds ?: 0.0,
                     inline = p.inline,
                     speaker = p.speaker,
                     directionMarks = p.directionMarks,
@@ -409,7 +441,7 @@ class DownloadRepository @Inject constructor(
                     isQuote = p.isQuote,
                     describesCharacters = p.describesCharacters,
                     scareQuote = p.scareQuote,
-                    audioPointerSeconds = p.audioPointerSeconds,
+                    audioPointerSeconds = f.audioPointerSeconds,
                 )
             }
             dao.upsert(

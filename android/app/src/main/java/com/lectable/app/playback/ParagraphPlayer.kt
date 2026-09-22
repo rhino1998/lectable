@@ -377,10 +377,10 @@ class ParagraphPlayer @Inject constructor(
         }
 
         // Prefer a downloaded local copy over streaming, if one exists for the book's current
-        // voice - the whole point of offline downloads (see DownloadRepository). ExoPlayer
+        // voice and still matches this paragraph's current audio - the whole point of offline downloads (see DownloadRepository). ExoPlayer
         // accepts a file:// Uri identically to an http:// one, so this is the only call site
         // that needs to know about local downloads at all.
-        val localFile = bookId?.let { id -> voiceKey?.let { key -> downloadRepository.localAudioFile(id, chapterIdx, key, paragraphIdx) } }
+        val localFile = bookId?.let { id -> voiceKey?.let { key -> downloadRepository.localAudioFile(id, chapterIdx, key, paragraph) } }
         val uri = localFile?.let(Uri::fromFile) ?: mediaUrlResolver.resolve(paragraph.audioUrl)?.let(Uri::parse) ?: return
         val mediaItem = MediaItem.Builder()
             .setUri(uri)
