@@ -344,6 +344,7 @@ var kindPool = map[Kind]taskqueue.PoolKey{
 	KindMusicLiveGeneration:     poolSFX,
 	KindScareQuote:              poolLLM,
 	KindDescription:             poolLLM,
+	KindPronunciation:           poolLLM,
 }
 
 // poolFor reports which slot pool kind draws from - see kindPool.
@@ -596,6 +597,13 @@ const (
 	// Jobs dashboard. Same shape as KindScareQuote, and depends on it the
 	// same way attribution does - but not on attribution itself.
 	KindDescription Kind = "description_tagging"
+	// KindPronunciation is an LLM pronunciation-resolution run for one
+	// chapter (internal/speakerattr.Client.ResolvePronunciation, via
+	// httpapi.pronounceChapter) - see EnqueuePronunciation. Split out of
+	// KindSpeechDirection (which used to run it as a third sub-pass) since
+	// a plain word substitution applies under every clone model, while
+	// direction tagging is Higgs-only.
+	KindPronunciation Kind = "pronunciation"
 )
 
 // Tier is shared across every chapter/paragraph-scoped Kind - a
@@ -929,6 +937,8 @@ func (t *task) dedupKey() string {
 		return "scare_quote:" + t.llmKey
 	case KindDescription:
 		return "describe:" + t.llmKey
+	case KindPronunciation:
+		return "pronunciation:" + t.llmKey
 	default:
 		return t.paragraph.ID
 	}
@@ -1020,6 +1030,7 @@ var kindCompare = map[Kind]func(a, b *task) int{
 	KindSpeakerReattribution:    comparePosition,
 	KindScareQuote:              comparePosition,
 	KindDescription:             comparePosition,
+	KindPronunciation:           comparePosition,
 }
 
 // Less breaks a same-pool, same-(promoted-)tier tie between t and other -
@@ -1159,6 +1170,11 @@ type ScareQuoteFunc func(ctx context.Context) (changed int, requeue func(), err 
 // work behind a KindDescription task (see httpapi.describeChapterForJob).
 // DirectionFunc's exact shape.
 type DescriptionFunc func(ctx context.Context) (tagged int, requeue func(), err error)
+
+// PronunciationFunc performs one chapter's pronunciation resolution - the
+// actual work behind a KindPronunciation task (see
+// httpapi.pronounceChapter). DirectionFunc's exact shape.
+type PronunciationFunc func(ctx context.Context) (resolved int, requeue func(), err error)
 
 // CharacterizationFunc performs one character's re-characterization (an
 // LLM call - speakerattr.Client.CharacterizeVoice - plus persisting the
@@ -1316,6 +1332,15 @@ type MusicScorer func(ctx context.Context, book *store.Book, ch *store.Chapter) 
 // wait on scare-quote tagging.
 type ChapterScareQuoter func(ctx context.Context, book *store.Book, ch *store.Chapter) (changed int, requeue func(), err error)
 
+// ChapterPronouncer lazily runs one chapter's own pronunciation resolution
+// (the work behind PronunciationFunc/EnqueuePronunciation, setting
+// Passes.Pronunciation on a full pass) the moment pronunciationDependency
+// discovers a KindVoiceClone/KindVoiceDesign task for a chapter that isn't
+// resolved yet - ChapterDirector's exact role for
+// speechDirectionDependency. A never-configured pronouncer (nil) just
+// means generation never waits on pronunciation resolution.
+type ChapterPronouncer func(ctx context.Context, book *store.Book, ch *store.Chapter) (resolved int, requeue func(), err error)
+
 type Manager struct {
 	// musicGenerating is the set of music region ids currently being
 	// generated (claimMusicRegion/releaseMusicRegion) - kept in memory
@@ -1334,6 +1359,7 @@ type Manager struct {
 	attribute    ChapterAttributor
 	scoreMusic   MusicScorer
 	scareQuote   ChapterScareQuoter
+	pronounce    ChapterPronouncer
 	ctx          context.Context // set by Start; used by fire-and-forget Enqueue* resolution goroutines
 
 	// queue is this package's whole priority/dependency/pool-dispatch
@@ -1520,6 +1546,13 @@ func (m *Manager) SetChapterScareQuoter(fn ChapterScareQuoter) {
 	m.scareQuote = fn
 }
 
+// SetChapterPronouncer wires fn in as the lazy pronunciation resolver - see
+// ChapterPronouncer's own doc comment. Called once from httpapi.NewRouter,
+// the same place/timing as SetChapterDirector.
+func (m *Manager) SetChapterPronouncer(fn ChapterPronouncer) {
+	m.pronounce = fn
+}
+
 // provisionMissingCharacterVoices lazily provisions (via m.provision - a
 // no-op if never configured) a voice for cloneModel for every distinct
 // real speaker (not "", not "Narrator") among speakers who doesn't have
@@ -1681,7 +1714,7 @@ func (m *Manager) estimateLength(bookID, chapterID string, wordLimit int) {
 	}
 
 	fast := voices.PresetsByID[voices.FastPresetID]
-	refPath, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, fast.ID, fast.Instruct, fast.Seed, fast.RefText, fast.SpeedMultiplier, fast.CloneModel, fast.DesignModel)
+	refPath, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, fast.ID, fast.Instruct, fast.Seed, fast.RefText, fast.SpeedMultiplier, fast.DesignModel)
 	if err != nil {
 		log.Printf("jobs: length estimate for book %s: ensure fast preset reference clip: %v", bookID, err)
 		return
@@ -1691,7 +1724,7 @@ func (m *Manager) estimateLength(bookID, chapterID string, wordLimit int) {
 		log.Printf("jobs: length estimate for book %s: read reference clip: %v", bookID, err)
 		return
 	}
-	audio, err := m.generateClone(ctx, fast.CloneModel, refAudio, fast.RefText, "", sample.String(), "")
+	audio, err := m.generateClone(ctx, voices.FastCloneModel, refAudio, fast.RefText, "", sample.String(), "")
 	if err != nil {
 		log.Printf("jobs: length estimate for book %s: generate: %v", bookID, err)
 		return
@@ -2476,6 +2509,9 @@ func (m *Manager) resolveDependencies(lq *taskqueue.LockedQueue, tk taskqueue.Ta
 		if d := m.speechDirectionDependency(lq, t); d != nil {
 			deps = append(deps, d)
 		}
+		if d := m.pronunciationDependency(lq, t); d != nil {
+			deps = append(deps, d)
+		}
 	}
 	if t.kind == KindVoiceClone {
 		if d := m.referenceClipDependency(lq, t); d != nil {
@@ -2618,15 +2654,15 @@ func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) 
 	if !book.SpeechDirection {
 		return nil
 	}
-	// directChapter (m.direct's own real implementation) still runs for
-	// every clone model, not just Higgs's own: its two Higgs-specific
-	// sub-passes (sentence/inline delivery tags) no-op for anything else,
-	// but the third (pronunciation resolution) doesn't depend on Higgs's
-	// own tag vocabulary at all and always runs - see directChapter's own
-	// higgsTags doc comment. So, unlike an earlier version of this
-	// function, there's no clone-model gate here any more: a non-Higgs
-	// book's chapter genuinely does reach Passes.Direction once a real
-	// direction task for it runs, the same as a Higgs one.
+	// Direction tags only mean anything to Higgs's own tokenizer, and
+	// directChapter (m.direct's own real implementation) no-ops for any
+	// other clone model without ever setting Passes.Direction - so without
+	// this gate a non-Higgs book's clone task would recreate a no-op
+	// direction task forever. Pronunciation resolution, which does apply
+	// to every model, is its own dependency (pronunciationDependency).
+	if narration.BookCloneModel(book) != voices.HiggsCloneModel {
+		return nil
+	}
 	ch, err := m.store.GetChapterByID(chapterID)
 	if err != nil || ch == nil {
 		return nil
@@ -2643,6 +2679,50 @@ func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) 
 		chapterIdx:  t.chapterIdx,
 		llmKey:      chapterID,
 		runLLM:      func(ctx context.Context) (int, func(), error) { return m.direct(ctx, book, &chVal) },
+		seriesName:  book.SeriesName,
+		seriesIndex: book.SeriesIndex,
+	}
+	return m.pushDependency(lq, nt)
+}
+
+// pronunciationDependency is speechDirectionDependency's sibling for
+// pronunciation resolution: t's own chapter's queued or in-flight
+// KindPronunciation task, if any, or a lazily-created one via m.pronounce
+// the first time it finds the chapter's Passes.Pronunciation unset.
+// Gated on the same book.SpeechDirection opt-in ("wait for tagging before
+// generating"), but not on the clone model - a pronunciation fix applies
+// to every one. Resolving a pronunciation invalidates the chapter's
+// already-generated audio (see httpapi.pronounceChapter), so a clone
+// dispatched before it finishes would just be deleted again.
+func (m *Manager) pronunciationDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+	chapterID := t.chapterID
+	key := "pronunciation:" + chapterID
+	if found, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == key }); ok {
+		return found
+	}
+	if m.pronounce == nil {
+		return nil
+	}
+	book, err := m.store.GetBook(t.bookID)
+	if err != nil || book == nil || !book.SpeechDirection {
+		return nil
+	}
+	ch, err := m.store.GetChapterByID(chapterID)
+	if err != nil || ch == nil {
+		return nil
+	}
+	if ch.Passes.Pronunciation {
+		return nil // already resolved
+	}
+	chVal := *ch
+	nt := &task{
+		kind:        KindPronunciation,
+		tier:        t.tier,
+		bookID:      t.bookID,
+		chapterID:   chapterID,
+		chapterIdx:  t.chapterIdx,
+		llmKey:      chapterID,
+		runLLM:      func(ctx context.Context) (int, func(), error) { return m.pronounce(ctx, book, &chVal) },
 		seriesName:  book.SeriesName,
 		seriesIndex: book.SeriesIndex,
 	}
@@ -2739,10 +2819,6 @@ func (m *Manager) referenceClipDependency(lq *taskqueue.LockedQueue, t *task) ta
 	// Nobody's rendering it yet - create the task now, carrying everything
 	// it needs straight from t's own already-resolved fields (see
 	// pushResolvedTask), no httpapi/character context required.
-	cloneModel := t.cloneModel
-	if cloneModel == "" {
-		cloneModel = voices.DefaultCloneModel
-	}
 	label := t.paragraph.Speaker
 	if label == "" {
 		label = "Narrator"
@@ -2763,7 +2839,7 @@ func (m *Manager) referenceClipDependency(lq *taskqueue.LockedQueue, t *task) ta
 			// up the seed that's actually on disk instead of reverting to
 			// the original, crash-triggering one.
 			seed := t.seed + attempt
-			path, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, t.presetID, t.instruct, seed, t.refText, t.speedMultiplier, cloneModel, t.designModel)
+			path, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, t.presetID, t.instruct, seed, t.refText, t.speedMultiplier, t.designModel)
 			if err == nil && attempt > 0 {
 				if uerr := m.store.UpdateVoicePresetSeed(t.presetID, seed); uerr != nil {
 					log.Printf("jobs: persist bumped seed for preset %s: %v", t.presetID, uerr)
@@ -3357,7 +3433,20 @@ func (m *Manager) RunDescription(ctx context.Context, bookID, chapterID string, 
 	return m.runLLMTaskDirect(ctx, KindDescription, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
 }
 
-// enqueueChapterLLM is EnqueueScareQuote/EnqueueDescription's shared
+// EnqueuePronunciation queues fn as a KindPronunciation task - same shape
+// as EnqueueScareQuote.
+func (m *Manager) EnqueuePronunciation(bookID, chapterID string, chapterIdx int, fn PronunciationFunc) {
+	m.enqueueChapterLLM(KindPronunciation, bookID, chapterID, chapterIdx, fn)
+}
+
+// RunPronunciation is EnqueuePronunciation's blocking sibling, for
+// httpapi.preprocessPronunciationPhase.
+func (m *Manager) RunPronunciation(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, fn PronunciationFunc) (int, error) {
+	return m.runLLMTaskDirect(ctx, KindPronunciation, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
+}
+
+// enqueueChapterLLM is EnqueueScareQuote/EnqueueDescription/
+// EnqueuePronunciation's shared
 // fire-and-forget push - a chapter-keyed poolLLM task at
 // defaultAttributionTier.
 func (m *Manager) enqueueChapterLLM(kind Kind, bookID, chapterID string, chapterIdx int, fn func(ctx context.Context) (int, func(), error)) {
@@ -4627,6 +4716,8 @@ func (m *Manager) cascadePipelinePromotion(bookID string, phase, newTier int) {
 		kind = KindScareQuote
 	case pipelinePhaseDescription:
 		kind = KindDescription
+	case pipelinePhasePronunciation:
+		kind = KindPronunciation
 	default:
 		return
 	}
@@ -4892,7 +4983,7 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, error) {
 	if cloneModel == "" {
 		cloneModel = voices.DefaultCloneModel
 	}
-	refPath, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, t.presetID, t.instruct, t.seed, t.refText, t.speedMultiplier, cloneModel, t.designModel)
+	refPath, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, t.presetID, t.instruct, t.seed, t.refText, t.speedMultiplier, t.designModel)
 	if err != nil {
 		return nil, fmt.Errorf("ensure reference clip: %w", err)
 	}
@@ -5387,7 +5478,7 @@ func (m *Manager) generateIndependently(t *task) {
 		}
 		return
 	}
-	refPath, err := voicerefs.EnsureFile(m.ctx, m.tts, m.dataDir, t.presetID, t.instruct, t.seed, t.refText, t.speedMultiplier, cloneModel, t.designModel)
+	refPath, err := voicerefs.EnsureFile(m.ctx, m.tts, m.dataDir, t.presetID, t.instruct, t.seed, t.refText, t.speedMultiplier, t.designModel)
 	if err != nil {
 		for _, p := range t.mergeParagraphs {
 			m.failParagraph(t, p, fmt.Errorf("ensure reference clip: %w", err))

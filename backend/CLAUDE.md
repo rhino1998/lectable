@@ -38,7 +38,7 @@ most *other* families reuse for their own KV-cache decode loop instead of
 hand-rolling one the way Higgs does), which already pass `true` for exactly
 this reason. Net effect: since `QWEN_TTS_AUDIOCPP_BACKEND=hip` here and this
 box's audio.cpp build has `GGML_HIP_GRAPHS=ON`, every paragraph rendered
-through Higgs (this app's default clone model) leaves one more captured
+through Higgs (formerly this app's default clone model) leaves one more captured
 HIP-graph-cache entry permanently resident, never evicted.
 
 **Patched, but only in this box's local checkout, deliberately left
@@ -434,14 +434,11 @@ building/running `ttsworker` does, since both now link into that binary.
   `Summary`) is one row, shared series-wide (below) - but their *assigned
   voice* is tracked separately, one `voice_preset_id` per `(character,
   clone_model)` pair (`Store.CharacterVoiceForModel`/`CharacterVoicesForModel`/
-  `SetCharacterVoice`, backed by `character_voices`), because a voice
-  preset clones through one specific `clone_model` and isn't portable to
-  another - a character can end up with a different auto-assigned preset
-  under `audiocpp-qwen3-0.6b` than under `audiocpp-higgs-4b`. Every
-  lookup/provisioning call is keyed by the book's own currently-resolved
-  clone model (`narration.EffectiveCloneModel(bookVoice)`, defaulting to
-  `voices.DefaultCloneModel` for a fully custom instruct with no preset
-  backing it); `provisionMissingCharacterVoices` checks any character it
+  `SetCharacterVoice`, backed by `character_voices`), so a character can
+  end up with a different auto-assigned preset under `audiocpp-qwen3-0.6b`
+  than under `audiocpp-higgs-4b`. Every lookup/provisioning call is keyed
+  by the book's own clone model (`store.Book.CloneModel`, via
+  `narration.BookCloneModel`/`EffectiveCloneModel`); `provisionMissingCharacterVoices` checks any character it
   touches - new or recurring - who doesn't yet have a voice for that
   model, so switching a book's (or series') narrator model doesn't
   silently leave recurring characters back on the book's own voice.
@@ -616,8 +613,8 @@ building/running `ttsworker` does, since both now link into that binary.
   attribution the way Describe is: it's optional/stylistic, nothing else
   depends on its output, and neither prompt has been benchmarked against
   real chapters yet the way attribution/description were. Only runs for
-  Higgs's own clone model (`voices.DefaultCloneModel`, `"audiocpp-higgs-4b"`
-  today) - checked synchronously (400 for any other clone model) since the
+  Higgs's own clone model (`voices.HiggsCloneModel`, `"audiocpp-higgs-4b"`)
+  - checked synchronously (400 for any other clone model) since the
   tag vocabulary means nothing to another family's tokenizer.
 
   `directChapter` threads `jobs.Manager.HasHigherPriorityLLMWork` through
@@ -670,10 +667,12 @@ building/running `ttsworker` does, since both now link into that binary.
   run tags nothing.
 
   **Pronunciation resolution** (`Client.ResolvePronunciation`/
-  `pronunciation.go`) is a third sibling pass `directChapter` runs
-  alongside DirectChapter/TagSfx, sharing the same per-chapter
-  call/requeue-on-pause plumbing but solving a genuinely different
-  problem: fixing a mispronounced abbreviation ("St." read as neither
+  `pronunciation.go`) is its own chapter pass - `httpapi.pronounceChapter`,
+  a `jobs.KindPronunciation` task, `store.Passes.Pronunciation`, `POST
+  .../resolve-pronunciation`, and its own preprocess phase - with the same
+  per-chapter call/requeue-on-pause/invalidate-audio shape as
+  `directChapter` (which it used to run inside of, as a third sub-pass).
+  It solves a genuinely different problem: fixing a mispronounced abbreviation ("St." read as neither
   "Street" nor "Saint" correctly) means actually changing what word gets
   spoken, not inserting a control token - a narrow, deliberate exception
   to `deliverytags`' own "never reword real content" invariant. Rather
@@ -730,16 +729,18 @@ building/running `ttsworker` does, since both now link into that binary.
   Forced alignment and the reader's own on-screen text always use `Text`
   untouched here too.
 
-  Bundled behind `directChapter`'s own Higgs-only clone-model gate for v1
-  even though pronunciation resolution doesn't actually need it -
-  simplicity, since every book in practice currently resolves to
-  `voices.DefaultCloneModel` anyway; move it out from behind that gate if
-  a non-Higgs clone model ever wants pronunciation fixes without the
-  Higgs-specific tag passes.
+  Unlike direction tagging, it isn't gated on Higgs - it runs for every
+  clone model. With `store.Book.SpeechDirection` on, a chapter's
+  generation waits on both (`jobs.Manager.pronunciationDependency` for any
+  model, `speechDirectionDependency` only for a Higgs book); chapters
+  directed before the split were backfilled with `passes.pronunciation`
+  (`store.migratePronunciationPass`), since direction tagging used to
+  resolve it too.
 - `internal/jobs/` — a single priority queue shared by every
   chapter/paragraph/character-scoped background job, generalized over a
   `Kind` (`KindVoiceClone`, `KindVoiceDesign`, `KindSpeakerAttribution`,
-  `KindSpeakerCharacterization`, `KindSpeechDirection` so far) rather than
+  `KindSpeakerCharacterization`, `KindSpeechDirection`, `KindPronunciation`,
+  among others) rather than
   one mechanism per feature. Every kind sorts through the same
   tier-ordered heap (`TierUrgent`/`TierLookahead`/`TierNormal`/`TierBackground` - `TierNormal` is never a default, only reached by manually promoting a task from the Jobs page), but
   dispatches into one of *two separate* worker slot pools by resource, not
@@ -1046,7 +1047,7 @@ build does, since both now link into that one binary.
 
 - `POST /api/books` (multipart `file`) / `GET /api/books` / `GET|DELETE /api/books/{id}`
 - `GET /api/books/{id}/cover`
-- `GET|PUT /api/books/{id}/voice` — changing voice resets that book's paragraph audio to `pending`; `multiVoice` toggles whether character voice assignments (see below) override this book's own voice at all (default off)
+- `GET|PUT /api/books/{id}/voice` — `cloneModel` is the book's own clone model (every voice in it clones through it; voice presets carry none - `""` on PUT leaves it unchanged, and changing it deletes the book's generated audio); changing voice resets that book's paragraph audio to `pending`; `multiVoice` toggles whether character voice assignments (see below) override this book's own voice at all (default off)
 - `GET|PUT /api/books/{id}/position`
 - `GET /api/books/{id}/chapters/{idx}` — paragraphs with `audioStatus`/`audioUrl`/`speaker`/`inline`
 - `POST /api/books/{id}/generate` — enqueues background generation for every chapter in the book at once (library page's hover "Generate audio" button) - just loops `Jobs.EnqueueChapter` per chapter and returns `202` immediately; no background goroutine or dedup needed since `EnqueueChapter` is already fire-and-forget and idempotent per chapter
@@ -1056,7 +1057,8 @@ build does, since both now link into that one binary.
 - `PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker` — `{"speaker": "..."}`; corrects one paragraph's speaker attribution directly, without touching its already-generated audio - a caller wanting the new voice actually narrated still needs a separate `regenerate` call above. `""`/`"Narrator"` both mean "no character"; any other name is registered as a real character if it wasn't one already. 400s if the target paragraph isn't quoted dialogue (`IsQuote`) - narration/description can't be attributed to a speaker
 - `POST /api/books/{id}/chapters/{idx}/attribute-speakers` — enqueues LLM speaker attribution for one chapter and returns `202 {"queued": true}` immediately, not the result (503 if the LLM model file is missing) - fire-and-forget; registers any newly-discovered character with no voice yet - characterization/voice assignment happens lazily later, the first time that character's voice is actually needed for generation
 - `POST /api/books/{id}/chapters/{idx}/retag-scare-quotes` / `.../retag-descriptions` — enqueue a `KindScareQuote` / `KindDescription` task for one chapter, `202 {"queued": true}` (always re-runs, even if already tagged); description tagging waits on the chapter's scare-quote tagging
-- `POST /api/books/{id}/chapters/{idx}/tag-directions` — enqueues speech-direction tagging (Higgs's own inline delivery tags) *and* pronunciation resolution for one chapter, `202 {"queued": true}` immediately (503 if the LLM model file is missing, 400 if the book's resolved clone model isn't `audiocpp-higgs-4b`) - fire-and-forget
+- `POST /api/books/{id}/chapters/{idx}/resolve-pronunciation` — enqueues pronunciation resolution (ambiguous abbreviations like "Dr.") for one chapter, any clone model, `202 {"queued": true}` (503 if the LLM model file is missing) - fire-and-forget
+- `POST /api/books/{id}/chapters/{idx}/tag-directions` — enqueues speech-direction tagging (Higgs's own inline delivery tags) for one chapter, `202 {"queued": true}` immediately (503 if the LLM model file is missing, 400 if the book's resolved clone model isn't `audiocpp-higgs-4b`) - fire-and-forget
 - `POST /api/books/{id}/chapters/{idx}/generate-music` — queues the whole-chapter background-music run now (`jobs.Manager.GenerateChapterMusic`, `TierNormal`), regardless of the book's `musicEnabled` toggle; resets failed regions to pending first so they're retried. `202 {"queued": n}` (regions queued, 0 if all already have music), `409` if the chapter isn't scored or its narration isn't fully generated. Separately, a `KindMusicLiveGeneration` task generates the region around the reader (and the next one) as soon as those regions' own paragraphs are voiced; a region's "generating" state is tracked in memory (`Manager.MusicRegionGenerating`), never stored
 - `POST /api/books/{id}/preprocess` — the "run everything" meta-task: scare-quote tagging, attribution, description tagging, characterization, voice provisioning, direction-tagging, and music scoring for every chapter/character in the book. Phase dependencies are declared in `jobs.pipelinePhaseDeps`: scare-quote tagging before attribution and description tagging, both of those before characterization, characterization before voice provisioning; direction-tagging and music scoring depend on none of them (`directChapter` only needs the book's own already-resolved voice and each paragraph's own `IsQuote`/`Text`, none of which the other three touch), so it dispatches immediately alongside attribution rather than waiting on the other three to clear first - see `jobs.pipelineResolver`'s own doc comment. `202 {"queued": true}` immediately (503 if the LLM model file is missing, `409` if a run is already in progress for this book) - the four phases are real, dependency-ordered tasks (`jobs.Manager.EnqueuePipeline`, one `pipelineTask` per phase, `httpapi`'s `preprocess*Phase` closures supplying each phase's actual work), each phase task blocking on its own chapter's/character's real per-item task (`RunAttribution`/`RunCharacterization` via `ensureCharacterized`/`RunVoiceProvision`/`RunDirection`) exactly the way a single-item button dispatch already does - so no nested-queue-call deadlock risk (a phase task never occupies the `poolLLM`/`poolGeneration`/`poolDesign` slot it's waiting on). The four phase tasks themselves dispatch through `poolPipeline`, on a second, independent `taskqueue.Queue` (`jobs.Manager.pipelineQueue`) separate from the one `poolGeneration`/`poolDesign`/`poolLLM` share - see `internal/jobs/pipeline.go`'s own doc comment: this is what lets book preprocessing actually run concurrently with ordinary generation/attribution instead of being subject to those three pools' own "one pool active at a time" mutual exclusion, since a phase task does no GPU/LLM work itself. Progress observable exactly like the individual buttons' own. Best-effort and idempotent per item, so rerunning it (or an individual button) after a partial failure only redoes what didn't finish
 - `GET /api/books/{id}/speakers` — per-book speaker table: Narrator + every attributed character (shared across the whole series), each with its `summary` characterization, paragraph/ready-audio counts, and a sample clip URL
@@ -1070,6 +1072,7 @@ build does, since both now link into that one binary.
 - `POST /api/books/{id}/characters/{characterId}/characterize` — force re-run LLM voice characterization for one character (503 if the LLM model file is missing), even if already characterized; invalidates every clone model's assigned voice preset for the character, if any
 - `GET /api/paragraphs/{id}/audio` — Range-request-capable, via `http.ServeFile`
 - `GET /api/voices/presets`, `GET /api/voices/languages` — served in-process from `internal/voices` (no worker call needed)
+- `GET|PUT /api/voices/default` — the voice *and* `cloneModel` a newly created book starts with (`default_voice`; `cloneModel` defaults to `audiocpp-pocket-100m`, `""` on PUT leaves it unchanged). Voice presets themselves have no clone model; the voice test endpoints take an optional `cloneModel` to preview through, defaulting to this one
 
 ## Testing changes
 

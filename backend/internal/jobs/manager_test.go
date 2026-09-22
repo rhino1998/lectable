@@ -256,7 +256,7 @@ func TestManagerFullyCustomInstructUsesDesignNotClone(t *testing.T) {
 	mgr := NewManager(s, fake.Manager(), dataDir)
 
 	book, chapterID := createBookAndChapter(t, s, "", 0, "Only paragraph.")
-	if err := s.UpdateVoice(book.ID, "", "speak like a robot", "English", 0, store.CharacterVoiceModeNarrator, false, false); err != nil {
+	if err := s.UpdateVoice(book.ID, "", "speak like a robot", "English", 0, book.CloneModel, store.CharacterVoiceModeNarrator, false, false); err != nil {
 		t.Fatalf("UpdateVoice: %v", err)
 	}
 	book, err := s.GetBook(book.ID)
@@ -916,7 +916,7 @@ func TestSpeechDirectionDependencyBlocksThenClearsOnceTagged(t *testing.T) {
 	// default - see store.Book.SpeechDirection's own doc comment), so this
 	// test's whole premise (the dependency blocks until tagged) needs it
 	// explicitly turned on.
-	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CharacterVoiceMode, true, false); err != nil {
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, "audiocpp-higgs-4b", book.CharacterVoiceMode, true, false); err != nil {
 		t.Fatalf("UpdateVoice(SpeechDirection=true): %v", err)
 	}
 
@@ -974,11 +974,13 @@ func TestSpeechDirectionDependencyNeverAppliesToNonHiggsCloneModel(t *testing.T)
 	s := openTestStore(t)
 	book, chapterID := createBookAndChapter(t, s, "", 0, "Some narration.")
 
-	preset, err := s.CreateVoicePreset("Custom", "a custom instruct", "a reference line", 1, 1.0, "some-other-clone-model", "")
+	preset, err := s.CreateVoicePreset("Custom", "a custom instruct", "a reference line", 1, 1.0, "")
 	if err != nil {
 		t.Fatalf("CreateVoicePreset: %v", err)
 	}
-	if err := s.UpdateVoice(book.ID, preset.ID, "", "en", 0, store.CharacterVoiceModeNarrator, false, false); err != nil {
+	// SpeechDirection on, so the only thing keeping the dependency away is
+	// the clone-model gate itself.
+	if err := s.UpdateVoice(book.ID, preset.ID, "", "en", 0, "some-other-clone-model", store.CharacterVoiceModeNarrator, true, false); err != nil {
 		t.Fatalf("UpdateVoice: %v", err)
 	}
 	book, err = s.GetBook(book.ID)
@@ -1009,6 +1011,60 @@ func TestSpeechDirectionDependencyNeverAppliesToNonHiggsCloneModel(t *testing.T)
 	}
 	if directCalls != 0 {
 		t.Fatalf("expected m.direct never to be called for a non-Higgs clone model, got %d call(s)", directCalls)
+	}
+}
+
+// TestPronunciationDependencyBlocksThenClearsForAnyCloneModel is
+// TestSpeechDirectionDependencyBlocksThenClearsOnceTagged's counterpart for
+// pronunciation resolution, on a non-Higgs book: unlike direction tagging,
+// pronunciation applies to every clone model, so with SpeechDirection on
+// the clone waits on a lazily-created KindPronunciation task, and once
+// Passes.Pronunciation is persisted it dispatches with nothing left to
+// wait on.
+func TestPronunciationDependencyBlocksThenClearsForAnyCloneModel(t *testing.T) {
+	s := openTestStore(t)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "Some narration.")
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, "audiocpp-pocket-100m", book.CharacterVoiceMode, true, false); err != nil {
+		t.Fatalf("UpdateVoice(SpeechDirection=true): %v", err)
+	}
+
+	pronounceCalls := 0
+	mgr := newTestManagerWithStore(s)
+	mgr.narration = narration.NewResolver(s)
+	mgr.direct = func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
+		t.Fatalf("direction tagging must not run for a non-Higgs book")
+		return 0, nil, nil
+	}
+	mgr.pronounce = func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
+		pronounceCalls++
+		return 0, nil, s.SetChapterPronounced(ch.ID)
+	}
+
+	cloneTask := &task{kind: KindVoiceClone, bookID: book.ID, chapterID: chapterID, tier: TierBackground, paragraph: store.Paragraph{ID: "p-1"}}
+	mgr.pushTask(cloneTask)
+
+	got, ok := mgr.queue.Pop()
+	if !ok {
+		t.Fatalf("expected the lazily-created pronunciation task to dispatch")
+	}
+	blocker := got.(*task)
+	if blocker.kind != KindPronunciation || blocker.chapterID != chapterID {
+		t.Fatalf("expected a KindPronunciation task for chapter %q, got kind=%v chapterID=%q", chapterID, blocker.kind, blocker.chapterID)
+	}
+	if _, ok := mgr.queue.Pop(); ok {
+		t.Fatalf("expected the clone to stay blocked while pronunciation resolution is in flight")
+	}
+	if _, _, err := blocker.runLLM(t.Context()); err != nil {
+		t.Fatalf("runLLM: %v", err)
+	}
+	mgr.queue.Finish(blocker.dedupKey())
+
+	got2, ok := mgr.queue.Pop()
+	if !ok || got2.(*task) != cloneTask {
+		t.Fatalf("expected the clone to dispatch once its chapter's pronunciation is resolved, got %v ok=%v", got2, ok)
+	}
+	if pronounceCalls != 1 {
+		t.Fatalf("expected exactly one pronunciation run, got %d", pronounceCalls)
 	}
 }
 
@@ -1046,7 +1102,7 @@ func TestHasHigherPriorityWorkIgnoresSelfBlockedGeneration(t *testing.T) {
 	// untagged chapter) needs it explicitly turned on - see
 	// TestSpeechDirectionDependencyBlocksThenClearsOnceTagged's own doc
 	// comment for the same setup.
-	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CharacterVoiceMode, true, false); err != nil {
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, "audiocpp-higgs-4b", book.CharacterVoiceMode, true, false); err != nil {
 		t.Fatalf("UpdateVoice(SpeechDirection=true): %v", err)
 	}
 
@@ -1690,7 +1746,7 @@ func TestGenerateChapterRowLastsUntilAudioDoneAndCancelDropsQueued(t *testing.T)
 func TestMusicGenerationWaitsForWholeChapterVoiced(t *testing.T) {
 	s := openTestStore(t)
 	book, chapterID := createBookAndChapter(t, s, "", 0, "First paragraph.", "Second paragraph.")
-	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CharacterVoiceMode, false, true); err != nil {
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CloneModel, book.CharacterVoiceMode, false, true); err != nil {
 		t.Fatalf("UpdateVoice(MusicEnabled=true): %v", err)
 	}
 	book, _ = s.GetBook(book.ID)

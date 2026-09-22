@@ -31,7 +31,7 @@ func TestEnsureFileConcurrentCallsRenderOnce(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			paths[i], errs[i] = EnsureFile(t.Context(), tts, dataDir, "shared-preset", "speak warmly", 1, "hello world", 1.0, "audiocpp-higgs-4b", "")
+			paths[i], errs[i] = EnsureFile(t.Context(), tts, dataDir, "shared-preset", "speak warmly", 1, "hello world", 1.0, "")
 		}(i)
 	}
 	wg.Wait()
@@ -57,7 +57,7 @@ func TestEnsureFileRendersAndCaches(t *testing.T) {
 	tts := fake.Manager()
 	dataDir := t.TempDir()
 
-	path, err := EnsureFile(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, "audiocpp-higgs-4b", "")
+	path, err := EnsureFile(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, "")
 	if err != nil {
 		t.Fatalf("EnsureFile: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestEnsureFileRendersAndCaches(t *testing.T) {
 	}
 
 	// A second EnsureFile call should be a pure cache hit - no new render.
-	if _, err := EnsureFile(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, "audiocpp-higgs-4b", ""); err != nil {
+	if _, err := EnsureFile(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, ""); err != nil {
 		t.Fatalf("EnsureFile (cached): %v", err)
 	}
 	if len(fake.DesignCalls()) != 1 {
@@ -85,10 +85,10 @@ func TestRegenerateAlwaysReRenders(t *testing.T) {
 	tts := fake.Manager()
 	dataDir := t.TempDir()
 
-	if _, err := EnsureFile(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, "audiocpp-higgs-4b", ""); err != nil {
+	if _, err := EnsureFile(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, ""); err != nil {
 		t.Fatalf("EnsureFile: %v", err)
 	}
-	if _, err := Regenerate(t.Context(), tts, dataDir, "preset-1", "speak differently now", 1, "hello world", 1.0, "audiocpp-higgs-4b", ""); err != nil {
+	if _, err := Regenerate(t.Context(), tts, dataDir, "preset-1", "speak differently now", 1, "hello world", 1.0, ""); err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
 	if len(fake.DesignCalls()) != 2 {
@@ -115,7 +115,7 @@ func TestRegenerateTruncatesAnOverlongClip(t *testing.T) {
 	tts := fake.Manager()
 	dataDir := t.TempDir()
 
-	path, err := Regenerate(t.Context(), tts, dataDir, "preset-1", "speak slowly", 1, "a very long generated reference line", 1.0, "audiocpp-higgs-4b", "")
+	path, err := Regenerate(t.Context(), tts, dataDir, "preset-1", "speak slowly", 1, "a very long generated reference line", 1.0, "")
 	if err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestRegenerateLeavesAShortClipUntouched(t *testing.T) {
 	tts := fake.Manager()
 	dataDir := t.TempDir()
 
-	path, err := Regenerate(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, "audiocpp-higgs-4b", "")
+	path, err := Regenerate(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, "")
 	if err != nil {
 		t.Fatalf("Regenerate: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestDeriveFromExistingAndCached(t *testing.T) {
 	tts := fake.Manager()
 	dataDir := t.TempDir()
 
-	if _, err := EnsureFile(t.Context(), tts, dataDir, "source-preset", "speak warmly", 1, "a somewhat longer reference line", 1.0, "audiocpp-higgs-4b", ""); err != nil {
+	if _, err := EnsureFile(t.Context(), tts, dataDir, "source-preset", "speak warmly", 1, "a somewhat longer reference line", 1.0, ""); err != nil {
 		t.Fatalf("EnsureFile (source): %v", err)
 	}
 	if len(fake.DesignCalls()) != 1 {
@@ -457,7 +457,7 @@ func TestDesignFailurePropagates(t *testing.T) {
 	tts := fake.Manager()
 	dataDir := t.TempDir()
 
-	if _, err := EnsureFile(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, "audiocpp-higgs-4b", ""); err == nil {
+	if _, err := EnsureFile(t.Context(), tts, dataDir, "preset-1", "speak warmly", 1, "hello world", 1.0, ""); err == nil {
 		t.Fatalf("expected EnsureFile to propagate the worker's Design failure")
 	}
 	if _, err := os.Stat(audiopath.VoicePresetRefFile(dataDir, "preset-1")); err == nil {

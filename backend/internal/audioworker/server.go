@@ -66,6 +66,7 @@ func (w *Worker) HandleGenerate(rw http.ResponseWriter, r *http.Request) {
 		Language:      req.Language,
 		Instruct:      req.Instruct,
 		GuidanceScale: req.GuidanceScale,
+		Temperature:   req.Temperature,
 	})
 	if err != nil {
 		writeError(rw, http.StatusInternalServerError, err)
@@ -82,7 +83,7 @@ func (w *Worker) HandleDesign(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	audio, err := w.Design(req.RefText, req.Instruct, req.Language, req.DesignModel, req.Seed, req.GuidanceScale)
+	audio, err := w.Design(req.RefText, req.Instruct, req.Language, req.DesignModel, req.Seed, req.GuidanceScale, req.Temperature)
 	if err != nil {
 		writeError(rw, http.StatusInternalServerError, err)
 		return

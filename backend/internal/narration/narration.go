@@ -29,7 +29,11 @@ type ResolvedVoice struct {
 	Seed            int
 	RefText         string
 	SpeedMultiplier float64
-	CloneModel      string
+	// CloneModel is the book's own clone model (store.Book.CloneModel,
+	// via EffectiveCloneModel) - identical for every voice resolved for
+	// the same book, since a voice preset carries no clone model of its
+	// own.
+	CloneModel string
 	// DesignModel selects which VoiceDesign engine renders this voice's
 	// reference clip (see voices.Preset.DesignModel/store.VoicePreset's own
 	// doc comments) - "" defers to the worker's own process-wide default.
@@ -79,6 +83,7 @@ func (r *Resolver) BookVoice(book *store.Book) (ResolvedVoice, error) {
 		Language:        book.VoiceLanguage,
 		Seed:            book.VoiceSeed,
 		SpeedMultiplier: 1.0,
+		CloneModel:      BookCloneModel(book),
 	}
 	if book.VoicePresetID == "" {
 		// Fully custom instruct with no preset backing it - VoiceDesign
@@ -90,43 +95,41 @@ func (r *Resolver) BookVoice(book *store.Book) (ResolvedVoice, error) {
 	} else if preset != nil {
 		v.RefText = preset.RefText
 		v.SpeedMultiplier = preset.SpeedMultiplier
-		v.CloneModel = preset.CloneModel
 		v.DesignModel = preset.DesignModel
 		return v, nil
 	}
 	if p, ok := voices.PresetsByID[book.VoicePresetID]; ok {
 		v.RefText = p.RefText
 		v.SpeedMultiplier = p.SpeedMultiplier
-		v.CloneModel = builtinCloneModel(p)
 		v.DesignModel = p.DesignModel
 	}
 	return v, nil
 }
 
-// builtinCloneModel is p's own CloneModel override if it has one (currently
-// only voices.FastPresetID does - see its own doc comment), defaulting to
-// voices.DefaultCloneModel like every other built-in preset.
-func builtinCloneModel(p voices.Preset) string {
-	if p.CloneModel != "" {
-		return p.CloneModel
+// BookCloneModel is book's own clone model, defaulting to
+// voices.DefaultCloneModel if it's somehow blank.
+func BookCloneModel(book *store.Book) string {
+	if book.CloneModel == "" {
+		return voices.DefaultCloneModel
 	}
-	return voices.DefaultCloneModel
+	return book.CloneModel
 }
 
 // CharacterVoice resolves presetID (a character's assigned voice, built-in
-// or custom) into a full ResolvedVoice narrating in language (a character's
-// assigned voice doesn't carry its own language - see store.VoicePreset -
-// so it narrates in whatever language the book itself is set to). ok is
+// or custom) into a full ResolvedVoice narrating in language through
+// cloneModel (a character's assigned voice carries neither its own
+// language nor its own clone model - see store.VoicePreset - so it
+// narrates in whatever language and model the book itself is set to). ok is
 // false if presetID is "" or names a preset that no longer exists (e.g. a
 // deleted custom preset); callers should fall back to BookVoice then.
-func (r *Resolver) CharacterVoice(presetID, language string) (v ResolvedVoice, ok bool, err error) {
+func (r *Resolver) CharacterVoice(presetID, language, cloneModel string) (v ResolvedVoice, ok bool, err error) {
 	if presetID == "" {
 		return ResolvedVoice{}, false, nil
 	}
 	if p, found := voices.PresetsByID[presetID]; found {
 		return ResolvedVoice{
 			PresetID: p.ID, Instruct: p.Instruct, Language: language, Seed: p.Seed,
-			RefText: p.RefText, SpeedMultiplier: p.SpeedMultiplier, CloneModel: builtinCloneModel(p),
+			RefText: p.RefText, SpeedMultiplier: p.SpeedMultiplier, CloneModel: cloneModel,
 			DesignModel: p.DesignModel,
 		}, true, nil
 	}
@@ -139,7 +142,7 @@ func (r *Resolver) CharacterVoice(presetID, language string) (v ResolvedVoice, o
 	}
 	return ResolvedVoice{
 		PresetID: custom.ID, Instruct: custom.Instruct, Language: language, Seed: custom.Seed,
-		RefText: custom.RefText, SpeedMultiplier: custom.SpeedMultiplier, CloneModel: custom.CloneModel,
+		RefText: custom.RefText, SpeedMultiplier: custom.SpeedMultiplier, CloneModel: cloneModel,
 		DesignModel: custom.DesignModel,
 	}, true, nil
 }
@@ -173,10 +176,9 @@ func (r *Resolver) ForParagraph(book *store.Book, speaker string) (ResolvedVoice
 	if char == nil {
 		return bookVoice, nil
 	}
-	// A character's assigned voice is per clone model (a preset clones
-	// through one specific model - see store.Character's doc comment), so
-	// the lookup is keyed by the book's own resolved clone model, not just
-	// the character alone.
+	// A character's assigned voice is per clone model (see
+	// store.Character's doc comment), so the lookup is keyed by the book's
+	// own clone model, not just the character alone.
 	cloneModel := EffectiveCloneModel(bookVoice)
 	presetID, err := r.store.CharacterVoiceForModel(char.ID, cloneModel)
 	if err != nil {
@@ -218,7 +220,7 @@ func (r *Resolver) ResolveCharacterVoice(book *store.Book, bookVoice ResolvedVoi
 		}
 		return bookVoice, nil
 	}
-	v, ok, err := r.CharacterVoice(presetID, book.VoiceLanguage)
+	v, ok, err := r.CharacterVoice(presetID, book.VoiceLanguage, bookVoice.CloneModel)
 	if err != nil {
 		return ResolvedVoice{}, err
 	}
@@ -245,12 +247,12 @@ func instructedNarratorVoice(bookVoice ResolvedVoice, summary string) ResolvedVo
 	return v
 }
 
-// EffectiveCloneModel is bookVoice's CloneModel, defaulting to
-// voices.DefaultCloneModel when bookVoice is a fully custom instruct with
-// no preset backing it (see BookVoice) and so has no clone model of its
-// own resolved - used to key character-voice auto-assignment/lookup
-// (Store.CharacterVoiceForModel) so "no clone model resolved" doesn't
-// become its own distinct, empty-string scope.
+// EffectiveCloneModel is bookVoice's CloneModel (always BookVoice's own
+// BookCloneModel), defaulting to voices.DefaultCloneModel for a
+// hand-built ResolvedVoice that never set one - used to key
+// character-voice auto-assignment/lookup (Store.CharacterVoiceForModel)
+// so "no clone model resolved" doesn't become its own distinct,
+// empty-string scope.
 func EffectiveCloneModel(bookVoice ResolvedVoice) string {
 	if bookVoice.CloneModel == "" {
 		return voices.DefaultCloneModel

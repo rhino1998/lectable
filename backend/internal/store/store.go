@@ -35,6 +35,15 @@ CREATE TABLE IF NOT EXISTS books (
 	voice_instruct TEXT NOT NULL DEFAULT '',
 	voice_language TEXT NOT NULL DEFAULT 'Auto',
 	voice_seed INTEGER NOT NULL DEFAULT 1006, -- resolved from voice_preset_id at voice-selection time; see httpapi.resolveVoiceSeed - matches voices.Presets' velvet-narrator entry
+	-- Which clone model narrates this book (every voice in it - narrator
+	-- and characters alike), e.g. "audiocpp-pocket-100m" or
+	-- "audiocpp-higgs-4b" (see internal/audioworker's cloneModelFamilies).
+	-- A property of the book, not of any voice preset: a preset is only a
+	-- reference clip recipe, cloneable through any model. Starts as
+	-- default_voice.clone_model when the book is created (see CreateBook);
+	-- changing it invalidates the book's generated audio (see
+	-- httpapi.handleUpdateVoice).
+	clone_model TEXT NOT NULL DEFAULT 'audiocpp-higgs-4b',
 	-- Whether/how a character's own narration voice can override this
 	-- book's own - see store.CharacterVoiceMode's own doc comment for the
 	-- four possible values ('narrator'/'assigned'/'instruct_unassigned'/
@@ -217,9 +226,9 @@ CREATE TABLE IF NOT EXISTS characters (
 );
 
 -- A character's assigned voice, one row per (character, clone_model) -
--- separate from characters' identity/summary because a voice_preset
--- clones through one specific clone_model (voice_presets.clone_model) and
--- isn't portable to another; the same character can end up with a
+-- separate from characters' identity/summary because a voice cast for one
+-- clone model (the book's own books.clone_model) isn't necessarily a good
+-- fit under another; the same character can end up with a
 -- different auto-assigned preset per model (see httpapi.provisionCharacterVoice),
 -- while still sharing one identity/summary across all of them (see the
 -- characters table comment above). '' voice_preset_id rows are never
@@ -365,30 +374,27 @@ CREATE TABLE IF NOT EXISTS voice_presets (
 	seed INTEGER NOT NULL,
 	speed_multiplier DOUBLE NOT NULL DEFAULT 1.0,
 	created_at BIGINT NOT NULL,
-	-- Which clone model this preset clones through, e.g.
-	-- "audiocpp-qwen3-0.6b" or "audiocpp-higgs-4b" (see
-	-- internal/audioworker's cloneModelFamilies) - "" defers to the
-	-- worker's own configured default rather than pinning one, but new
-	-- presets are created with an explicit value (see
-	-- httpapi.handleCreateCustomVoicePreset) so a book's narrator model
-	-- doesn't silently change if the worker's default is later changed.
-	clone_model TEXT NOT NULL DEFAULT 'audiocpp-higgs-4b',
 	-- Which VoiceDesign engine renders this preset's reference clip, e.g.
 	-- "qwen3_tts" or "breeze_tts" (see internal/audioworker's
-	-- designEngines) - same "" defers / new presets get an explicit value
-	-- shape as clone_model above (voices.DefaultDesignModel).
+	-- designEngines) - "" defers to the worker's own configured default,
+	-- but new presets are created with an explicit value
+	-- (voices.DefaultDesignModel) so a preset's sound doesn't silently
+	-- change if the worker's default is later changed. No clone model
+	-- here: which model clones a preset's clip is the book's choice
+	-- (books.clone_model), not the preset's.
 	design_model TEXT NOT NULL DEFAULT 'breeze_tts'
 );
 
--- Singleton (always exactly the id=0 row - see Open) holding the voice new
--- books are created with, settable from the Voices page rather than only
--- per-book from the reader.
+-- Singleton (always exactly the id=0 row - see Open) holding the voice and
+-- clone model new books are created with, settable from the Voices page
+-- rather than only per-book from the reader.
 CREATE TABLE IF NOT EXISTS default_voice (
 	id INTEGER PRIMARY KEY,
 	preset_id TEXT NOT NULL DEFAULT 'velvet-narrator',
 	instruct TEXT NOT NULL DEFAULT '',
 	language TEXT NOT NULL DEFAULT 'Auto',
-	seed INTEGER NOT NULL DEFAULT 1006
+	seed INTEGER NOT NULL DEFAULT 1006,
+	clone_model TEXT NOT NULL DEFAULT 'audiocpp-higgs-4b'
 );
 
 CREATE INDEX IF NOT EXISTS idx_chapters_book ON chapters(book_id);
@@ -444,6 +450,14 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := migrateParagraphAudioPointer(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateCloneModelToBook(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migratePronunciationPass(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -573,6 +587,81 @@ func migrateCharactersInvalid(db *sql.DB) error {
 	return nil
 }
 
+// migrateCloneModelToBook moves the clone model from voice_presets (where
+// it used to be a per-voice setting) onto books/default_voice (where it
+// now lives - see the books.clone_model schema comment), in
+// migrateCharactersRefLine's own ADD COLUMN IF NOT EXISTS shape. Keyed on
+// books.clone_model not existing yet, so it runs exactly once.
+//
+// Each existing book is backfilled with whichever model its own narrator
+// preset used to clone through - Higgs for every built-in preset (and the
+// old voice_presets.clone_model default), PocketTTS for fast-narrator, the
+// custom preset's own saved value otherwise - so the audio it has already
+// generated under that model stays valid rather than silently changing
+// engine. The removed "soprano" built-in preset (a fixed-voice model with
+// no reference clip, meaningless as a voice now that the model is chosen
+// separately) becomes a soprano-model book on the default preset instead.
+// default_voice gets the new factory default (voices.DefaultCloneModel),
+// not a backfill.
+func migrateCloneModelToBook(db *sql.DB) error {
+	hasColumn := func(table, column string) (bool, error) {
+		var n int
+		err := db.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?`, table, column).Scan(&n)
+		return n > 0, err
+	}
+	booksHas, err := hasColumn("books", "clone_model")
+	if err != nil {
+		return fmt.Errorf("migrate books.clone_model: %w", err)
+	}
+	if !booksHas {
+		stmts := []string{
+			fmt.Sprintf(`ALTER TABLE books ADD COLUMN clone_model TEXT DEFAULT '%s'`, voices.HiggsCloneModel),
+			fmt.Sprintf(`UPDATE books SET clone_model = '%s' WHERE voice_preset_id = '%s'`, voices.FastCloneModel, voices.FastPresetID),
+			fmt.Sprintf(`UPDATE books SET clone_model = '%s', voice_preset_id = '%s', voice_seed = %d WHERE voice_preset_id = 'soprano'`,
+				voices.SopranoCloneModel, voices.DefaultPresetID, voices.PresetsByID[voices.DefaultPresetID].Seed),
+		}
+		presetsHas, err := hasColumn("voice_presets", "clone_model")
+		if err != nil {
+			return fmt.Errorf("migrate books.clone_model: %w", err)
+		}
+		if presetsHas {
+			stmts = append(stmts, `UPDATE books SET clone_model = vp.clone_model FROM voice_presets vp WHERE books.voice_preset_id = vp.id AND vp.clone_model <> ''`)
+		}
+		for _, stmt := range stmts {
+			if _, err := db.Exec(stmt); err != nil {
+				return fmt.Errorf("migrate books.clone_model: %w", err)
+			}
+		}
+	}
+	if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE default_voice ADD COLUMN IF NOT EXISTS clone_model TEXT DEFAULT '%s'`, voices.DefaultCloneModel)); err != nil {
+		return fmt.Errorf("migrate default_voice.clone_model: %w", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(`UPDATE default_voice SET preset_id = '%s', seed = %d WHERE preset_id = 'soprano'`,
+		voices.DefaultPresetID, voices.PresetsByID[voices.DefaultPresetID].Seed)); err != nil {
+		return fmt.Errorf("migrate default_voice soprano preset: %w", err)
+	}
+	if _, err := db.Exec(`DELETE FROM character_voices WHERE voice_preset_id = 'soprano'`); err != nil {
+		return fmt.Errorf("migrate character_voices soprano preset: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE voice_presets DROP COLUMN IF EXISTS clone_model`); err != nil {
+		return fmt.Errorf("migrate voice_presets.clone_model: %w", err)
+	}
+	return nil
+}
+
+// migratePronunciationPass backfills passes.pronunciation for chapters
+// directed before pronunciation resolution became its own pass: it used to
+// run as part of direction tagging, so a chapter with passes.direction
+// already has its pronunciation resolved. Keyed on the pronunciation key
+// being absent, so it only ever touches pre-split rows.
+func migratePronunciationPass(db *sql.DB) error {
+	if _, err := db.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, '{"pronunciation": true}')
+		WHERE json_extract(passes, '$.direction') = 'true'::JSON AND json_extract(passes, '$.pronunciation') IS NULL`); err != nil {
+		return fmt.Errorf("migrate chapters passes.pronunciation: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Close() error { return s.db.Close() }
 
 func NewID() string {
@@ -595,19 +684,22 @@ type DefaultVoice struct {
 	Instruct string
 	Language string
 	Seed     int
+	// CloneModel is the clone model a newly created book narrates through
+	// (Book.CloneModel) - see the books.clone_model schema comment.
+	CloneModel string
 }
 
 func (s *Store) GetDefaultVoice() (DefaultVoice, error) {
 	var v DefaultVoice
-	err := s.db.QueryRow(`SELECT preset_id, instruct, language, seed FROM default_voice WHERE id = 0`).
-		Scan(&v.PresetID, &v.Instruct, &v.Language, &v.Seed)
+	err := s.db.QueryRow(`SELECT preset_id, instruct, language, seed, clone_model FROM default_voice WHERE id = 0`).
+		Scan(&v.PresetID, &v.Instruct, &v.Language, &v.Seed, &v.CloneModel)
 	return v, err
 }
 
-func (s *Store) SetDefaultVoice(presetID, instruct, language string, seed int) error {
+func (s *Store) SetDefaultVoice(presetID, instruct, language string, seed int, cloneModel string) error {
 	_, err := s.db.Exec(
-		`UPDATE default_voice SET preset_id = ?, instruct = ?, language = ?, seed = ? WHERE id = 0`,
-		presetID, instruct, language, seed,
+		`UPDATE default_voice SET preset_id = ?, instruct = ?, language = ?, seed = ?, clone_model = ? WHERE id = 0`,
+		presetID, instruct, language, seed, cloneModel,
 	)
 	return err
 }
@@ -679,10 +771,10 @@ func (s *Store) CreateBook(title, author, language string, coverExt string, seri
 
 	bookID = NewID()
 	_, err = tx.Exec(
-		`INSERT INTO books (id, title, author, language, cover_ext, series_name, series_index, added_at, voice_preset_id, voice_instruct, voice_language, voice_seed)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO books (id, title, author, language, cover_ext, series_name, series_index, added_at, voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		bookID, title, author, language, coverExt, seriesName, seriesIndex, time.Now().Unix(),
-		defaultVoice.PresetID, defaultVoice.Instruct, defaultVoice.Language, defaultVoice.Seed,
+		defaultVoice.PresetID, defaultVoice.Instruct, defaultVoice.Language, defaultVoice.Seed, defaultVoice.CloneModel,
 	)
 	if err != nil {
 		return "", nil, fmt.Errorf("insert book: %w", err)
@@ -751,7 +843,7 @@ func (s *Store) CreateBook(title, author, language string, coverExt string, seri
 
 func (s *Store) ListBooks() ([]Book, error) {
 	rows, err := s.db.Query(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
-		voice_preset_id, voice_instruct, voice_language, voice_seed, character_voice_mode, speech_direction, music_enabled,
+		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled,
 		pos_chapter_idx, pos_paragraph_idx, pos_seconds, estimate_sec_per_char
 		FROM books ORDER BY added_at DESC`)
 	if err != nil {
@@ -763,7 +855,7 @@ func (s *Store) ListBooks() ([]Book, error) {
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.Title, &b.Author, &b.Language, &b.CoverExt, &b.SeriesName, &b.SeriesIndex, &b.AddedAt,
-			&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CharacterVoiceMode, &b.SpeechDirection, &b.MusicEnabled,
+			&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CloneModel, &b.CharacterVoiceMode, &b.SpeechDirection, &b.MusicEnabled,
 			&b.PosChapterIdx, &b.PosParagraphIdx, &b.PosSeconds, &b.EstimateSecPerChar); err != nil {
 			return nil, err
 		}
@@ -775,11 +867,11 @@ func (s *Store) ListBooks() ([]Book, error) {
 func (s *Store) GetBook(id string) (*Book, error) {
 	var b Book
 	err := s.db.QueryRow(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
-		voice_preset_id, voice_instruct, voice_language, voice_seed, character_voice_mode, speech_direction, music_enabled,
+		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled,
 		pos_chapter_idx, pos_paragraph_idx, pos_seconds, estimate_sec_per_char
 		FROM books WHERE id = ?`, id).Scan(
 		&b.ID, &b.Title, &b.Author, &b.Language, &b.CoverExt, &b.SeriesName, &b.SeriesIndex, &b.AddedAt,
-		&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CharacterVoiceMode, &b.SpeechDirection, &b.MusicEnabled,
+		&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CloneModel, &b.CharacterVoiceMode, &b.SpeechDirection, &b.MusicEnabled,
 		&b.PosChapterIdx, &b.PosParagraphIdx, &b.PosSeconds, &b.EstimateSecPerChar)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -822,13 +914,15 @@ func (s *Store) DeleteBook(id string) error {
 // preset (built-in or custom) presetID resolves to - 0 if presetID is
 // empty (a fully custom instruct with no preset backing it), in which case
 // tts-service falls back to its own unseeded default for that call.
+// cloneModel sets Book.CloneModel, which every voice in the book (narrator
+// and characters alike) clones through.
 // characterVoiceMode sets store.Book.CharacterVoiceMode - see its own doc
 // comment for the four possible values - independent of presetID/instruct/
 // language/seed, which remain the fallback voice regardless of mode.
-func (s *Store) UpdateVoice(bookID, presetID, instruct, language string, seed int, characterVoiceMode CharacterVoiceMode, speechDirection, musicEnabled bool) error {
+func (s *Store) UpdateVoice(bookID, presetID, instruct, language string, seed int, cloneModel string, characterVoiceMode CharacterVoiceMode, speechDirection, musicEnabled bool) error {
 	_, err := s.db.Exec(
-		`UPDATE books SET voice_preset_id = ?, voice_instruct = ?, voice_language = ?, voice_seed = ?, character_voice_mode = ?, speech_direction = ?, music_enabled = ? WHERE id = ?`,
-		presetID, instruct, language, seed, characterVoiceMode, speechDirection, musicEnabled, bookID,
+		`UPDATE books SET voice_preset_id = ?, voice_instruct = ?, voice_language = ?, voice_seed = ?, clone_model = ?, character_voice_mode = ?, speech_direction = ?, music_enabled = ? WHERE id = ?`,
+		presetID, instruct, language, seed, cloneModel, characterVoiceMode, speechDirection, musicEnabled, bookID,
 	)
 	return err
 }
@@ -841,7 +935,7 @@ func (s *Store) SetLengthEstimate(bookID string, secPerChar float64) error {
 }
 
 func (s *Store) ListVoicePresets() ([]VoicePreset, error) {
-	rows, err := s.db.Query(`SELECT id, name, instruct, ref_text, seed, speed_multiplier, created_at, clone_model, design_model FROM voice_presets ORDER BY created_at ASC`)
+	rows, err := s.db.Query(`SELECT id, name, instruct, ref_text, seed, speed_multiplier, created_at, design_model FROM voice_presets ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -850,7 +944,7 @@ func (s *Store) ListVoicePresets() ([]VoicePreset, error) {
 	var out []VoicePreset
 	for rows.Next() {
 		var p VoicePreset
-		if err := rows.Scan(&p.ID, &p.Name, &p.Instruct, &p.RefText, &p.Seed, &p.SpeedMultiplier, &p.CreatedAt, &p.CloneModel, &p.DesignModel); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Instruct, &p.RefText, &p.Seed, &p.SpeedMultiplier, &p.CreatedAt, &p.DesignModel); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -899,8 +993,8 @@ func (s *Store) VoicePresetGroups() (map[string]string, error) {
 
 func (s *Store) GetVoicePreset(id string) (*VoicePreset, error) {
 	var p VoicePreset
-	err := s.db.QueryRow(`SELECT id, name, instruct, ref_text, seed, speed_multiplier, created_at, clone_model, design_model FROM voice_presets WHERE id = ?`, id).
-		Scan(&p.ID, &p.Name, &p.Instruct, &p.RefText, &p.Seed, &p.SpeedMultiplier, &p.CreatedAt, &p.CloneModel, &p.DesignModel)
+	err := s.db.QueryRow(`SELECT id, name, instruct, ref_text, seed, speed_multiplier, created_at, design_model FROM voice_presets WHERE id = ?`, id).
+		Scan(&p.ID, &p.Name, &p.Instruct, &p.RefText, &p.Seed, &p.SpeedMultiplier, &p.CreatedAt, &p.DesignModel)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -910,15 +1004,14 @@ func (s *Store) GetVoicePreset(id string) (*VoicePreset, error) {
 	return &p, nil
 }
 
-func (s *Store) CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, cloneModel, designModel string) (VoicePreset, error) {
+func (s *Store) CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error) {
 	p := VoicePreset{
 		ID: NewID(), Name: name, Instruct: instruct, RefText: refText, Seed: seed,
-		SpeedMultiplier: speedMultiplier, CreatedAt: time.Now().Unix(), CloneModel: cloneModel,
-		DesignModel: designModel,
+		SpeedMultiplier: speedMultiplier, CreatedAt: time.Now().Unix(), DesignModel: designModel,
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO voice_presets (id, name, instruct, ref_text, seed, speed_multiplier, created_at, clone_model, design_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Name, p.Instruct, p.RefText, p.Seed, p.SpeedMultiplier, p.CreatedAt, p.CloneModel, p.DesignModel,
+		`INSERT INTO voice_presets (id, name, instruct, ref_text, seed, speed_multiplier, created_at, design_model) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.Instruct, p.RefText, p.Seed, p.SpeedMultiplier, p.CreatedAt, p.DesignModel,
 	)
 	if err != nil {
 		return VoicePreset{}, err
@@ -926,10 +1019,10 @@ func (s *Store) CreateVoicePreset(name, instruct, refText string, seed int, spee
 	return p, nil
 }
 
-func (s *Store) UpdateVoicePreset(id, name, instruct, refText string, seed int, speedMultiplier float64, cloneModel, designModel string) error {
+func (s *Store) UpdateVoicePreset(id, name, instruct, refText string, seed int, speedMultiplier float64, designModel string) error {
 	_, err := s.db.Exec(
-		`UPDATE voice_presets SET name = ?, instruct = ?, ref_text = ?, seed = ?, speed_multiplier = ?, clone_model = ?, design_model = ? WHERE id = ?`,
-		name, instruct, refText, seed, speedMultiplier, cloneModel, designModel, id,
+		`UPDATE voice_presets SET name = ?, instruct = ?, ref_text = ?, seed = ?, speed_multiplier = ?, design_model = ? WHERE id = ?`,
+		name, instruct, refText, seed, speedMultiplier, designModel, id,
 	)
 	return err
 }
@@ -1583,6 +1676,17 @@ func (s *Store) SetChapterDirected(chapterID string) error {
 	return err
 }
 
+// SetChapterPronounced marks chapterID's own passes.pronunciation true -
+// set by httpapi.pronounceChapter once a pronunciation resolution run
+// finishes covering the whole chapter. SetChapterDirected's shape.
+func (s *Store) SetChapterPronounced(chapterID string) error {
+	_, err := s.db.Exec(
+		`UPDATE chapters SET passes = json_merge_patch(passes, '{"pronunciation": true}') WHERE id = ?`,
+		chapterID,
+	)
+	return err
+}
+
 // ListParagraphsRaw returns a chapter's paragraphs (structural fields plus
 // Speaker) with no per-voice audio status - since a character's assigned
 // voice can now override the book's own per paragraph (see
@@ -1986,7 +2090,7 @@ func (s *Store) DeleteCharacter(id string) error {
 // consistent throughout it.
 func (s *Store) ListSeriesBooks(seriesName string) ([]Book, error) {
 	rows, err := s.db.Query(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
-		voice_preset_id, voice_instruct, voice_language, voice_seed, character_voice_mode, speech_direction,
+		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction,
 		pos_chapter_idx, pos_paragraph_idx, pos_seconds, estimate_sec_per_char
 		FROM books WHERE series_name = ? ORDER BY series_index ASC, added_at ASC`, seriesName)
 	if err != nil {
@@ -1998,7 +2102,7 @@ func (s *Store) ListSeriesBooks(seriesName string) ([]Book, error) {
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.Title, &b.Author, &b.Language, &b.CoverExt, &b.SeriesName, &b.SeriesIndex, &b.AddedAt,
-			&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CharacterVoiceMode, &b.SpeechDirection,
+			&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CloneModel, &b.CharacterVoiceMode, &b.SpeechDirection,
 			&b.PosChapterIdx, &b.PosParagraphIdx, &b.PosSeconds, &b.EstimateSecPerChar); err != nil {
 			return nil, err
 		}

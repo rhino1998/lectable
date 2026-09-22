@@ -9,6 +9,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
+	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
 // isPreprocessing reports whether bookID currently has a preprocessing
@@ -130,6 +131,7 @@ func (s *Server) handlePreprocessBook(w http.ResponseWriter, r *http.Request) {
 		jobs.PhaseVoiceProvision:   s.preprocessVoiceProvisionPhase(book),
 		jobs.PhaseDirection:        s.preprocessDirectionPhase(book, chapters),
 		jobs.PhaseMusic:            s.preprocessMusicPhase(book, chapters),
+		jobs.PhasePronunciation:    s.preprocessPronunciationPhase(book, chapters),
 	}
 	if err := s.Jobs.EnqueuePipeline(book.ID, phases); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -152,6 +154,21 @@ func (s *Server) preprocessScareQuotePhase(book *store.Book, chapters []store.Ch
 		func(ctx context.Context, tier int, ch *store.Chapter) error {
 			_, err := s.Jobs.RunScareQuote(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
 				return s.scareQuoteChapterForJob(ctx, book, ch)
+			})
+			return err
+		})
+}
+
+// preprocessPronunciationPhase is the pronunciation resolution phase - like
+// direction tagging, it needs nothing any other phase produces, so it
+// dispatches immediately. Same skip reasoning as preprocessScareQuotePhase,
+// for Passes.Pronunciation.
+func (s *Server) preprocessPronunciationPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
+	return s.chapterPhase(book, chapters, "pronunciation resolution",
+		func(p store.Passes) bool { return p.Pronunciation },
+		func(ctx context.Context, tier int, ch *store.Chapter) error {
+			_, err := s.Jobs.RunPronunciation(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
+				return s.pronounceChapter(ctx, book, ch, nil)
 			})
 			return err
 		})
@@ -403,13 +420,16 @@ func (s *Server) preprocessVoiceProvisionPhase(book *store.Book) jobs.PipelinePh
 // pass), so a chapter this condition sees
 // as not-yet-directed genuinely still isn't, regardless of what any other
 // phase did to it in the meantime, running concurrently or not.
-// directChapter's own two Higgs-only sub-passes still silently no-op for
-// any other clone model (see higgsTags), but its third sub-pass
-// (pronunciation) runs regardless, so there's still real work - and a real
-// Passes.Direction advance - for this phase to do even then. Same
-// fan-out/join/best-effort shape as the other three phases.
+// Skipped entirely for a non-Higgs book: directChapter no-ops for any
+// other clone model, so there'd be nothing to tag (pronunciation
+// resolution, which does apply, is its own phase -
+// preprocessPronunciationPhase). Same fan-out/join/best-effort shape as
+// the other phases.
 func (s *Server) preprocessDirectionPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
 	return func(ctx context.Context, tier func() int) error {
+		if narration.BookCloneModel(book) != voices.HiggsCloneModel {
+			return nil
+		}
 		var wg sync.WaitGroup
 		for _, cs := range chapters {
 			if cs.Passes.Direction {

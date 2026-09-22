@@ -1503,31 +1503,27 @@ func (s *Server) invalidateParagraphAudio(book *store.Book, paragraphs []store.P
 	}
 }
 
-// directChapter runs all three of speakerattr's per-paragraph
-// preprocessing passes (Client.DirectChapter for sentence-level emotion/
-// style/prosody, Client.TagSfx for positional sfx/pause tags,
-// Client.ResolvePronunciation for ambiguous-abbreviation disambiguation)
-// over chapter's paragraphs and persists each one's own independent
-// annotation (Store.SetParagraphSentenceTags/SetParagraphInlineTags/
-// SetParagraphPronunciation), the first two keyed to the book's currently
-// resolved clone model, pronunciation not (see its own bundling note
-// below). Unlike describeChapter, this is never chained automatically
+// directChapter runs both of speakerattr's delivery-tagging passes
+// (Client.DirectChapter for sentence-level emotion/style/prosody,
+// Client.TagSfx for positional sfx/pause tags) over chapter's paragraphs
+// and persists each one's own independent annotation
+// (Store.SetParagraphSentenceTags/SetParagraphInlineTags), keyed to the
+// book's clone model. Pronunciation resolution used to be a third
+// sub-pass here and is now its own (pronounceChapter). Unlike describeChapter, this is never chained automatically
 // after attributeChapter - it's independently triggered
 // (handleTagDirections) since it's genuinely optional/stylistic, with no
 // other feature depending on its output the way Characterize depends on
 // Describe, and hasn't yet been benchmarked for prompt quality against
 // real chapters the way attribution/description were.
 //
-// Only runs for Higgs's own clone model (voices.DefaultCloneModel,
+// Only runs for Higgs's own clone model (voices.HiggsCloneModel,
 // "audiocpp-higgs-4b" today): the delivery-tag vocabulary itself
 // (speakerattr.validSentenceTags/validInlineTags) is specific to
 // higgs_audio_tts's own tokenizer - tagging under any other clone model
 // would just have audio.cpp's tokenizer encode the tag text as literal
 // characters, which the model would then try to pronounce, not silently
-// ignore. Pronunciation resolution has no such restriction (plain word
-// substitution reads correctly under any clone model) but is bundled
-// behind this same gate anyway for v1 - see the call site's own comment.
-// Returns (0, nil, nil) as a no-op for any other clone model rather than
+// ignore. Returns (0, nil, nil) as a no-op for any other clone model -
+// without setting Passes.Direction - rather than
 // an error - handleTagDirections itself checks this
 // synchronously before enqueueing so a reader gets an immediate, clear
 // rejection instead of a task that silently does nothing; this check is a
@@ -1604,11 +1600,9 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 		return 0, nil, err
 	}
 	cloneModel := narration.EffectiveCloneModel(bookVoice)
-	// higgsTags gates only the two passes whose tag vocabulary is actually
-	// Higgs-specific (see the doc comment further down, by the calls
-	// themselves) - pronunciation resolution runs for every clone model
-	// regardless (see its own call site's doc comment for why).
-	higgsTags := cloneModel == voices.DefaultCloneModel
+	if cloneModel != voices.HiggsCloneModel {
+		return 0, nil, nil
+	}
 
 	all, err := s.Store.ListParagraphsRaw(ch.ID)
 	if err != nil {
@@ -1632,95 +1626,66 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
 	}
 
-	// Three independent LLM passes - sentence-level (emotion/style/prosody
-	// speed|pitch|expressive), positional (sfx/prosody pause|long_pause),
-	// and pronunciation (ambiguous-abbreviation disambiguation) - see
-	// speakerattr.Client.DirectChapter/TagSfx/ResolvePronunciation's own
-	// doc comments for why these stay separate calls rather than one. All
-	// three that run share the same "unconditional, an error in one
-	// doesn't skip the others" treatment: each annotates its own
-	// independent storage (Store.SetParagraphSentenceTags/
-	// SetParagraphInlineTags/SetParagraphPronunciation), so there's
-	// nothing for one pass's failure to corrupt in another's output. Each
+	// Two independent LLM passes - sentence-level (emotion/style/prosody
+	// speed|pitch|expressive) and positional (sfx/prosody pause|long_pause)
+	// - see speakerattr.Client.DirectChapter/TagSfx's own doc comments for
+	// why these stay separate calls rather than one. Both share the same
+	// "unconditional, an error in one doesn't skip the other" treatment:
+	// each annotates its own independent storage
+	// (Store.SetParagraphSentenceTags/SetParagraphInlineTags), so there's
+	// nothing for one pass's failure to corrupt in the other's output. Each
 	// also independently reports its own remaining paragraphs if it stops
-	// partway on a genuine error (shouldPause is nil for all three now -
-	// see this function's own doc comment above) - the passes can stop at
+	// partway on a genuine error (shouldPause is nil for both now - see
+	// this function's own doc comment above) - the passes can stop at
 	// different points, so the requeue built below carries forward the
-	// union of all of them rather than assuming they align.
-	//
-	// DirectChapter/TagSfx are Higgs-only (higgsTags): their tag vocabulary
-	// is baked into Higgs's own tokenizer and means nothing to any other
-	// family's decode (see store.Paragraph.Tags' own doc comment).
-	// ResolvePronunciation runs regardless of clone model - a "Dr." ->
-	// "Doctor" substitution reads correctly under any of them, so there's
-	// no reason to gate it on higgsTags too.
-	var (
-		sentenceTags      map[int]string
-		sentenceRemaining []speakerattr.ParagraphInput
-		sentenceErr       error
-		inlineTags        map[int]string
-		inlineRemaining   []speakerattr.ParagraphInput
-		inlineErr         error
-	)
-	if higgsTags {
-		sentenceTags, sentenceRemaining, sentenceErr = s.Speaker.DirectChapter(ctx, book.Title, ch.Title, inputs, nil)
-		inlineTags, inlineRemaining, inlineErr = s.Speaker.TagSfx(ctx, book.Title, ch.Title, inputs, nil)
-	}
-	pronunciation, pronunciationRemaining, pronunciationErr := s.Speaker.ResolvePronunciation(ctx, book.Title, ch.Title, inputs, nil)
+	// union of both rather than assuming they align.
+	sentenceTags, sentenceRemaining, sentenceErr := s.Speaker.DirectChapter(ctx, book.Title, ch.Title, inputs, nil)
+	inlineTags, inlineRemaining, inlineErr := s.Speaker.TagSfx(ctx, book.Title, ch.Title, inputs, nil)
 
-	if higgsTags {
-		// A paragraph absent from sentenceTags/inlineTags means "this pass
-		// decided it needs no tag this run" (the overwhelmingly common case -
-		// see DirectChapter/TagSfx's own doc comments) - but setParagraphDirectionField
-		// treats an absent paragraph as simply untouched, not explicitly
-		// cleared. Without this, re-tagging a chapter could only ever add or
-		// change tags, never remove one a *previous* run set that the current
-		// model logic no longer agrees with (confirmed in production: an
-		// emotion tag DirectChapter had placed on a narration paragraph before
-		// stripEmotionFromNonQuotes existed stayed there forever afterward,
-		// since a fresh run simply never mentions that paragraph again rather
-		// than actively clearing it). clearStaleDirectionTags adds an explicit
-		// "" entry for exactly the paragraphs that need one - processed this
-		// run (not left for a later continuation) but not retagged, and only
-		// when they actually still carry a stale value from before - so a
-		// genuinely no-op re-tag (nothing to clear, nothing to add) stays a
-		// no-op rather than rewriting and invalidating audio for a chapter
-		// that didn't actually change.
-		sentenceTags = clearStaleDirectionTags(sentenceTags, paragraphs, sentenceRemaining, func(p store.Paragraph) string {
-			return p.Tags[cloneModel].SentenceText
-		})
-		inlineTags = clearStaleDirectionTags(inlineTags, paragraphs, inlineRemaining, func(p store.Paragraph) string {
-			return p.Tags[cloneModel].InlineText
-		})
+	// A paragraph absent from sentenceTags/inlineTags means "this pass
+	// decided it needs no tag this run" (the overwhelmingly common case -
+	// see DirectChapter/TagSfx's own doc comments) - but setParagraphDirectionField
+	// treats an absent paragraph as simply untouched, not explicitly
+	// cleared. Without this, re-tagging a chapter could only ever add or
+	// change tags, never remove one a *previous* run set that the current
+	// model logic no longer agrees with (confirmed in production: an
+	// emotion tag DirectChapter had placed on a narration paragraph before
+	// stripEmotionFromNonQuotes existed stayed there forever afterward,
+	// since a fresh run simply never mentions that paragraph again rather
+	// than actively clearing it). clearStaleDirectionTags adds an explicit
+	// "" entry for exactly the paragraphs that need one - processed this
+	// run (not left for a later continuation) but not retagged, and only
+	// when they actually still carry a stale value from before - so a
+	// genuinely no-op re-tag (nothing to clear, nothing to add) stays a
+	// no-op rather than rewriting and invalidating audio for a chapter
+	// that didn't actually change.
+	sentenceTags = clearStaleDirectionTags(sentenceTags, paragraphs, sentenceRemaining, func(p store.Paragraph) string {
+		return p.Tags[cloneModel].SentenceText
+	})
+	inlineTags = clearStaleDirectionTags(inlineTags, paragraphs, inlineRemaining, func(p store.Paragraph) string {
+		return p.Tags[cloneModel].InlineText
+	})
 
-		// Persisted regardless of any error - a batch failing partway through
-		// a chapter shouldn't discard whatever earlier batches in this same
-		// call actually tagged, same "persist what succeeded" treatment
-		// attributeChapter/describeChapter give their own partial errors.
-		if serr := s.Store.SetParagraphSentenceTags(ch.ID, cloneModel, sentenceTags); serr != nil {
-			return 0, nil, serr
-		}
-		if serr := s.Store.SetParagraphInlineTags(ch.ID, cloneModel, inlineTags); serr != nil {
-			return 0, nil, serr
-		}
+	// Persisted regardless of any error - a batch failing partway through
+	// a chapter shouldn't discard whatever earlier batches in this same
+	// call actually tagged, same "persist what succeeded" treatment
+	// attributeChapter/describeChapter give their own partial errors.
+	if serr := s.Store.SetParagraphSentenceTags(ch.ID, cloneModel, sentenceTags); serr != nil {
+		return 0, nil, serr
 	}
-	if serr := s.Store.SetParagraphPronunciation(ch.ID, pronunciation); serr != nil {
+	if serr := s.Store.SetParagraphInlineTags(ch.ID, cloneModel, inlineTags); serr != nil {
 		return 0, nil, serr
 	}
 
-	// touched is the union of all three passes' own touched paragraphs (a
-	// line can get an entry from more than one - e.g. a sentence-level
-	// emotion tag and a resolved "Dr."), counted once each for the
-	// "tagged" count this returns and for deciding whether anything
-	// actually changed below.
-	touched := make(map[int]bool, len(sentenceTags)+len(inlineTags)+len(pronunciation))
+	// touched is the union of both passes' own touched paragraphs (a line
+	// can get an entry from each), counted once each for the "tagged"
+	// count this returns and for deciding whether anything actually
+	// changed below.
+	touched := make(map[int]bool, len(sentenceTags)+len(inlineTags))
 	for idx := range sentenceTags {
 		touched[idx] = true
 	}
 	for idx := range inlineTags {
-		touched[idx] = true
-	}
-	for idx := range pronunciation {
 		touched[idx] = true
 	}
 
@@ -1744,42 +1709,35 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 			_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s/%s", s.DataDir, book.ID, ch.ID))
 		}
 	}
-	if sentenceErr != nil || inlineErr != nil || pronunciationErr != nil {
-		// A genuine failure partway through one or more passes, not a
+	if sentenceErr != nil || inlineErr != nil {
+		// A genuine failure partway through one or both passes, not a
 		// pause - don't mark cloneModel directed for this chapter yet (same
 		// "only mark on a full, uninterrupted run" rule attributeChapter's
 		// own SetChapterAttributed follows), so a later re-run doesn't skip
 		// it. Reports whichever error occurred first, preferring sentence
-		// over inline over pronunciation if more than one failed.
+		// over inline if both failed.
 		if sentenceErr != nil {
 			return len(touched), nil, sentenceErr
 		}
-		if inlineErr != nil {
-			return len(touched), nil, inlineErr
-		}
-		return len(touched), nil, pronunciationErr
+		return len(touched), nil, inlineErr
 	}
-	if len(sentenceRemaining) > 0 || len(inlineRemaining) > 0 || len(pronunciationRemaining) > 0 {
+	if len(sentenceRemaining) > 0 || len(inlineRemaining) > 0 {
 		// At least one pass paused for higher-priority poolLLM work before
-		// reaching every paragraph it was given - build the union of all
-		// three passes' own remaining paragraphs and requeue exactly that
-		// set as a follow-up task under this same chapter's dedup key (see
-		// jobs.Manager.EnqueueDirection/pushTask). If only some passes
-		// paused, the others (already fully finished this run) still get
-		// re-invoked on the continuation, over this narrower onlyIdx set -
-		// a few wasted-but-harmless calls re-covering paragraphs already
-		// handled (SetParagraphSentenceTags/InlineTags/Pronunciation all
-		// overwrite idempotently per-idx), traded for not having to track
-		// each pass's own completion separately across a chain of
-		// continuations.
-		remainingIdx := make(map[int]bool, len(sentenceRemaining)+len(inlineRemaining)+len(pronunciationRemaining))
+		// reaching every paragraph it was given - build the union of both
+		// passes' own remaining paragraphs and requeue exactly that set as
+		// a follow-up task under this same chapter's dedup key (see
+		// jobs.Manager.EnqueueDirection/pushTask). If only one pass paused,
+		// the other (already fully finished this run) still gets re-invoked
+		// on the continuation, over this narrower onlyIdx set - a few
+		// wasted-but-harmless calls re-covering paragraphs already handled
+		// (SetParagraphSentenceTags/InlineTags both overwrite idempotently
+		// per-idx), traded for not having to track each pass's own
+		// completion separately across a chain of continuations.
+		remainingIdx := make(map[int]bool, len(sentenceRemaining)+len(inlineRemaining))
 		for _, p := range sentenceRemaining {
 			remainingIdx[p.Idx] = true
 		}
 		for _, p := range inlineRemaining {
-			remainingIdx[p.Idx] = true
-		}
-		for _, p := range pronunciationRemaining {
 			remainingIdx[p.Idx] = true
 		}
 		requeue = func() {
@@ -1789,7 +1747,7 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 		}
 		return len(touched), requeue, nil
 	}
-	// A full, uninterrupted run of all three passes over the whole chapter
+	// A full, uninterrupted run of both passes over the whole chapter
 	// just finished for cloneModel (possibly across several paused/resumed
 	// continuations - see onlyIdx's own doc comment) - advance its
 	// pipeline progress persistently (store.Passes), the same "stored
@@ -1803,6 +1761,83 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 		log.Printf("directChapter: could not advance chapter %s passes: %v", ch.ID, serr)
 	}
 	return len(touched), nil, nil
+}
+
+// pronounceChapter runs speakerattr.Client.ResolvePronunciation
+// (ambiguous-abbreviation disambiguation, e.g. "Dr." -> "Doctor" vs
+// "Drive") over chapter's paragraphs and persists the substitutions
+// (Store.SetParagraphPronunciation) - its own pass (store.Passes.
+// Pronunciation, jobs.KindPronunciation), split out of directChapter: a
+// plain word substitution reads correctly under every clone model, so
+// unlike direction tagging it isn't gated on Higgs. Invalidates the
+// chapter's generated audio if anything was resolved, and marks
+// Passes.Pronunciation only on a full, uninterrupted run - directChapter's
+// exact contract, including onlyIdx's meaning (non-nil only for a paused
+// run's own continuation).
+func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *store.Chapter, onlyIdx map[int]bool) (resolved int, requeue func(), err error) {
+	all, err := s.Store.ListParagraphsRaw(ch.ID)
+	if err != nil {
+		return 0, nil, err
+	}
+	paragraphs := all
+	if onlyIdx != nil {
+		paragraphs = make([]store.Paragraph, 0, len(onlyIdx))
+		for _, p := range all {
+			if onlyIdx[p.Idx] {
+				paragraphs = append(paragraphs, p)
+			}
+		}
+	}
+	if len(paragraphs) == 0 {
+		return 0, nil, nil
+	}
+	inputs := make([]speakerattr.ParagraphInput, len(paragraphs))
+	for i, p := range paragraphs {
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
+	}
+
+	pronunciation, remaining, resolveErr := s.Speaker.ResolvePronunciation(ctx, book.Title, ch.Title, inputs, nil)
+	// Persisted regardless of any error - see directChapter's own "persist
+	// what succeeded" note.
+	if serr := s.Store.SetParagraphPronunciation(ch.ID, pronunciation); serr != nil {
+		return 0, nil, serr
+	}
+	if len(pronunciation) > 0 {
+		// Same blunt whole-chapter invalidation directChapter does - see
+		// its own comment.
+		if serr := s.Store.DeleteChapterAudio(ch.ID); serr != nil {
+			log.Printf("pronounceChapter: invalidate audio for chapter %s: %v", ch.ID, serr)
+		} else {
+			_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s/%s", s.DataDir, book.ID, ch.ID))
+		}
+	}
+	if resolveErr != nil {
+		return len(pronunciation), nil, resolveErr
+	}
+	if len(remaining) > 0 {
+		remainingIdx := make(map[int]bool, len(remaining))
+		for _, p := range remaining {
+			remainingIdx[p.Idx] = true
+		}
+		requeue = func() {
+			s.Jobs.EnqueuePronunciation(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
+				return s.pronounceChapter(ctx, book, ch, remainingIdx)
+			})
+		}
+		return len(pronunciation), requeue, nil
+	}
+	if serr := s.Store.SetChapterPronounced(ch.ID); serr != nil {
+		log.Printf("pronounceChapter: could not advance chapter %s passes: %v", ch.ID, serr)
+	}
+	return len(pronunciation), nil, nil
+}
+
+// pronounceChapterForJob matches jobs.ChapterPronouncer's signature, wired
+// in as such from NewRouter so jobs.Manager.pronunciationDependency can
+// resolve a chapter's pronunciation lazily ahead of generating it -
+// directChapterForJob's exact counterpart.
+func (s *Server) pronounceChapterForJob(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
+	return s.pronounceChapter(ctx, book, ch, nil)
 }
 
 // characterizeVoice asks the LLM (speakerattr.Client.CharacterizeVoice) to
@@ -1925,7 +1960,7 @@ func (s *Server) normalizeCharacterVoiceVolume(ctx context.Context, book *store.
 	if bookVoice.PresetID == "" {
 		return // fully custom instruct, no rendered clip to normalize against
 	}
-	if _, err := voicerefs.EnsureFile(ctx, s.TTS, s.DataDir, bookVoice.PresetID, bookVoice.Instruct, bookVoice.Seed, bookVoice.RefText, bookVoice.SpeedMultiplier, bookVoice.CloneModel, bookVoice.DesignModel); err != nil {
+	if _, err := voicerefs.EnsureFile(ctx, s.TTS, s.DataDir, bookVoice.PresetID, bookVoice.Instruct, bookVoice.Seed, bookVoice.RefText, bookVoice.SpeedMultiplier, bookVoice.DesignModel); err != nil {
 		log.Printf("httpapi: normalize voice volume for preset %s: ensure book voice reference clip: %v", presetID, err)
 		return
 	}
@@ -2019,7 +2054,7 @@ func (s *Server) provisionCharacterVoiceAttempt(ctx context.Context, bookID stri
 		return "", nil
 	}
 
-	preset, err := s.Store.CreateVoicePreset(char.Name, characterized.Summary, characterRefText(characterized), store.RandomSeed(), 1.0, cloneModel, voices.DefaultDesignModel)
+	preset, err := s.Store.CreateVoicePreset(char.Name, characterized.Summary, characterRefText(characterized), store.RandomSeed(), 1.0, voices.DefaultDesignModel)
 	if err != nil {
 		return "", fmt.Errorf("create voice preset: %w", err)
 	}
@@ -2028,7 +2063,7 @@ func (s *Server) provisionCharacterVoiceAttempt(ctx context.Context, bookID stri
 	// below and self-heals on first actual generation - see
 	// jobs.Manager.generate's own voicerefs.EnsureFile call.
 	if _, err := s.renderWithSeedBump(preset.ID, preset.Seed, attempt, func(effectiveSeed int) (string, error) {
-		return voicerefs.EnsureFile(ctx, s.TTS, s.DataDir, preset.ID, preset.Instruct, effectiveSeed, preset.RefText, preset.SpeedMultiplier, preset.CloneModel, preset.DesignModel)
+		return voicerefs.EnsureFile(ctx, s.TTS, s.DataDir, preset.ID, preset.Instruct, effectiveSeed, preset.RefText, preset.SpeedMultiplier, preset.DesignModel)
 	}); err != nil {
 		log.Printf("httpapi: render reference clip for character %q: %v", char.Name, err)
 	} else {
@@ -2234,7 +2269,7 @@ func (s *Server) regenerateCharacterVoice(ctx context.Context, bookID string, ch
 		if characterized.Summary == "" {
 			return "", nil // defensive only now - see ensureCharacterized
 		}
-		created, err := s.Store.CreateVoicePreset(char.Name, characterized.Summary, characterRefText(characterized), store.RandomSeed(), 1.0, cloneModel, voices.DefaultDesignModel)
+		created, err := s.Store.CreateVoicePreset(char.Name, characterized.Summary, characterRefText(characterized), store.RandomSeed(), 1.0, voices.DefaultDesignModel)
 		if err != nil {
 			return "", fmt.Errorf("create voice preset: %w", err)
 		}
@@ -2253,7 +2288,7 @@ func (s *Server) regenerateCharacterVoice(ctx context.Context, bookID string, ch
 	}
 
 	if _, err := s.renderWithSeedBump(preset.ID, preset.Seed, attempt, func(effectiveSeed int) (string, error) {
-		return voicerefs.Regenerate(ctx, s.TTS, s.DataDir, preset.ID, preset.Instruct, effectiveSeed, preset.RefText, preset.SpeedMultiplier, preset.CloneModel, preset.DesignModel)
+		return voicerefs.Regenerate(ctx, s.TTS, s.DataDir, preset.ID, preset.Instruct, effectiveSeed, preset.RefText, preset.SpeedMultiplier, preset.DesignModel)
 	}); err != nil {
 		return "", fmt.Errorf("regenerate reference clip: %w", err)
 	}
@@ -2558,8 +2593,8 @@ func (s *Server) handleTagDirections(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if narration.EffectiveCloneModel(bookVoice) != voices.DefaultCloneModel {
-		writeError(w, http.StatusBadRequest, "speech direction tags are only supported for the "+voices.DefaultCloneModel+" clone model")
+	if narration.EffectiveCloneModel(bookVoice) != voices.HiggsCloneModel {
+		writeError(w, http.StatusBadRequest, "speech direction tags are only supported for the "+voices.HiggsCloneModel+" clone model")
 		return
 	}
 	ch, err := s.Store.GetChapterByIdx(bookID, idx)
@@ -2609,8 +2644,22 @@ func (s *Server) handleRetagScareQuotes(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
 }
 
-// chapterLLMTarget resolves handleRetagDescriptions/handleRetagScareQuotes'
-// shared {id}/{idx} path params to a book and chapter, writing the error
+// handleResolvePronunciation queues a KindPronunciation task for one
+// chapter - handleRetagScareQuotes' counterpart, for any clone model.
+// Always re-runs, even if the chapter was already resolved.
+func (s *Server) handleResolvePronunciation(w http.ResponseWriter, r *http.Request) {
+	book, ch, ok := s.chapterLLMTarget(w, r)
+	if !ok {
+		return
+	}
+	s.Jobs.EnqueuePronunciation(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
+		return s.pronounceChapter(ctx, book, ch, nil)
+	})
+	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+}
+
+// chapterLLMTarget resolves handleRetagDescriptions/handleRetagScareQuotes/
+// handleResolvePronunciation's shared {id}/{idx} path params to a book and chapter, writing the error
 // response itself (503 without a speaker LLM, 400/404/500 otherwise) and
 // reporting ok=false when the caller should just return.
 func (s *Server) chapterLLMTarget(w http.ResponseWriter, r *http.Request) (*store.Book, *store.Chapter, bool) {
@@ -2780,11 +2829,11 @@ func (s *Server) recharacterizeAndInvalidate(ctx context.Context, book *store.Bo
 		if preset == nil {
 			continue
 		}
-		if err := s.Store.UpdateVoicePreset(preset.ID, preset.Name, fresh.Summary, characterRefText(*fresh), preset.Seed, preset.SpeedMultiplier, preset.CloneModel, preset.DesignModel); err != nil {
+		if err := s.Store.UpdateVoicePreset(preset.ID, preset.Name, fresh.Summary, characterRefText(*fresh), preset.Seed, preset.SpeedMultiplier, preset.DesignModel); err != nil {
 			return fresh.Summary, invalidated, err
 		}
 		if err := voicerefs.Delete(s.DataDir, preset.ID); err != nil {
-			log.Printf("httpapi: delete cached reference clip for character %q's voice (clone model %q): %v", fresh.Name, preset.CloneModel, err)
+			log.Printf("httpapi: delete cached reference clip for character %q's voice %s: %v", fresh.Name, preset.ID, err)
 			continue
 		}
 		invalidated = true

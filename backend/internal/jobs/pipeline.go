@@ -67,8 +67,8 @@ const maxPipelineInFlight = 256
 // Manager.scareQuoteDependency enforces per chapter), characterization
 // once both of those are done (it reads a character's attributed dialogue
 // and description paragraphs), then voice provisioning (needs
-// characterization's own Summary). Direction tagging and music scoring
-// need nothing any other phase produces (see httpapi.directChapter/
+// characterization's own Summary). Direction tagging, pronunciation
+// resolution and music scoring need nothing any other phase produces (see httpapi.directChapter/
 // scoreChapterMusic - only the book's resolved voice and each paragraph's
 // own IsQuote/Text), so they dispatch immediately alongside scare-quote
 // tagging. The constants' numeric order is just identity, not execution
@@ -83,6 +83,7 @@ const (
 	pipelinePhaseMusic
 	pipelinePhaseScareQuote
 	pipelinePhaseDescription
+	pipelinePhasePronunciation
 	pipelinePhaseCount
 )
 
@@ -94,6 +95,7 @@ var pipelinePhaseNames = [pipelinePhaseCount]string{
 	pipelinePhaseMusic:            "music",
 	pipelinePhaseScareQuote:       "scare_quote",
 	pipelinePhaseDescription:      "description",
+	pipelinePhasePronunciation:    "pronunciation",
 }
 
 // PipelinePhases is EnqueuePipeline's argument - one PipelinePhaseFunc per
@@ -111,6 +113,7 @@ const (
 	PhaseVoiceProvision   = pipelinePhaseVoiceProvision
 	PhaseDirection        = pipelinePhaseDirection
 	PhaseMusic            = pipelinePhaseMusic
+	PhasePronunciation    = pipelinePhasePronunciation
 )
 
 // pipelinePhaseDeps lists, per phase, the phases of the same book's run
@@ -140,6 +143,7 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 	pipelinePhaseMusic:            "pipeline_music",
 	pipelinePhaseScareQuote:       "pipeline_scare_quote",
 	pipelinePhaseDescription:      "pipeline_description",
+	pipelinePhasePronunciation:    "pipeline_pronunciation",
 }
 
 // pipelineTaskKind distinguishes what a pipelineTask actually represents:

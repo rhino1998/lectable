@@ -104,6 +104,7 @@ func NewRouter(s *Server) http.Handler {
 			s.Jobs.SetChapterDirector(s.directChapterForJob)
 			s.Jobs.SetChapterAttributor(s.attributeChapterForJob)
 			s.Jobs.SetChapterScareQuoter(s.scareQuoteChapterForJob)
+			s.Jobs.SetChapterPronouncer(s.pronounceChapterForJob)
 			// scoreChapterMusic itself calls s.Speaker.ScoreMusic - same
 			// s.Speaker-configured gate as the three above, and the same
 			// reason jobs.Manager.maybeScoreChapterMusic's own nil-scorer
@@ -157,6 +158,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-descriptions", s.handleRetagDescriptions)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-scare-quotes", s.handleRetagScareQuotes)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/tag-directions", s.handleTagDirections)
+	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/resolve-pronunciation", s.handleResolvePronunciation)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/music", s.handleGetChapterMusic)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/score-music", s.handleScoreChapterMusic)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/generate-music", s.handleGenerateChapterMusic)

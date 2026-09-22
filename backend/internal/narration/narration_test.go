@@ -52,19 +52,19 @@ func TestBookVoiceBuiltInPreset(t *testing.T) {
 	if v.RefText != builtin.RefText || v.SpeedMultiplier != builtin.SpeedMultiplier {
 		t.Fatalf("expected built-in preset fields to be resolved, got %+v", v)
 	}
-	if v.CloneModel != voices.DefaultCloneModel {
-		t.Fatalf("expected built-in preset to resolve to the default clone model, got %q", v.CloneModel)
+	if v.CloneModel != book.CloneModel || v.CloneModel != voices.DefaultCloneModel {
+		t.Fatalf("expected the book's own (default) clone model, got %q", v.CloneModel)
 	}
 }
 
 func TestBookVoiceCustomPreset(t *testing.T) {
 	s := openTestStore(t)
 	book := createBook(t, s)
-	preset, err := s.CreateVoicePreset("Custom", "speak softly", "ref text", 3, 0.9, "audiocpp-qwen3-0.6b", "qwen3_tts")
+	preset, err := s.CreateVoicePreset("Custom", "speak softly", "ref text", 3, 0.9, "qwen3_tts")
 	if err != nil {
 		t.Fatalf("CreateVoicePreset: %v", err)
 	}
-	if err := s.UpdateVoice(book.ID, preset.ID, "speak softly", "English", 3, store.CharacterVoiceModeNarrator, false, false); err != nil {
+	if err := s.UpdateVoice(book.ID, preset.ID, "speak softly", "English", 3, "audiocpp-qwen3-0.6b", store.CharacterVoiceModeNarrator, false, false); err != nil {
 		t.Fatalf("UpdateVoice: %v", err)
 	}
 	book, err = s.GetBook(book.ID)
@@ -85,7 +85,7 @@ func TestBookVoiceCustomPreset(t *testing.T) {
 func TestBookVoiceFullyCustomInstructHasNoPreset(t *testing.T) {
 	s := openTestStore(t)
 	book := createBook(t, s)
-	if err := s.UpdateVoice(book.ID, "", "speak like a robot", "English", 0, store.CharacterVoiceModeNarrator, false, false); err != nil {
+	if err := s.UpdateVoice(book.ID, "", "speak like a robot", "English", 0, book.CloneModel, store.CharacterVoiceModeNarrator, false, false); err != nil {
 		t.Fatalf("UpdateVoice: %v", err)
 	}
 	book, err := s.GetBook(book.ID)
@@ -117,7 +117,7 @@ func TestForParagraphMultiVoiceOffAlwaysUsesBookVoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertCharacter: %v", err)
 	}
-	preset, err := s.CreateVoicePreset("Alice Voice", "speak brightly", "ref", 1, 1.0, voices.DefaultCloneModel, voices.DefaultDesignModel)
+	preset, err := s.CreateVoicePreset("Alice Voice", "speak brightly", "ref", 1, 1.0, voices.DefaultDesignModel)
 	if err != nil {
 		t.Fatalf("CreateVoicePreset: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestForParagraphMultiVoiceOffAlwaysUsesBookVoice(t *testing.T) {
 func TestForParagraphMultiVoiceOnUsesCharacterVoice(t *testing.T) {
 	s := openTestStore(t)
 	book := createBook(t, s)
-	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, store.CharacterVoiceModeAssigned, false, false); err != nil {
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CloneModel, store.CharacterVoiceModeAssigned, false, false); err != nil {
 		t.Fatalf("UpdateVoice (enable MultiVoice): %v", err)
 	}
 	book, err := s.GetBook(book.ID)
@@ -158,7 +158,7 @@ func TestForParagraphMultiVoiceOnUsesCharacterVoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertCharacter: %v", err)
 	}
-	preset, err := s.CreateVoicePreset("Alice Voice", "speak brightly", "ref", 1, 1.0, voices.DefaultCloneModel, voices.DefaultDesignModel)
+	preset, err := s.CreateVoicePreset("Alice Voice", "speak brightly", "ref", 1, 1.0, voices.DefaultDesignModel)
 	if err != nil {
 		t.Fatalf("CreateVoicePreset: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestForParagraphMultiVoiceOnUsesCharacterVoice(t *testing.T) {
 func TestForParagraphFallsBackWhenCharacterHasNoVoiceYet(t *testing.T) {
 	s := openTestStore(t)
 	book := createBook(t, s)
-	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, store.CharacterVoiceModeAssigned, false, false); err != nil {
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CloneModel, store.CharacterVoiceModeAssigned, false, false); err != nil {
 		t.Fatalf("UpdateVoice (enable MultiVoice): %v", err)
 	}
 	book, err := s.GetBook(book.ID)
@@ -227,11 +227,11 @@ func TestForParagraphFallsBackWhenCharacterHasNoVoiceYet(t *testing.T) {
 // tests below.
 func bookWithInstructedClone(t *testing.T, s *store.Store, book *store.Book) *store.Book {
 	t.Helper()
-	preset, err := s.CreateVoicePreset("Narrator", "speak warmly", "ref", 1, 1.0, voices.InstructedCloneModel, voices.DefaultDesignModel)
+	preset, err := s.CreateVoicePreset("Narrator", "speak warmly", "ref", 1, 1.0, voices.DefaultDesignModel)
 	if err != nil {
 		t.Fatalf("CreateVoicePreset: %v", err)
 	}
-	if err := s.UpdateVoice(book.ID, preset.ID, "speak warmly", book.VoiceLanguage, 1, store.CharacterVoiceModeInstructUnassigned, false, false); err != nil {
+	if err := s.UpdateVoice(book.ID, preset.ID, "speak warmly", book.VoiceLanguage, 1, voices.InstructedCloneModel, store.CharacterVoiceModeInstructUnassigned, false, false); err != nil {
 		t.Fatalf("UpdateVoice: %v", err)
 	}
 	book, err = s.GetBook(book.ID)
@@ -307,15 +307,15 @@ func TestForParagraphInstructCharacterVoicesUsesNarratorRefWithCloneInstruct(t *
 func TestForParagraphInstructCharacterVoicesNoOpForOtherCloneModel(t *testing.T) {
 	s := openTestStore(t)
 	book := createBook(t, s)
-	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, store.CharacterVoiceModeInstructUnassigned, false, false); err != nil {
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CloneModel, store.CharacterVoiceModeInstructUnassigned, false, false); err != nil {
 		t.Fatalf("UpdateVoice: %v", err)
 	}
 	book, err := s.GetBook(book.ID)
 	if err != nil {
 		t.Fatalf("GetBook: %v", err)
 	}
-	// book's default voice (voices.DefaultPresetID) resolves through
-	// voices.DefaultCloneModel, not voices.InstructedCloneModel.
+	// book's own clone model is voices.DefaultCloneModel, not
+	// voices.InstructedCloneModel.
 
 	scope := store.SeriesScope(book)
 	char, _, err := s.UpsertCharacter(scope, "Alice", false)
@@ -352,7 +352,7 @@ func TestForParagraphInstructAllOverridesExplicitAssignment(t *testing.T) {
 	s := openTestStore(t)
 	book := createBook(t, s)
 	book = bookWithInstructedClone(t, s, book)
-	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, store.CharacterVoiceModeInstructAll, false, false); err != nil {
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CloneModel, store.CharacterVoiceModeInstructAll, false, false); err != nil {
 		t.Fatalf("UpdateVoice: %v", err)
 	}
 	book, err := s.GetBook(book.ID)
@@ -371,7 +371,7 @@ func TestForParagraphInstructAllOverridesExplicitAssignment(t *testing.T) {
 	// Alice has her own, wholly distinct assigned preset - under
 	// InstructUnassigned this would win outright; under InstructAll it
 	// must be ignored entirely.
-	assigned, err := s.CreateVoicePreset("Alice's Own Voice", "speak brightly", "ref", 1, 1.0, voices.InstructedCloneModel, voices.DefaultDesignModel)
+	assigned, err := s.CreateVoicePreset("Alice's Own Voice", "speak brightly", "ref", 1, 1.0, voices.DefaultDesignModel)
 	if err != nil {
 		t.Fatalf("CreateVoicePreset: %v", err)
 	}

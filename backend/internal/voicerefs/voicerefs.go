@@ -17,7 +17,6 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/loudness"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
-	"github.com/rhino1998/lectable/backend/internal/voices"
 	"github.com/rhino1998/lectable/backend/internal/wav"
 	"github.com/rhino1998/lectable/backend/internal/wsola"
 )
@@ -53,9 +52,9 @@ func lockPreset(presetID string) func() {
 // it (via the worker's VoiceDesign task, then re-speeding in-process) and
 // caching it to disk first if it doesn't exist yet. Safe to call on every
 // request that needs the clip (playback, paragraph generation) - the
-// common case is just an os.Stat. cloneModel is unused for rendering itself
-// (VoiceDesign is the same regardless - see design.go's docstring) but kept
-// in the signature for parity with callers that already have it on hand.
+// common case is just an os.Stat. The clip is independent of whichever
+// clone model it's later cloned through (a book's own choice, not the
+// preset's).
 //
 // The render itself is serialized per presetID (see presetLocks) with a
 // second os.Stat once the lock is held, so a caller that waited out
@@ -64,7 +63,7 @@ func lockPreset(presetID string) func() {
 // "always re-render" path for a preset edit) stays unlocked, since it's
 // never called concurrently with itself for the same presetID the way
 // EnsureFile's own check-then-render is.
-func EnsureFile(ctx context.Context, tts *ttsworker.Manager, dataDir, presetID, instruct string, seed int, refText string, speedMultiplier float64, cloneModel, designModel string) (string, error) {
+func EnsureFile(ctx context.Context, tts *ttsworker.Manager, dataDir, presetID, instruct string, seed int, refText string, speedMultiplier float64, designModel string) (string, error) {
 	path := audiopath.VoicePresetRefFile(dataDir, presetID)
 	if _, err := os.Stat(path); err == nil {
 		return path, nil
@@ -74,38 +73,18 @@ func EnsureFile(ctx context.Context, tts *ttsworker.Manager, dataDir, presetID, 
 	if _, err := os.Stat(path); err == nil {
 		return path, nil
 	}
-	return Regenerate(ctx, tts, dataDir, presetID, instruct, seed, refText, speedMultiplier, cloneModel, designModel)
+	return Regenerate(ctx, tts, dataDir, presetID, instruct, seed, refText, speedMultiplier, designModel)
 }
 
 // Regenerate always (re)creates presetID's reference clip and overwrites
 // the cached file, regardless of whether one already exists. Call this
 // when instruct/seed/refText/speedMultiplier/designModel change (a preset
 // edit) - EnsureFile would otherwise keep serving the stale clip forever.
-func Regenerate(ctx context.Context, tts *ttsworker.Manager, dataDir, presetID, instruct string, seed int, refText string, speedMultiplier float64, cloneModel, designModel string) (string, error) {
-	var data []byte
-	var err error
-	if voices.NoCloneModels[cloneModel] {
-		// cloneModel has no VoiceDesign engine at all (a fixed single
-		// built-in voice - see voices.NoCloneModels' own doc comment), so
-		// there's no instruct/seed to sample a voice from. Render a plain
-		// one-shot sample of that fixed voice speaking refText instead, via
-		// the same Generate() path real paragraph generation uses. The
-		// resulting bytes are saved to this preset's usual reference-clip
-		// path for SpeedMultiplier/duration-cap/loudness bookkeeping and as
-		// a real, honest preview sample - but are never actually fed back
-		// in as a cloning reference: audioworker's own noReference family
-		// flag makes Generate ignore whatever reference audio a caller
-		// sends for one of these clone_models.
-		data, err = tts.Generate(ctx, refText, cloneModel, nil, "", "Auto", "", "")
-		if err != nil {
-			return "", fmt.Errorf("generate: %w", err)
-		}
-	} else {
-		seed64 := int64(seed)
-		data, err = tts.Design(ctx, refText, instruct, "Auto", designModel, &seed64)
-		if err != nil {
-			return "", fmt.Errorf("design: %w", err)
-		}
+func Regenerate(ctx context.Context, tts *ttsworker.Manager, dataDir, presetID, instruct string, seed int, refText string, speedMultiplier float64, designModel string) (string, error) {
+	seed64 := int64(seed)
+	data, err := tts.Design(ctx, refText, instruct, "Auto", designModel, &seed64)
+	if err != nil {
+		return "", fmt.Errorf("design: %w", err)
 	}
 	data, err = applySpeed(data, speedMultiplier)
 	if err != nil {
@@ -126,8 +105,7 @@ func Regenerate(ctx context.Context, tts *ttsworker.Manager, dataDir, presetID, 
 // - relativeSpeed should be the new preset's speedMultiplier divided by
 // sourcePresetID's. Pure re-speed math, no worker call at all: VoiceDesign
 // rendering never depends on which clone_model a preset uses, only on
-// instruct/seed/refText/language (see cloneModel's absence from Regenerate
-// above too).
+// instruct/seed/refText/language/designModel.
 func DeriveFromExisting(ctx context.Context, dataDir, presetID, sourcePresetID string, relativeSpeed float64) (string, error) {
 	sourceAudio, err := os.ReadFile(audiopath.VoicePresetRefFile(dataDir, sourcePresetID))
 	if err != nil {
@@ -333,12 +311,11 @@ func save(dataDir, presetID string, data []byte) (string, error) {
 // language/designModel. Design (what both a "test this design" preview and
 // the very first step of building any preset's reference clip actually
 // call) is deterministic on just this tuple - speedMultiplier is a separate
-// WSOLA pass applied afterward (applySpeed above), and cloneModel never
-// affects the design render itself, only per-paragraph cloning later. So a
+// WSOLA pass applied afterward (applySpeed above), and the clone model a
+// book later clones through never affects the design render itself. So a
 // cached render at this key is reusable for any preset sharing just
 // instruct/seed/refText/language/designModel, whatever its own
-// speedMultiplier/cloneModel end up being. designModel IS part of the key,
-// unlike cloneModel - two presets with identical instruct/seed/refText but
+// speedMultiplier ends up being. designModel IS part of the key - two presets with identical instruct/seed/refText but
 // different design engines render audibly different clips and must not be
 // treated as the same cached recipe.
 func DesignConfigHash(instruct string, seed int, text, language, designModel string) string {

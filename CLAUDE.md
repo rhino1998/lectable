@@ -86,6 +86,11 @@ Voice is controlled by a natural-language instruction string (VoiceDesign,
 not a fixed speaker id) — see the presets in `backend/internal/voices`. A
 book's voice is a per-book setting; changing it invalidates that book's
 cached audio, since a book should keep one consistent narrator throughout.
+The **clone model** (which TTS family clones every voice's reference clip
+into paragraph audio - PocketTTS by default, or Higgs, BreezeTTS, etc.) is
+also a per-book setting, never a property of a voice: a voice preset is
+just a reference-clip recipe. New books start with the default clone model
+set on the Voices page.
 
 ## Running everything locally
 

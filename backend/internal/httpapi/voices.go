@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 	"github.com/rhino1998/lectable/backend/internal/voices"
@@ -22,7 +23,6 @@ type voicePresetDTOOut struct {
 	Seed            int     `json:"seed"`
 	RefText         string  `json:"ref_text"`
 	SpeedMultiplier float64 `json:"speed_multiplier"`
-	CloneModel      string  `json:"cloneModel"`
 	DesignModel     string  `json:"designModel"`
 	AudioURL        string  `json:"audioUrl"`
 	// RefError is only ever set by handleRegeneratePreset's own response -
@@ -41,7 +41,6 @@ func (s *Server) buildVoicePresets() (any, error) {
 		out[i] = voicePresetDTOOut{
 			ID: p.ID, Name: p.Name, Instruct: p.Instruct, Seed: p.Seed, RefText: p.RefText,
 			SpeedMultiplier: p.SpeedMultiplier,
-			CloneModel:      DefaultCloneModel,
 			DesignModel:     p.DesignModel,
 			AudioURL:        "/api/voices/presets/" + p.ID + "/audio",
 		}
@@ -59,6 +58,11 @@ type voiceSettingsDTO struct {
 	Instruct string `json:"instruct"`
 	Language string `json:"language"`
 	Seed     int    `json:"seed"`
+	// CloneModel is which clone model narrates the book - every voice in
+	// it, narrator and characters alike (store.Book.CloneModel) - or, for
+	// the default voice, the clone model a newly created book starts with.
+	// "" on update leaves the current value unchanged.
+	CloneModel string `json:"cloneModel"`
 	// CharacterVoiceMode - see store.CharacterVoiceMode's own doc comment
 	// for the four possible values ("narrator"/"assigned"/
 	// "instruct_unassigned"/"instruct_all") and what each means. Characters
@@ -67,7 +71,7 @@ type voiceSettingsDTO struct {
 	// those assignments (or, for the two instruct_* modes, a character's
 	// own characterization) into different narration voices during
 	// generation. The two instruct_* modes only actually change anything
-	// for a book whose resolved clone model is breeze_tts - a no-op
+	// for a book whose clone model is breeze_tts - a no-op
 	// otherwise (same as "assigned" for that character).
 	CharacterVoiceMode string `json:"characterVoiceMode"`
 	// SpeechDirection opts this book into waiting for speech-direction
@@ -100,6 +104,7 @@ func (s *Server) buildVoice(id string) (any, error) {
 		Instruct:           b.VoiceInstruct,
 		Language:           b.VoiceLanguage,
 		Seed:               b.VoiceSeed,
+		CloneModel:         narration.BookCloneModel(b),
 		CharacterVoiceMode: string(b.CharacterVoiceMode),
 		SpeechDirection:    b.SpeechDirection,
 		MusicEnabled:       b.MusicEnabled,
@@ -133,25 +138,33 @@ func (s *Server) resolveVoiceSeed(presetID string) (int, error) {
 
 // resolveVoiceRecipe looks up id's full render recipe - among the curated
 // built-in presets first, then this library's custom ones, the same
-// "built-in id space, then custom" precedence resolveVoiceSeed uses. A
-// built-in's own CloneModel is deliberately ignored in favor of
-// DefaultCloneModel here, matching handleTestPreset's own established
-// "always preview a built-in through the default clone model" convention
-// (voices.FastPresetID is the sole built-in with its own CloneModel
-// override, and it exists to be cloned through specifically for length
-// estimation, not for a reader to preview).
-func (s *Server) resolveVoiceRecipe(id string) (name, instruct string, seed int, refText string, speedMultiplier float64, cloneModel, designModel string, err error) {
+// "built-in id space, then custom" precedence resolveVoiceSeed uses.
+func (s *Server) resolveVoiceRecipe(id string) (name, instruct string, seed int, refText string, speedMultiplier float64, designModel string, err error) {
 	if p, found := voices.PresetsByID[id]; found {
-		return p.Name, p.Instruct, p.Seed, p.RefText, p.SpeedMultiplier, DefaultCloneModel, p.DesignModel, nil
+		return p.Name, p.Instruct, p.Seed, p.RefText, p.SpeedMultiplier, p.DesignModel, nil
 	}
 	custom, err := s.Store.GetVoicePreset(id)
 	if err != nil {
-		return "", "", 0, "", 0, "", "", err
+		return "", "", 0, "", 0, "", err
 	}
 	if custom == nil {
-		return "", "", 0, "", 0, "", "", fmt.Errorf("voice %q not found", id)
+		return "", "", 0, "", 0, "", fmt.Errorf("voice %q not found", id)
 	}
-	return custom.Name, custom.Instruct, custom.Seed, custom.RefText, custom.SpeedMultiplier, custom.CloneModel, custom.DesignModel, nil
+	return custom.Name, custom.Instruct, custom.Seed, custom.RefText, custom.SpeedMultiplier, custom.DesignModel, nil
+}
+
+// previewCloneModel is the clone model a voice preview (testVoice/
+// handleTestCloneInstruct) clones through: requested if set, otherwise
+// the configured default clone model new books start with - a voice
+// preset has no clone model of its own to fall back to.
+func (s *Server) previewCloneModel(requested string) string {
+	if requested != "" {
+		return requested
+	}
+	if dv, err := s.Store.GetDefaultVoice(); err == nil && dv.CloneModel != "" {
+		return dv.CloneModel
+	}
+	return voices.DefaultCloneModel
 }
 
 type testCloneInstructRequest struct {
@@ -163,12 +176,11 @@ type testCloneInstructRequest struct {
 	// reference clip - what this preview is actually testing.
 	Instruct string `json:"instruct"`
 	Text     string `json:"text"`
-	// CloneModel, when set, overrides BaseID's own saved/resolved cloning
-	// model - lets the editor preview breeze_tts specifically (the one
-	// family that actually honors Instruct alongside a reference clip -
-	// see audioworker.cloneFamily.instructOption) regardless of which
-	// model BaseID itself normally clones through. "" defers to BaseID's
-	// own resolved clone model, same as testVoiceRequest.CloneModel.
+	// CloneModel is which clone model to preview through - the editor
+	// always sends breeze_tts here (the one family that actually honors
+	// Instruct alongside a reference clip - see audioworker.cloneFamily.
+	// instructOption). "" defers to previewCloneModel's default, same as
+	// testVoiceRequest.CloneModel.
 	CloneModel string `json:"cloneModel"`
 	// GuidanceScale, when set, overrides the breeze_tts clone family's own
 	// configured instruct-time guidance_scale (LECTABLE_AUDIOCPP_BREEZE_CLONE_GUIDANCE_SCALE,
@@ -203,17 +215,14 @@ func (s *Server) handleTestCloneInstruct(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "instruct is required")
 		return
 	}
-	baseName, baseInstruct, baseSeed, baseRefText, baseSpeed, baseCloneModel, baseDesignModel, err := s.resolveVoiceRecipe(req.BaseID)
+	baseName, baseInstruct, baseSeed, baseRefText, baseSpeed, baseDesignModel, err := s.resolveVoiceRecipe(req.BaseID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	cloneModel := baseCloneModel
-	if req.CloneModel != "" {
-		cloneModel = req.CloneModel
-	}
+	cloneModel := s.previewCloneModel(req.CloneModel)
 
-	refPath, err := s.ensureVoiceRef(r.Context(), req.BaseID, baseName, baseInstruct, baseSeed, baseRefText, baseSpeed, cloneModel, baseDesignModel)
+	refPath, err := s.ensureVoiceRef(r.Context(), req.BaseID, baseName, baseInstruct, baseSeed, baseRefText, baseSpeed, baseDesignModel)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
@@ -272,7 +281,12 @@ func (s *Server) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.Store.UpdateVoice(id, req.PresetID, req.Instruct, req.Language, seed, characterVoiceMode, req.SpeechDirection, req.MusicEnabled); err != nil {
+	cloneModel := req.CloneModel
+	if cloneModel == "" {
+		cloneModel = narration.BookCloneModel(b)
+	}
+
+	if err := s.Store.UpdateVoice(id, req.PresetID, req.Instruct, req.Language, seed, cloneModel, characterVoiceMode, req.SpeechDirection, req.MusicEnabled); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -294,14 +308,27 @@ func (s *Server) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
 	// Deleting the book's audio here forces every paragraph to regenerate
 	// under the newly-enabled dependency, the same explicit invalidation
 	// handleDeleteBookAudio already does for a manual "clear generation".
-	if req.SpeechDirection && !b.SpeechDirection {
+	//
+	// A clone model change is the same shape: the clone model isn't part of
+	// any voice_id (it's the book's, not a voice's - see
+	// store.Book.CloneModel), so audio generated through the old model
+	// would otherwise keep being served as if it were the new one's.
+	var invalidateReason string
+	switch {
+	case cloneModel != narration.BookCloneModel(b):
+		invalidateReason = "change clone model"
+	case req.SpeechDirection && !b.SpeechDirection:
+		invalidateReason = "enable speech direction"
+	}
+	if invalidateReason != "" {
 		if err := s.Store.DeleteBookAudio(id); err != nil {
-			log.Printf("httpapi: enable speech direction for book %s: delete stale audio: %v", id, err)
+			log.Printf("httpapi: %s for book %s: delete stale audio: %v", invalidateReason, id, err)
 		} else if err := os.RemoveAll(fmt.Sprintf("%s/audio/%s", s.DataDir, id)); err != nil {
-			log.Printf("httpapi: enable speech direction for book %s: remove audio dir: %v", id, err)
+			log.Printf("httpapi: %s for book %s: remove audio dir: %v", invalidateReason, id, err)
 		}
 	}
 	req.Seed = seed
+	req.CloneModel = cloneModel
 	writeJSON(w, http.StatusOK, req)
 }
 
@@ -315,12 +342,13 @@ func (s *Server) buildDefaultVoice() (any, error) {
 	if err != nil {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
-	return voiceSettingsDTO{PresetID: v.PresetID, Instruct: v.Instruct, Language: v.Language, Seed: v.Seed}, nil
+	return voiceSettingsDTO{PresetID: v.PresetID, Instruct: v.Instruct, Language: v.Language, Seed: v.Seed, CloneModel: v.CloneModel}, nil
 }
 
-// handleUpdateDefaultVoice sets the voice new books are created with -
-// "selecting" a voice on the Voices page. Existing books are unaffected;
-// this only changes what a freshly uploaded book starts with.
+// handleUpdateDefaultVoice sets the voice and clone model new books are
+// created with - "selecting" a voice (or picking the default clone model)
+// on the Voices page. Existing books are unaffected; this only changes
+// what a freshly uploaded book starts with.
 func (s *Server) handleUpdateDefaultVoice(w http.ResponseWriter, r *http.Request) {
 	var req voiceSettingsDTO
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -337,7 +365,16 @@ func (s *Server) handleUpdateDefaultVoice(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := s.Store.SetDefaultVoice(req.PresetID, req.Instruct, req.Language, seed); err != nil {
+	if req.CloneModel == "" {
+		current, err := s.Store.GetDefaultVoice()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		req.CloneModel = current.CloneModel
+	}
+
+	if err := s.Store.SetDefaultVoice(req.PresetID, req.Instruct, req.Language, seed, req.CloneModel); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -352,7 +389,6 @@ type customVoicePresetDTO struct {
 	RefText         string  `json:"refText"`
 	Seed            int     `json:"seed"`
 	SpeedMultiplier float64 `json:"speedMultiplier"`
-	CloneModel      string  `json:"cloneModel"`
 	DesignModel     string  `json:"designModel"`
 	CreatedAt       int64   `json:"createdAt"`
 	AudioURL        string  `json:"audioUrl"`
@@ -375,7 +411,7 @@ type customVoicePresetDTO struct {
 func voicePresetDTO(p store.VoicePreset, refErr error) customVoicePresetDTO {
 	dto := customVoicePresetDTO{
 		ID: p.ID, Name: p.Name, Instruct: p.Instruct, RefText: p.RefText, Seed: p.Seed,
-		SpeedMultiplier: p.SpeedMultiplier, CloneModel: p.CloneModel, DesignModel: p.DesignModel, CreatedAt: p.CreatedAt,
+		SpeedMultiplier: p.SpeedMultiplier, DesignModel: p.DesignModel, CreatedAt: p.CreatedAt,
 		AudioURL: "/api/voices/custom-presets/" + p.ID + "/audio",
 	}
 	if refErr != nil {
@@ -404,10 +440,6 @@ func (s *Server) buildCustomVoicePresets() (any, error) {
 	}
 	return out, nil
 }
-
-// DefaultCloneModel re-exports voices.DefaultCloneModel for existing call
-// sites in this package.
-const DefaultCloneModel = voices.DefaultCloneModel
 
 // ensureVoiceRef returns presetID's reference clip path, rendering it
 // through the job queue (jobs.Manager.RunVoiceProvision) if it doesn't
@@ -438,14 +470,14 @@ const DefaultCloneModel = voices.DefaultCloneModel
 // comment used to warn about more broadly - call voicerefs.EnsureFile/
 // Regenerate directly there instead, exactly as those call sites already
 // do.
-func (s *Server) ensureVoiceRef(ctx context.Context, presetID, name, instruct string, seed int, refText string, speedMultiplier float64, cloneModel, designModel string) (string, error) {
+func (s *Server) ensureVoiceRef(ctx context.Context, presetID, name, instruct string, seed int, refText string, speedMultiplier float64, designModel string) (string, error) {
 	path := audiopath.VoicePresetRefFile(s.DataDir, presetID)
 	if _, err := os.Stat(path); err == nil {
 		return path, nil
 	}
 	return s.Jobs.RunVoiceProvision(ctx, "", presetID, "generate", name, func(ctx context.Context, attempt int) (string, error) {
 		return s.renderWithSeedBump(presetID, seed, attempt, func(effectiveSeed int) (string, error) {
-			return voicerefs.EnsureFile(ctx, s.TTS, s.DataDir, presetID, instruct, effectiveSeed, refText, speedMultiplier, cloneModel, designModel)
+			return voicerefs.EnsureFile(ctx, s.TTS, s.DataDir, presetID, instruct, effectiveSeed, refText, speedMultiplier, designModel)
 		})
 	})
 }
@@ -456,10 +488,10 @@ func (s *Server) ensureVoiceRef(ctx context.Context, presetID, name, instruct st
 // model-instance-contention reasoning as ensureVoiceRef, minus the
 // os.Stat fast path since a regenerate always needs a fresh render
 // regardless of what's already on disk.
-func (s *Server) regenerateVoiceRef(ctx context.Context, presetID, name, instruct string, seed int, refText string, speedMultiplier float64, cloneModel, designModel string) (string, error) {
+func (s *Server) regenerateVoiceRef(ctx context.Context, presetID, name, instruct string, seed int, refText string, speedMultiplier float64, designModel string) (string, error) {
 	return s.Jobs.RunVoiceProvision(ctx, "", presetID, "regenerate", name, func(ctx context.Context, attempt int) (string, error) {
 		return s.renderWithSeedBump(presetID, seed, attempt, func(effectiveSeed int) (string, error) {
-			return voicerefs.Regenerate(ctx, s.TTS, s.DataDir, presetID, instruct, effectiveSeed, refText, speedMultiplier, cloneModel, designModel)
+			return voicerefs.Regenerate(ctx, s.TTS, s.DataDir, presetID, instruct, effectiveSeed, refText, speedMultiplier, designModel)
 		})
 	})
 }
@@ -499,7 +531,6 @@ type customVoicePresetRequest struct {
 	RefText         string   `json:"refText"`
 	Seed            *int     `json:"seed"`            // nil on create = server picks a random one
 	SpeedMultiplier *float64 `json:"speedMultiplier"` // nil = 1.0 (no change)
-	CloneModel      *string  `json:"cloneModel"`      // nil on create = DefaultCloneModel; nil on update = unchanged
 	// DesignModel: nil on create = voices.DefaultDesignModel (always
 	// breeze_tts for a brand-new voice, regardless of whether its recipe
 	// happens to match an existing preset's own - see voices.
@@ -528,16 +559,12 @@ func (s *Server) handleCreateCustomVoicePreset(w http.ResponseWriter, r *http.Re
 	if req.SpeedMultiplier != nil {
 		speedVal = *req.SpeedMultiplier
 	}
-	cloneModel := DefaultCloneModel
-	if req.CloneModel != nil && *req.CloneModel != "" {
-		cloneModel = *req.CloneModel
-	}
 	designModel := voices.DefaultDesignModel
 	if req.DesignModel != nil && *req.DesignModel != "" {
 		designModel = *req.DesignModel
 	}
 
-	p, err := s.Store.CreateVoicePreset(req.Name, req.Instruct, req.RefText, seedVal, speedVal, cloneModel, designModel)
+	p, err := s.Store.CreateVoicePreset(req.Name, req.Instruct, req.RefText, seedVal, speedVal, designModel)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -559,7 +586,7 @@ func (s *Server) handleCreateCustomVoicePreset(w http.ResponseWriter, r *http.Re
 		// a full re-render would, without paying for one.
 		_, refErr = voicerefs.DeriveFromExisting(r.Context(), s.DataDir, p.ID, sourceID, speedVal/sourceSpeed)
 	} else {
-		_, refErr = s.ensureVoiceRef(r.Context(), p.ID, p.Name, p.Instruct, p.Seed, p.RefText, p.SpeedMultiplier, p.CloneModel, p.DesignModel)
+		_, refErr = s.ensureVoiceRef(r.Context(), p.ID, p.Name, p.Instruct, p.Seed, p.RefText, p.SpeedMultiplier, p.DesignModel)
 	}
 	writeJSON(w, http.StatusCreated, voicePresetDTO(p, refErr))
 }
@@ -567,12 +594,9 @@ func (s *Server) handleCreateCustomVoicePreset(w http.ResponseWriter, r *http.Re
 // findDerivationSource looks for an existing preset (built-in or custom,
 // other than excludeID) with the exact same instruct/refText/seed/
 // designModel as a preset being created, and an already-rendered reference
-// clip on disk. cloneModel is deliberately NOT part of the match:
-// VoiceDesign rendering (what produces the reference clip) never depends on
-// which clone_model a preset uses for per-paragraph cloning afterward -
-// only instruct/seed/refText/language/designModel do (see internal/
-// audioworker's Design). designModel IS part of the match, unlike
-// cloneModel - two presets with identical instruct/seed/refText but
+// clip on disk - VoiceDesign rendering (what produces the reference clip)
+// depends only on instruct/seed/refText/language/designModel (see internal/
+// audioworker's Design). designModel IS part of the match - two presets with identical instruct/seed/refText but
 // different design engines render audibly different clips, so deriving one
 // from the other would silently serve the wrong engine's sound; this is
 // also why a brand-new preset's own designModel is always set explicitly
@@ -631,32 +655,28 @@ func (s *Server) handleUpdateCustomVoicePreset(w http.ResponseWriter, r *http.Re
 	if req.SpeedMultiplier != nil {
 		speedVal = *req.SpeedMultiplier
 	}
-	cloneModelVal := existing.CloneModel
-	if req.CloneModel != nil && *req.CloneModel != "" {
-		cloneModelVal = *req.CloneModel
-	}
 	designModelVal := existing.DesignModel
 	if req.DesignModel != nil && *req.DesignModel != "" {
 		designModelVal = *req.DesignModel
 	}
 
-	if err := s.Store.UpdateVoicePreset(id, req.Name, req.Instruct, req.RefText, seedVal, speedVal, cloneModelVal, designModelVal); err != nil {
+	if err := s.Store.UpdateVoicePreset(id, req.Name, req.Instruct, req.RefText, seedVal, speedVal, designModelVal); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	p := store.VoicePreset{
 		ID: id, Name: req.Name, Instruct: req.Instruct, RefText: req.RefText, Seed: seedVal,
-		SpeedMultiplier: speedVal, CloneModel: cloneModelVal, DesignModel: designModelVal, CreatedAt: existing.CreatedAt,
+		SpeedMultiplier: speedVal, DesignModel: designModelVal, CreatedAt: existing.CreatedAt,
 	}
 
-	// instruct/refText/seed/speedMultiplier/cloneModel/designModel all feed
+	// instruct/refText/seed/speedMultiplier/designModel all feed
 	// the reference clip, so any of them changing means it has to be
 	// re-rendered - EnsureFile alone would just keep serving the stale one
 	// since a file's already there. Same "regenerate" mode/dedup key as
 	// handleRegenerateCustomVoicePreset, so an edit-save and an explicit
 	// "Regenerate" click for the same preset correctly join into one queued
 	// render instead of racing.
-	_, refErr := s.regenerateVoiceRef(r.Context(), p.ID, p.Name, p.Instruct, p.Seed, p.RefText, p.SpeedMultiplier, p.CloneModel, p.DesignModel)
+	_, refErr := s.regenerateVoiceRef(r.Context(), p.ID, p.Name, p.Instruct, p.Seed, p.RefText, p.SpeedMultiplier, p.DesignModel)
 	writeJSON(w, http.StatusOK, voicePresetDTO(p, refErr))
 }
 
@@ -698,7 +718,7 @@ func (s *Server) handleRegenerateCustomVoicePreset(w http.ResponseWriter, r *htt
 
 	_, refErr := s.Jobs.RunVoiceProvision(r.Context(), "", p.ID, "regenerate", p.Name, func(ctx context.Context, attempt int) (string, error) {
 		return s.renderWithSeedBump(p.ID, p.Seed, attempt, func(effectiveSeed int) (string, error) {
-			_, err := voicerefs.Regenerate(ctx, s.TTS, s.DataDir, p.ID, p.Instruct, effectiveSeed, p.RefText, p.SpeedMultiplier, p.CloneModel, p.DesignModel)
+			_, err := voicerefs.Regenerate(ctx, s.TTS, s.DataDir, p.ID, p.Instruct, effectiveSeed, p.RefText, p.SpeedMultiplier, p.DesignModel)
 			return p.ID, err
 		})
 	})
@@ -778,18 +798,20 @@ func (s *Server) handleDeleteCustomVoicePreset(w http.ResponseWriter, r *http.Re
 
 type testVoiceRequest struct {
 	Text string `json:"text"`
-	// CloneModel, when set, overrides the preset's saved cloning model -
-	// lets the editor preview the model currently selected in the form
-	// (which may not be saved yet) instead of always hearing the preset's
-	// persisted one.
+	// CloneModel is which clone model to preview the voice through - a
+	// preset has none of its own (that's each book's choice). "" defers to
+	// previewCloneModel's default.
 	CloneModel string `json:"cloneModel"`
+	// Temperature, when set, overrides the clone model's own sampling
+	// temperature for this one test (nil for the model's default).
+	Temperature *float64 `json:"temperature"`
 }
 
 // testVoice synthesizes text with the given voice recipe and writes the
 // resulting audio/wav straight to the response - shared by the built-in
 // and custom preset test endpoints, which differ only in where
-// instruct/seed/refText/speedMultiplier/cloneModel/designModel come from.
-func (s *Server) testVoice(w http.ResponseWriter, r *http.Request, presetID, name, instruct string, seed int, refText string, speedMultiplier float64, cloneModel, designModel string) {
+// instruct/seed/refText/speedMultiplier/designModel come from.
+func (s *Server) testVoice(w http.ResponseWriter, r *http.Request, presetID, name, instruct string, seed int, refText string, speedMultiplier float64, designModel string) {
 	var req testVoiceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -800,11 +822,13 @@ func (s *Server) testVoice(w http.ResponseWriter, r *http.Request, presetID, nam
 		writeError(w, http.StatusBadRequest, "text is required")
 		return
 	}
-	if req.CloneModel != "" {
-		cloneModel = req.CloneModel
+	if req.Temperature != nil && *req.Temperature <= 0 {
+		writeError(w, http.StatusBadRequest, "temperature must be positive")
+		return
 	}
+	cloneModel := s.previewCloneModel(req.CloneModel)
 
-	refPath, err := s.ensureVoiceRef(r.Context(), presetID, name, instruct, seed, refText, speedMultiplier, cloneModel, designModel)
+	refPath, err := s.ensureVoiceRef(r.Context(), presetID, name, instruct, seed, refText, speedMultiplier, designModel)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
@@ -814,7 +838,7 @@ func (s *Server) testVoice(w http.ResponseWriter, r *http.Request, presetID, nam
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	audio, err := s.TTS.Generate(r.Context(), text, cloneModel, refAudio, refText, "Auto", "", "")
+	audio, err := s.TTS.GeneratePreview(r.Context(), text, cloneModel, refAudio, refText, "Auto", req.Temperature)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
@@ -842,6 +866,10 @@ type testVoiceDesignRequest struct {
 	// preset has no guidance setting of its own, so its clip is always
 	// rendered at the engine's default.
 	GuidanceScale *float64 `json:"guidanceScale"`
+	// Temperature, when set, overrides the design engine's own sampling
+	// temperature for this one preview (nil for the engine's default) -
+	// same never-cached-for-save rule as GuidanceScale.
+	Temperature *float64 `json:"temperature"`
 }
 
 // handleTestVoiceDesign previews a voice instruction directly via the
@@ -881,6 +909,10 @@ func (s *Server) handleTestVoiceDesign(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "guidanceScale must be non-negative")
 		return
 	}
+	if req.Temperature != nil && *req.Temperature <= 0 {
+		writeError(w, http.StatusBadRequest, "temperature must be positive")
+		return
+	}
 
 	var seed64 *int64
 	if req.Seed != nil {
@@ -888,13 +920,13 @@ func (s *Server) handleTestVoiceDesign(w http.ResponseWriter, r *http.Request) {
 		seed64 = &v
 	}
 	audio, err := s.Jobs.RunVoiceDesignPreview(r.Context(), instruct, func(ctx context.Context) ([]byte, error) {
-		return s.TTS.DesignWithGuidance(ctx, text, instruct, "Auto", req.DesignModel, seed64, req.GuidanceScale)
+		return s.TTS.DesignPreview(ctx, text, instruct, "Auto", req.DesignModel, seed64, req.GuidanceScale, req.Temperature)
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
 	}
-	if req.Seed != nil && req.GuidanceScale == nil {
+	if req.Seed != nil && req.GuidanceScale == nil && req.Temperature == nil {
 		voicerefs.CacheDesignRender(s.DataDir, voicerefs.DesignConfigHash(instruct, *req.Seed, text, "Auto", req.DesignModel), audio)
 	}
 	w.Header().Set("Content-Type", "audio/wav")
@@ -917,7 +949,7 @@ func (s *Server) handleTestCustomVoicePreset(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "voice preset not found")
 		return
 	}
-	s.testVoice(w, r, preset.ID, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, preset.CloneModel, preset.DesignModel)
+	s.testVoice(w, r, preset.ID, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, preset.DesignModel)
 }
 
 // handleTestPreset is the built-in-preset equivalent of
@@ -930,7 +962,7 @@ func (s *Server) handleTestPreset(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "preset not found")
 		return
 	}
-	s.testVoice(w, r, preset.ID, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, DefaultCloneModel, preset.DesignModel)
+	s.testVoice(w, r, preset.ID, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, preset.DesignModel)
 }
 
 // handleRegeneratePreset is the built-in-preset equivalent of
@@ -949,10 +981,10 @@ func (s *Server) handleRegeneratePreset(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "preset not found")
 		return
 	}
-	_, refErr := s.regenerateVoiceRef(r.Context(), preset.ID, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, DefaultCloneModel, preset.DesignModel)
+	_, refErr := s.regenerateVoiceRef(r.Context(), preset.ID, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, preset.DesignModel)
 	dto := voicePresetDTOOut{
 		ID: preset.ID, Name: preset.Name, Instruct: preset.Instruct, Seed: preset.Seed, RefText: preset.RefText,
-		SpeedMultiplier: preset.SpeedMultiplier, CloneModel: DefaultCloneModel, DesignModel: preset.DesignModel,
+		SpeedMultiplier: preset.SpeedMultiplier, DesignModel: preset.DesignModel,
 		AudioURL: "/api/voices/presets/" + preset.ID + "/audio",
 	}
 	if refErr != nil {
@@ -972,7 +1004,7 @@ func (s *Server) handleGetPresetAudio(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "preset not found")
 		return
 	}
-	path, err := s.ensureVoiceRef(r.Context(), id, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, DefaultCloneModel, preset.DesignModel)
+	path, err := s.ensureVoiceRef(r.Context(), id, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, preset.DesignModel)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
@@ -995,7 +1027,7 @@ func (s *Server) handleGetCustomVoiceAudio(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "voice preset not found")
 		return
 	}
-	path, err := s.ensureVoiceRef(r.Context(), id, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, preset.CloneModel, preset.DesignModel)
+	path, err := s.ensureVoiceRef(r.Context(), id, preset.Name, preset.Instruct, preset.Seed, preset.RefText, preset.SpeedMultiplier, preset.DesignModel)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return

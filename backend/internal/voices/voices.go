@@ -55,18 +55,11 @@ type Preset struct {
 	// speed control. >1.0 speeds the reference up (biasing the cloned
 	// narrator's pace faster), <1.0 slows it down.
 	SpeedMultiplier float64
-	// CloneModel overrides DefaultCloneModel for this preset only - "" (every
-	// built-in preset except FastPresetID) defers to DefaultCloneModel, same
-	// as a custom preset's own empty VoicePreset.CloneModel. Set on
-	// FastPresetID so that preset clones through PocketTTS (by far the
-	// fastest family this worker loads) rather than whichever slower engine
-	// the rest of a book's own presets use.
-	CloneModel string
 	// DesignModel overrides which VoiceDesign engine renders this preset's
 	// reference clip (see backend/internal/audioworker's designEngines -
 	// "qwen3_tts" or "breeze_tts", kept as plain literal strings here
-	// rather than a shared import, same reasoning as CloneModel's own
-	// clone_model ids: this package is linked into cmd/server, which must
+	// rather than a shared import, same reasoning as the clone_model ids
+	// below: this package is linked into cmd/server, which must
 	// never import audioworker/audiocpp-go). "" (every built-in preset
 	// except velvet-narrator) defers to the worker's own process-wide
 	// default (LECTABLE_AUDIOCPP_DESIGN_ENGINE, currently breeze_tts).
@@ -160,62 +153,41 @@ var Presets = []Preset{
 		Seed:            1007,
 		RefText:         DefaultRefText,
 		SpeedMultiplier: 1.0,
-		CloneModel:      FastCloneModel,
-	},
-	{
-		ID:   "soprano",
-		Name: "Soprano (fixed voice, no cloning)",
-		// No Instruct/Seed: SopranoCloneModel has no VoiceDesign engine to
-		// sample a voice from at all (see NoCloneModels) - this preset
-		// always renders the same single built-in voice regardless of
-		// these fields, so there's no instruction for them to carry.
-		// RefText is still used, as the text voicerefs.Regenerate speaks
-		// for this preset's on-disk "reference clip" - never actually fed
-		// back in as a cloning reference (see NoCloneModels' own doc
-		// comment), just a real, honest preview sample and a file for
-		// SpeedMultiplier/loudness bookkeeping to apply to.
-		RefText:         DefaultRefText,
-		SpeedMultiplier: 1.0,
-		CloneModel:      SopranoCloneModel,
 	},
 }
 
 // FastPresetID names the built-in preset internal/jobs.Manager's own
-// length-estimate sample (EnqueueLengthEstimate) clones through - see
-// FastCloneModel's own doc comment for why this preset in particular. Also
-// a perfectly normal, selectable narrator preset like any other; nothing
-// prevents a reader from picking it for real narration too.
+// length-estimate sample (EnqueueLengthEstimate) clones from, always
+// through FastCloneModel regardless of any book's own clone model. Also a
+// perfectly normal, selectable narrator preset like any other.
 var FastPresetID = "fast-narrator"
 
-// FastCloneModel is the audiocpp-pocket-100m (PocketTTS) clone model
-// FastPresetID clones through - see backend/internal/audioworker/families.
-// go's own "audiocpp-pocket" doc comment for why PocketTTS specifically:
-// its decode is dramatically faster than every other family this worker
-// loads, which is exactly what a throwaway length-estimate sample wants -
-// a real, generated-audio chars/sec ratio without paying for a slow
-// engine's full decode just to measure it.
-const FastCloneModel = "audiocpp-pocket-100m"
+// Clone model ids (see backend/internal/audioworker's cloneModelFamilies),
+// kept as plain literals here rather than a shared import - this package
+// is linked into cmd/server, which must never import audioworker/
+// audiocpp-go (see backend/CLAUDE.md's hard invariant).
+//
+// Which clone model narrates is a property of the *book* (store.Book.
+// CloneModel), never of a voice preset: a preset is only a reference clip
+// recipe (instruct/seed/refText/designModel), and the same clip can be
+// cloned through any clone model.
+const (
+	// PocketCloneModel is PocketTTS - by far the fastest family the worker
+	// loads (see audioworker/families.go's "audiocpp-pocket" doc comment).
+	PocketCloneModel = "audiocpp-pocket-100m"
+	// HiggsCloneModel is Higgs Audio - the only family whose delivery-tag
+	// vocabulary speech direction (httpapi's direction tagging,
+	// store.Book.SpeechDirection) targets.
+	HiggsCloneModel = "audiocpp-higgs-4b"
+	// SopranoCloneModel is a single fixed built-in voice with no cloning
+	// at all - the worker ignores any reference clip sent with it.
+	SopranoCloneModel = "audiocpp-soprano"
+)
 
-// SopranoCloneModel is the audiocpp-soprano clone_model the "soprano"
-// preset uses - see backend/internal/audioworker/families.go's own
-// "audiocpp-soprano" entry. Listed in NoCloneModels below.
-const SopranoCloneModel = "audiocpp-soprano"
-
-// NoCloneModels lists every clone_model id with no voice-cloning or
-// VoiceDesign capability at all - a single fixed built-in voice, every
-// call rendering identically regardless of caller (kept as plain string
-// literals here, not a shared import with audioworker.cloneFamily's own
-// matching noReference flag, for the same reason CloneModel/DesignModel's
-// values are already duplicated this way: this package is linked into
-// cmd/server, which must never import audioworker/audiocpp-go - see
-// backend/CLAUDE.md's hard invariant). internal/voicerefs checks this to
-// skip VoiceDesign entirely for a preset using one of these (there's no
-// design-capable engine to render a meaningful reference clip from in the
-// first place) and render a plain one-shot sample instead - see
-// voicerefs.Regenerate.
-var NoCloneModels = map[string]bool{
-	SopranoCloneModel: true,
-}
+// FastCloneModel is what EnqueueLengthEstimate's throwaway sample clones
+// through: a real, generated-audio chars/sec ratio without paying for a
+// slow engine's full decode just to measure it.
+const FastCloneModel = PocketCloneModel
 
 // PresetsByID indexes Presets by id.
 var PresetsByID = func() map[string]Preset {
@@ -230,13 +202,11 @@ var PresetsByID = func() map[string]Preset {
 // starts with.
 var DefaultPresetID = "velvet-narrator"
 
-// DefaultCloneModel is what a new custom voice preset is created with when
-// the request doesn't specify one, and what every built-in preset (which
-// has no per-preset clone_model of its own) is rendered/cloned through.
-// Pinned here explicitly (rather than left blank to defer to the worker's
-// own default) so a preset's narrator model doesn't silently change if the
-// worker's own configured default is later reconfigured.
-const DefaultCloneModel = "audiocpp-higgs-4b"
+// DefaultCloneModel is the factory default for store.DefaultVoice.
+// CloneModel (the clone model new books start with, settable from the
+// Voices page), the fallback for a book whose own clone model is somehow
+// blank, and what ttsworker eagerly loads at startup.
+const DefaultCloneModel = HiggsCloneModel
 
 // InstructedCloneModel is the one clone_model whose family accepts a
 // clone-time style instruction alongside its reference clip in the same

@@ -75,3 +75,15 @@ func TestDesignEngineIDsMatchKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestMossLanguage(t *testing.T) {
+	for _, tc := range []struct{ lang, want string }{
+		{"Auto", "Auto"},
+		{"", "Auto"},
+		{"english", "English"},
+	} {
+		if got := mossLanguage(tc.lang, ""); got != tc.want {
+			t.Errorf("mossLanguage(%q) = %q, want %q", tc.lang, got, tc.want)
+		}
+	}
+}

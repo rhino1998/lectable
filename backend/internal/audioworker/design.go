@@ -26,8 +26,9 @@ import (
 // guidanceScale, when non-nil, overrides engine's own "guidance_scale"
 // (including a defaultRequestOptions value, e.g. breeze_tts's "4") for this
 // call - silently ignored for an engine that has no such option (see
-// designEngine.guidanceScale).
-func (w *Worker) Design(refText, instruct, language, designModel string, seed *int64, guidanceScale *float64) (*audiocpp.AudioBuffer, error) {
+// designEngine.guidanceScale). temperature likewise overrides the engine's
+// own sampling temperature, ignored unless designEngine.temperature.
+func (w *Worker) Design(refText, instruct, language, designModel string, seed *int64, guidanceScale, temperature *float64) (*audiocpp.AudioBuffer, error) {
 	w.touch()
 
 	engine := resolveDesignEngine(designModel)
@@ -57,12 +58,19 @@ func (w *Worker) Design(refText, instruct, language, designModel string, seed *i
 
 	request := audiocpp.NewRequest()
 	defer request.Close()
-	request.SetText(refText, lang).SetOption(instructOption, instruct)
+	if engine.instructAsTextPrefix {
+		request.SetText("("+instruct+")"+refText, lang)
+	} else {
+		request.SetText(refText, lang).SetOption(instructOption, instruct)
+	}
 	for k, v := range engine.defaultRequestOptions {
 		request.SetOption(k, v)
 	}
 	if engine.guidanceScale && guidanceScale != nil {
 		request.SetOption("guidance_scale", strconv.FormatFloat(*guidanceScale, 'f', -1, 64))
+	}
+	if engine.temperature && temperature != nil {
+		request.SetOption("temperature", strconv.FormatFloat(*temperature, 'f', -1, 64))
 	}
 	if engine.estimateDuration {
 		request.SetOption("duration_sec", formatSeconds(textSeconds(refText, 0, 0)))

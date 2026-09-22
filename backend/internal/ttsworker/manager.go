@@ -183,7 +183,7 @@ func (m *Manager) spawnAndWaitLocked(ctx context.Context) error {
 	cmd := exec.Command(m.cfg.BinPath, "-port", strconv.Itoa(m.cfg.Port))
 	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH="+m.cfg.LibDir+":"+os.Getenv("LD_LIBRARY_PATH"))
 	if m.cfg.DefaultCloneModel != "" {
-		cmd.Env = append(cmd.Env, "LECTABLE_DEFAULT_CLONE_MODEL="+m.cfg.DefaultCloneModel)
+		cmd.Env = append(cmd.Env, "QWEN_TTS_DEFAULT_CLONE_MODEL="+m.cfg.DefaultCloneModel)
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -522,6 +522,18 @@ func (m *Manager) do(ctx context.Context, method, path string, reqBody, respBody
 // configured default, same as every caller but the voice/character
 // editor's "test with another voice as a base" control.
 func (m *Manager) Generate(ctx context.Context, text, cloneModel string, refAudio []byte, refText, language, instruct, guidanceScale string) ([]byte, error) {
+	return m.generate(ctx, text, cloneModel, refAudio, refText, language, instruct, guidanceScale, nil)
+}
+
+// GeneratePreview is Generate for the voice editor's saved-voice test,
+// with a one-off sampling-temperature override (see
+// ttsproto.GenerateRequest.Temperature) - nil is exactly Generate with no
+// instruction.
+func (m *Manager) GeneratePreview(ctx context.Context, text, cloneModel string, refAudio []byte, refText, language string, temperature *float64) ([]byte, error) {
+	return m.generate(ctx, text, cloneModel, refAudio, refText, language, "", "", temperature)
+}
+
+func (m *Manager) generate(ctx context.Context, text, cloneModel string, refAudio []byte, refText, language, instruct, guidanceScale string, temperature *float64) ([]byte, error) {
 	m.restartGate.RLock()
 	defer m.restartGate.RUnlock()
 	jobID := m.beginJob()
@@ -536,6 +548,7 @@ func (m *Manager) Generate(ctx context.Context, text, cloneModel string, refAudi
 		Language:       language,
 		Instruct:       instruct,
 		GuidanceScale:  guidanceScale,
+		Temperature:    temperature,
 	}, &out)
 	return out, err
 }
@@ -544,12 +557,14 @@ func (m *Manager) Generate(ctx context.Context, text, cloneModel string, refAudi
 // (unstretched), returning WAV bytes. designModel selects which engine -
 // "" defers to the worker's own process-wide default.
 func (m *Manager) Design(ctx context.Context, refText, instruct, language, designModel string, seed *int64) ([]byte, error) {
-	return m.DesignWithGuidance(ctx, refText, instruct, language, designModel, seed, nil)
+	return m.DesignPreview(ctx, refText, instruct, language, designModel, seed, nil, nil)
 }
 
-// DesignWithGuidance is Design with a one-off guidance-scale override (see
-// ttsproto.DesignRequest.GuidanceScale) - nil is exactly Design.
-func (m *Manager) DesignWithGuidance(ctx context.Context, refText, instruct, language, designModel string, seed *int64, guidanceScale *float64) ([]byte, error) {
+// DesignPreview is Design for the voice editor's design preview, with
+// one-off guidance-scale and sampling-temperature overrides (see
+// ttsproto.DesignRequest.GuidanceScale/Temperature) - nil for both is
+// exactly Design.
+func (m *Manager) DesignPreview(ctx context.Context, refText, instruct, language, designModel string, seed *int64, guidanceScale, temperature *float64) ([]byte, error) {
 	m.restartGate.RLock()
 	defer m.restartGate.RUnlock()
 	jobID := m.beginJob()
@@ -563,6 +578,7 @@ func (m *Manager) DesignWithGuidance(ctx context.Context, refText, instruct, lan
 		Language:      language,
 		DesignModel:   designModel,
 		GuidanceScale: guidanceScale,
+		Temperature:   temperature,
 	}, &out)
 	return out, err
 }

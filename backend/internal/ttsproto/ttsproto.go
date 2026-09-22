@@ -31,6 +31,11 @@ type GenerateRequest struct {
 	// audioworker.GenerateRequest.GuidanceScale's own doc comment. Ignored
 	// entirely unless Instruct is also set.
 	GuidanceScale string `json:"guidanceScale,omitempty"`
+	// Temperature, when set, overrides the clone family's own sampling
+	// temperature for this one call - the voice editor's saved-voice test
+	// control. Ignored by a family with no temperature option (see
+	// audioworker's cloneFamily.temperature).
+	Temperature *float64 `json:"temperature,omitempty"`
 }
 
 // DesignRequest is POST /design's body: render a fresh reference clip via
@@ -51,6 +56,11 @@ type DesignRequest struct {
 	// (qwen3_tts, omnivoice, auk_flash - see audioworker's
 	// designEngine.guidanceScale).
 	GuidanceScale *float64 `json:"guidanceScale,omitempty"`
+	// Temperature, when set, overrides the engine's own sampling
+	// temperature for this one call - the voice editor's design preview
+	// control. Ignored by an engine with no temperature option (see
+	// audioworker's designEngine.temperature).
+	Temperature *float64 `json:"temperature,omitempty"`
 }
 
 // MusicRequest is POST /music's body: render an ACE-Step music clip from

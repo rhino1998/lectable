@@ -97,6 +97,11 @@ type GenerateRequest struct {
 	// actual instruction" scoping as instructGuidanceScale itself - see
 	// its own doc comment; ignored entirely on a call with no Instruct.
 	GuidanceScale string
+	// Temperature, when non-nil, overrides this family's own sampling
+	// temperature for this one call (the voice editor's saved-voice test) -
+	// ignored for a family with no temperature option (see
+	// cloneFamily.temperature).
+	Temperature *float64
 }
 
 // isMaxTokensOverflow reports whether err is Higgs generation running out
@@ -157,6 +162,9 @@ func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
 			refTextOption = "reference_text"
 		}
 		request.SetVoiceAudio(req.RefSamples, req.RefSampleRate, req.RefChannels)
+		if fam.refAsPromptAudio && strings.TrimSpace(req.RefText) != "" {
+			request.SetAudio(req.RefSamples, req.RefSampleRate, req.RefChannels)
+		}
 		if !fam.noRefText {
 			request.SetOption(refTextOption, req.RefText)
 		}
@@ -185,6 +193,9 @@ func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
 		if gs != "" {
 			request.SetOption("guidance_scale", gs)
 		}
+	}
+	if fam.temperature && req.Temperature != nil {
+		request.SetOption("temperature", strconv.FormatFloat(*req.Temperature, 'f', -1, 64))
 	}
 	if err := request.Err(); err != nil {
 		return nil, fmt.Errorf("build request: %w", err)

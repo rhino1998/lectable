@@ -116,6 +116,27 @@ type cloneFamily struct {
 	// own pace (seconds per character of its transcript) projected onto the
 	// text being spoken; see estimateCloneDuration.
 	estimateDuration bool
+	// temperature: true if this family's own session reads a plain
+	// "temperature" request option (its sampling temperature), so Generate
+	// may pass a caller's per-call override through - read directly from
+	// each family's session source, since most model specs don't list their
+	// options. False for flow/diffusion families with no such knob
+	// (fireredtts3, zipvoice, auk), omnivoice (separate class/position
+	// temperatures), and firered_audio (its "temperature" only applies to
+	// the understanding/ASR path).
+	temperature bool
+	// refAsPromptAudio: for voxcpm1/voxcpm2, which take two separate
+	// reference inputs - the speaker reference (timbre only, what
+	// SetVoiceAudio attaches) and a "prompt audio" clip the model continues
+	// from, which is the only thing its reference transcript is paired with
+	// (audio.cpp's voxcpm2 audiovae.cpp encode_prompt_audio). Upstream's
+	// "ultimate clone" sends the same clip as both; when true, Generate also
+	// attaches the reference clip as the request's input audio whenever a
+	// transcript is available. Off by default (voxCPMPromptAudio): in
+	// practice the continuation leaked the tail end of the reference clip
+	// into the start of the generated paragraph, so the default is
+	// timbre-only cloning, which never continues from anything.
+	refAsPromptAudio bool
 }
 
 func envOr(key, def string) string {
@@ -266,6 +287,13 @@ var qwen3ClonePoolSize = envIntOr("LECTABLE_AUDIOCPP_QWEN3_CLONE_POOL_SIZE", 2)
 var omnivoiceClonePoolSize = envIntOr("LECTABLE_AUDIOCPP_OMNIVOICE_CLONE_POOL_SIZE", 2)
 var breezeClonePoolSize = envIntOr("LECTABLE_AUDIOCPP_BREEZE_CLONE_POOL_SIZE", 2)
 
+// pocketClonePoolSize pins PocketTTS at 4 concurrent sessions explicitly
+// rather than inheriting Config.ClonePoolSize's process-wide default (also
+// 4 today) - a ~100M-parameter model whose sessions are cheap enough that
+// 4 at once is no VRAM concern, and 4 matches internal/jobs' maxInFlight,
+// so every generation slot the queue can dispatch gets its own session.
+var pocketClonePoolSize = envIntOr("LECTABLE_AUDIOCPP_POCKET_CLONE_POOL_SIZE", 4)
+
 // breezeCloneGuidanceScale is breeze_tts's own classifier-free guidance-
 // scale request option (model_specs/breeze_tts.json, default 1.0),
 // overridden here the same way designEngines["breeze_tts"]'s own
@@ -338,6 +366,80 @@ var cloneModelFamilies = map[string]string{
 	"audiocpp-firered":     "audiocpp-firered",
 	"audiocpp-auk":         "audiocpp-auk",
 	"audiocpp-auk-flash":   "audiocpp-auk-flash",
+	"audiocpp-moss-local":  "audiocpp-moss-local",
+	"audiocpp-moss-nano":   "audiocpp-moss-nano",
+	"audiocpp-voxcpm1":     "audiocpp-voxcpm1",
+	"audiocpp-voxcpm2":     "audiocpp-voxcpm2",
+	"audiocpp-zipvoice":    "audiocpp-zipvoice",
+}
+
+// mossLocalPoolSize: not yet profiled under concurrent load on this box -
+// starts at 1, same reasoning as fireRedTTS3PoolSize above.
+var mossLocalPoolSize = envIntOr("LECTABLE_AUDIOCPP_MOSS_LOCAL_CLONE_POOL_SIZE", 1)
+var mossNanoPoolSize = envIntOr("LECTABLE_AUDIOCPP_MOSS_NANO_CLONE_POOL_SIZE", 1)
+var voxCPM1PoolSize = envIntOr("LECTABLE_AUDIOCPP_VOXCPM1_CLONE_POOL_SIZE", 1)
+var voxCPM2PoolSize = envIntOr("LECTABLE_AUDIOCPP_VOXCPM2_CLONE_POOL_SIZE", 1)
+
+// voxCPM1CacheSlots/voxCPM2CacheSlots are each family's own
+// prompt_cache_slots session option (audio.cpp default 1 - caches the
+// encoded prompt/reference audio), falling back to cloneCacheSlots' shared
+// value when unset - see mossLocalCacheSlots.
+var voxCPM1CacheSlots = envOr("LECTABLE_AUDIOCPP_VOXCPM1_CACHE_SLOTS", cloneCacheSlots)
+var voxCPM2CacheSlots = envOr("LECTABLE_AUDIOCPP_VOXCPM2_CACHE_SLOTS", cloneCacheSlots)
+
+// voxCPMEncoderSampleCapacity sizes both VoxCPM families' AudioVAE
+// encoder input buffer (voxcpm1/voxcpm2.audiovae_encoder_sample_capacity),
+// the longest reference clip either can encode - audio.cpp's default
+// 240000 samples is only 15s at the encoder's 16kHz, shorter than the 20s
+// voicerefs.maxRefClipSeconds allows, and every clone call against a
+// longer clip failed outright ("AudioVAE encoder sample capacity
+// exceeded"). 480000 (30s) covers that cap with headroom and divides
+// evenly by the encoder's stride, which audio.cpp requires. The whole
+// buffer is encoded on every call regardless of clip length, so this is
+// kept no larger than needed.
+var voxCPMEncoderSampleCapacity = envOr("LECTABLE_AUDIOCPP_VOXCPM_ENCODER_SAMPLE_CAPACITY", "480000")
+
+// voxCPMPromptAudio turns on VoxCPM's "ultimate clone" mode for both
+// families (cloneFamily.refAsPromptAudio) - off by default because it
+// leaked the end of the reference clip into generated audio; set true to
+// trade that risk for its closer voice match.
+var voxCPMPromptAudio = envOr("LECTABLE_AUDIOCPP_VOXCPM_PROMPT_AUDIO", "false") == "true"
+
+// voxCPM2ModelPath is shared by cloneFamilies' "audiocpp-voxcpm2" and
+// designEngines' "voxcpm2" - one GGUF covers cloning and voice design.
+var voxCPM2ModelPath = envOr(
+	"LECTABLE_AUDIOCPP_VOXCPM2_MODEL_PATH",
+	modelPath("VoxCPM2-GGUF/voxcpm2-q8_0.gguf"),
+)
+var zipVoicePoolSize = envIntOr("LECTABLE_AUDIOCPP_ZIPVOICE_CLONE_POOL_SIZE", 1)
+
+// espeakLibraryPath/espeakDataPath locate the eSpeak NG shared library and
+// its voice data, which zipvoice loads at runtime to phonemize English text
+// (this box's audio.cpp build doesn't statically link it -
+// AUDIOCPP_STATIC_ESPEAK=OFF - and no system espeak-ng is installed). The
+// defaults point at a copy unpacked from the espeakng_loader PyPI wheel
+// into the models directory; point both at a system install instead
+// (e.g. /usr/lib/x86_64-linux-gnu/libespeak-ng.so.1 and
+// /usr/lib/x86_64-linux-gnu/espeak-ng-data) if one exists.
+var espeakLibraryPath = envOr("LECTABLE_AUDIOCPP_ESPEAK_LIBRARY_PATH", modelPath("espeak-ng/libespeak-ng.so"))
+var espeakDataPath = envOr("LECTABLE_AUDIOCPP_ESPEAK_DATA_PATH", modelPath("espeak-ng/espeak-ng-data"))
+
+// mossLocalCacheSlots is moss_tts_local.reference_cache_slots (audio.cpp
+// default 1) - its own env var so it can be tuned independently, falling
+// back to cloneCacheSlots' shared value when unset. Each slot holds one
+// reference clip's already-encoded audio codes, reused whenever the same
+// (reference audio, transcript) pair comes back on a warm session.
+var mossLocalCacheSlots = envOr("LECTABLE_AUDIOCPP_MOSS_LOCAL_CACHE_SLOTS", cloneCacheSlots)
+
+// mossLanguage maps a language onto MOSS-TTS's prompt-template language
+// slot, which takes free text ("- Language:\n<value>") rather than a fixed
+// tag set - "Auto" leaves it empty so the model detects the language
+// itself, anything else is capitalized to read as a language name.
+func mossLanguage(language, _ string) string {
+	if language == "" || strings.EqualFold(language, "auto") {
+		return "Auto"
+	}
+	return strings.ToUpper(language[:1]) + strings.ToLower(language[1:])
 }
 
 // fireRedTTS3PoolSize/fireRedAudioPoolSize/aukPoolSize: each of these
@@ -444,7 +546,8 @@ func hasCJK(text string) bool {
 
 var cloneFamilies = map[string]cloneFamily{
 	"audiocpp-qwen3": {
-		family: "qwen3_tts",
+		temperature: true,
+		family:      "qwen3_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_QWEN3_MODEL_PATH",
 			modelPath("Qwen3-TTS-12Hz-0.6B-Base-GGUF/qwen3-tts-12hz-0.6b-base-q8_0.gguf"),
@@ -453,7 +556,8 @@ var cloneFamilies = map[string]cloneFamily{
 		poolSizeOverride: qwen3ClonePoolSize,
 	},
 	"audiocpp-higgs": {
-		family: "higgs_audio_tts",
+		temperature: true,
+		family:      "higgs_audio_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_HIGGS_MODEL_PATH",
 			modelPath("Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf"),
@@ -474,7 +578,8 @@ var cloneFamilies = map[string]cloneFamily{
 	// this book's actual narrator, so there's no reason to pay for a slow
 	// engine's real decode just to measure that.
 	"audiocpp-pocket": {
-		family: "pocket_tts",
+		temperature: true,
+		family:      "pocket_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_POCKET_MODEL_PATH",
 			modelPath("PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf"),
@@ -486,7 +591,8 @@ var cloneFamilies = map[string]cloneFamily{
 		// English package, so this is fixed at load time rather than
 		// exposed as a per-call option the way qwen3_tts/higgs_audio_tts's
 		// own language passthrough is.
-		refTextOption: "voice_clone_text",
+		refTextOption:    "voice_clone_text",
+		poolSizeOverride: pocketClonePoolSize,
 	},
 	// BreezeTTS 2 (audio-cpp/audio.cpp-gguf's "breeze_tts" family) - a
 	// prompt-audio cloning engine like qwen3_tts/higgs_audio_tts, wired in
@@ -494,7 +600,8 @@ var cloneFamilies = map[string]cloneFamily{
 	// "reference_text" request-option name already matches this package's
 	// default (refTextOption left empty below), unlike pocket_tts above.
 	"audiocpp-breeze": {
-		family: "breeze_tts",
+		temperature: true,
+		family:      "breeze_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_BREEZE_MODEL_PATH",
 			modelPath("Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf"),
@@ -539,7 +646,8 @@ var cloneFamilies = map[string]cloneFamily{
 	// *_cache_slots session option (see soprano_tts.json's own "options" -
 	// nothing to widen here, same as omnivoice above).
 	"audiocpp-soprano": {
-		family: "soprano_tts",
+		temperature: true,
+		family:      "soprano_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_SOPRANO_MODEL_PATH",
 			modelPath("Soprano-1.1-80M-GGUF/soprano-1.1-80m-q8_0.gguf"),
@@ -595,6 +703,89 @@ var cloneFamilies = map[string]cloneFamily{
 		wrapText:         aukCloneText,
 		estimateDuration: true,
 		poolSizeOverride: aukPoolSize,
+	},
+	// MOSS-TTS-Local v1.5 (OpenMOSS, Apache-2.0) - one self-contained GGUF
+	// (audio tokenizer included). Clones whenever a reference clip is
+	// attached, on the same "tts" session every family here uses; reads its
+	// transcript from "reference_text", this package's default. Chunks long
+	// text itself (2048 chars per chunk by default).
+	"audiocpp-moss-local": {
+		temperature: true,
+		family:      "moss_tts_local",
+		modelPath: envOr(
+			"LECTABLE_AUDIOCPP_MOSS_LOCAL_MODEL_PATH",
+			modelPath("MOSS-TTS-Local-v1.5-GGUF/moss-tts-local-v1.5-q8_0.gguf"),
+		),
+		sessionOptions:   map[string]string{"moss_tts_local.reference_cache_slots": mossLocalCacheSlots},
+		languageTag:      mossLanguage,
+		poolSizeOverride: mossLocalPoolSize,
+	},
+	// MOSS-TTS-Nano 100M (OpenMOSS, Apache-2.0) - MOSS-TTS-Local's small
+	// sibling, one ~190MB GGUF. Same reference_text/clone-by-attachment
+	// shape, but its prompt has no language slot at all (the "language"
+	// option SetText sends is simply never read) and no reference-cache
+	// session option to widen.
+	"audiocpp-moss-nano": {
+		temperature: true,
+		family:      "moss_tts_nano",
+		modelPath: envOr(
+			"LECTABLE_AUDIOCPP_MOSS_NANO_MODEL_PATH",
+			modelPath("MOSS-TTS-Nano-100M-GGUF/moss-tts-nano-100m-q8_0.gguf"),
+		),
+		poolSizeOverride: mossNanoPoolSize,
+	},
+	// ZipVoice-Distill (k2-fsa, Apache-2.0; audio.cpp community port of
+	// davidxifeng/zipvoice-gguf) - a non-autoregressive flow-matching cloner
+	// (8 Euler steps), English and Chinese. Needs the reference transcript
+	// ("reference_text", this package's default) and eSpeak NG for English
+	// phonemization (espeakLibraryPath/espeakDataPath). Output length comes
+	// from its own duration predictor, scaled from the reference clip's pace.
+	"audiocpp-zipvoice": {
+		family: "zipvoice",
+		modelPath: envOr(
+			"LECTABLE_AUDIOCPP_ZIPVOICE_MODEL_PATH",
+			modelPath("ZipVoice-Distill-GGUF/zipvoice-distill-q8_0.gguf"),
+		),
+		sessionOptions: map[string]string{
+			"zipvoice.espeak_library_path": espeakLibraryPath,
+			"zipvoice.espeak_data_path":    espeakDataPath,
+		},
+		poolSizeOverride: zipVoicePoolSize,
+	},
+	// VoxCPM2 (OpenBMB, Apache-2.0) - MiniCPM backbone + diffusion
+	// AudioVAE, cloning and voice design from one GGUF (see designEngines'
+	// own "voxcpm2" entry). Clones from the reference clip's timbre by
+	// default (see refAsPromptAudio for the optional "ultimate clone" mode);
+	// auto-detects language (its prompt has no language slot, and the
+	// "language" option SetText sends is never read). Chunks long text
+	// itself (2048 chars by default, continuing each chunk from the last).
+	"audiocpp-voxcpm2": {
+		family:    "voxcpm2",
+		modelPath: voxCPM2ModelPath,
+		sessionOptions: map[string]string{
+			"voxcpm2.prompt_cache_slots":               voxCPM2CacheSlots,
+			"voxcpm2.audiovae_encoder_sample_capacity": voxCPMEncoderSampleCapacity,
+		},
+		noLanguageOption: true,
+		refAsPromptAudio: voxCPMPromptAudio,
+		poolSizeOverride: voxCPM2PoolSize,
+	},
+	// VoxCPM1 0.5B (OpenBMB, Apache-2.0) - clone-only predecessor, run by
+	// the same audio.cpp runtime as voxcpm2. Its spec validates request
+	// options strictly and lists no "language" (noLanguageOption).
+	"audiocpp-voxcpm1": {
+		family: "voxcpm1",
+		modelPath: envOr(
+			"LECTABLE_AUDIOCPP_VOXCPM1_MODEL_PATH",
+			modelPath("VoxCPM1-GGUF/voxcpm-0.5b-q8_0-audiovae-f16.gguf"),
+		),
+		sessionOptions: map[string]string{
+			"voxcpm1.prompt_cache_slots":               voxCPM1CacheSlots,
+			"voxcpm1.audiovae_encoder_sample_capacity": voxCPMEncoderSampleCapacity,
+		},
+		noLanguageOption: true,
+		refAsPromptAudio: voxCPMPromptAudio,
+		poolSizeOverride: voxCPM1PoolSize,
 	},
 	"audiocpp-auk-flash": {
 		family:           "auk",
@@ -656,6 +847,14 @@ type designEngine struct {
 	// auk). False for qwen3_tts/omnivoice (no such option - their specs
 	// would reject it) and auk_flash (always runs without guidance).
 	guidanceScale bool
+	// temperature: see cloneFamily.temperature - true for qwen3_tts and
+	// breeze_tts, the design engines whose sessions read "temperature".
+	temperature bool
+	// instructAsTextPrefix: true for voxcpm2, which has no instruction
+	// request option - a voice description goes in parentheses at the very
+	// start of the text itself ("(A warm, deep male voice)Hello...") -
+	// so Design prepends it rather than setting instructOption.
+	instructAsTextPrefix bool
 }
 
 // designEngines: qwen3_tts's own VoiceDesign checkpoint was the sole engine
@@ -668,8 +867,9 @@ type designEngine struct {
 // env-var controlled only, for now, not yet exposed as a per-preset choice.
 var designEngines = map[string]designEngine{
 	"qwen3_tts": {
-		id:     "qwen3_tts",
-		family: "qwen3_tts",
+		temperature: true,
+		id:          "qwen3_tts",
+		family:      "qwen3_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_QWEN3_DESIGN_MODEL_PATH",
 			modelPath("Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF/qwen3-tts-12hz-1.7b-voicedesign-q8_0.gguf"),
@@ -682,6 +882,7 @@ var designEngines = map[string]designEngine{
 		// different weight_type) if those crashes resurface.
 	},
 	"breeze_tts": {
+		temperature:   true,
 		id:            "breeze_tts",
 		family:        "breeze_tts",
 		guidanceScale: true,
@@ -753,6 +954,19 @@ var designEngines = map[string]designEngine{
 		noLanguageOption: true,
 		designTask:       "tts",
 		estimateDuration: true,
+	},
+	// VoxCPM2 - the same GGUF as cloneFamilies' own "audiocpp-voxcpm2"
+	// entry, on a plain "tts" session: design is just text prefixed with
+	// the voice description in parentheses (instructAsTextPrefix), no
+	// reference attached. Reads "guidance_scale" (default 2.0).
+	"voxcpm2": {
+		id:                   "voxcpm2",
+		family:               "voxcpm2",
+		modelPath:            voxCPM2ModelPath,
+		designTask:           "tts",
+		noLanguageOption:     true,
+		instructAsTextPrefix: true,
+		guidanceScale:        true,
 	},
 	"auk_flash": {
 		id:               "auk_flash",

@@ -132,14 +132,14 @@ func TestOpenSeedsDefaultVoice(t *testing.T) {
 		t.Fatalf("expected a non-empty seeded default preset id")
 	}
 
-	if err := s.SetDefaultVoice("custom-preset", "speak warmly", "English", 42); err != nil {
+	if err := s.SetDefaultVoice("custom-preset", "speak warmly", "English", 42, "audiocpp-higgs-4b"); err != nil {
 		t.Fatalf("SetDefaultVoice: %v", err)
 	}
 	v2, err := s.GetDefaultVoice()
 	if err != nil {
 		t.Fatalf("GetDefaultVoice after set: %v", err)
 	}
-	if v2 != (DefaultVoice{PresetID: "custom-preset", Instruct: "speak warmly", Language: "English", Seed: 42}) {
+	if v2 != (DefaultVoice{PresetID: "custom-preset", Instruct: "speak warmly", Language: "English", Seed: 42, CloneModel: "audiocpp-higgs-4b"}) {
 		t.Fatalf("unexpected default voice after set: %+v", v2)
 	}
 }
@@ -200,6 +200,88 @@ func TestMigrateCharactersRefLineBackfillsExisting(t *testing.T) {
 	}
 	if c.RefLine != voices.DefaultRefText {
 		t.Fatalf("ref_line not backfilled to voices.DefaultRefText: got %q", c.RefLine)
+	}
+}
+
+// TestMigrateCloneModelToBook simulates a database from before the clone
+// model moved from voice_presets onto books/default_voice, and confirms
+// Open's migrateCloneModelToBook backfills each existing book with the
+// model its narrator preset used to clone through, drops the removed
+// "soprano" preset, and gives default_voice the new factory default.
+func TestMigrateCloneModelToBook(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "library.duckdb")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	custom, err := s.CreateVoicePreset("Custom", "speak softly", "ref", 3, 1.0, voices.DefaultDesignModel)
+	if err != nil {
+		t.Fatalf("CreateVoicePreset: %v", err)
+	}
+	bookIDs := map[string]string{}
+	for _, presetID := range []string{voices.DefaultPresetID, voices.FastPresetID, "soprano", custom.ID} {
+		id, _, err := s.CreateBook("Book "+presetID, "Author", "en", "", "", 0, nil)
+		if err != nil {
+			t.Fatalf("CreateBook: %v", err)
+		}
+		if err := s.UpdateVoice(id, presetID, "", "Auto", 1, "", CharacterVoiceModeNarrator, false, false); err != nil {
+			t.Fatalf("UpdateVoice: %v", err)
+		}
+		bookIDs[presetID] = id
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	raw, err := sql.Open("duckdb", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE books DROP COLUMN clone_model`,
+		`ALTER TABLE default_voice DROP COLUMN clone_model`,
+		`ALTER TABLE voice_presets ADD COLUMN clone_model TEXT DEFAULT 'audiocpp-higgs-4b'`,
+		`UPDATE voice_presets SET clone_model = 'audiocpp-qwen3-0.6b' WHERE id = '` + custom.ID + `'`,
+		`UPDATE default_voice SET preset_id = 'soprano'`,
+	} {
+		if _, err := raw.Exec(stmt); err != nil {
+			t.Fatalf("simulate pre-migration schema (%s): %v", stmt, err)
+		}
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("Open (should migrate clone_model onto books): %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	want := map[string]struct{ presetID, cloneModel string }{
+		voices.DefaultPresetID: {voices.DefaultPresetID, voices.HiggsCloneModel},
+		voices.FastPresetID:    {voices.FastPresetID, voices.FastCloneModel},
+		"soprano":              {voices.DefaultPresetID, voices.SopranoCloneModel},
+		custom.ID:              {custom.ID, "audiocpp-qwen3-0.6b"},
+	}
+	for oldPreset, w := range want {
+		b, err := s.GetBook(bookIDs[oldPreset])
+		if err != nil || b == nil {
+			t.Fatalf("GetBook: %v", err)
+		}
+		if b.VoicePresetID != w.presetID || b.CloneModel != w.cloneModel {
+			t.Errorf("book on preset %q: got preset %q / clone model %q, want %q / %q", oldPreset, b.VoicePresetID, b.CloneModel, w.presetID, w.cloneModel)
+		}
+	}
+	dv, err := s.GetDefaultVoice()
+	if err != nil {
+		t.Fatalf("GetDefaultVoice: %v", err)
+	}
+	if dv.PresetID != voices.DefaultPresetID || dv.CloneModel != voices.DefaultCloneModel {
+		t.Errorf("default voice: got %+v", dv)
+	}
+	if got, err := s.GetVoicePreset(custom.ID); err != nil || got == nil {
+		t.Fatalf("custom preset lost during migration: %v", err)
 	}
 }
 
@@ -350,6 +432,79 @@ func TestChapterPasses(t *testing.T) {
 	}
 	if want := (Passes{Attribution: true, Description: true, ScareQuote: true, Direction: true}); ch.Passes != want {
 		t.Fatalf("expected Direction to survive re-attribution, got %+v", ch.Passes)
+	}
+}
+
+func TestSetChapterPronouncedIsItsOwnPass(t *testing.T) {
+	s := openTestStore(t)
+	_, chapterID := oneChapterBook(t, s, "", 0, "p1")
+
+	if err := s.SetChapterPronounced(chapterID); err != nil {
+		t.Fatalf("SetChapterPronounced: %v", err)
+	}
+	ch, err := s.GetChapterByID(chapterID)
+	if err != nil {
+		t.Fatalf("GetChapterByID: %v", err)
+	}
+	if want := (Passes{Pronunciation: true}); ch.Passes != want {
+		t.Fatalf("expected only Pronunciation set, got %+v", ch.Passes)
+	}
+	if err := s.SetChapterDirected(chapterID); err != nil {
+		t.Fatalf("SetChapterDirected: %v", err)
+	}
+	ch, err = s.GetChapterByID(chapterID)
+	if err != nil {
+		t.Fatalf("GetChapterByID: %v", err)
+	}
+	if want := (Passes{Pronunciation: true, Direction: true}); ch.Passes != want {
+		t.Fatalf("expected Pronunciation to survive SetChapterDirected, got %+v", ch.Passes)
+	}
+}
+
+// TestMigratePronunciationPassBackfillsDirected confirms a chapter directed
+// before pronunciation became its own pass (when direction tagging still
+// resolved pronunciation too) comes back with Passes.Pronunciation set,
+// while an undirected chapter and one with an explicit pronunciation value
+// are left alone.
+func TestMigratePronunciationPassBackfillsDirected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "library.duckdb")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_, directed := oneChapterBook(t, s, "", 0, "p1")
+	_, undirected := oneChapterBook(t, s, "", 0, "p1")
+	_, explicit := oneChapterBook(t, s, "", 0, "p1")
+	for id, passes := range map[string]string{
+		directed:   `{"direction": true}`,
+		undirected: `{"attribution": true}`,
+		explicit:   `{"direction": true, "pronunciation": false}`,
+	} {
+		if _, err := s.db.Exec(`UPDATE chapters SET passes = ? WHERE id = ?`, passes, id); err != nil {
+			t.Fatalf("seed passes: %v", err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	for id, want := range map[string]Passes{
+		directed:   {Direction: true, Pronunciation: true},
+		undirected: {Attribution: true},
+		explicit:   {Direction: true},
+	} {
+		ch, err := s.GetChapterByID(id)
+		if err != nil {
+			t.Fatalf("GetChapterByID: %v", err)
+		}
+		if ch.Passes != want {
+			t.Errorf("chapter %s: expected %+v, got %+v", id, want, ch.Passes)
+		}
 	}
 }
 
@@ -649,7 +804,7 @@ func TestQuotesAndDescriptionsForBooksSingleQuery(t *testing.T) {
 
 func TestVoicePresetCRUD(t *testing.T) {
 	s := openTestStore(t)
-	preset, err := s.CreateVoicePreset("My Narrator", "speak calmly", "reference text", 7, 1.1, "audiocpp-higgs-4b", "breeze_tts")
+	preset, err := s.CreateVoicePreset("My Narrator", "speak calmly", "reference text", 7, 1.1, "breeze_tts")
 	if err != nil {
 		t.Fatalf("CreateVoicePreset: %v", err)
 	}
@@ -661,11 +816,11 @@ func TestVoicePresetCRUD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVoicePreset: %v", err)
 	}
-	if got == nil || got.Name != "My Narrator" || got.CloneModel != "audiocpp-higgs-4b" || got.DesignModel != "breeze_tts" {
+	if got == nil || got.Name != "My Narrator" || got.DesignModel != "breeze_tts" {
 		t.Fatalf("unexpected preset: %+v", got)
 	}
 
-	if err := s.UpdateVoicePreset(preset.ID, "Renamed", "speak boldly", "reference text", 7, 1.2, "audiocpp-higgs-4b", "qwen3_tts"); err != nil {
+	if err := s.UpdateVoicePreset(preset.ID, "Renamed", "speak boldly", "reference text", 7, 1.2, "qwen3_tts"); err != nil {
 		t.Fatalf("UpdateVoicePreset: %v", err)
 	}
 	got, err = s.GetVoicePreset(preset.ID)
@@ -722,11 +877,11 @@ func TestCharacterVoiceAssignmentPerCloneModel(t *testing.T) {
 		t.Fatalf("expected UpsertCharacter to report no creation for an existing name")
 	}
 
-	presetA, err := s.CreateVoicePreset("Voice A", "speak wisely", "ref", 1, 1.0, "audiocpp-higgs-4b", "breeze_tts")
+	presetA, err := s.CreateVoicePreset("Voice A", "speak wisely", "ref", 1, 1.0, "breeze_tts")
 	if err != nil {
 		t.Fatalf("CreateVoicePreset A: %v", err)
 	}
-	presetB, err := s.CreateVoicePreset("Voice B", "speak wisely", "ref", 1, 1.0, "audiocpp-qwen3-0.6b", "breeze_tts")
+	presetB, err := s.CreateVoicePreset("Voice B", "speak wisely", "ref", 1, 1.0, "breeze_tts")
 	if err != nil {
 		t.Fatalf("CreateVoicePreset B: %v", err)
 	}

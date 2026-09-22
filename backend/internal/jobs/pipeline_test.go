@@ -13,7 +13,8 @@ import (
 // TestPipelinePhasesRunInDependencyOrder is EnqueuePipeline's own core
 // contract for its chained phases: scare-quote tagging before attribution
 // and description tagging, both of those before characterization, and
-// characterization before voice provisioning - see pipelinePhaseDeps. Direction carries no such
+// characterization before voice provisioning - see pipelinePhaseDeps. Direction (like
+// pronunciation resolution) carries no such
 // dependency at all (see TestDirectionPhaseRunsWithoutWaitingOnEarlierPhases
 // below for that half of the contract), so it's deliberately left out of
 // the ordering assertion here - its position in order is unconstrained.
@@ -36,7 +37,7 @@ func TestPipelinePhasesRunInDependencyOrder(t *testing.T) {
 
 	if err := mgr.EnqueuePipeline("book-1", [pipelinePhaseCount]PipelinePhaseFunc{
 		phase(pipelinePhaseAttribution), phase(pipelinePhaseCharacterization), phase(pipelinePhaseVoiceProvision), phase(pipelinePhaseDirection), phase(pipelinePhaseMusic),
-		phase(pipelinePhaseScareQuote), phase(pipelinePhaseDescription),
+		phase(pipelinePhaseScareQuote), phase(pipelinePhaseDescription), phase(pipelinePhasePronunciation),
 	}); err != nil {
 		t.Fatalf("EnqueuePipeline: %v", err)
 	}

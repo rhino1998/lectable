@@ -30,6 +30,10 @@ type Book struct {
 	VoiceInstruct string
 	VoiceLanguage string
 	VoiceSeed     int // 0 = none resolved (falls back to tts-service's own default); see UpdateVoice
+	// CloneModel is which clone model narrates this book - every voice in
+	// it, narrator and characters alike. A property of the book, never of
+	// a voice preset; see the books.clone_model schema comment.
+	CloneModel string
 	// CharacterVoiceMode controls whether/how a character's own narration
 	// voice can override the book's own - see CharacterVoiceMode's own doc
 	// comment for the four possible values. MultiVoice/
@@ -158,11 +162,6 @@ type VoicePreset struct {
 	// cloned from - see internal/voicerefs/internal/wsola. 1.0 = no change.
 	SpeedMultiplier float64
 	CreatedAt       int64
-	// Which tts-service clone model to clone this preset through (e.g.
-	// "qwen-cpp-0.6b", "sopro", "llama-mtmd-qwen3-1.7b") - lets different
-	// presets be compared side by side. "" defers to tts-service's own
-	// configured default.
-	CloneModel string
 	// Which VoiceDesign engine renders this preset's reference clip (e.g.
 	// "qwen3_tts", "breeze_tts" - see backend/internal/audioworker's
 	// designEngines). "" defers to the worker's own process-wide default,
@@ -205,8 +204,8 @@ type Passes struct {
 	// (jobs.Manager.scareQuoteDependency).
 	ScareQuote bool `json:"scareQuote"`
 	// Direction is set once speech-direction tagging
-	// (internal/speakerattr.Client.DirectChapter/TagSfx/ResolvePronunciation,
-	// via httpapi.directChapter) has completed over the whole chapter at
+	// (internal/speakerattr.Client.DirectChapter/TagSfx, via
+	// httpapi.directChapter - Higgs-only) has completed over the whole chapter at
 	// least once, the same "full pass, not a pause/failure" contract as
 	// Attribution. Fully independent of Attribution/Description - a
 	// reader can trigger "Tag directions" directly on a chapter that was
@@ -215,6 +214,14 @@ type Passes struct {
 	// struct (unlike the old single ChapterState enum it replaced)
 	// represents that combination just fine.
 	Direction bool `json:"direction"`
+	// Pronunciation is set once pronunciation resolution
+	// (internal/speakerattr.Client.ResolvePronunciation, a
+	// jobs.KindPronunciation task via httpapi.pronounceChapter) has
+	// completed a full pass over the chapter - Direction's own contract,
+	// but its own pass: a plain word substitution ("Dr." -> "Doctor")
+	// reads correctly under every clone model, so unlike Direction it
+	// isn't gated on Higgs.
+	Pronunciation bool `json:"pronunciation"`
 	// Music is set once internal/speakerattr.Client.ScoreMusic has
 	// completed a full, uninterrupted pass over this chapter (never on a
 	// pause or a genuine failure partway through) - Direction's own "full
@@ -605,8 +612,8 @@ func (p Paragraph) ResolveGenerationText(cloneModel string) string {
 // *regardless* of which narrator voice/clone model each of those books
 // uses. Voice *assignment* is a separate, per-clone-model concern - see
 // CharacterVoiceForModel/CharacterVoicesForModel/SetCharacterVoice -
-// because a voice preset clones through one specific model (VoicePreset.
-// CloneModel) and isn't portable to another; a character can have a
+// keyed by the book's own clone model (Book.CloneModel), so a voice cast
+// under one model doesn't carry over to another; a character can have a
 // different assigned preset under "audiocpp-qwen3-0.6b" than under
 // "audiocpp-higgs-4b", auto-created independently the first time each
 // model encounters them (see httpapi.provisionCharacterVoice, called lazily -
