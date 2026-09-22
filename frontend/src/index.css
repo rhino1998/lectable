@@ -906,6 +906,24 @@ label {
   gap: 0.75rem;
 }
 
+/* Name filter above the Speakers page's roster list. */
+.speakers-roster-search {
+  font: inherit;
+  width: 100%;
+  max-width: 20rem;
+  margin-bottom: 0.75rem;
+  padding: 0.3rem 0.1rem;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: none;
+  color: var(--text);
+}
+.speakers-roster-search:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+
 /* Icon-only sibling of .text-button - same accent coloring, sized/centered
    for a bare icon instead of a text label (relies on title="" for the
    accessible name). Used for compact per-row list actions (voices list). */

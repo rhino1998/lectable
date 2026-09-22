@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import {
   RiDeleteBinLine,
@@ -159,6 +159,7 @@ export function SpeakersPage() {
   const [autoSplitError, setAutoSplitError] = useState<string | null>(null)
   const [autoSplitNote, setAutoSplitNote] = useState<string | null>(null)
   const reattributingNames = useReattributingSpeakers(bookId)
+  const [rosterFilter, setRosterFilter] = useState('')
   const [generatingVoiceId, setGeneratingVoiceId] = useState<string | null>(null)
   const [generateVoiceError, setGenerateVoiceError] = useState<string | null>(null)
   const [appearancesFor, setAppearancesFor] = useState<string | null>(null)
@@ -176,6 +177,12 @@ export function SpeakersPage() {
   const builtins = builtinsQuery.data?.presets ?? []
   const customs = customPresetsQuery.data ?? []
   const speakers = speakersQuery.data ?? []
+  // Roster search - matches on name only. Filters just what's displayed;
+  // merge/reassign targets still come from the full speakers list.
+  const filteredSpeakers = useMemo(() => {
+    const q = rosterFilter.trim().toLowerCase()
+    return q === '' ? speakers : speakers.filter((s) => s.name.toLowerCase().includes(q))
+  }, [speakers, rosterFilter])
 
   // Derived from the shared backend job queue (the live jobs topic), not
   // local mutation state - "Recharacterize all" is fire-and-forget (see
@@ -863,7 +870,16 @@ export function SpeakersPage() {
       <section>
         <div className="library-header">
           <h2>
-            Roster{speakers.length > 0 && <span className="muted"> ({speakers.length})</span>}
+            Roster
+            {speakers.length > 0 && (
+              <span className="muted">
+                {' '}
+                ({filteredSpeakers.length === speakers.length
+                  ? speakers.length
+                  : `${filteredSpeakers.length} of ${speakers.length}`}
+                )
+              </span>
+            )}
           </h2>
           {speakers.length > 0 && (
             <div className="speakers-roster-actions">
@@ -929,8 +945,18 @@ export function SpeakersPage() {
         {autoSplitError && <p className="error-text">{autoSplitError}</p>}
         {autoSplitNote && <p className="muted">{autoSplitNote}</p>}
         {generateVoiceError && <p className="error-text">{generateVoiceError}</p>}
+        {speakers.length > 0 && (
+          <input
+            className="speakers-roster-search"
+            type="search"
+            placeholder="Search speakers…"
+            value={rosterFilter}
+            onChange={(e) => setRosterFilter(e.target.value)}
+          />
+        )}
+        {speakers.length > 0 && filteredSpeakers.length === 0 && <p className="muted">No matches</p>}
         <ul className="speaker-list">
-          {speakers.map((s) => {
+          {filteredSpeakers.map((s) => {
             // "Someone other than this character" - shared by the
             // whole-character merge panel and per-line reassignment in
             // this row's own appearances list.
