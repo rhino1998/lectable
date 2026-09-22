@@ -3,6 +3,7 @@ package speakerattr
 import (
 	"context"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -118,6 +119,71 @@ const directionBatchParagraphs = 10
 // increase that goes with this.
 const directionMaxTokens = 32768
 
+// directionTemp is the first attempt's sampling temperature for both
+// delivery-tagging passes (DirectChapter here and TagSfx) - just off
+// greedy, unlike the temp 0 every JSON-parsed pass starts at. At temp 0 a
+// batch the model degenerates on (a real, observed case: one sfx batch
+// looping until directionMaxTokens, which outlasts ttsworker's 5-minute
+// stuck-job watchdog) decodes the identical runaway on every top-level
+// task retry too, since those re-run the same prompt through the same
+// greedy path - a small temperature gives each retry an actual chance at
+// a different token sequence. Kept below retryTempBump so a parse retry
+// still escalates past it (see generateAndParse).
+const directionTemp = 0.1
+
+// taggedReplyLineAllowance is how many characters beyond a line's own text
+// one echoed-back reply line may legitimately add: its "idx: " prefix,
+// several inserted tags, and a little whitespace slack.
+const taggedReplyLineAllowance = 256
+
+// taggedReplyHeadroomTokens is the fixed token headroom taggedReplyBudget
+// adds on top of the reply itself - room for a hybrid-thinking model's
+// own <think> trace (see stripThinking) before its actual reply.
+const taggedReplyHeadroomTokens = 2048
+
+// taggedReplyBudget sizes one direction/sfx batch's generation to what a
+// reply could actually need, instead of the flat directionMaxTokens/
+// sfxMaxTokens ceiling. Both passes only ever echo back a subset of the
+// batch's own lines with tags spliced in (see parseTaggedLines), so a real
+// reply can never be much longer than the batch itself - maxChars is that
+// bound. A reply longer than maxChars is a runaway (see
+// taggedReplyParser). maxTokens converts it at a deliberately generous
+// 2 chars/token (English prose runs nearer 4) plus
+// taggedReplyHeadroomTokens, capped at ceiling. This matters because a
+// degenerate generation (a real, observed case: one sfx batch never
+// stopping) would otherwise run all the way to ceiling - 32768 tokens,
+// longer than ttsworker's 5-minute stuck-job watchdog allows, so the
+// worker got killed mid-request on every retry instead of the batch
+// failing fast.
+func taggedReplyBudget(byIdx map[int]string, ceiling int) (maxChars, maxTokens int) {
+	for _, text := range byIdx {
+		maxChars += len(text) + taggedReplyLineAllowance
+	}
+	return maxChars, min(ceiling, maxChars/2+taggedReplyHeadroomTokens)
+}
+
+// taggedReplyParser wraps parseTaggedLines for generateAndParse, rejecting
+// a reply longer than maxChars (see taggedReplyBudget) as a runaway so a
+// fresh attempt at a higher temperature gets a chance (see
+// retryTempBump). The runaway's own lines are still validated and kept on
+// the final attempt rather than failing the whole batch - parseTaggedLines
+// already drops anything that isn't a faithful, validly-tagged copy of a
+// real line, so whatever survives from a runaway is as trustworthy as any
+// other reply's.
+func taggedReplyParser(origByIdx map[int]string, validTags map[string]bool, maxChars int, pass string) func(string) (map[int]string, error) {
+	attempt := 0
+	return func(content string) (map[int]string, error) {
+		attempt++
+		if len(content) > maxChars {
+			if attempt <= maxGenerateRetries {
+				return nil, fmt.Errorf("%s reply is %d chars, longer than any valid reply to this batch (%d) - likely a runaway generation", pass, len(content), maxChars)
+			}
+			log.Printf("speakerattr: %s reply still a runaway (%d chars > %d) on the final attempt - keeping whichever lines validate", pass, len(content), maxChars)
+		}
+		return parseTaggedLines(content, origByIdx, validTags)
+	}
+}
+
 // directionSystemPrompt is deliberately conservative in the same direction
 // describeSystemPrompt's own precision-tuning history pushed it: asking
 // for a high bar and an expected-short list up front, rather than tagging
@@ -139,9 +205,17 @@ const directionMaxTokens = 32768
 // <|prosody:pause|> - see its doc comment.
 const directionSystemPrompt = `You are a voice director for an audiobook narrator. Given numbered lines from a novel (narration and/or spoken dialogue), decide which lines deserve inline delivery tags marking a specific emotional or vocal-style/pacing shift, so a listener actually hears that shift in the narrator's voice - or, separately, a non-narrative line that calls for a flatter, more administrative delivery regardless of its tone.
 
-Reply with ONLY plain text lines, no JSON, no code fence, no other commentary: one line per tagged line, in exactly this format - <line number>: <the line's own text with 0 or more tags inserted> - include a line ONLY for a line where at least one tag is warranted; omit every other line entirely. Most lines are neutral and should be omitted - expect this list to be short, not one entry per line. If no line needs a tag, reply with nothing at all.
+Reply with ONLY plain text lines, no JSON, no code fence, no other commentary: one line per tagged line, made of that line's own number, a colon and a space, then that line's own text with its tag(s) inserted. For example, if "Lines:" contained
 
-CRITICAL RULE: the text after "<line number>: " must be the line's own original text, character for character, with ONLY tags inserted - never add, remove, reorder, or reword a single word of the actual line. The only thing you are allowed to change is where tags are inserted.
+12: “Get out of my house!” she screamed.
+
+then tagging it would be this one reply line:
+
+12: <|emotion:anger|><|style:shouting|>“Get out of my house!” she screamed.
+
+Include a line ONLY for a line where at least one tag is warranted; omit every other line entirely. Most lines are neutral and should be omitted - expect this list to be short, not one entry per line. If no line needs a tag, reply with nothing at all.
+
+CRITICAL RULE: the text after the line number and colon must be the line's own original text, character for character, with ONLY tags inserted - never add, remove, reorder, or reword a single word of the actual line. The only thing you are allowed to change is where tags are inserted.
 
 A tag is inserted immediately before the sentence, clause, or quoted phrase whose delivery it colors. Most lines need at most one tag, placed at the very start of the line. A longer line whose tone genuinely shifts partway through - dialogue that turns from calm to angry mid-sentence, a quote that starts warm and pivots to fear - may have a second tag inserted right at the point where the shift happens, still leaving every word exactly where it was.
 
@@ -183,9 +257,8 @@ func (c *Client) directionBatch(ctx context.Context, bookTitle, chapterTitle str
 		// Text happens to contain.
 		byIdx[p.Idx] = oneLine(p.Text)
 	}
-	return generateAndParse(ctx, c, directionSystemPrompt, user.String(), 0, directionMaxTokens, func(content string) (map[int]string, error) {
-		return parseTaggedLines(content, byIdx, validSentenceTags)
-	})
+	maxChars, maxTokens := taggedReplyBudget(byIdx, directionMaxTokens)
+	return generateAndParse(ctx, c, directionSystemPrompt, user.String(), directionTemp, maxTokens, taggedReplyParser(byIdx, validSentenceTags, maxChars, "direction"))
 }
 
 // allowedNonQuoteTags is the full set a paragraph that isn't actual quoted

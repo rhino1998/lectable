@@ -168,3 +168,42 @@ func TestParseTaggedLinesEmptyResponseIsNotAnError(t *testing.T) {
 		t.Fatalf("expected no entries, got %+v", out)
 	}
 }
+
+func TestTaggedReplyBudget(t *testing.T) {
+	byIdx := map[int]string{1: string(make([]byte, 1000)), 2: string(make([]byte, 500))}
+	maxChars, maxTokens := taggedReplyBudget(byIdx, directionMaxTokens)
+	if want := 1500 + 2*taggedReplyLineAllowance; maxChars != want {
+		t.Fatalf("maxChars = %d; want %d", maxChars, want)
+	}
+	if want := maxChars/2 + taggedReplyHeadroomTokens; maxTokens != want {
+		t.Fatalf("maxTokens = %d; want %d", maxTokens, want)
+	}
+	if _, capped := taggedReplyBudget(byIdx, 100); capped != 100 {
+		t.Fatalf("maxTokens = %d; want capped at 100", capped)
+	}
+}
+
+func TestTaggedReplyParserRetriesRunawayThenKeepsValidLines(t *testing.T) {
+	orig := map[int]string{3: "Stop right there!"}
+	valid := map[string]bool{"<|style:shouting|>": true}
+	good := "3: <|style:shouting|>Stop right there!"
+	runaway := good + "\n" + string(make([]byte, 400))
+
+	parse := taggedReplyParser(orig, valid, len(good)+10, "test")
+	for attempt := 1; attempt <= maxGenerateRetries; attempt++ {
+		if _, err := parse(runaway); err == nil {
+			t.Fatalf("attempt %d: runaway accepted; want an error so generateAndParse retries", attempt)
+		}
+	}
+	out, err := parse(runaway)
+	if err != nil {
+		t.Fatalf("final attempt: %v; want the valid lines kept", err)
+	}
+	if out[3] != good[3:] {
+		t.Fatalf("out[3] = %q; want %q", out[3], good[3:])
+	}
+
+	if out, err := taggedReplyParser(orig, valid, len(good)+10, "test")(good); err != nil || out[3] == "" {
+		t.Fatalf("normal reply = %v, %v; want accepted", out, err)
+	}
+}

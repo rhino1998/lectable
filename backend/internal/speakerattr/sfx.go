@@ -77,9 +77,17 @@ const sfxMaxTokens = 32768
 // makes sense as dialogue, not narration describing the action.
 const sfxSystemPrompt = `You are a sound-effect and pacing director for an audiobook narrator. Given numbered lines from a novel, find lines that already contain a spoken interjection or onomatopoeia worth tagging as a sound effect, or a place where a pause clearly belongs - either a dramatic beat the narration itself describes, or a breath pause in an unusually long, unbroken sentence.
 
-Reply with ONLY plain text lines, no JSON, no code fence, no other commentary: one line per tagged line, in exactly this format - <line number>: <the line's own text with 0 or more tags inserted> - include a line ONLY for a line that clearly qualifies; omit every other line entirely. This should be a very short list - most lines need none of this. If no line qualifies, reply with nothing at all.
+Reply with ONLY plain text lines, no JSON, no code fence, no other commentary: one line per tagged line, made of that line's own number, a colon and a space, then that line's own text with its tag(s) inserted. For example, if "Lines:" contained
 
-CRITICAL RULE: the text after "<line number>: " must be the line's own original text, character for character, with ONLY tags inserted - never add, remove, reorder, or reword a single word of the actual line, and never invent a word that isn't already there. The only thing you are allowed to change is where tags are inserted.
+34: “Aaaah! It's right behind me!”
+
+then tagging it would be this one reply line:
+
+34: “<|sfx:screaming|>Aaaah! It's right behind me!”
+
+Include a line ONLY for a line that clearly qualifies; omit every other line entirely. This should be a very short list - most lines need none of this. If no line qualifies, reply with nothing at all.
+
+CRITICAL RULE: the text after the line number and colon must be the line's own original text, character for character, with ONLY tags inserted - never add, remove, reorder, or reword a single word of the actual line, and never invent a word that isn't already there. The only thing you are allowed to change is where tags are inserted.
 
 Three independent things to look for - a line can get any combination, or none:
 - Sound effects: insert the tag immediately before an interjection/onomatopoeia word that is ALREADY written out in the line, with NO space between the tag and that word (e.g. "<|sfx:screaming|>Aaaah, run!"). Only use one when the line already spells out the sound as a word - never insert one just because the narration says someone screamed/cried/burped without actually writing the sound itself, and never invent a new interjection that isn't already there.
@@ -111,9 +119,8 @@ func (c *Client) sfxBatch(ctx context.Context, bookTitle, chapterTitle string, b
 	for _, p := range batch {
 		byIdx[p.Idx] = oneLine(p.Text) // see DirectChapter's own directionBatch for why oneLine, not p.Text
 	}
-	return generateAndParse(ctx, c, sfxSystemPrompt, user.String(), 0, sfxMaxTokens, func(content string) (map[int]string, error) {
-		return parseTaggedLines(content, byIdx, validInlineTags)
-	})
+	maxChars, maxTokens := taggedReplyBudget(byIdx, sfxMaxTokens)
+	return generateAndParse(ctx, c, sfxSystemPrompt, user.String(), directionTemp, maxTokens, taggedReplyParser(byIdx, validInlineTags, maxChars, "sfx"))
 }
 
 // TagSfx tags chapterTitle's paragraphs with inline Higgs delivery tags

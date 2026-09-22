@@ -301,11 +301,13 @@ const retryTempBump = 0.2
 // retry loop in a form that doesn't need a real *Client to exercise in a
 // test. Only the first attempt (attempt 0) uses temp as given; see
 // retryTempBump for what each retry attempt after it escalates to instead.
+// A low-but-nonzero temp (below retryTempBump - see directionTemp) still
+// escalates the same way, never dropping below its own starting value.
 func generateAndParse[T any](ctx context.Context, c *Client, systemPrompt, userPrompt string, temp float32, maxTokens int, parse func(content string) (T, error)) (T, error) {
 	return retryParse(func(attempt int) (string, error) {
 		callTemp := temp
-		if attempt > 0 && temp <= 0 {
-			callTemp = float32(attempt) * retryTempBump
+		if attempt > 0 && temp < retryTempBump {
+			callTemp = max(temp, float32(attempt)*retryTempBump)
 		}
 		return c.generate(ctx, systemPrompt, userPrompt, callTemp, maxTokens)
 	}, parse)
