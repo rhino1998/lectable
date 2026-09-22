@@ -110,6 +110,10 @@ export function useScoreChapterMusic(bookId: string) {
   return useMutation({ mutationFn: (chapterIdx: number) => api.scoreChapterMusic(bookId, chapterIdx) })
 }
 
+export function useGenerateChapterMusic(bookId: string) {
+  return useMutation({ mutationFn: (chapterIdx: number) => api.generateChapterMusic(bookId, chapterIdx) })
+}
+
 // Generates/regenerates one music region. chapterIdx isn't needed by the
 // request itself (which addresses the region directly by id) - kept in the
 // variables so existing call sites don't change shape.
@@ -213,7 +217,8 @@ export function useGenerateParagraphSFX(bookId: string) {
   })
 }
 
-// Blocking, same shape/reasoning as useRetagDescriptions below.
+// Fire-and-forget, same as useRetagDescriptions below - progress comes
+// from useScareQuotingChapters.
 export function useRetagScareQuotes(bookId: string) {
   return useMutation({ mutationFn: (chapterIdx: number) => api.retagScareQuotes(bookId, chapterIdx) })
 }
@@ -307,12 +312,30 @@ export function useDirectingChapters(bookId: string): Set<number> {
   return useChapterIdxSet(bookId, 'speech_direction')
 }
 
+// useAttributingChapters' own counterpart for scare-quote tagging.
+export function useScareQuotingChapters(bookId: string): Set<number> {
+  return useChapterIdxSet(bookId, 'scare_quote_tagging')
+}
+
+// useAttributingChapters' own counterpart for description tagging.
+export function useDescribingChapters(bookId: string): Set<number> {
+  return useChapterIdxSet(bookId, 'description_tagging')
+}
+
 // useAttributingChapters' own counterpart for background-music tone-region
 // scoring. Doesn't track "music_generation" - that's region-scoped, not
 // chapter-scoped, and its progress is already visible on the chapterMusic
 // topic wherever that's mounted (the reader).
 export function useScoringMusicChapters(bookId: string): Set<number> {
   return useChapterIdxSet(bookId, 'music_scoring')
+}
+
+// Chapters with background-music clips being generated right now - either
+// the whole-chapter run or the live one around the reader's position.
+export function useGeneratingMusicChapters(bookId: string): Set<number> {
+  const whole = useChapterIdxSet(bookId, 'music_generation')
+  const live = useChapterIdxSet(bookId, 'music_live_generation')
+  return useMemo(() => new Set([...whole, ...live]), [whole, live])
 }
 
 // useAttributingChapters' own counterpart for a chapter's own narration
@@ -327,6 +350,13 @@ export function useSetCharacterVoice(bookId: string) {
   return useMutation({
     mutationFn: ({ characterId, voicePresetId }: { characterId: string; voicePresetId: string }) =>
       api.setCharacterVoice(bookId, characterId, voicePresetId),
+  })
+}
+
+export function useSetCharacterInvalid(bookId: string) {
+  return useMutation({
+    mutationFn: ({ characterId, invalid }: { characterId: string; invalid: boolean }) =>
+      api.setCharacterInvalid(bookId, characterId, invalid),
   })
 }
 
@@ -435,9 +465,8 @@ export function useCharacterDescriptions(bookId: string, characterId: string | n
   return useLive('characterDescriptions', characterId !== null ? { bookId, characterId } : null)
 }
 
-// Blocking (see api.retagDescriptions's own doc comment) - callers track
-// their own in-flight/error state the same way useCharacterizeSpeaker's
-// single-row "Regenerate" button does.
+// Fire-and-forget (see api.retagDescriptions's own doc comment) - progress
+// comes from useDescribingChapters.
 export function useRetagDescriptions(bookId: string) {
   return useMutation({ mutationFn: (chapterIdx: number) => api.retagDescriptions(bookId, chapterIdx) })
 }
@@ -552,12 +581,14 @@ export function useTestVoiceDesign() {
       text,
       seed,
       designModel,
+      guidanceScale,
     }: {
       instruct: string
       text: string
       seed?: number
       designModel?: string
-    }) => api.testVoiceDesign(instruct, text, seed, designModel),
+      guidanceScale?: number
+    }) => api.testVoiceDesign(instruct, text, seed, designModel, guidanceScale),
   })
 }
 

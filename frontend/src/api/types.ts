@@ -50,6 +50,11 @@ export interface ChapterSummary {
     direction: boolean
     music: boolean
   }
+  // Background-music regions: how many were scored, and how many have a
+  // ready clip / failed. All 0 for a chapter that isn't scored.
+  musicRegionCount: number
+  musicReadyCount: number
+  musicErrorCount: number
 }
 
 export interface BookDetail extends BookSummary {
@@ -393,6 +398,10 @@ export const CLONE_MODELS = [
   "audiocpp-higgs-4b",
   "audiocpp-breeze-tts",
   "audiocpp-omnivoice",
+  "audiocpp-fireredtts3",
+  "audiocpp-firered",
+  "audiocpp-auk",
+  "audiocpp-auk-flash",
 ] as const
 export type CloneModel = (typeof CLONE_MODELS)[number]
 
@@ -401,6 +410,10 @@ export const CLONE_MODEL_LABELS: Record<CloneModel, string> = {
   "audiocpp-higgs-4b": "Higgs Audio v3 TTS 4B (audio.cpp)",
   "audiocpp-breeze-tts": "BreezeTTS 2 (audio.cpp)",
   "audiocpp-omnivoice": "OmniVoice (audio.cpp)",
+  "audiocpp-fireredtts3": "FireRedTTS3 Instruct (audio.cpp)",
+  "audiocpp-firered": "FireRedAudio (audio.cpp)",
+  "audiocpp-auk": "AuK (audio.cpp, CUDA only)",
+  "audiocpp-auk-flash": "AuK-Flash (audio.cpp, CUDA only)",
 }
 
 // Kept identical to the backend's voices.InstructedCloneModel - the one
@@ -415,13 +428,38 @@ export const INSTRUCTED_CLONE_MODEL: CloneModel = "audiocpp-breeze-tts"
 // VoiceDesign engine renders a preset's reference clip (a separate concern
 // from CLONE_MODELS above, which is what clones per-paragraph audio from
 // that already-rendered clip).
-export const DESIGN_MODELS = ["breeze_tts", "qwen3_tts", "omnivoice"] as const
+export const DESIGN_MODELS = [
+  "breeze_tts",
+  "qwen3_tts",
+  "omnivoice",
+  "fireredtts3",
+  "firered_audio",
+  "auk",
+  "auk_flash",
+] as const
 export type DesignModel = (typeof DESIGN_MODELS)[number]
 
 export const DESIGN_MODEL_LABELS: Record<DesignModel, string> = {
   breeze_tts: "BreezeTTS 2 (audio.cpp)",
   qwen3_tts: "Qwen3-TTS VoiceDesign (audio.cpp)",
   omnivoice: "OmniVoice (audio.cpp)",
+  fireredtts3: "FireRedTTS3 Instruct (audio.cpp)",
+  firered_audio: "FireRedAudio (audio.cpp)",
+  auk: "AuK (audio.cpp, CUDA only)",
+  auk_flash: "AuK-Flash (audio.cpp, CUDA only)",
+}
+
+// Each design engine's own default guidance_scale, for the ones that have
+// one at all (backend audioworker's designEngine.guidanceScale) - shown as
+// the voice editor's design-preview placeholder. breeze_tts's is the app's
+// own override (its model default is 1.0); the rest are their model
+// defaults. Absent = the engine ignores guidance (qwen3_tts, omnivoice,
+// auk_flash), so the editor hides the control.
+export const DESIGN_MODEL_GUIDANCE_DEFAULTS: Partial<Record<DesignModel, number>> = {
+  breeze_tts: 4,
+  fireredtts3: 1.2,
+  firered_audio: 2,
+  auk: 2,
 }
 
 // Kept identical to the backend's voices.DefaultDesignModel - what a
@@ -491,6 +529,12 @@ export interface QueueTask {
     // carries a character's name - see useReattributingSpeakers.
     | 'speaker-reattribute'
     | 'speech_direction'
+    // Per-chapter scare-quote / description tagging (LLM, chapter-scoped
+    // like speech_direction). Attribution and description tagging for a
+    // chapter both wait on its scare-quote tagging - see backend
+    // jobs.KindScareQuote/KindDescription.
+    | 'scare_quote_tagging'
+    | 'description_tagging'
     // Background-music tone-region scoring for one chapter (LLM,
     // chapter-scoped) and rendering one already-scored region's own clip
     // (Stable Audio, not chapter/paragraph-scoped the way the others
@@ -498,6 +542,10 @@ export interface QueueTask {
     // jobs.KindMusicScoring and store.MusicRegion's own doc comment.
     | 'music_scoring'
     | 'music_generation'
+    // The same, for just the region the reader is in and the one after
+    // it, as soon as their own paragraphs are voiced - see backend
+    // jobs.KindMusicLiveGeneration.
+    | 'music_live_generation'
     // Stable Audio SFX sound-effect generation - a paragraph's own
     // persisted clip (sfx_generation, chapter/paragraph-scoped,
     // ParagraphIdx below meaningful) - see backend jobs.KindSFXGeneration.
@@ -513,12 +561,14 @@ export interface QueueTask {
     // own - the LLM test page's own POST /api/llm/test (see backend
     // jobs.KindLLMPreview).
     | 'llm_preview'
-    // The five ordered phases of a book's own "Preprocess" run (POST
+    // The phases of a book's own "Preprocess" run (POST
     // .../preprocess) - "pipeline_"-prefixed so none of these can ever
     // collide with the per-item kind sharing a phase's own bare name
     // (voice_provision above is a real, distinct per-character kind).
     // Never chapter/paragraph-scoped - see label below.
+    | 'pipeline_scare_quote'
     | 'pipeline_attribution'
+    | 'pipeline_description'
     | 'pipeline_characterization'
     | 'pipeline_voice_provision'
     | 'pipeline_direction'
@@ -561,7 +611,7 @@ export interface QueueTask {
   // ("speaker_attribution"/"speaker_characterization") and every
   // "pipeline_*" kind, none of which are paragraph-scoped.
   paragraphIdx: number
-  tier: 'urgent' | 'lookahead' | 'background'
+  tier: 'urgent' | 'lookahead' | 'normal' | 'background'
   // presetId/instruct are "" for the two LLM kinds and every "pipeline_*"
   // kind, and for a "voice_design" task presetId alone is "" (a pure
   // custom instruct with no preset backing it) - resolve presetId against
@@ -616,6 +666,11 @@ export interface Speaker {
   // audioUrl (see SpeakerAppearance below) instead of a single row-level
   // sample.
   refAudioUrl?: string
+  // Ruled out as a real speaker (backend store.Character.Invalid) - set
+  // via api.setCharacterInvalid or by Auto Split. Attribution no longer
+  // creates/assigns this name; lines already attributed to it stay put
+  // until Auto Split redistributes them.
+  invalid?: boolean
 }
 
 // One paragraph a character speaks, from GET

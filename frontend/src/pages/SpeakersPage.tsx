@@ -1,11 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import {
+  RiCheckLine,
+  RiCloseLine,
   RiDeleteBinLine,
+  RiDiscLine,
   RiDoubleQuotesL,
   RiEmotionLine,
   RiEqualizerLine,
+  RiForbidLine,
   RiGitMergeLine,
+  RiLoader4Line,
   RiMusic2Line,
   RiPriceTag3Line,
   RiRefreshLine,
@@ -28,19 +33,24 @@ import {
   useCustomVoicePresets,
   useDeleteCharacter,
   useDeleteSpeakerData,
+  useDescribingChapters,
   useDirectingChapters,
   useGenerateChapter,
+  useGenerateChapterMusic,
   useGenerateCharacterVoice,
   useGenerateCharacterVoices,
   useGeneratingChapters,
+  useGeneratingMusicChapters,
   useMergeCharacter,
   usePreprocessBook,
   useReattributeSpeaker,
   useReattributingSpeakers,
+  useSetCharacterInvalid,
   useRegenerateCharacterVoices,
   useRegenerateParagraph,
   useRetagDescriptions,
   useRetagScareQuotes,
+  useScareQuotingChapters,
   useScoreChapterMusic,
   useScoringMusicChapters,
   useSetCharacterVoice,
@@ -90,11 +100,13 @@ export function SpeakersPage() {
   const retagScareQuotes = useRetagScareQuotes(bookId)
   const tagDirections = useTagDirections(bookId)
   const scoreChapterMusic = useScoreChapterMusic(bookId)
+  const generateChapterMusic = useGenerateChapterMusic(bookId)
   const generateChapter = useGenerateChapter(bookId)
   const characterizeSpeaker = useCharacterizeSpeaker(bookId)
   const characterizeSpeakers = useCharacterizeSpeakers(bookId)
   const deleteSpeakerData = useDeleteSpeakerData(bookId)
   const deleteCharacter = useDeleteCharacter(bookId)
+  const setCharacterInvalid = useSetCharacterInvalid(bookId)
   const mergeCharacter = useMergeCharacter(bookId)
   const reattributeSpeaker = useReattributeSpeaker(bookId)
   const generateVoice = useGenerateCharacterVoice(bookId)
@@ -115,7 +127,9 @@ export function SpeakersPage() {
   // background-music tone-region scoring - see useScoringMusicChapters'
   // own doc comment.
   const scoringMusicIdxs = useScoringMusicChapters(bookId)
+  const generatingMusicIdxs = useGeneratingMusicChapters(bookId)
   const [musicScoreError, setMusicScoreError] = useState<string | null>(null)
+  const [musicGenerateError, setMusicGenerateError] = useState<string | null>(null)
   // Same job-queue-derived tracking as attributingIdxs/directingIdxs/
   // scoringMusicIdxs, for a chapter's own narration audio generation - see
   // useGeneratingChapters' own doc comment. Generating a chapter's voice
@@ -124,17 +138,12 @@ export function SpeakersPage() {
   // as "generate everything for this chapter" once music is turned on.
   const generatingIdxs = useGeneratingChapters(bookId)
   const [generateError, setGenerateError] = useState<string | null>(null)
-  // useRetagDescriptions is blocking (see its own doc comment), so - unlike
-  // attribution's job-queue-derived attributingIdxs above - "which chapter
-  // is retagging right now" is tracked locally the same way the
-  // single-row "Regenerate characterization" button tracks its own
-  // in-flight character id.
-  const [retaggingIdx, setRetaggingIdx] = useState<number | null>(null)
+  // Same job-queue-derived tracking as attributingIdxs, for description
+  // and scare-quote tagging - both their own queued jobs now (attribution
+  // and description tagging each wait on a chapter's scare-quote job).
+  const describingIdxs = useDescribingChapters(bookId)
   const [retagError, setRetagError] = useState<string | null>(null)
-  // Same blocking/local-tracking shape as retaggingIdx/retagError above,
-  // for the scare-quote retag button - a separate id/error pair since the
-  // two buttons can be clicked independently for different chapters.
-  const [retaggingScareQuoteIdx, setRetaggingScareQuoteIdx] = useState<number | null>(null)
+  const scareQuotingIdxs = useScareQuotingChapters(bookId)
   const [retagScareQuoteError, setRetagScareQuoteError] = useState<string | null>(null)
   // The single-row "Regenerate" button is still a genuinely blocking
   // request (useCharacterizeSpeaker), so it tracks its own in-flight
@@ -147,6 +156,8 @@ export function SpeakersPage() {
   const [deleteSpeakerError, setDeleteSpeakerError] = useState<string | null>(null)
   const [deletingCharacterId, setDeletingCharacterId] = useState<string | null>(null)
   const [deleteCharacterError, setDeleteCharacterError] = useState<string | null>(null)
+  const [invalidError, setInvalidError] = useState<string | null>(null)
+  const [togglingInvalidId, setTogglingInvalidId] = useState<string | null>(null)
   const [mergingId, setMergingId] = useState<string | null>(null)
   const [mergeError, setMergeError] = useState<string | null>(null)
   // "Auto Split" is fire-and-forget across several per-chapter tasks (see
@@ -247,19 +258,15 @@ export function SpeakersPage() {
 
   const runRetagDescriptions = (idx: number) => {
     setRetagError(null)
-    setRetaggingIdx(idx)
     retagDescriptions.mutate(idx, {
       onError: (err) => setRetagError(err instanceof ApiError ? err.message : 'Description tagging failed'),
-      onSettled: () => setRetaggingIdx(null),
     })
   }
 
   const runRetagScareQuotes = (idx: number) => {
     setRetagScareQuoteError(null)
-    setRetaggingScareQuoteIdx(idx)
     retagScareQuotes.mutate(idx, {
       onError: (err) => setRetagScareQuoteError(err instanceof ApiError ? err.message : 'Scare-quote tagging failed'),
-      onSettled: () => setRetaggingScareQuoteIdx(null),
     })
   }
 
@@ -274,6 +281,14 @@ export function SpeakersPage() {
     setMusicScoreError(null)
     scoreChapterMusic.mutate(idx, {
       onError: (err) => setMusicScoreError(err instanceof ApiError ? err.message : 'Background-music scoring failed'),
+    })
+  }
+
+  const runGenerateMusic = (idx: number) => {
+    setMusicGenerateError(null)
+    generateChapterMusic.mutate(idx, {
+      onError: (err) =>
+        setMusicGenerateError(err instanceof ApiError ? err.message : 'Background-music generation failed'),
     })
   }
 
@@ -323,6 +338,20 @@ export function SpeakersPage() {
     })
   }
 
+  // Non-destructive toggle - see api.setCharacterInvalid. No confirm:
+  // nothing is removed, and it's one click to undo.
+  const runToggleInvalid = (characterId: string, invalid: boolean) => {
+    setInvalidError(null)
+    setTogglingInvalidId(characterId)
+    setCharacterInvalid.mutate(
+      { characterId, invalid },
+      {
+        onError: (err) => setInvalidError(err instanceof ApiError ? err.message : 'Could not update this character'),
+        onSettled: () => setTogglingInvalidId(null),
+      },
+    )
+  }
+
   const runMerge = (characterId: string, name: string, targetName: string) => {
     if (
       !confirm(
@@ -353,7 +382,7 @@ export function SpeakersPage() {
   const runAutoSplit = (name: string) => {
     if (
       !confirm(
-        `Auto Split "${name}"? Every line currently attributed to them in this book will be re-judged and reassigned to whichever real character, Narrator, or Unknown actually speaks it.`,
+        `Auto Split "${name}"? Every line currently attributed to them in this book will be re-judged and reassigned to whichever real character, Narrator, or Unknown actually speaks it.${name === 'Unknown' ? '' : ` "${name}" will also be marked invalid so it isn't assigned again.`}`,
       )
     ) {
       return
@@ -474,6 +503,24 @@ export function SpeakersPage() {
     book.chapters.filter((c) => !isGenerated(c)).forEach((c) => runGenerate(c.idx))
   }
   const hasUngenerated = book.chapters.some((c) => !isGenerated(c))
+
+  // A chapter's music can only generate once it's scored and its narration
+  // is fully generated (each region's clip is sized to its own narration -
+  // see api.generateChapterMusic); "missing" is any region without a ready
+  // clip, failed ones included.
+  // `?? 0`: an older backend doesn't send the music counts at all.
+  const musicCounts = (c: (typeof book.chapters)[number]) => ({
+    total: c.musicRegionCount ?? 0,
+    ready: c.musicReadyCount ?? 0,
+    errors: c.musicErrorCount ?? 0,
+  })
+  const isMusicGenerated = (c: (typeof book.chapters)[number]) =>
+    musicCounts(c).total > 0 && musicCounts(c).ready >= musicCounts(c).total
+  const canGenerateMusic = (c: (typeof book.chapters)[number]) => musicCounts(c).total > 0 && isGenerated(c)
+  const missingMusicChapters = book.chapters.filter((c) => canGenerateMusic(c) && !isMusicGenerated(c))
+  const runGenerateMissingMusic = () => {
+    missingMusicChapters.forEach((c) => runGenerateMusic(c.idx))
+  }
 
   // One batch request (see useCharacterizeSpeakers/handleCharacterizeSpeakers)
   // rather than firing runCharacterize once per character - a real backend
@@ -672,6 +719,14 @@ export function SpeakersPage() {
             </button>
             <button
               className="text-button"
+              onClick={runGenerateMissingMusic}
+              disabled={generatingMusicIdxs.size > 0 || missingMusicChapters.length === 0}
+              title="Generate background music for every scored, fully-narrated chapter that's missing any, retrying failed regions"
+            >
+              Generate missing music
+            </button>
+            <button
+              className="text-button"
               onClick={runGenerateUngenerated}
               disabled={generatingIdxs.size > 0 || !hasUngenerated}
               title="Generate audio for every chapter that isn't fully generated yet, skipping ones already done"
@@ -695,6 +750,7 @@ export function SpeakersPage() {
         {retagScareQuoteError && <p className="error-text">{retagScareQuoteError}</p>}
         {directionError && <p className="error-text">{directionError}</p>}
         {musicScoreError && <p className="error-text">{musicScoreError}</p>}
+        {musicGenerateError && <p className="error-text">{musicGenerateError}</p>}
         {generateError && <p className="error-text">{generateError}</p>}
         <table className="chapter-attribute-table">
           <thead>
@@ -706,73 +762,62 @@ export function SpeakersPage() {
               {directionSupported && <th>Direction</th>}
               <th>Music</th>
               <th>Audio</th>
+              <th>Music audio</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {book.chapters.map((c) => {
               const attributing = attributingIdxs.has(c.idx)
-              const retagging = retaggingIdx === c.idx
-              const retaggingScareQuotes = retaggingScareQuoteIdx === c.idx
+              const retagging = describingIdxs.has(c.idx)
+              const retaggingScareQuotes = scareQuotingIdxs.has(c.idx)
               const directing = directingIdxs.has(c.idx)
               const scoringMusic = scoringMusicIdxs.has(c.idx)
               const generating = generatingIdxs.has(c.idx)
+              const generatingMusic = generatingMusicIdxs.has(c.idx)
               return (
                 <tr key={c.idx}>
                   <td>{c.title}</td>
                   <td>
-                    <span
-                      className={
-                        'chapter-attribute-status' + (c.passes.attribution ? ' chapter-attribute-status-done' : '')
-                      }
-                    >
-                      {c.passes.attribution ? 'Attributed' : 'Not attributed'}
-                    </span>
+                    <PassStatus done={c.passes.attribution} busy={attributing} label="Attribution" />
                   </td>
                   <td>
-                    <span
-                      className={
-                        'chapter-attribute-status' + (c.passes.description ? ' chapter-attribute-status-done' : '')
-                      }
-                    >
-                      {c.passes.description ? 'Tagged' : 'Not tagged'}
-                    </span>
+                    <PassStatus done={c.passes.description} busy={retagging} label="Description tagging" />
                   </td>
                   <td>
-                    <span
-                      className={
-                        'chapter-attribute-status' + (c.passes.scareQuote ? ' chapter-attribute-status-done' : '')
-                      }
-                    >
-                      {c.passes.scareQuote ? 'Tagged' : 'Not tagged'}
-                    </span>
+                    <PassStatus done={c.passes.scareQuote} busy={retaggingScareQuotes} label="Scare-quote tagging" />
                   </td>
                   {directionSupported && (
                     <td>
-                      <span
-                        className={
-                          'chapter-attribute-status' + (c.passes.direction ? ' chapter-attribute-status-done' : '')
-                        }
-                      >
-                        {c.passes.direction ? 'Tagged' : 'Not tagged'}
-                      </span>
+                      <PassStatus done={c.passes.direction} busy={directing} label="Direction tagging" />
                     </td>
                   )}
                   <td>
-                    <span
-                      className={
-                        'chapter-attribute-status' + (c.passes.music ? ' chapter-attribute-status-done' : '')
-                      }
-                    >
-                      {scoringMusic ? 'Scoring…' : c.passes.music ? 'Scored' : 'Not scored'}
-                    </span>
+                    <PassStatus done={c.passes.music} busy={scoringMusic} label="Music scoring" />
                   </td>
                   <td>
-                    <span
-                      className={'chapter-attribute-status' + (isGenerated(c) ? ' chapter-attribute-status-done' : '')}
-                    >
-                      {generating ? 'Generating…' : `${c.readyCount}/${c.paragraphCount}`}
-                    </span>
+                    <CountStatus
+                      ready={c.readyCount}
+                      total={c.paragraphCount}
+                      busy={generating}
+                      label="Narration audio"
+                    />
+                  </td>
+                  <td>
+                    {musicCounts(c).total === 0 ? (
+                      <span className="chapter-attribute-status" title="Music audio: not scored yet">
+                        —
+                      </span>
+                    ) : (
+                      <CountStatus
+                        ready={musicCounts(c).ready}
+                        total={musicCounts(c).total}
+                        errors={musicCounts(c).errors}
+                        busy={generatingMusic}
+                        label="Music audio"
+                        unit="regions"
+                      />
+                    )}
                   </td>
                   <td>
                     <div className="chapter-attribute-actions">
@@ -843,6 +888,24 @@ export function SpeakersPage() {
                         }
                       >
                         <RiMusic2Line className={scoringMusic ? 'spin' : undefined} />
+                      </button>
+                      <button
+                        className="icon-action-button"
+                        disabled={generatingMusic || !canGenerateMusic(c)}
+                        onClick={() => runGenerateMusic(c.idx)}
+                        title={
+                          generatingMusic
+                            ? 'Generating music…'
+                            : musicCounts(c).total === 0
+                              ? 'Generate background music — score this chapter first'
+                              : !isGenerated(c)
+                                ? "Generate background music — this chapter's narration needs to be fully generated first"
+                                : isMusicGenerated(c)
+                                  ? 'Background music is fully generated for this chapter'
+                                  : 'Generate background music for this chapter (retries failed regions)'
+                        }
+                      >
+                        <RiDiscLine className={generatingMusic ? 'spin' : undefined} />
                       </button>
                       <button
                         className="icon-action-button"
@@ -941,6 +1004,7 @@ export function SpeakersPage() {
         {characterizeError && <p className="error-text">{characterizeError}</p>}
         {characterizeNote && <p className="muted">{characterizeNote}</p>}
         {deleteCharacterError && <p className="error-text">{deleteCharacterError}</p>}
+        {invalidError && <p className="error-text">{invalidError}</p>}
         {mergeError && <p className="error-text">{mergeError}</p>}
         {autoSplitError && <p className="error-text">{autoSplitError}</p>}
         {autoSplitNote && <p className="muted">{autoSplitNote}</p>}
@@ -960,7 +1024,10 @@ export function SpeakersPage() {
             // "Someone other than this character" - shared by the
             // whole-character merge panel and per-line reassignment in
             // this row's own appearances list.
-            const otherTargets = ['Narrator', ...speakers.filter((o) => o.id && o.id !== s.id).map((o) => o.name)]
+            const otherTargets = [
+              'Narrator',
+              ...speakers.filter((o) => o.id && o.id !== s.id && !o.invalid).map((o) => o.name),
+            ]
             return (
               <SpeakerRow
                 key={s.id || s.name}
@@ -976,6 +1043,8 @@ export function SpeakersPage() {
                 generatingVoice={generatingVoiceId === s.id}
                 onDelete={() => s.id && runDeleteCharacter(s.id, s.name)}
                 deleting={deletingCharacterId === s.id}
+                onToggleInvalid={() => s.id && runToggleInvalid(s.id, !s.invalid)}
+                togglingInvalid={togglingInvalidId === s.id}
                 mergeTargets={otherTargets}
                 onMerge={(targetName) => s.id && runMerge(s.id, s.name, targetName)}
                 merging={mergingId === s.id}
@@ -1015,6 +1084,8 @@ function SpeakerRow({
   generatingVoice,
   onDelete,
   deleting,
+  onToggleInvalid,
+  togglingInvalid,
   mergeTargets,
   onMerge,
   merging,
@@ -1049,6 +1120,8 @@ function SpeakerRow({
   generatingVoice: boolean
   onDelete: () => void
   deleting: boolean
+  onToggleInvalid: () => void
+  togglingInvalid: boolean
   mergeTargets: string[]
   onMerge: (targetName: string) => void
   merging: boolean
@@ -1082,7 +1155,14 @@ function SpeakerRow({
   return (
     <li className="speaker-row">
       <div className="speaker-row-main">
-        <span>{speaker.name}</span>
+        <span>
+          {speaker.name}
+          {speaker.invalid && (
+            <span className="speaker-invalid-badge" title="Not a real speaker — attribution won't assign this name">
+              invalid
+            </span>
+          )}
+        </span>
         <span className="muted">
           {speaker.readyCount}/{speaker.paragraphCount} generated
         </span>
@@ -1192,6 +1272,18 @@ function SpeakerRow({
               title="Merge into another speaker"
             >
               <RiGitMergeLine />
+            </button>
+            <button
+              className={'icon-action-button' + (speaker.invalid ? ' icon-action-button-active' : '')}
+              onClick={onToggleInvalid}
+              disabled={togglingInvalid}
+              title={
+                speaker.invalid
+                  ? 'Marked invalid — click to allow attribution to assign this name again'
+                  : "Mark invalid — not a real speaker; attribution won't create or assign this name again (existing lines stay until Auto Split)"
+              }
+            >
+              <RiForbidLine />
             </button>
             <button
               className="icon-action-button"
@@ -1560,6 +1652,10 @@ function CharacterVoiceEditor({
 
   const saving = createPreset.isPending || updatePreset.isPending || setCharacterVoice.isPending
 
+  // Design-preview guidance_scale override - see VoiceEditorForm's
+  // test.guidance. "" = the design engine's own default.
+  const [designGuidanceScale, setDesignGuidanceScale] = useState('')
+
   const runTest = () => {
     setTestError(null)
     if (isEditingCustom) {
@@ -1573,7 +1669,7 @@ function CharacterVoiceEditor({
       return
     }
     testDesign.mutate(
-      { instruct, text: refText, seed, designModel },
+      { instruct, text: refText, seed, designModel, guidanceScale: designGuidanceScale.trim() ? Number(designGuidanceScale) : undefined },
       {
         onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
         onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not preview this voice'),
@@ -1649,6 +1745,7 @@ function CharacterVoiceEditor({
             ? 'Uses the saved voice, except the cloning model above is applied live - save any other changes first to hear them reflected here.'
             : 'Preview renders the reference line above via VoiceDesign directly - no preset saved yet. Saving right after, unchanged, reuses this exact clip instead of rendering again.',
           onRun: runTest,
+          guidance: isEditingCustom ? undefined : { value: designGuidanceScale, onChange: setDesignGuidanceScale },
         }}
       />
 
@@ -1706,5 +1803,58 @@ function CharacterVoiceEditor({
         </div>
       </div>
     </div>
+  )
+}
+
+// PassStatus is one chapter-table cell for a yes/no pipeline pass: a
+// check once done, an X if not, a spinner while its task is running. The
+// full wording lives in the tooltip/aria-label to keep the table narrow.
+function PassStatus({ done, busy, label }: { done: boolean; busy: boolean; label: string }) {
+  const text = `${label}: ${busy ? 'running…' : done ? 'done' : 'not done'}`
+  return (
+    <span
+      className={'chapter-attribute-status' + (done && !busy ? ' chapter-attribute-status-done' : '')}
+      title={text}
+      aria-label={text}
+    >
+      {busy ? <RiLoader4Line className="spin" /> : done ? <RiCheckLine /> : <RiCloseLine />}
+    </span>
+  )
+}
+
+// CountStatus is PassStatus for a ready/total count (narration paragraphs,
+// music regions): a check once everything is ready, otherwise the count
+// itself - still short, and more useful than a bare X. errors, if any, is
+// flagged in the error color.
+function CountStatus({
+  ready,
+  total,
+  errors = 0,
+  busy,
+  label,
+  unit = 'paragraphs',
+}: {
+  ready: number
+  total: number
+  errors?: number
+  busy: boolean
+  label: string
+  unit?: string
+}) {
+  const done = total > 0 && ready >= total
+  const text =
+    `${label}: ${ready}/${total} ${unit} ready` + (errors > 0 ? `, ${errors} failed` : '') + (busy ? ' — generating…' : '')
+  return (
+    <span
+      className={
+        'chapter-attribute-status' +
+        (done && !busy ? ' chapter-attribute-status-done' : '') +
+        (errors > 0 && !busy ? ' chapter-attribute-status-error' : '')
+      }
+      title={text}
+      aria-label={text}
+    >
+      {busy ? <RiLoader4Line className="spin" /> : done ? <RiCheckLine /> : `${ready}/${total}`}
+    </span>
   )
 }

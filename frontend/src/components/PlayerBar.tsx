@@ -351,7 +351,10 @@ export function PlayerBar({
                 <div className="annotation-speaker-list-names">
                   {filteredSpeakers.length === 0 && <span className="muted">No matches</span>}
                   {filteredSpeakers.map((s) => {
-                    const mergeTargets = ['Narrator', ...speakers.filter((o) => o.id && o.id !== s.id).map((o) => o.name)]
+                    const mergeTargets = [
+                      'Narrator',
+                      ...speakers.filter((o) => o.id && o.id !== s.id && !o.invalid).map((o) => o.name),
+                    ]
                     return (
                       <div key={s.id || s.name} className="annotation-speaker-row">
                         <div className="annotation-speaker-row-main">

@@ -170,10 +170,11 @@ export const api = {
       json('POST', { prompt, durationSeconds }),
     ),
 
-  // Speakers page's "Retag scare quotes" - force re-runs scare-quote
-  // tagging for one chapter, mirroring retagDescriptions below.
+  // Speakers page's "Retag scare quotes" - enqueues a scare-quote tagging
+  // job for one chapter (fire-and-forget, 202), mirroring
+  // retagDescriptions below.
   retagScareQuotes: (bookId: string, chapterIdx: number) =>
-    request<{ ok: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/retag-scare-quotes`, { method: 'POST' }),
+    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/retag-scare-quotes`, { method: 'POST' }),
 
   // Keeps some runway of generated audio ahead of (chapterIdx, paragraphIdx),
   // spanning into later chapters as needed - see jobs.Manager.EnqueueLookahead.
@@ -190,6 +191,14 @@ export const api = {
   // only gates whether a scored region actually goes on to generate.
   scoreChapterMusic: (bookId: string, chapterIdx: number) =>
     request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/score-music`, { method: 'POST' }),
+
+  // Generates every music region in one chapter that doesn't have a clip
+  // yet, retrying failed ones - see backend httpapi.handleGenerateChapterMusic.
+  // Runs regardless of the book-wide musicEnabled toggle. queued is how many
+  // regions went out (0 if all already have music); 409 if the chapter
+  // isn't scored or its narration isn't fully generated yet.
+  generateChapterMusic: (bookId: string, chapterIdx: number) =>
+    request<{ queued: number }>(`/api/books/${bookId}/chapters/${chapterIdx}/generate-music`, { method: 'POST' }),
 
   // Generates (or re-generates) one music region's own clip - the
   // annotations-view boundary marker's own "Generate"/"Regenerate"
@@ -222,14 +231,12 @@ export const api = {
       method: 'POST',
     }),
 
-  // Force re-runs description-tagging for one chapter (503 if the backend
-  // has no SPEAKER_LLM_MODEL_PATH configured) - unlike attributeSpeakers,
-  // this blocks until the run actually finishes: it's a single chapter's
-  // worth of small batches, fast enough not to need the fire-and-forget/
-  // job-queue treatment attribution itself needs - see
-  // httpapi.handleRetagDescriptions.
+  // Enqueues a description-tagging job for one chapter (503 if the backend
+  // has no SPEAKER_LLM_MODEL_PATH configured) - fire-and-forget like
+  // attributeSpeakers; the job waits on the chapter's scare-quote tagging
+  // first. See httpapi.handleRetagDescriptions.
   retagDescriptions: (bookId: string, chapterIdx: number) =>
-    request<{ ok: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/retag-descriptions`, {
+    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/retag-descriptions`, {
       method: 'POST',
     }),
 
@@ -280,6 +287,13 @@ export const api = {
   setCharacterVoice: (bookId: string, characterId: string, voicePresetId: string) =>
     request<{ ok: boolean }>(`/api/books/${bookId}/characters/${characterId}/voice`, json('PUT', { voicePresetId })),
 
+  // Marks (or unmarks) a character as not a real speaker, so attribution
+  // stops creating/assigning the name - non-destructive: their current
+  // lines, summary, and voice stay as they are. Auto Split sets this too.
+  // See httpapi.handleSetCharacterInvalid.
+  setCharacterInvalid: (bookId: string, characterId: string, invalid: boolean) =>
+    request<{ ok: boolean }>(`/api/books/${bookId}/characters/${characterId}/invalid`, json('PUT', { invalid })),
+
   // Removes one character entirely - this book's own paragraphs
   // attributed to them revert to Unknown (still real dialogue, just no
   // longer attributed to this character - "Narrator" is reserved for
@@ -309,7 +323,9 @@ export const api = {
   // unconfigured, 404 if name isn't "Unknown" and isn't a real character
   // either. Progress is observable via the jobs topic
   // (kind: 'speaker-reattribute'), and the speakers topic reflects each
-  // chapter's result as its task clears. Deliberately doesn't delete
+  // chapter's result as its task clears. A real character (not Unknown)
+  // is also marked invalid (see setCharacterInvalid) so attribution won't
+  // hand their lines straight back. Deliberately doesn't delete
   // the character's own identity/voice afterward even if it ends up
   // empty - a reader can follow up with deleteCharacter once they see
   // the row is actually empty.
@@ -472,8 +488,8 @@ export const api = {
   // httpapi.handleTestVoiceDesign / handleCreateCustomVoicePreset.
   // designModel previews a specific VoiceDesign engine - "" defers to the
   // worker's own process-wide default.
-  testVoiceDesign: (instruct: string, text: string, seed?: number, designModel?: string) =>
-    requestBlob('/api/voices/design-test', json('POST', { instruct, text, seed, designModel })),
+  testVoiceDesign: (instruct: string, text: string, seed?: number, designModel?: string, guidanceScale?: number) =>
+    requestBlob('/api/voices/design-test', json('POST', { instruct, text, seed, designModel, guidanceScale })),
 
   // Standalone sound-effect/music test (the SFX page) - stateless, not
   // attached to any book/paragraph; one endpoint for every generation-only

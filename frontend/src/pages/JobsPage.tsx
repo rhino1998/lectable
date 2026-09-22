@@ -29,11 +29,15 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   speaker_characterization: 'Characterization',
   'speaker-reattribute': 'Auto Split',
   speech_direction: 'Direction Tagging',
-  // The five phases of a book's own "Preprocess" run (see LibraryPage's
+  scare_quote_tagging: 'Scare Quote Tagging',
+  description_tagging: 'Description Tagging',
+  // The phases of a book's own "Preprocess" run (see LibraryPage's
   // own Preprocess button) - each fans out real per-chapter/per-character
   // work into the ordinary kinds above (a "pipeline_attribution" row is a
   // meta-task, not itself an LLM call) - see backend jobs.EnqueuePipeline.
+  pipeline_scare_quote: 'Preprocess: Scare Quote Tagging',
   pipeline_attribution: 'Preprocess: Attribution',
+  pipeline_description: 'Preprocess: Description Tagging',
   pipeline_characterization: 'Preprocess: Characterization',
   pipeline_voice_provision: 'Preprocess: Voice Provision',
   pipeline_direction: 'Preprocess: Direction Tagging',
@@ -52,6 +56,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   llm_preview: 'LLM Preview',
   music_scoring: 'Background Music: Scoring',
   music_generation: 'Background Music: Generation',
+  music_live_generation: 'Background Music: Live',
 }
 
 // Only these kinds ever carry a real paragraph index - every other
@@ -71,11 +76,12 @@ const PARAGRAPH_SCOPED_KINDS = new Set<QueueTask['kind']>(['voice_clone', 'voice
 // Ordered most urgent first, matching backend jobs.TierUrgent/TierLookahead/
 // TierBackground's own numeric ordering - used both to compute which tiers
 // a row can still be promoted to (upgradeOptions) and to label them.
-const TIER_ORDER: QueueTask['tier'][] = ['urgent', 'lookahead', 'background']
+const TIER_ORDER: QueueTask['tier'][] = ['urgent', 'lookahead', 'normal', 'background']
 
 const TIER_LABELS: Record<QueueTask['tier'], string> = {
   urgent: 'Urgent',
   lookahead: 'Lookahead',
+  normal: 'Normal',
   background: 'Background',
 }
 
@@ -180,8 +186,17 @@ function targetLabel(t: QueueTask): string {
 // phase hadn't reached yet.
 function cancelTitle(t: QueueTask, inFlight: boolean): string {
   if (!inFlight) return 'Cancel'
-  if (t.kind === 'speaker_attribution' || t.kind === 'speaker_characterization' || t.kind === 'speech_direction') {
+  if (
+    t.kind === 'speaker_attribution' ||
+    t.kind === 'speaker_characterization' ||
+    t.kind === 'speech_direction' ||
+    t.kind === 'scare_quote_tagging' ||
+    t.kind === 'description_tagging'
+  ) {
     return "Cancel — won't take effect until its current LLM call finishes"
+  }
+  if (t.kind.startsWith('pipeline_generate_')) {
+    return "Cancel — drops this generation's still-queued paragraphs; ones already rendering finish"
   }
   if (t.kind.startsWith('pipeline_')) {
     return "Cancel — stops this phase from starting more chapters/characters; anything already in progress keeps running"

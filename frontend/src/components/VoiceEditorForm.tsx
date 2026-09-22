@@ -1,5 +1,14 @@
 import type { CSSProperties } from 'react'
-import { CLONE_MODELS, CLONE_MODEL_LABELS, DESIGN_MODELS, DESIGN_MODEL_LABELS, DEFAULT_DESIGN_MODEL, type CloneModel } from '../api/types'
+import {
+  CLONE_MODELS,
+  CLONE_MODEL_LABELS,
+  DESIGN_MODELS,
+  DESIGN_MODEL_GUIDANCE_DEFAULTS,
+  DESIGN_MODEL_LABELS,
+  DEFAULT_DESIGN_MODEL,
+  type CloneModel,
+  type DesignModel,
+} from '../api/types'
 
 // Kept identical to tts-service's own DEFAULT_REF_TEXT (voices.py) - the
 // same phonetically-balanced pangram-style line it clones its built-in
@@ -100,8 +109,18 @@ export function VoiceEditorForm({
     buttonLabel: string
     hint: string
     onRun: () => void
+    // Set only while the test runs through VoiceDesign (a voice not yet
+    // saved) - a one-off guidance_scale override for that preview, "" for
+    // the design engine's own default. Hidden for an engine with no
+    // guidance option at all.
+    guidance?: {
+      value: string
+      onChange: (v: string) => void
+    }
   }
 }) {
+  const guidanceDefault = DESIGN_MODEL_GUIDANCE_DEFAULTS[(designModel || DEFAULT_DESIGN_MODEL) as DesignModel]
+
   return (
     <div className="custom-voice-form">
       <label>
@@ -210,6 +229,27 @@ export function VoiceEditorForm({
             placeholder="Type any sentence to hear this voice say it..."
           />
         </label>
+        {test.guidance && guidanceDefault !== undefined && (
+          <>
+            <label>
+              Guidance scale
+              <input
+                type="number"
+                min={0}
+                step={0.1}
+                placeholder={`default (${guidanceDefault})`}
+                value={test.guidance.value}
+                onChange={(e) => test.guidance?.onChange(e.target.value)}
+              />
+            </label>
+            <p className="muted">
+              How strongly the design model follows the voice instruction - higher values push harder toward
+              the description, lower values sound more natural but drift from it. Applies to this preview
+              only: a preview with a custom value is never reused on save, which renders the reference clip
+              at the model's default.
+            </p>
+          </>
+        )}
         <p className="muted">{test.hint}</p>
         {test.error && <p className="error-text">{test.error}</p>}
         <div className="voice-panel-actions">

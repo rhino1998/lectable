@@ -12,6 +12,7 @@ import {
   useDeleteBookmark,
   useDeleteChapterAudio,
   useDirectingChapters,
+  useDescribingChapters,
   useGenerateChapter,
   useGenerateParagraphSFX,
   useGeneratingChapters,
@@ -20,6 +21,7 @@ import {
   useRegenerateMusicRegion,
   useRetagDescriptions,
   useRetagScareQuotes,
+  useScareQuotingChapters,
   useScoreChapterMusic,
   useScoringMusicChapters,
   useSetParagraphDescription,
@@ -145,13 +147,10 @@ export function ReaderPage() {
   const generatingIdxs = useGeneratingChapters(bookId)
   const regenerateMusicRegion = useRegenerateMusicRegion(bookId)
   const [chapterActionError, setChapterActionError] = useState<string | null>(null)
-  // useRetagDescriptions/useRetagScareQuotes are blocking (see SpeakersPage's
-  // own retaggingIdx/retaggingScareQuoteIdx doc comment for why) - unlike
-  // attributingIdxs/directingIdxs/scoringMusicIdxs/generatingIdxs above,
-  // which are all derived from the live job-queue topic, "which chapter is
-  // retagging right now" needs its own locally-tracked id per button.
-  const [retaggingDescriptionsIdx, setRetaggingDescriptionsIdx] = useState<number | null>(null)
-  const [retaggingScareQuotesIdx, setRetaggingScareQuotesIdx] = useState<number | null>(null)
+  // Description/scare-quote tagging are queued jobs, derived from the live
+  // job-queue topic like attributingIdxs/directingIdxs above.
+  const describingIdxs = useDescribingChapters(bookId)
+  const scareQuotingIdxs = useScareQuotingChapters(bookId)
 
   // Mirrors SpeakersPage's own effectiveCloneModel/directionSupported: the
   // chapter-header direction-tagging button is only offered when the
@@ -253,7 +252,14 @@ export function ReaderPage() {
   }, [contextMenu])
 
   const reassignTargets = useMemo(
-    () => [...new Set((speakersQuery.data ?? []).map((s) => s.name).filter((n) => n !== '' && n !== 'Narrator'))],
+    () => [
+      ...new Set(
+        (speakersQuery.data ?? [])
+          .filter((s) => !s.invalid)
+          .map((s) => s.name)
+          .filter((n) => n !== '' && n !== 'Narrator'),
+      ),
+    ],
     [speakersQuery.data],
   )
 
@@ -331,11 +337,9 @@ export function ReaderPage() {
   const runRetagDescriptionsChapter = useCallback(
     (idx: number) => {
       setChapterActionError(null)
-      setRetaggingDescriptionsIdx(idx)
       retagDescriptions.mutate(idx, {
         onError: (err) =>
           setChapterActionError(err instanceof ApiError ? err.message : 'Description tagging failed'),
-        onSettled: () => setRetaggingDescriptionsIdx(null),
       })
     },
     [retagDescriptions],
@@ -344,11 +348,9 @@ export function ReaderPage() {
   const runRetagScareQuotesChapter = useCallback(
     (idx: number) => {
       setChapterActionError(null)
-      setRetaggingScareQuotesIdx(idx)
       retagScareQuotes.mutate(idx, {
         onError: (err) =>
           setChapterActionError(err instanceof ApiError ? err.message : 'Scare-quote tagging failed'),
-        onSettled: () => setRetaggingScareQuotesIdx(null),
       })
     },
     [retagScareQuotes],
@@ -1037,8 +1039,8 @@ export function ReaderPage() {
               chapterAttributing={attributingIdxs.has(idx)}
               chapterClearing={deleteChapterAudio.isPending && deleteChapterAudio.variables === idx}
               hasAttribution={!!chapterSummary?.passes.attribution}
-              chapterRetaggingDescriptions={retaggingDescriptionsIdx === idx}
-              chapterRetaggingScareQuotes={retaggingScareQuotesIdx === idx}
+              chapterRetaggingDescriptions={describingIdxs.has(idx)}
+              chapterRetaggingScareQuotes={scareQuotingIdxs.has(idx)}
               chapterDirecting={directingIdxs.has(idx)}
               chapterScoringMusic={scoringMusicIdxs.has(idx)}
               chapterGenerating={generatingIdxs.has(idx)}

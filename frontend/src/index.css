@@ -504,6 +504,19 @@ label {
   white-space: nowrap;
 }
 
+.speaker-invalid-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--error) 15%, transparent);
+  color: var(--error);
+}
+
 .job-tier-badge {
   display: inline-block;
   font-size: 0.7rem;
@@ -514,6 +527,10 @@ label {
   border-radius: 999px;
   background: var(--bg-subtle);
   color: color-mix(in srgb, var(--text) 65%, transparent);
+}
+.job-tier-badge-normal {
+  background: color-mix(in srgb, var(--annotation-speaker) 15%, transparent);
+  color: var(--annotation-speaker);
 }
 .job-tier-badge-lookahead {
   background: color-mix(in srgb, var(--accent) 15%, transparent);
@@ -1100,12 +1117,17 @@ label {
   flex-wrap: nowrap;
 }
 .chapter-attribute-status {
+  display: inline-flex;
+  align-items: center;
   font-size: 0.8rem;
   color: color-mix(in srgb, var(--text) 65%, transparent);
   white-space: nowrap;
 }
 .chapter-attribute-status-done {
   color: var(--accent);
+}
+.chapter-attribute-status-error {
+  color: var(--error);
 }
 
 .speaker-list {

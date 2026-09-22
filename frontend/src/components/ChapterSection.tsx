@@ -502,13 +502,10 @@ interface ChapterSectionProps {
   hasAttribution: boolean
   // The rest of the chapter-header action buttons - SpeakersPage's own
   // per-chapter row, mirrored here so a reader can run any of these
-  // without leaving the reader for the Speakers page. chapterRetagging*
-  // are locally-tracked (blocking mutations, like SpeakersPage's own
-  // retaggingIdx/retaggingScareQuoteIdx), chapterDirecting/
-  // chapterScoringMusic/chapterGenerating are job-queue-derived (see
-  // useDirectingChapters/useScoringMusicChapters/useGeneratingChapters) -
-  // same split SpeakersPage's own per-row booleans use, for the same
-  // reasons documented on each hook.
+  // without leaving the reader for the Speakers page. All job-queue-
+  // derived (see useDescribingChapters/useScareQuotingChapters/
+  // useDirectingChapters/useScoringMusicChapters/useGeneratingChapters),
+  // the same as SpeakersPage's own per-row booleans.
   chapterRetaggingDescriptions: boolean
   chapterRetaggingScareQuotes: boolean
   chapterDirecting: boolean

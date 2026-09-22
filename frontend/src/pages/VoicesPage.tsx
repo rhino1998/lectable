@@ -297,6 +297,10 @@ export function VoicesPage() {
     setTarget('__new__')
   }
 
+  // Design-preview guidance_scale override - see VoiceEditorForm's
+  // test.guidance. "" = the design engine's own default.
+  const [designGuidanceScale, setDesignGuidanceScale] = useState('')
+
   const runTest = () => {
     setTestError(null)
     if (editing) {
@@ -314,7 +318,7 @@ export function VoicesPage() {
     // right after, unchanged, reuses this exact clip - see backend
     // voicerefs.DesignConfigHash.
     testDesign.mutate(
-      { instruct, text: refText, seed, designModel },
+      { instruct, text: refText, seed, designModel, guidanceScale: designGuidanceScale.trim() ? Number(designGuidanceScale) : undefined },
       {
         onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
         onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not preview this voice'),
@@ -532,6 +536,7 @@ export function VoicesPage() {
               ? 'Uses the saved voice, except the cloning model above is applied live - save any other changes first to hear them reflected here.'
               : 'Preview renders the reference line above via VoiceDesign directly - no preset saved yet. Creating the voice right after, unchanged, reuses this exact clip instead of rendering again.',
             onRun: runTest,
+            guidance: editing ? undefined : { value: designGuidanceScale, onChange: setDesignGuidanceScale },
           }}
         />
       )}
