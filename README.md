@@ -44,4 +44,6 @@ llama.cpp linking) and default ports.
 
 ## License
 
-No license specified yet.
+MIT - see [`LICENSE`](LICENSE). A few vendored headers and one ported
+algorithm keep their upstream licenses; see
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).

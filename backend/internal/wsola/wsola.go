@@ -1,3 +1,10 @@
+// Portions derived from Chromium's media/filters/audio_renderer_algorithm.cc
+// and media/filters/wsola_internals.cc:
+//
+// Copyright 2013 The Chromium Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE-chromium.txt file in this directory.
+
 // Package wsola is a time-domain, pitch-preserving audio time-stretcher.
 //
 // A from-scratch Go port of Chromium's WSOLA (Waveform Similarity
