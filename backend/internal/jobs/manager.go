@@ -1884,10 +1884,8 @@ func (m *Manager) InlineParagraphSet(chapterID string, paragraph store.Paragraph
 }
 
 // sentenceTerminators are the trailing characters that end a segment's own
-// sentence for scareQuoteMergeGroup's boundary rule below - deliberately
-// narrower than internal/epub's own dialogueTerminators (which also treats
-// ,…— as dialogue-like, but for the SPLIT decision, a different question
-// entirely). Here only .!? actually end a sentence: a colon/semicolon
+// sentence for scareQuoteMergeGroup's boundary rule below. Only .!?
+// actually end a sentence: a colon/semicolon
 // reads as part of the same continuous utterance ("He was blunt: 'Get
 // out.'" merges into one clip), and an em dash/ellipsis usually signals an
 // interrupted or trailing-off thought that keeps going rather than a hard
@@ -1898,10 +1896,7 @@ const sentenceTerminators = ".!?"
 // segmentEndsSentence reports whether p's own text - the text just inside
 // its closing quote mark, for a quote segment (store.Paragraph.IsQuote),
 // or its own text directly otherwise - ends with one of
-// sentenceTerminators. Mirrors internal/epub's own looksLikeDialogue in
-// shape (strip the trailing quote mark, trim trailing whitespace, check
-// the last rune) but answers a different question with a narrower
-// terminator set - see sentenceTerminators' own doc comment.
+// sentenceTerminators - see sentenceTerminators' own doc comment.
 func segmentEndsSentence(p store.Paragraph) bool {
 	text := p.Text
 	if p.IsQuote {

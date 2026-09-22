@@ -49,14 +49,14 @@ func TestSplitQuoteSegments(t *testing.T) {
 			},
 		},
 		{
-			name: "angle brackets mid-sentence stay narration when not dialogue-shaped",
-			// <off> doesn't end on a dialogueTerminators rune, so the span
-			// fails looksLikeDialogue and the whole sentence comes back
-			// as one unsplit non-quote segment, quote marks and all - see
-			// splitQuoteSegments' own doc comment.
-			text: "It felt <off> to leave without saying goodbye.",
+			name: "scare quote mid-sentence still splits as a quote",
+			// Not dialogue-shaped, but splitQuoteSegments no longer judges
+			// that - speakerattr.Client.ScareQuoteChapter does, later.
+			text: `It felt "off" to leave without saying goodbye.`,
 			want: []quoteSegment{
-				{Text: "It felt <off> to leave without saying goodbye."},
+				{Text: "It felt"},
+				{Text: `"off"`, IsQuote: true},
+				{Text: "to leave without saying goodbye."},
 			},
 		},
 		{

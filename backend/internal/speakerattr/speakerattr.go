@@ -588,13 +588,12 @@ func normalizeBarePronoun(speaker string) string {
 // spoken dialogue, no matter who's speaking it" rule in Go, the same
 // "don't just ask nicely, enforce it" pattern this package uses elsewhere
 // (e.g. deliverytags' own insertion-diffing invariant). isQuote is the
-// paragraph's own ParagraphInput.IsQuote - true only for an actual quoted-
-// dialogue span, already distinguished from a merely scare-quoted phrase
-// inside otherwise-ordinary narration at the epub-parsing level
-// (internal/epub's own looksLikeDialogue, which only keeps a quoted span
-// that's punctuated like a complete spoken utterance) - so by the time a
-// paragraph reaches this call, IsQuote true already means "real dialogue,
-// not scare quotes". If the model still returns "Narrator" for one
+// paragraph's own ParagraphInput.IsQuote - true for a quoted span not
+// (yet) flagged as a scare quote (callers pass store.Paragraph.IsQuote &&
+// !ScareQuote; a scare quote that ScareQuoteChapter hasn't caught yet
+// still looks like dialogue here, and gets fixed up once it is - see
+// store.Store.SetParagraphScareQuotes). If the model still returns
+// "Narrator" for one
 // (whichever way it got there - unable to determine the speaker, or an
 // older "first-person narrator's own dialogue is Narrator" framing this
 // package no longer uses at all), this maps it to "Unknown" instead - the

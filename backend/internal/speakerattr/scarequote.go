@@ -11,16 +11,15 @@ import (
 // single-purpose pass over a chapter's already-quote-split paragraphs
 // (internal/epub.splitQuoteSegments/store.Paragraph.IsQuote), asking
 // nothing about who's speaking or what's described - only whether a
-// paragraph epub.go's own looksLikeDialogue heuristic already accepted as
-// a quoted-dialogue span is actually genuine spoken dialogue at all, or a
-// "scare quote": quotation marks used for sarcasm/skepticism, mentioning a
-// term/title/label rather than uttering it, or quoting a written source
-// (a sign, a book, an inscription) rather than speech in the scene. That
-// heuristic only checks the quote's own closing punctuation (a comma or
-// period right before the closing mark reads as plausible dialogue), which
-// a scare quote can easily satisfy too ("the so-called 'chosen one,' he
-// thought derisively") - catching the rest needs real semantic judgment
-// the structural parser can't do, the reason this is an LLM pass at all.
+// quoted span (internal/epub splits out every balanced quote-mark pair as
+// IsQuote, with no judgment of its own) is actually genuine spoken
+// dialogue at all, or a "scare quote": quotation marks used for
+// sarcasm/skepticism, mentioning a term/title/label rather than uttering
+// it, or quoting a written source (a sign, a book, an inscription) rather
+// than speech in the scene. This is the only place that distinction is
+// made - telling `the "downward" stairway` or "the so-called 'chosen one,'
+// he thought derisively" apart from real dialogue needs semantic judgment
+// a structural parser can't do, the reason this is an LLM pass at all.
 //
 // Isolated into its own call, at DescribeChapter's own small batch size,
 // for the same reason DescribeChapter itself was split out of
@@ -36,7 +35,7 @@ import (
 // paragraph (store.Paragraph.Inline's own doc comment) and generates them
 // as one TTS call, later sliced back into each paragraph's own audio file
 // by forced alignment - paragraph rows/indices themselves never change.
-const scareQuoteSystemPrompt = `You are a literary analysis assistant. Given numbered lines from a novel (a mix of narration and quoted spans already identified as looking like dialogue), find the very rare quoted lines that are NOT actually spoken aloud by a character - a "scare quote" - as opposed to real spoken dialogue.
+const scareQuoteSystemPrompt = `You are a literary analysis assistant. Given numbered lines from a novel (a mix of narration and quoted spans), find the very rare quoted lines that are NOT actually spoken aloud by a character - a "scare quote" - as opposed to real spoken dialogue.
 Reply with ONLY a JSON array, no other text: [{"idx": <line number>}, ...] - include an entry ONLY for a line that clears the bar below; omit every other line entirely, including every narration line. Expect this list to almost always be completely empty - the overwhelming majority of chapters contain zero scare quotes. Only flag a line you are confident about.
 Rules:
 - Only a line already given to you as a quoted span (its own text starts and ends with quotation marks) can ever belong in this list. Never include a plain narration line.

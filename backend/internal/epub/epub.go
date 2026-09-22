@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"golang.org/x/net/html"
@@ -1234,45 +1233,6 @@ type quoteSegment struct {
 	IsQuote bool
 }
 
-// dialogueTerminators are the runes a genuine quoted line of spoken
-// dialogue almost always ends on, immediately before its closing quote
-// mark: a full stop, exclamation, question mark, ellipsis, em dash
-// (interrupted speech), or comma (dialogue continuing into a tag right
-// after, e.g. `"Ahem," I said`). See looksLikeDialogue.
-const dialogueTerminators = ".!?,…—"
-
-// looksLikeDialogue reports whether the quoted span runes[start:end]
-// (quote marks included, per span's own doc comment) plausibly represents
-// spoken dialogue rather than a scare-quoted word/phrase or an in-text
-// mention (`the "downward" stairway`, `felt "right" to leave`,
-// `crossed "become the captain of my own ship" off my list`) - real false
-// positives pulled from actual books during development, where a
-// syntactically-detected quote span was neither dialogue nor
-// attributable to any speaker, but a purely syntactic splitter (and, for
-// what it's worth, BookNLP's own trained quote-span model - checked
-// against the same chapters) both flag it as one anyway. The check itself
-// is narrow and cheap: the last non-whitespace rune immediately before
-// the closing quote mark, tested against dialogueTerminators. A
-// scare-quote/mention sits mid-sentence with the surrounding prose
-// continuing right past the closing quote, so it essentially never ends
-// on one of these; a genuine spoken line, however short, is essentially
-// always punctuated as a complete utterance (`"Amateurs . . ."`,
-// `"Damn!"`, `"Ahem,"`) - including books that write long stretches of
-// bare, untagged back-and-forth dialogue, since this check has nothing to
-// do with whether a tag is present, only with how the quoted text itself
-// ends. Deliberately one-directional - splitQuoteSegments only ever calls
-// this to decide whether to keep a syntactically-found span as a quote,
-// never to invent one text doesn't otherwise have - so it can only trade
-// away a few false positives, never cost real dialogue recall.
-func looksLikeDialogue(runes []rune, start, end int) bool {
-	inner := strings.TrimRightFunc(string(runes[start+1:end-1]), unicode.IsSpace)
-	if inner == "" {
-		return false
-	}
-	last, _ := utf8.DecodeLastRuneInString(inner)
-	return strings.ContainsRune(dialogueTerminators, last)
-}
-
 // splitQuoteSegments splits text into alternating narration and quoted-
 // dialogue segments on quote-mark boundaries (quoteOpeners/quoteClosers -
 // straight ", curly “ ”, guillemets « », and angle brackets < >), each
@@ -1285,12 +1245,13 @@ func looksLikeDialogue(runes []rune, start, end int) bool {
 // left-hand rune and only closes on its own right-hand rune. Unbalanced or
 // quote-free text comes back as a single unsplit, non-quote segment -
 // splitting only happens where a quote clearly opens and closes within the
-// same paragraph, never on a guess. A span that opens and closes cleanly
-// but fails looksLikeDialogue is dropped from spans entirely (not kept as
-// its own non-quote segment) - its text simply merges back into whichever
-// narration surrounds it, exactly as if no quote marks had been there at
-// all, rather than fragmenting one flowing sentence into extra
-// single-word paragraphs/audio clips.
+// same paragraph, never on a guess. Every span that opens and closes
+// cleanly becomes an IsQuote segment, including scare quotes and mentions
+// (`the "downward" stairway`) - telling those apart from real dialogue is
+// left entirely to internal/speakerattr.Client.ScareQuoteChapter's LLM
+// pass, which flags them (store.Paragraph.ScareQuote) so generation merges
+// them back into the surrounding narration's own TTS call (see
+// jobs.Manager.scareQuoteMergeGroup) rather than voicing them separately.
 func splitQuoteSegments(text string) []quoteSegment {
 	type span struct{ start, end int } // rune offsets, end exclusive, quote marks included
 
@@ -1304,9 +1265,7 @@ func splitQuoteSegments(text string) []quoteSegment {
 			inQuote = true
 			quoteStart = i
 		case inQuote && strings.ContainsRune(quoteClosers, ch):
-			if looksLikeDialogue(runes, quoteStart, i+1) {
-				spans = append(spans, span{quoteStart, i + 1})
-			}
+			spans = append(spans, span{quoteStart, i + 1})
 			inQuote = false
 		}
 	}
