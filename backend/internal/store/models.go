@@ -190,26 +190,19 @@ type Passes struct {
 	// paused/resumed continuations - never set on a pause or a genuine
 	// failure partway through, only a full completion).
 	Attribution bool `json:"attribution"`
-	// Description is set alongside Attribution, in the same write, by
-	// that same attribution run - AttributeChapter's own result carries
-	// both which character is speaking (Speaker) and which characters a
-	// narration paragraph physically/personality-describes (Describes,
-	// persisted via Store.SetParagraphDescriptions) from one LLM call, so
-	// nothing can ever set one of these two without the other today.
-	// Tracked as its own field anyway (rather than folded into
-	// Attribution) so a future version that splits description-tagging
-	// into its own independent call doesn't need another schema change to
-	// represent that.
+	// Description is set once description tagging
+	// (internal/speakerattr.Client.DescribeChapter, a jobs.KindDescription
+	// task - see httpapi.describeChapterForJob) has completed over the
+	// whole chapter, persisting which characters each narration paragraph
+	// describes (Store.SetParagraphDescriptions). Its own task, dependent
+	// on ScareQuote but not on Attribution.
 	Description bool `json:"description"`
-	// ScareQuote is set alongside Attribution/Description, in the same
-	// write, by that same attribution run - AttributeChapter's own result
-	// is what triggers speakerattr.Client.ScareQuoteChapter
-	// (httpapi.attributeChapter's own describeChapter/scareQuoteChapter
-	// sibling calls), which persists via Store.SetParagraphScareQuotes.
-	// Tracked as its own field for the same reason Description is (see its
-	// own doc comment) - a future version that splits scare-quote tagging
-	// into its own independently-triggered call doesn't need another
-	// schema change to represent that.
+	// ScareQuote is set once scare-quote tagging
+	// (internal/speakerattr.Client.ScareQuoteChapter, a jobs.KindScareQuote
+	// task - see httpapi.scareQuoteChapterForJob) has completed over the
+	// whole chapter, persisting Store.SetParagraphScareQuotes. Both
+	// attribution and description tagging wait on this
+	// (jobs.Manager.scareQuoteDependency).
 	ScareQuote bool `json:"scareQuote"`
 	// Direction is set once speech-direction tagging
 	// (internal/speakerattr.Client.DirectChapter/TagSfx/ResolvePronunciation,
@@ -308,9 +301,10 @@ type Chapter struct {
 // way an explicit LLM-supplied end once required.
 //
 // Generation (internal/musicgen.GenerateRegion, dispatched via
-// jobs.Manager's KindMusicGeneration) waits for every paragraph in this
-// region's own range to have real, ready narration audio first - a
-// region's own TargetDurationSeconds (computed at dispatch time, not
+// jobs.Manager's KindMusicGeneration) waits for every paragraph in the
+// whole chapter to have real, ready narration audio first (see
+// jobs.Manager.MaybeAdvanceChapterMusic) - a region's own
+// TargetDurationSeconds (computed at dispatch time, not
 // stored) is the sum of those paragraphs' own real narration durations, so
 // the generated clip actually matches how long the region plays under
 // for, whatever that turns out to be (no artificial minimum - see
@@ -663,7 +657,20 @@ type Character struct {
 	// to warn the casting prompt that the dialogue sample below may be
 	// drawn from several different unnamed people who happened to share
 	// this label, not one consistent personality.
-	IsRole    bool
+	IsRole bool
+	// Invalid marks this name as not a real speaker at all (a stray
+	// pronoun, a vocative, a generic phrase the LLM keeps latching onto) -
+	// set explicitly from the Speakers page or by an "Auto Split" of this
+	// character (httpapi.handleReattributeSpeaker). The row is kept as a
+	// tombstone rather than deleted precisely so the name *stays* known:
+	// deleting it would just let the next attribution pass rediscover and
+	// re-create it. Attribution/description passes withhold an invalid
+	// name from "Known characters" and remap any result naming it to
+	// "Unknown" (or drop it, for descriptions) instead of assigning it;
+	// characterization/voice provisioning skip it. Paragraphs already
+	// attributed to it are left alone - Auto Split is what redistributes
+	// those.
+	Invalid   bool
 	CreatedAt int64
 }
 

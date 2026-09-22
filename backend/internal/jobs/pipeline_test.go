@@ -11,10 +11,9 @@ import (
 )
 
 // TestPipelinePhasesRunInDependencyOrder is EnqueuePipeline's own core
-// contract for its three actually-chained phases: characterization never
-// starts before attribution (same book) has finished, and voice
-// provisioning never starts before characterization has - see
-// pipelineResolver's own doc comment. Direction carries no such
+// contract for its chained phases: scare-quote tagging before attribution
+// and description tagging, both of those before characterization, and
+// characterization before voice provisioning - see pipelinePhaseDeps. Direction carries no such
 // dependency at all (see TestDirectionPhaseRunsWithoutWaitingOnEarlierPhases
 // below for that half of the contract), so it's deliberately left out of
 // the ordering assertion here - its position in order is unconstrained.
@@ -37,6 +36,7 @@ func TestPipelinePhasesRunInDependencyOrder(t *testing.T) {
 
 	if err := mgr.EnqueuePipeline("book-1", [pipelinePhaseCount]PipelinePhaseFunc{
 		phase(pipelinePhaseAttribution), phase(pipelinePhaseCharacterization), phase(pipelinePhaseVoiceProvision), phase(pipelinePhaseDirection), phase(pipelinePhaseMusic),
+		phase(pipelinePhaseScareQuote), phase(pipelinePhaseDescription),
 	}); err != nil {
 		t.Fatalf("EnqueuePipeline: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestPipelinePhasesRunInDependencyOrder(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
-		return len(order) == 5
+		return len(order) == int(pipelinePhaseCount)
 	})
 
 	mu.Lock()
@@ -58,6 +58,15 @@ func TestPipelinePhasesRunInDependencyOrder(t *testing.T) {
 	}
 	if pos[pipelinePhaseCharacterization] >= pos[pipelinePhaseVoiceProvision] {
 		t.Fatalf("expected characterization to run before voice provisioning, got order %v", order)
+	}
+	if pos[pipelinePhaseScareQuote] >= pos[pipelinePhaseAttribution] {
+		t.Fatalf("expected scare-quote tagging to run before attribution, got order %v", order)
+	}
+	if pos[pipelinePhaseScareQuote] >= pos[pipelinePhaseDescription] {
+		t.Fatalf("expected scare-quote tagging to run before description tagging, got order %v", order)
+	}
+	if pos[pipelinePhaseDescription] >= pos[pipelinePhaseCharacterization] {
+		t.Fatalf("expected description tagging to run before characterization, got order %v", order)
 	}
 }
 

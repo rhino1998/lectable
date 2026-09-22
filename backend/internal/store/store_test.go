@@ -307,6 +307,22 @@ func TestChapterPasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChapterByID after attributed: %v", err)
 	}
+	if want := (Passes{Attribution: true}); ch.Passes != want {
+		t.Fatalf("expected %+v, got %+v", want, ch.Passes)
+	}
+
+	// Scare-quote and description tagging are their own tasks now, each
+	// setting only its own pass.
+	if err := s.SetChapterScareQuoted(chapterID); err != nil {
+		t.Fatalf("SetChapterScareQuoted: %v", err)
+	}
+	if err := s.SetChapterDescribed(chapterID); err != nil {
+		t.Fatalf("SetChapterDescribed: %v", err)
+	}
+	ch, err = s.GetChapterByID(chapterID)
+	if err != nil {
+		t.Fatalf("GetChapterByID after tagging: %v", err)
+	}
 	if want := (Passes{Attribution: true, Description: true, ScareQuote: true}); ch.Passes != want {
 		t.Fatalf("expected %+v, got %+v", want, ch.Passes)
 	}
@@ -783,6 +799,53 @@ func TestCharacterVoiceAssignmentPerCloneModel(t *testing.T) {
 	}
 	if afterDelete != nil {
 		t.Fatalf("expected character to be gone after delete, got %+v", afterDelete)
+	}
+}
+
+// TestSetCharacterInvalid checks the invalid flag round-trips through
+// every character read path and that UpsertCharacter on an invalid name
+// returns the existing tombstone rather than re-creating (or un-marking)
+// it - the whole point of keeping the row instead of deleting it.
+func TestSetCharacterInvalid(t *testing.T) {
+	s := openTestStore(t)
+	scope := "book:b1"
+	char, _, err := s.UpsertCharacter(scope, "He", false)
+	if err != nil {
+		t.Fatalf("UpsertCharacter: %v", err)
+	}
+	if char.Invalid {
+		t.Fatalf("new character should not start invalid")
+	}
+	if err := s.SetCharacterInvalid(char.ID, true); err != nil {
+		t.Fatalf("SetCharacterInvalid: %v", err)
+	}
+
+	got, err := s.GetCharacter(char.ID)
+	if err != nil || got == nil || !got.Invalid {
+		t.Fatalf("GetCharacter = %+v, %v; want Invalid", got, err)
+	}
+	byName, err := s.GetCharacterByName(scope, "He")
+	if err != nil || byName == nil || !byName.Invalid {
+		t.Fatalf("GetCharacterByName = %+v, %v; want Invalid", byName, err)
+	}
+	list, err := s.ListCharacters(scope)
+	if err != nil || len(list) != 1 || !list[0].Invalid {
+		t.Fatalf("ListCharacters = %+v, %v; want one invalid row", list, err)
+	}
+
+	again, created, err := s.UpsertCharacter(scope, "He", false)
+	if err != nil {
+		t.Fatalf("UpsertCharacter (repeat): %v", err)
+	}
+	if created || again.ID != char.ID || !again.Invalid {
+		t.Fatalf("UpsertCharacter on invalid name = %+v created=%v; want existing invalid row", again, created)
+	}
+
+	if err := s.SetCharacterInvalid(char.ID, false); err != nil {
+		t.Fatalf("SetCharacterInvalid(false): %v", err)
+	}
+	if got, _ := s.GetCharacter(char.ID); got == nil || got.Invalid {
+		t.Fatalf("GetCharacter after unmark = %+v; want valid", got)
 	}
 }
 

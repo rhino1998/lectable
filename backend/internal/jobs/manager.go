@@ -341,6 +341,9 @@ var kindPool = map[Kind]taskqueue.PoolKey{
 	KindLLMPreview:              poolLLM,
 	KindMusicScoring:            poolLLM,
 	KindMusicGeneration:         poolSFX,
+	KindMusicLiveGeneration:     poolSFX,
+	KindScareQuote:              poolLLM,
+	KindDescription:             poolLLM,
 }
 
 // poolFor reports which slot pool kind draws from - see kindPool.
@@ -561,6 +564,38 @@ const (
 	// ready, the same reasoning TierBackground already carries for
 	// KindSpeechDirection/KindSpeakerAttribution.
 	KindMusicGeneration Kind = "music_generation"
+	// KindMusicLiveGeneration is KindMusicGeneration's reader-driven
+	// sibling: the one or two music regions around the reader's own
+	// current position (the region they're in, and the one after it),
+	// generated as soon as those regions' own paragraphs are voiced rather
+	// than waiting for the whole chapter the way KindMusicGeneration does -
+	// so live listening gets music while the rest of the chapter's
+	// narration is still generating. Same batch function
+	// (generateChapterMusicBatch), same poolSFX, TierLookahead rather than
+	// TierBackground since it's what the reader is about to hear. Keyed by
+	// chapter like KindMusicGeneration (one live batch in flight per
+	// chapter); both kinds can reach the same region, so each region is
+	// claimed in memory (Manager.claimMusicRegion) before generating and
+	// only ever generated once. See MaybeAdvanceChapterMusic.
+	KindMusicLiveGeneration Kind = "music_live_generation"
+	// KindScareQuote is an LLM scare-quote-tagging run for one chapter
+	// (internal/speakerattr.Client.ScareQuoteChapter, via
+	// httpapi.scareQuoteChapterForJob) - see EnqueueScareQuote.
+	// KindSpeechDirection's exact shape (fire-and-forget, poolLLM,
+	// defaultAttributionTier, caller-supplied ScareQuoteFunc). Every
+	// KindSpeakerAttribution/KindDescription task for a chapter depends on
+	// this one (scareQuoteDependency): attribution needs to know which
+	// quoted spans aren't dialogue before judging speakers, and a scare
+	// quote is narration a description can be read from.
+	KindScareQuote Kind = "scare_quote_tagging"
+	// KindDescription is an LLM description-tagging run for one chapter
+	// (internal/speakerattr.Client.DescribeChapter, via
+	// httpapi.describeChapterForJob) - see EnqueueDescription. Split out of
+	// KindSpeakerAttribution (which used to run it inline after a full
+	// attribution pass) so it's independently visible/retryable on the
+	// Jobs dashboard. Same shape as KindScareQuote, and depends on it the
+	// same way attribution does - but not on attribution itself.
+	KindDescription Kind = "description_tagging"
 )
 
 // Tier is shared across every chapter/paragraph-scoped Kind - a
@@ -584,10 +619,18 @@ const (
 	// queue - it never interrupts a paragraph tts-service has already
 	// started, only picks the next one to dispatch.
 	TierLookahead = 0
+	// TierNormal sits between TierLookahead and TierBackground - nothing
+	// is enqueued at it by default; it's reached only by a reader
+	// explicitly promoting a task (PromoteTier, the Jobs page), for work
+	// that should jump ahead of the bulk TierBackground backlog without
+	// competing with what the reader is actually waiting on right now.
+	// Counts as "higher priority" for HasHigherPriorityWork, same as any
+	// tier more urgent than TierBackground.
+	TierNormal = 1
 	// TierBackground is bulk "generate this whole chapter" / upload-sample
 	// work - useful to have done eventually, but never worth making the
 	// reader wait behind.
-	TierBackground = 1
+	TierBackground = 2
 )
 
 // task is one unit of dispatched work - a paragraph's worth of generation
@@ -880,6 +923,12 @@ func (t *task) dedupKey() string {
 		return "music_score:" + t.llmKey
 	case KindMusicGeneration:
 		return "music_gen:" + t.llmKey
+	case KindMusicLiveGeneration:
+		return "music_live:" + t.llmKey
+	case KindScareQuote:
+		return "scare_quote:" + t.llmKey
+	case KindDescription:
+		return "describe:" + t.llmKey
 	default:
 		return t.paragraph.ID
 	}
@@ -969,6 +1018,8 @@ var kindCompare = map[Kind]func(a, b *task) int{
 	KindSpeakerCharacterization: comparePosition,
 	KindSpeechDirection:         comparePosition,
 	KindSpeakerReattribution:    comparePosition,
+	KindScareQuote:              comparePosition,
+	KindDescription:             comparePosition,
 }
 
 // Less breaks a same-pool, same-(promoted-)tier tie between t and other -
@@ -1098,6 +1149,16 @@ type DirectionFunc func(ctx context.Context) (tagged int, requeue func(), err er
 // reason AttributionFunc/DirectionFunc are - running it needs Store/
 // Speaker access this package doesn't have. DirectionFunc's exact shape.
 type MusicScoreFunc func(ctx context.Context) (scored int, requeue func(), err error)
+
+// ScareQuoteFunc performs one chapter's scare-quote tagging and reports how
+// many paragraphs' flags changed - the actual work behind a KindScareQuote
+// task (see httpapi.scareQuoteChapterForJob). DirectionFunc's exact shape.
+type ScareQuoteFunc func(ctx context.Context) (changed int, requeue func(), err error)
+
+// DescriptionFunc performs one chapter's description tagging - the actual
+// work behind a KindDescription task (see httpapi.describeChapterForJob).
+// DirectionFunc's exact shape.
+type DescriptionFunc func(ctx context.Context) (tagged int, requeue func(), err error)
 
 // CharacterizationFunc performs one character's re-characterization (an
 // LLM call - speakerattr.Client.CharacterizeVoice - plus persisting the
@@ -1245,7 +1306,24 @@ type ChapterAttributor func(ctx context.Context, book *store.Book, ch *store.Cha
 // separately from generating its audio.
 type MusicScorer func(ctx context.Context, book *store.Book, ch *store.Chapter) (scored int, requeue func(), err error)
 
+// ChapterScareQuoter lazily runs one chapter's own scare-quote tagging (the
+// work behind ScareQuoteFunc/EnqueueScareQuote, setting Passes.ScareQuote
+// on a full pass) the moment scareQuoteDependency discovers a
+// KindSpeakerAttribution/KindDescription task for a chapter that isn't
+// tagged yet and finds no scare-quote task already queued or in flight for
+// it - ChapterDirector's exact role for speechDirectionDependency. A
+// never-configured quoter (nil) just means attribution/description never
+// wait on scare-quote tagging.
+type ChapterScareQuoter func(ctx context.Context, book *store.Book, ch *store.Chapter) (changed int, requeue func(), err error)
+
 type Manager struct {
+	// musicGenerating is the set of music region ids currently being
+	// generated (claimMusicRegion/releaseMusicRegion) - kept in memory
+	// only, never persisted as a status: nothing can still be generating
+	// across a restart, so a stored "generating" would only ever go stale.
+	musicGenMu      sync.Mutex
+	musicGenerating map[string]bool
+
 	store        *store.Store
 	tts          *ttsworker.Manager
 	dataDir      string
@@ -1255,6 +1333,7 @@ type Manager struct {
 	direct       ChapterDirector
 	attribute    ChapterAttributor
 	scoreMusic   MusicScorer
+	scareQuote   ChapterScareQuoter
 	ctx          context.Context // set by Start; used by fire-and-forget Enqueue* resolution goroutines
 
 	// queue is this package's whole priority/dependency/pool-dispatch
@@ -1434,6 +1513,13 @@ func (m *Manager) SetMusicScorer(fn MusicScorer) {
 	m.scoreMusic = fn
 }
 
+// SetChapterScareQuoter wires fn in as the lazy scare-quote tagger - see
+// ChapterScareQuoter's own doc comment. Called once from
+// httpapi.NewRouter, the same place/timing as SetChapterDirector.
+func (m *Manager) SetChapterScareQuoter(fn ChapterScareQuoter) {
+	m.scareQuote = fn
+}
+
 // provisionMissingCharacterVoices lazily provisions (via m.provision - a
 // no-op if never configured) a voice for cloneModel for every distinct
 // real speaker (not "", not "Narrator") among speakers who doesn't have
@@ -1463,7 +1549,10 @@ func (m *Manager) provisionMissingCharacterVoices(ctx context.Context, book *sto
 			log.Printf("jobs: look up character %q: %v", name, err)
 			continue
 		}
-		if char == nil {
+		// An invalid character's lingering lines are awaiting
+		// redistribution (see store.Character.Invalid) - not worth
+		// provisioning a voice for.
+		if char == nil || char.Invalid {
 			continue
 		}
 		presetID, err := m.store.CharacterVoiceForModel(char.ID, cloneModel)
@@ -2194,6 +2283,10 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 			// - see PromoteChapterMusicNear's own doc comment for why
 			// that's enough.
 			m.PromoteChapterMusicNear(bookID, ch.ID)
+			// And start the music right where they are, without waiting
+			// for the rest of the chapter to be voiced - see
+			// KindMusicLiveGeneration.
+			m.advanceChapterMusic(bookID, ch.ID, fromParagraphIdx)
 		}
 		remaining -= len(resolved)
 		chapterIdx++
@@ -2240,6 +2333,7 @@ func (m *Manager) PromoteChapterMusicNear(bookID, chapterID string) {
 	}
 	promote("music_score:" + chapterID)
 	promote("music_gen:" + chapterID)
+	promote("music_live:" + chapterID)
 	// Unconditional, same "cheap to over-call" reasoning
 	// MaybeAdvanceChapterMusic's own doc comment gives - simpler than
 	// threading back whether either promote() call actually found and
@@ -2385,6 +2479,11 @@ func (m *Manager) resolveDependencies(lq *taskqueue.LockedQueue, tk taskqueue.Ta
 	}
 	if t.kind == KindVoiceClone {
 		if d := m.referenceClipDependency(lq, t); d != nil {
+			deps = append(deps, d)
+		}
+	}
+	if t.kind == KindSpeakerAttribution || t.kind == KindDescription {
+		if d := m.scareQuoteDependency(lq, t); d != nil {
 			deps = append(deps, d)
 		}
 	}
@@ -2544,6 +2643,55 @@ func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) 
 		chapterIdx:  t.chapterIdx,
 		llmKey:      chapterID,
 		runLLM:      func(ctx context.Context) (int, func(), error) { return m.direct(ctx, book, &chVal) },
+		seriesName:  book.SeriesName,
+		seriesIndex: book.SeriesIndex,
+	}
+	return m.pushDependency(lq, nt)
+}
+
+// scareQuoteDependency makes t's own chapter's scare-quote tagging
+// (KindScareQuote) a hard dependency of a KindSpeakerAttribution/
+// KindDescription task: returns that chapter's currently queued or
+// in-flight KindScareQuote task, if any, or lazily creates one via
+// m.scareQuote (a no-op if never configured) the first time it finds the
+// chapter's Passes.ScareQuote unset - speechDirectionDependency's exact
+// shape. Attribution needs scare quotes flagged first so it never assigns
+// a character to a quoted span that isn't dialogue (httpapi.
+// attributeChapter forces those to Narrator), and description tagging
+// reads narration, which a scare quote is part of. A scare-quote run that
+// fails leaves Passes.ScareQuote unset, so the next resolution recreates
+// it and the dependent task keeps waiting - deliberate: the pass is
+// sampled, so a retry is expected to succeed eventually, and running
+// attribution against unflagged scare quotes would bake in wrong speakers.
+func (m *Manager) scareQuoteDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+	chapterID := t.chapterID
+	key := "scare_quote:" + chapterID
+	if found, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == key }); ok {
+		return found
+	}
+	if m.scareQuote == nil {
+		return nil
+	}
+	ch, err := m.store.GetChapterByID(chapterID)
+	if err != nil || ch == nil {
+		return nil
+	}
+	if ch.Passes.ScareQuote {
+		return nil // already tagged
+	}
+	book, err := m.store.GetBook(t.bookID)
+	if err != nil || book == nil {
+		return nil
+	}
+	chVal := *ch
+	nt := &task{
+		kind:        KindScareQuote,
+		tier:        t.tier,
+		bookID:      t.bookID,
+		chapterID:   chapterID,
+		chapterIdx:  t.chapterIdx,
+		llmKey:      chapterID,
+		runLLM:      func(ctx context.Context) (int, func(), error) { return m.scareQuote(ctx, book, &chVal) },
 		seriesName:  book.SeriesName,
 		seriesIndex: book.SeriesIndex,
 	}
@@ -3182,6 +3330,51 @@ func (m *Manager) RunMusicScoring(ctx context.Context, bookID, chapterID string,
 	return m.runLLMTaskDirect(ctx, KindMusicScoring, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
 }
 
+// EnqueueScareQuote queues fn as a KindScareQuote task - EnqueueDirection's
+// exact fire-and-forget shape (dedup-by-chapter, poolLLM,
+// defaultAttributionTier). See EnqueueAttribution's own doc comment for the
+// reasoning behind that shape.
+func (m *Manager) EnqueueScareQuote(bookID, chapterID string, chapterIdx int, fn ScareQuoteFunc) {
+	m.enqueueChapterLLM(KindScareQuote, bookID, chapterID, chapterIdx, fn)
+}
+
+// RunScareQuote is EnqueueScareQuote's blocking sibling - RunDirection's
+// exact counterpart, for httpapi.preprocessScareQuotePhase.
+func (m *Manager) RunScareQuote(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, fn ScareQuoteFunc) (int, error) {
+	return m.runLLMTaskDirect(ctx, KindScareQuote, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
+}
+
+// EnqueueDescription queues fn as a KindDescription task - same shape as
+// EnqueueScareQuote. Blocked on the chapter's scare-quote tagging via
+// scareQuoteDependency.
+func (m *Manager) EnqueueDescription(bookID, chapterID string, chapterIdx int, fn DescriptionFunc) {
+	m.enqueueChapterLLM(KindDescription, bookID, chapterID, chapterIdx, fn)
+}
+
+// RunDescription is EnqueueDescription's blocking sibling, for
+// httpapi.preprocessDescriptionPhase.
+func (m *Manager) RunDescription(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, fn DescriptionFunc) (int, error) {
+	return m.runLLMTaskDirect(ctx, KindDescription, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
+}
+
+// enqueueChapterLLM is EnqueueScareQuote/EnqueueDescription's shared
+// fire-and-forget push - a chapter-keyed poolLLM task at
+// defaultAttributionTier.
+func (m *Manager) enqueueChapterLLM(kind Kind, bookID, chapterID string, chapterIdx int, fn func(ctx context.Context) (int, func(), error)) {
+	seriesName, seriesIndex := m.seriesFor(bookID)
+	m.pushTask(&task{
+		kind:        kind,
+		tier:        defaultAttributionTier,
+		chapterIdx:  chapterIdx,
+		bookID:      bookID,
+		chapterID:   chapterID,
+		llmKey:      chapterID,
+		runLLM:      fn,
+		seriesName:  seriesName,
+		seriesIndex: seriesIndex,
+	})
+}
+
 // HasHigherPriorityWork reports whether *any* pool currently has a task
 // queued (not counting whatever's already in flight - a task already
 // dispatched into poolLLM's own slot is necessarily the caller itself) at a
@@ -3427,8 +3620,8 @@ func (m *Manager) EnqueueSFXGeneration(bookID, chapterID string, chapterIdx int,
 // EnqueueMusicGeneration queues fn as a KindMusicGeneration task - render
 // and persist every one of a chapter's currently-eligible background-music
 // regions in one task (see generateChapterMusicBatch). Its only caller is
-// MaybeAdvanceChapterMusic, once it's found at least one region whose
-// paragraphs all have ready narration and (for a "continuation" transition)
+// advanceWholeChapterMusic, once the whole chapter is voiced and it's found
+// at least one pending region that (for a "continuation" transition)
 // whose immediately preceding region has already finished or will finish
 // earlier in this same batch - see MusicRegion's own doc comment for the
 // full readiness contract. TierBackground, not TierUrgent the way
@@ -3438,9 +3631,13 @@ func (m *Manager) EnqueueSFXGeneration(bookID, chapterID string, chapterIdx int,
 // have one music-generation batch in flight at a time, the same "one at a
 // time per chapter" shape KindMusicScoring already has.
 func (m *Manager) EnqueueMusicGeneration(bookID, chapterID string, chapterIdx int, fn func(ctx context.Context, attempt int) error) {
+	m.enqueueMusicGeneration(bookID, chapterID, chapterIdx, TierBackground, fn)
+}
+
+func (m *Manager) enqueueMusicGeneration(bookID, chapterID string, chapterIdx, tier int, fn func(ctx context.Context, attempt int) error) {
 	m.pushTask(&task{
 		kind:        KindMusicGeneration,
-		tier:        TierBackground,
+		tier:        tier,
 		bookID:      bookID,
 		chapterID:   chapterID,
 		chapterIdx:  chapterIdx,
@@ -3462,138 +3659,385 @@ type pendingMusicRegion struct {
 // MaybeAdvanceChapterMusic checks chapterID's own music regions (if
 // bookID's own store.Book.MusicEnabled - background music is a book-wide
 // toggle, not a per-chapter one, unlike scoring itself, which stays
-// chapter-scoped) for every one currently eligible to generate, and
-// dispatches them all as one batch (EnqueueMusicGeneration,
-// TierBackground) rather than one task per region - a region's own clip
-// generates fast (Stable Audio Medium, not a long LLM batch) and a
-// "continuation" region needs its own immediately-preceding region's clip
-// anyway, so nothing is gained by splitting a chapter's own ready regions
-// across several separately-dispatched/retried tasks the way an earlier
-// version did; see store.MusicRegion's own doc comment for the full
-// readiness contract this enforces: every paragraph in a region's own
-// [StartIdx, EndIdx] range must already have ready narration audio (under
-// whichever voice it currently resolves to - internal/narration.Resolver),
-// and, only for a MusicTransitionContinuation region, the immediately
-// preceding region (by Idx) must already have settled (AudioReady or
-// AudioError) or itself be part of this same batch (about to settle,
-// in order, before generateChapterMusicBatch ever reaches this one) so its
-// own clip will exist to seed this one's first chunk from.
+// chapter-scoped) and dispatches whatever is eligible to generate, along
+// two independent paths:
 //
-// The scan below walks regions in order and stops (breaks) the moment it
-// hits either a still-pending region whose narration isn't fully ready, or
-// one it can't safely batch because the region before it neither has
-// settled nor is itself part of this batch (shouldn't happen given the
-// scan is itself strictly sequential, but guards the invariant explicitly
-// rather than relying on that implicitly) - regions further along the
-// chapter can never be eligible before that point either, since paragraph
-// idx ranges only increase. Everything gathered before that point (which
-// may be zero, one, or several regions) becomes one batch.
+//   - Whole chapter (advanceWholeChapterMusic, KindMusicGeneration,
+//     TierBackground): once every paragraph in the chapter has ready
+//     narration, every eligible region goes out as one batch.
+//   - Live (advanceLiveMusic, KindMusicLiveGeneration, TierLookahead): when
+//     the reader's position is in this chapter, the region they're in and
+//     the one after it go out as soon as those regions' own paragraphs are
+//     voiced, so music starts while the rest of the chapter is still being
+//     narrated.
+//
+// Both honor store.MusicRegion's own continuation contract: a
+// MusicTransitionContinuation region's immediately preceding region must
+// already have settled (AudioReady or AudioError) or be earlier in the
+// same batch, so its clip exists to seed this one's first chunk from
+// (advanceLiveMusic's own doc comment has its one exception). Both can
+// reach the same region, so generateChapterMusicBatch claims each region
+// in memory before generating it (claimMusicRegion) - a region is only ever
+// generated once, and a batch that finds its next region claimed by the
+// other path stops there and is picked up again when that task finishes.
 //
 // Unlike the LLM kinds (attribution/direction/music-scoring), the actual
 // generation call needs nothing httpapi doesn't already give this package
 // directly - m.tts satisfies musicgen.Backend, and m.store/m.dataDir are
-// this package's own fields - so, unlike EnqueueMusicScoring, this builds
-// and dispatches the whole closure itself with no caller-supplied
-// function required.
+// this package's own fields - so this builds and dispatches the whole
+// closure itself with no caller-supplied function required.
 //
-// Called from three places: httpapi.scoreChapterMusic, after each batch of
-// freshly-scored regions persists (a chapter whose narration is already
-// fully generated before music is ever turned on needs this to kick things
-// off - no future paragraph-completion event will ever fire to do it);
+// Called from: httpapi.scoreChapterMusic, after each batch of freshly-
+// scored regions persists (a chapter already fully narrated before music
+// was turned on has no future paragraph-completion event to kick it off);
 // saveParagraphAudio/handleMergedResult, once a paragraph finishes
-// narrating, in case it was the last one some region needed; and
-// handleResult's own KindMusicGeneration branch, once a chapter's batch
-// finishes, to advance to whatever comes after it. Cheap to over-call: a
-// book with MusicEnabled false (the overwhelming common case) costs one
-// row lookup and returns immediately, and EnqueueMusicGeneration's own
-// dedup means a chapter that already has a batch dispatched or finished is
-// never queued twice.
+// narrating, in case it was the last one some region needed; handleResult,
+// once either music kind's batch finishes, to advance past it; and
+// enqueueLookahead (via advanceChapterMusic, with the reader's exact
+// position). Cheap to over-call: a book with MusicEnabled false (the
+// overwhelming common case) costs one row lookup and returns immediately,
+// and both kinds' own per-chapter dedup keys mean a chapter is never
+// queued twice for the same path.
 func (m *Manager) MaybeAdvanceChapterMusic(bookID, chapterID string) {
-	book, err := m.store.GetBook(bookID)
-	if err != nil || book == nil || !book.MusicEnabled {
+	m.advanceChapterMusic(bookID, chapterID, -1)
+}
+
+// advanceChapterMusic is MaybeAdvanceChapterMusic with an optional
+// explicit reader position: livePos >= 0 is the paragraph idx the reader
+// is at right now in chapterID (enqueueLookahead, which knows it before
+// the book's saved position catches up); -1 falls back to the book's own
+// saved position, if it's in this chapter at all.
+func (m *Manager) advanceChapterMusic(bookID, chapterID string, livePos int) {
+	st, err := m.loadChapterMusic(bookID, chapterID)
+	if err != nil || st == nil || !st.book.MusicEnabled || len(st.regions) == 0 {
 		return
+	}
+	if livePos < 0 && st.book.PosChapterIdx == st.ch.Idx {
+		livePos = st.book.PosParagraphIdx
+	}
+	if livePos >= 0 {
+		m.advanceLiveMusic(bookID, chapterID, st.ch.Idx, st.regions, livePos, st.regionDuration)
+	}
+	if st.allReady {
+		m.advanceWholeChapterMusic(bookID, chapterID, st.ch.Idx, st.regions, st.regionDuration, TierBackground)
+	}
+}
+
+// chapterMusicState is everything both music paths need to decide what's
+// eligible in one chapter - see loadChapterMusic.
+type chapterMusicState struct {
+	book    *store.Book
+	ch      *store.Chapter
+	regions []store.MusicRegion
+	// allReady reports whether every paragraph in the chapter has ready
+	// narration - the whole-chapter path's own gate.
+	allReady bool
+	// regionDuration is a region's narration length, or ok=false if any of
+	// its paragraphs isn't voiced yet (or it points past the chapter's own
+	// paragraphs - stale scoring).
+	regionDuration func(store.MusicRegion) (float64, bool)
+}
+
+// loadChapterMusic gathers chapterMusicState for chapterID, or nil if the
+// book/chapter doesn't exist. Doesn't check store.Book.MusicEnabled -
+// the automatic path does, the explicit GenerateChapterMusic doesn't.
+func (m *Manager) loadChapterMusic(bookID, chapterID string) (*chapterMusicState, error) {
+	book, err := m.store.GetBook(bookID)
+	if err != nil || book == nil {
+		return nil, err
 	}
 	ch, err := m.store.GetChapterByID(chapterID)
 	if err != nil || ch == nil {
-		return
+		return nil, err
 	}
 	regions, err := m.store.ListMusicRegions(chapterID)
-	if err != nil || len(regions) == 0 {
-		return
+	if err != nil {
+		return nil, err
+	}
+	if len(regions) == 0 {
+		// Not scored - nothing either path could do, so skip the
+		// narration-status queries below entirely.
+		return &chapterMusicState{book: book, ch: ch}, nil
 	}
 	paragraphs, err := m.store.ListParagraphsRaw(chapterID)
 	if err != nil {
-		return
+		return nil, err
+	}
+	// Ready narration durations, keyed by paragraph id - under the voice
+	// each paragraph currently resolves to; one status query per distinct
+	// voice (usually one or a handful per chapter). They size each region
+	// below. allReady gates the whole-chapter batch: that one only starts
+	// once the *whole* chapter is voiced, so it never competes with the
+	// chapter's own narration for the GPU (poolSFX and poolGeneration are
+	// mutually exclusive TTS-family pools). The live batch only needs its
+	// own regions' paragraphs.
+	idsByVoice := map[string][]string{}
+	for _, p := range paragraphs {
+		voice, verr := m.narration.ForParagraph(book, p.Speaker)
+		if verr != nil {
+			return nil, verr
+		}
+		idsByVoice[voice.VoiceID()] = append(idsByVoice[voice.VoiceID()], p.ID)
+	}
+	durationByID := make(map[string]float64, len(paragraphs))
+	allReady := true
+	for voiceID, ids := range idsByVoice {
+		states, serr := m.store.ParagraphAudioStatuses(ids, voiceID)
+		if serr != nil {
+			return nil, serr
+		}
+		for _, id := range ids {
+			if st, ok := states[id]; ok && st.Status == store.AudioReady {
+				durationByID[id] = st.DurationSeconds
+			} else {
+				allReady = false
+			}
+		}
 	}
 	byIdx := make(map[int]store.Paragraph, len(paragraphs))
 	for _, p := range paragraphs {
 		byIdx[p.Idx] = p
 	}
+	regionDuration := func(region store.MusicRegion) (float64, bool) {
+		total := 0.0
+		for idx := region.StartIdx; idx <= region.EndIdx; idx++ {
+			p, ok := byIdx[idx]
+			if !ok {
+				return 0, false
+			}
+			d, ok := durationByID[p.ID]
+			if !ok {
+				return 0, false
+			}
+			total += d
+		}
+		return total, true
+	}
+	return &chapterMusicState{book: book, ch: ch, regions: regions, allReady: allReady, regionDuration: regionDuration}, nil
+}
 
-	var batch []pendingMusicRegion
+// ErrChapterNotVoiced/ErrChapterNotScored are GenerateChapterMusic's own
+// "can't yet" answers: a region's clip is sized to its own narration, so
+// music can't generate before the chapter's narration exists, and there
+// are no regions at all before scoring.
+var (
+	ErrChapterNotVoiced = errors.New("chapter narration isn't fully generated yet")
+	ErrChapterNotScored = errors.New("chapter background music hasn't been scored yet")
+)
+
+// GenerateChapterMusic is the explicit, reader-clicked whole-chapter
+// music run (the Speakers page's per-chapter button): unlike the automatic
+// path (MaybeAdvanceChapterMusic), it runs regardless of the book-wide
+// MusicEnabled toggle - the same "always allowed" treatment scoring
+// already gets - and first resets every AudioError region back to pending
+// so a retry actually retries them; the automatic path treats an errored
+// region as settled and never goes back to it. TierNormal, above the
+// automatic path's TierBackground. Returns how many regions it queued (0
+// if every region already has music).
+func (m *Manager) GenerateChapterMusic(bookID, chapterID string) (int, error) {
+	st, err := m.loadChapterMusic(bookID, chapterID)
+	if err != nil {
+		return 0, err
+	}
+	if st == nil {
+		return 0, ErrTaskNotFound
+	}
+	if len(st.regions) == 0 {
+		return 0, ErrChapterNotScored
+	}
+	if !st.allReady {
+		return 0, ErrChapterNotVoiced
+	}
+	for i, r := range st.regions {
+		if r.Status == store.AudioError && !m.musicRegionGenerating(r.ID) {
+			if err := m.store.ResetMusicRegionAudio(r.ID); err != nil {
+				return 0, err
+			}
+			st.regions[i].Status = store.AudioPending
+		}
+	}
+	return m.advanceWholeChapterMusic(bookID, chapterID, st.ch.Idx, st.regions, st.regionDuration, TierNormal), nil
+}
+
+// musicRegionPending reports whether a region still needs generating.
+// "generating" is never written any more (see Manager.musicGenerating) but
+// may still be on a row left over from before that, and means the same
+// thing now: nothing is actually generating it.
+func musicRegionPending(status string) bool {
+	return status == store.AudioPending || status == store.AudioGenerating
+}
+
+// advanceWholeChapterMusic dispatches every currently-eligible region of a
+// fully-voiced chapter as one KindMusicGeneration batch. The scan walks
+// regions in order and stops the moment it hits one it can't safely batch
+// because the region before it neither has settled nor is itself part of
+// this batch - regions further along the chapter can never be eligible
+// before that point either. Everything gathered before that point (zero,
+// one, or several regions) becomes one batch.
+func (m *Manager) advanceWholeChapterMusic(bookID, chapterID string, chapterIdx int, regions []store.MusicRegion, regionDuration func(store.MusicRegion) (float64, bool), tier int) int {
+	batch, initialSeedRegionID := selectWholeChapterMusic(regions, regionDuration, m.musicRegionGenerating)
+	if len(batch) == 0 {
+		return 0
+	}
+	m.enqueueMusicGeneration(bookID, chapterID, chapterIdx, tier, func(ctx context.Context, attempt int) error {
+		return m.generateChapterMusicBatch(ctx, bookID, chapterID, batch, initialSeedRegionID)
+	})
+	return len(batch)
+}
+
+// selectWholeChapterMusic is advanceWholeChapterMusic's own scan, pulled
+// out as a pure function so it's testable without a real Store - generating
+// reports whether a region is claimed right now (Manager.musicRegionGenerating).
+func selectWholeChapterMusic(regions []store.MusicRegion, regionDuration func(store.MusicRegion) (float64, bool), generating func(string) bool) (batch []pendingMusicRegion, initialSeedRegionID string) {
 	// initialSeedRegionID is the batch's own first item's seed, if any -
 	// read from whatever real, already-settled region (from an earlier
 	// batch, or the chapter's own start) immediately precedes it, since
 	// generateChapterMusicBatch's own loop only ever tracks a seed forward
 	// from one batch item to the next and has no earlier history of its
 	// own to fall back on for the very first one.
-	var initialSeedRegionID string
 	lastBatchedIdx := -1
 	for i, region := range regions {
-		if region.Status != store.AudioPending {
+		// A region the live batch is generating right now counts as
+		// unsettled - the scan continues past it only to break on the
+		// region after it, so nothing gets batched behind it until its
+		// own task finishes and re-runs this.
+		if !musicRegionPending(region.Status) || generating(region.ID) {
 			continue
 		}
 		if i > 0 {
 			prev := regions[i-1]
-			settled := prev.Status == store.AudioReady || prev.Status == store.AudioError
+			settled := !musicRegionPending(prev.Status)
 			inThisBatch := lastBatchedIdx == i-1
 			if !settled && !inThisBatch {
-				// Regions dispatch strictly in order - if the one right
-				// before this hasn't settled, and isn't itself queued to
-				// generate earlier in this same batch, neither this one
-				// nor anything further along the chapter is eligible yet.
 				break
 			}
 		}
-
-		total := 0.0
-		ready := true
-		for idx := region.StartIdx; idx <= region.EndIdx; idx++ {
-			p, ok := byIdx[idx]
-			if !ok {
-				ready = false
-				break
-			}
-			voice, verr := m.narration.ForParagraph(book, p.Speaker)
-			if verr != nil {
-				ready = false
-				break
-			}
-			status, dur, derr := m.store.GetParagraphAudioDuration(p.ID, voice.VoiceID())
-			if derr != nil || status != store.AudioReady {
-				ready = false
-				break
-			}
-			total += dur
-		}
-		if !ready {
-			// This region's own narration isn't fully ready yet - nothing
-			// further along the chapter can be either.
+		total, ok := regionDuration(region)
+		if !ok {
+			// Stale scoring (a region pointing past the chapter's own
+			// paragraphs) - nothing further along can be trusted either.
 			break
 		}
-
 		if len(batch) == 0 && region.Transition == store.MusicTransitionContinuation && i > 0 && regions[i-1].Status == store.AudioReady {
 			initialSeedRegionID = regions[i-1].ID
 		}
 		batch = append(batch, pendingMusicRegion{region: region, targetDuration: total})
 		lastBatchedIdx = i
 	}
+	return batch, initialSeedRegionID
+}
+
+// advanceLiveMusic dispatches the region the reader is in (the one whose
+// [StartIdx, EndIdx] contains pos) and the region right after it as one
+// KindMusicLiveGeneration batch, each as soon as its own paragraphs are
+// voiced - not the whole chapter, the way advanceWholeChapterMusic waits
+// for. A "continuation" region still needs its predecessor's clip: the
+// region after the reader's is only batched once the reader's own region
+// has settled or is itself in this batch. The reader's own region is the
+// one exception - if the region before it hasn't been generated at all
+// (the reader jumped straight into the middle of the chapter), it
+// generates unseeded rather than making the reader wait on music for a
+// stretch they've skipped; it only waits if that predecessor is being
+// generated right now, since its clip will exist shortly.
+func (m *Manager) advanceLiveMusic(bookID, chapterID string, chapterIdx int, regions []store.MusicRegion, pos int, regionDuration func(store.MusicRegion) (float64, bool)) {
+	batch, initialSeedRegionID := selectLiveMusic(regions, pos, regionDuration, m.musicRegionGenerating)
 	if len(batch) == 0 {
 		return
 	}
-	m.EnqueueMusicGeneration(bookID, chapterID, ch.Idx, func(ctx context.Context, attempt int) error {
-		return m.generateChapterMusicBatch(ctx, bookID, chapterID, batch, initialSeedRegionID)
+	m.pushTask(&task{
+		kind:       KindMusicLiveGeneration,
+		tier:       TierLookahead,
+		bookID:     bookID,
+		chapterID:  chapterID,
+		chapterIdx: chapterIdx,
+		llmKey:     chapterID,
+		runMusicGen: func(ctx context.Context, attempt int) error {
+			return m.generateChapterMusicBatch(ctx, bookID, chapterID, batch, initialSeedRegionID)
+		},
 	})
+}
+
+// selectLiveMusic is advanceLiveMusic's own scan, pulled out as a pure
+// function for the same reason as selectWholeChapterMusic.
+func selectLiveMusic(regions []store.MusicRegion, pos int, regionDuration func(store.MusicRegion) (float64, bool), generating func(string) bool) (batch []pendingMusicRegion, initialSeedRegionID string) {
+	cur := -1
+	for i, r := range regions {
+		if r.StartIdx <= pos && pos <= r.EndIdx {
+			cur = i
+			break
+		}
+	}
+	if cur < 0 {
+		return nil, ""
+	}
+	lastBatchedIdx := -1
+	for i := cur; i < len(regions) && i <= cur+1; i++ {
+		region := regions[i]
+		if !musicRegionPending(region.Status) || generating(region.ID) {
+			continue
+		}
+		if i > 0 {
+			prev := regions[i-1]
+			inThisBatch := lastBatchedIdx == i-1
+			settled := !musicRegionPending(prev.Status)
+			if !settled && !inThisBatch {
+				if i != cur || generating(prev.ID) {
+					break
+				}
+				// The reader's own region, with a predecessor nobody has
+				// generated - go ahead unseeded (see this function's own
+				// doc comment).
+			}
+			if len(batch) == 0 && region.Transition == store.MusicTransitionContinuation && prev.Status == store.AudioReady {
+				initialSeedRegionID = prev.ID
+			}
+		}
+		total, ok := regionDuration(region)
+		if !ok {
+			break
+		}
+		batch = append(batch, pendingMusicRegion{region: region, targetDuration: total})
+		lastBatchedIdx = i
+	}
+	return batch, initialSeedRegionID
+}
+
+// claimMusicRegion marks id as being generated, reporting false if some
+// other task already has it - the whole-chapter and live batches can both
+// reach the same region, and poolSFX runs several tasks at once.
+func (m *Manager) claimMusicRegion(id string) bool {
+	m.musicGenMu.Lock()
+	if m.musicGenerating[id] {
+		m.musicGenMu.Unlock()
+		return false
+	}
+	if m.musicGenerating == nil {
+		m.musicGenerating = map[string]bool{}
+	}
+	m.musicGenerating[id] = true
+	m.musicGenMu.Unlock()
+	m.notifyChanged()
+	return true
+}
+
+func (m *Manager) releaseMusicRegion(id string) {
+	m.musicGenMu.Lock()
+	delete(m.musicGenerating, id)
+	m.musicGenMu.Unlock()
+	m.notifyChanged()
+}
+
+func (m *Manager) musicRegionGenerating(id string) bool {
+	m.musicGenMu.Lock()
+	defer m.musicGenMu.Unlock()
+	return m.musicGenerating[id]
+}
+
+// MusicRegionGenerating reports whether region id is being generated right
+// now - the in-memory state httpapi overlays onto a region's stored status
+// (which never holds "generating" itself).
+func (m *Manager) MusicRegionGenerating(id string) bool {
+	return m.musicRegionGenerating(id)
 }
 
 // generateChapterMusicBatch is MaybeAdvanceChapterMusic's own dispatched
@@ -3642,13 +4086,32 @@ func (m *Manager) generateChapterMusicBatch(ctx context.Context, bookID, chapter
 		if ctx.Err() != nil {
 			return nil
 		}
+		// The other music kind may have this region right now - stop
+		// here rather than generate what comes after it without its clip
+		// to seed from; that task's own completion re-runs
+		// MaybeAdvanceChapterMusic, which picks up where this left off.
+		if !m.claimMusicRegion(item.region.ID) {
+			return nil
+		}
+		// Re-read now that it's claimed: it may have been generated since
+		// this batch was built.
+		current, gerr := m.store.GetMusicRegion(item.region.ID)
+		if gerr != nil || current == nil || !musicRegionPending(current.Status) {
+			m.releaseMusicRegion(item.region.ID)
+			if current != nil && current.Status == store.AudioReady {
+				prevRegionID = current.ID
+			}
+			continue
+		}
 		var seed []byte
 		if item.region.Transition == store.MusicTransitionContinuation && prevRegionID != "" {
 			if data, rerr := os.ReadFile(audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, prevRegionID)); rerr == nil {
 				seed = data
 			}
 		}
-		if err := m.generateMusicRegionWithRetry(ctx, bookID, chapterID, item.region, item.targetDuration, seed); err != nil {
+		err := m.generateMusicRegionWithRetry(ctx, bookID, chapterID, item.region, item.targetDuration, seed)
+		m.releaseMusicRegion(item.region.ID)
+		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				return nil
 			}
@@ -3717,9 +4180,6 @@ func (m *Manager) generateMusicRegionWithRetry(ctx context.Context, bookID, chap
 // music_regions/audiopath.MusicRegionFile instead of paragraph_audio/
 // audiopath.ParagraphFile).
 func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID string, region store.MusicRegion, targetDuration float64, seed []byte) error {
-	if err := m.store.SetMusicRegionGenerating(region.ID); err != nil {
-		log.Printf("jobs: mark music region %s generating: %v", region.ID, err)
-	}
 	audio, err := musicgen.GenerateRegion(ctx, m.tts, musicgen.Region{
 		Prompt:                region.Prompt,
 		TargetDurationSeconds: targetDuration,
@@ -3847,7 +4307,7 @@ type QueueTask struct {
 	ChapterID    string
 	ChapterIdx   int
 	ParagraphIdx int
-	Tier         int    // TierUrgent (-1), TierLookahead (0), or TierBackground (1)
+	Tier         int    // TierUrgent (-1), TierLookahead (0), TierNormal (1), or TierBackground (2)
 	PresetID     string // "" if this voice is a pure custom instruct with no preset backing it
 	Instruct     string
 	// Attempt counts genuine failures this exact unit of work has already
@@ -3973,15 +4433,7 @@ func deliverCanceled(t *task) {
 // existed).
 func (m *Manager) Cancel(id string) bool {
 	if t, ok := m.queue.Cancel(func(c taskqueue.Task) bool { return c.Key() == id }); ok {
-		bt := t.(*task)
-		m.mu.Lock()
-		m.chapterPending[bt.chapterID]--
-		if m.chapterPending[bt.chapterID] <= 0 {
-			delete(m.chapterPending, bt.chapterID)
-		}
-		m.mu.Unlock()
-		m.notifyChanged()
-		deliverCanceled(bt)
+		m.dropCanceledQueued(t.(*task))
 		return true
 	}
 	// Not queued any more (Cancel above only removes queued work) - if id
@@ -3993,6 +4445,20 @@ func (m *Manager) Cancel(id string) bool {
 		return true
 	}
 	return m.cancelPipelineTask(id)
+}
+
+// dropCanceledQueued does the bookkeeping for bt, a task just removed from
+// m.queue while still queued (taskqueue.Queue.Cancel): chapterPending,
+// a change notification, and delivering a canceled outcome to any waiter.
+func (m *Manager) dropCanceledQueued(bt *task) {
+	m.mu.Lock()
+	m.chapterPending[bt.chapterID]--
+	if m.chapterPending[bt.chapterID] <= 0 {
+		delete(m.chapterPending, bt.chapterID)
+	}
+	m.mu.Unlock()
+	m.notifyChanged()
+	deliverCanceled(bt)
 }
 
 // CancelAll cancels every queued and in-flight task at once, across both
@@ -4078,11 +4544,11 @@ var ErrTierNotMoreUrgent = errors.New("jobs: requested tier is not more urgent t
 // has no reason to duplicate that parsing when trying both in turn is
 // just as cheap and one less thing to keep in sync if either key format
 // ever changes. Returns ErrInvalidTier for a newTier that isn't one of
-// TierUrgent/TierLookahead/TierBackground, ErrTaskNotFound if id matches
+// TierUrgent/TierLookahead/TierNormal/TierBackground, ErrTaskNotFound if id matches
 // nothing in either queue, or ErrTierNotMoreUrgent if it does but newTier
 // isn't actually more urgent than what it already has.
 func (m *Manager) PromoteTier(id string, newTier int) error {
-	if newTier != TierUrgent && newTier != TierLookahead && newTier != TierBackground {
+	if newTier != TierUrgent && newTier != TierLookahead && newTier != TierNormal && newTier != TierBackground {
 		return ErrInvalidTier
 	}
 
@@ -4137,7 +4603,8 @@ func (m *Manager) PromoteTier(id string, newTier int) error {
 // (maxPipelineInFlight is generous, and pipelineTask.Less never
 // distinguishes two phases at all) - the real work a reader actually wants
 // sped up is whatever per-chapter task this phase's own fan-out already
-// dispatched into m.queue (RunAttribution/RunDirection/RunMusicScoring),
+// dispatched into m.queue (RunAttribution/RunDirection/RunMusicScoring/
+// RunScareQuote/RunDescription),
 // which stayed at whatever tier it was dispatched at (see
 // PipelinePhaseFunc's own doc comment on its tier parameter) regardless of
 // a later promotion, without this. Deliberately excludes the
@@ -4156,6 +4623,10 @@ func (m *Manager) cascadePipelinePromotion(bookID string, phase, newTier int) {
 		kind = KindSpeechDirection
 	case pipelinePhaseMusic:
 		kind = KindMusicScoring
+	case pipelinePhaseScareQuote:
+		kind = KindScareQuote
+	case pipelinePhaseDescription:
+		kind = KindDescription
 	default:
 		return
 	}
@@ -4313,7 +4784,7 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 	// KindMusicGeneration is runSFXGen's own exact sibling shape, just
 	// under its own runMusicGen field - see EnqueueMusicGeneration's own
 	// doc comment.
-	if t.kind == KindMusicGeneration {
+	if t.kind == KindMusicGeneration || t.kind == KindMusicLiveGeneration {
 		go func() {
 			err := t.runMusicGen(ctx, t.attempt)
 			ch <- taskResult{err: err}
@@ -4545,7 +5016,7 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		}
 		return
 	}
-	if t.kind == KindMusicGeneration {
+	if t.kind == KindMusicGeneration || t.kind == KindMusicLiveGeneration {
 		if retryEligible(t, result.err) {
 			log.Printf("jobs: music generation task %s failed (attempt %d/%d), retrying via queue: %v", t.dedupKey(), t.attempt+1, maxTaskAttempts, result.err)
 			m.pushTask(t.requeueCopy())

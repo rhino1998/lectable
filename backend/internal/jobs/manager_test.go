@@ -757,6 +757,72 @@ func TestAttributionOrderDependencyBlocksThenClearsOncePreviousChapterAttributed
 	}
 }
 
+// TestScareQuoteDependencyBlocksAttributionAndDescription covers
+// scareQuoteDependency: a chapter's attribution and description tasks both
+// wait on one lazily-created KindScareQuote task for that chapter (shared,
+// not one each), a failed run gets recreated rather than letting them
+// through, and once Passes.ScareQuote is persisted both dispatch without
+// another scare-quote run.
+func TestScareQuoteDependencyBlocksAttributionAndDescription(t *testing.T) {
+	s := openTestStore(t)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "Some narration.")
+
+	calls := 0
+	fail := true
+	mgr := newTestManagerWithStore(s)
+	mgr.scareQuote = func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
+		calls++
+		if fail {
+			return 0, nil, errors.New("sampled a bad response")
+		}
+		return 0, nil, s.SetChapterScareQuoted(ch.ID)
+	}
+
+	attrTask := &task{kind: KindSpeakerAttribution, bookID: book.ID, chapterID: chapterID, tier: TierBackground, llmKey: chapterID}
+	descTask := &task{kind: KindDescription, bookID: book.ID, chapterID: chapterID, tier: TierBackground, llmKey: chapterID}
+	mgr.pushTask(attrTask)
+	mgr.pushTask(descTask)
+
+	runBlocker := func() {
+		t.Helper()
+		got, ok := mgr.queue.Pop()
+		if !ok {
+			t.Fatalf("expected the lazily-created scare-quote task to dispatch")
+		}
+		blocker := got.(*task)
+		if blocker.kind != KindScareQuote || blocker.chapterID != chapterID {
+			t.Fatalf("expected a KindScareQuote task for chapter %q, got kind=%v chapterID=%q", chapterID, blocker.kind, blocker.chapterID)
+		}
+		if _, ok := mgr.queue.Pop(); ok {
+			t.Fatalf("expected attribution/description to stay blocked while scare-quote tagging is in flight")
+		}
+		_, _, _ = blocker.runLLM(t.Context())
+		mgr.queue.Finish(blocker.dedupKey())
+	}
+
+	runBlocker() // fails - Passes.ScareQuote stays unset
+	fail = false
+	runBlocker() // recreated, and succeeds this time
+	if calls != 2 {
+		t.Fatalf("expected exactly two scare-quote runs (one failed, one retried), got %d", calls)
+	}
+
+	dispatched := map[*task]bool{}
+	for range 2 {
+		got, ok := mgr.queue.Pop()
+		if !ok {
+			t.Fatalf("expected attribution and description to dispatch once scare quotes are tagged")
+		}
+		dispatched[got.(*task)] = true
+	}
+	if !dispatched[attrTask] || !dispatched[descTask] {
+		t.Fatalf("expected both the attribution and description tasks to dispatch, got %v", dispatched)
+	}
+	if calls != 2 {
+		t.Fatalf("expected no further scare-quote run once the chapter is tagged, got %d", calls)
+	}
+}
+
 // TestAttributionOrderDependencyJoinsAnAlreadyQueuedTask covers the actual
 // production shape (preprocessAttributionPhase/"Attribute all" pushing
 // every not-yet-attributed chapter's own task at once, before any of them
@@ -1545,8 +1611,19 @@ func TestPauseStopsNewDispatchButNotInFlight(t *testing.T) {
 	// already show up well within this window.
 	time.Sleep(100 * time.Millisecond)
 	inFlight, queued := mgr.Snapshot()
-	if len(inFlight) != 0 {
-		t.Fatalf("expected nothing dispatched while paused, got %d in flight", len(inFlight))
+	// The chapter's own pipeline_generate_chapter row stays in flight
+	// while it waits on its paragraphs (see waitForChapterAudio) - that's
+	// bookkeeping on pipelineQueue, not dispatched paragraph work.
+	generateRow := false
+	for _, qt := range inFlight {
+		if qt.Kind == "pipeline_generate_chapter" {
+			generateRow = true
+			continue
+		}
+		t.Fatalf("expected no paragraph work dispatched while paused, got %s in flight", qt.Kind)
+	}
+	if !generateRow {
+		t.Fatalf("expected the chapter's generate row to stay in flight while its paragraphs wait")
 	}
 	if len(queued) == 0 {
 		t.Fatalf("expected the enqueued paragraphs to still be sitting queued while paused")
@@ -1562,6 +1639,96 @@ func TestPauseStopsNewDispatchButNotInFlight(t *testing.T) {
 		t.Fatalf("BookVoice: %v", err)
 	}
 	waitFor(t, 5*time.Second, func() bool { return allParagraphsReady(t, s, chapterID, bookVoice.VoiceID()) })
+}
+
+// TestGenerateChapterRowLastsUntilAudioDoneAndCancelDropsQueued covers
+// waitForChapterAudio: the pipeline_generate_chapter row stays in flight
+// while its chapter's paragraphs are still queued, and canceling that row
+// removes those still-queued paragraphs rather than leaving them to run.
+func TestGenerateChapterRowLastsUntilAudioDoneAndCancelDropsQueued(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	s := openTestStore(t)
+	mgr := NewManager(s, fake.Manager(), t.TempDir())
+	book, chapterID := createBookAndChapter(t, s, "", 0, "First paragraph.", "Second paragraph.")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	mgr.Start(ctx)
+	mgr.Pause() // keep the paragraphs queued
+
+	mgr.EnqueueChapter(book.ID, chapterID, 0)
+
+	var rowID string
+	waitFor(t, 2*time.Second, func() bool {
+		inFlight, _ := mgr.Snapshot()
+		for _, qt := range inFlight {
+			if qt.Kind == "pipeline_generate_chapter" {
+				rowID = qt.ID
+				return true
+			}
+		}
+		return false
+	})
+	time.Sleep(700 * time.Millisecond) // past waitForChapterAudio's empty-queue grace period
+	if inFlight, _ := mgr.Snapshot(); len(inFlight) == 0 {
+		t.Fatalf("expected the generate row to still be in flight while its paragraphs are queued")
+	}
+
+	if !mgr.Cancel(rowID) {
+		t.Fatalf("Cancel(%q) found nothing", rowID)
+	}
+	waitFor(t, 2*time.Second, func() bool {
+		inFlight, queued := mgr.Snapshot()
+		return len(inFlight) == 0 && len(queued) == 0
+	})
+}
+
+// TestMusicGenerationWaitsForWholeChapterVoiced covers
+// MaybeAdvanceChapterMusic's whole-chapter gate: a region whose own
+// paragraphs are all ready still doesn't generate while any other
+// paragraph in the chapter lacks narration; once the last one is ready,
+// the chapter's music batch is queued.
+func TestMusicGenerationWaitsForWholeChapterVoiced(t *testing.T) {
+	s := openTestStore(t)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "First paragraph.", "Second paragraph.")
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CharacterVoiceMode, false, true); err != nil {
+		t.Fatalf("UpdateVoice(MusicEnabled=true): %v", err)
+	}
+	book, _ = s.GetBook(book.ID)
+	// One region covering only paragraph 0.
+	if _, err := s.AppendMusicRegions(chapterID, []store.MusicRegionInput{{StartIdx: 0, Mood: "calm", Prompt: "calm music"}}, 0); err != nil {
+		t.Fatalf("AppendMusicRegions: %v", err)
+	}
+
+	mgr := newTestManagerWithStore(s)
+	mgr.narration = narration.NewResolver(s)
+	voice, err := mgr.narration.BookVoice(book)
+	if err != nil {
+		t.Fatalf("BookVoice: %v", err)
+	}
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil || len(paragraphs) != 2 {
+		t.Fatalf("ListParagraphsRaw: %v (%d)", err, len(paragraphs))
+	}
+	musicQueued := func() bool {
+		_, ok := mgr.queue.Find(func(c taskqueue.Task) bool { return c.Key() == "music_gen:"+chapterID })
+		return ok
+	}
+
+	if err := s.SetParagraphReady(paragraphs[0].ID, voice.VoiceID(), 2.5); err != nil {
+		t.Fatalf("SetParagraphReady(0): %v", err)
+	}
+	mgr.MaybeAdvanceChapterMusic(book.ID, chapterID)
+	if musicQueued() {
+		t.Fatalf("expected no music generation while paragraph 1 is still unvoiced")
+	}
+
+	if err := s.SetParagraphReady(paragraphs[1].ID, voice.VoiceID(), 3.0); err != nil {
+		t.Fatalf("SetParagraphReady(1): %v", err)
+	}
+	mgr.MaybeAdvanceChapterMusic(book.ID, chapterID)
+	if !musicQueued() {
+		t.Fatalf("expected the chapter's music batch to be queued once every paragraph is voiced")
+	}
 }
 
 // scareQuoteTestBlocks builds a chapter of the shape splitQuoteSegments

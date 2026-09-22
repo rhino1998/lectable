@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 )
@@ -50,23 +51,28 @@ const poolPipeline taskqueue.PoolKey = "pipeline"
 // reason - matching the old bare-goroutine runBookPipeline's own
 // behavior, which had no cap on how many books could run concurrently at
 // all.
-const maxPipelineInFlight = 16
+//
+// The "generate audio" meta-tasks (EnqueueChapter/EnqueueBookGenerate/
+// EnqueueRemaining) share this pool and stay in flight until the paragraph
+// audio they queued has finished (see waitForChapterAudio) - so a reader
+// clicking "generate" on a few dozen chapters holds that many slots for a
+// long time. Sized well above that so those rows can never starve a
+// book's preprocessing phases of a slot; each is just a goroutine blocked
+// on a channel.
+const maxPipelineInFlight = 256
 
-// Book preprocessing runs five phases, three of them chained (see
-// pipelineResolver): attribution before characterization (characterization
-// needs attribution's own discovered characters), characterization before
-// voice provisioning (provisioning needs characterization's own Summary) -
-// the same order (and reasoning) httpapi's old runBookPipeline hardcoded as
-// sequential code blocks joined by sync.WaitGroup, now expressed as a
-// declarative dependency chain instead. Direction tagging and music scoring
-// are the odd ones out: direction tagging needs nothing attribution/
-// characterization/voice-provisioning produce (see httpapi.directChapter -
-// only the book's own already-resolved voice and each paragraph's own
-// IsQuote/Text, neither touched by any of the other three), and music
-// scoring needs nothing at all beyond a chapter's own paragraph text (see
-// httpapi.scoreChapterMusic) - so both have no dependency of their own and
-// dispatch immediately alongside attribution rather than waiting for the
-// other three to clear first - see pipelineResolver's own doc comment.
+// Book preprocessing runs seven phases, related by pipelinePhaseDeps (see
+// pipelineResolver): scare-quote tagging first, then attribution and
+// description tagging (both need scare quotes flagged - the same edge
+// Manager.scareQuoteDependency enforces per chapter), characterization
+// once both of those are done (it reads a character's attributed dialogue
+// and description paragraphs), then voice provisioning (needs
+// characterization's own Summary). Direction tagging and music scoring
+// need nothing any other phase produces (see httpapi.directChapter/
+// scoreChapterMusic - only the book's resolved voice and each paragraph's
+// own IsQuote/Text), so they dispatch immediately alongside scare-quote
+// tagging. The constants' numeric order is just identity, not execution
+// order (new phases are appended rather than renumbering existing ones).
 // pipelinePhaseNames doubles as each phase's own Key() suffix (see
 // pipelineKey) and Snapshot/log display name.
 const (
@@ -75,6 +81,8 @@ const (
 	pipelinePhaseVoiceProvision
 	pipelinePhaseDirection
 	pipelinePhaseMusic
+	pipelinePhaseScareQuote
+	pipelinePhaseDescription
 	pipelinePhaseCount
 )
 
@@ -84,6 +92,36 @@ var pipelinePhaseNames = [pipelinePhaseCount]string{
 	pipelinePhaseVoiceProvision:   "voice_provision",
 	pipelinePhaseDirection:        "direction",
 	pipelinePhaseMusic:            "music",
+	pipelinePhaseScareQuote:       "scare_quote",
+	pipelinePhaseDescription:      "description",
+}
+
+// PipelinePhases is EnqueuePipeline's argument - one PipelinePhaseFunc per
+// phase, indexed by the exported Phase* constants below so a caller builds
+// it as a keyed literal rather than relying on positional order.
+type PipelinePhases = [pipelinePhaseCount]PipelinePhaseFunc
+
+// Exported names for the pipelinePhase* indices, for building a
+// PipelinePhases literal outside this package.
+const (
+	PhaseScareQuote       = pipelinePhaseScareQuote
+	PhaseAttribution      = pipelinePhaseAttribution
+	PhaseDescription      = pipelinePhaseDescription
+	PhaseCharacterization = pipelinePhaseCharacterization
+	PhaseVoiceProvision   = pipelinePhaseVoiceProvision
+	PhaseDirection        = pipelinePhaseDirection
+	PhaseMusic            = pipelinePhaseMusic
+)
+
+// pipelinePhaseDeps lists, per phase, the phases of the same book's run
+// that must finish before it may dispatch - see the pipelinePhase*
+// constants' doc comment for why each edge exists. A phase with no entry
+// dispatches immediately.
+var pipelinePhaseDeps = [pipelinePhaseCount][]int{
+	pipelinePhaseAttribution:      {pipelinePhaseScareQuote},
+	pipelinePhaseDescription:      {pipelinePhaseScareQuote},
+	pipelinePhaseCharacterization: {pipelinePhaseAttribution, pipelinePhaseDescription},
+	pipelinePhaseVoiceProvision:   {pipelinePhaseCharacterization},
 }
 
 // pipelineKindNames is pipelinePhaseNames' own counterpart in this
@@ -100,10 +138,12 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 	pipelinePhaseVoiceProvision:   "pipeline_voice_provision",
 	pipelinePhaseDirection:        "pipeline_direction",
 	pipelinePhaseMusic:            "pipeline_music",
+	pipelinePhaseScareQuote:       "pipeline_scare_quote",
+	pipelinePhaseDescription:      "pipeline_description",
 }
 
 // pipelineTaskKind distinguishes what a pipelineTask actually represents:
-// one of book-preprocessing's own five dependent phases (pipelinePhase*
+// one of book-preprocessing's own dependent phases (pipelinePhase*
 // above - pipelineTaskPreprocessPhase, the zero value, keeps every
 // existing preprocessing call site working unchanged), or one of the
 // three independent "generate audio" meta-tasks below -
@@ -117,7 +157,7 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 // doc comment). A generate meta-task's own run is the same shape as a
 // preprocessing phase's PipelinePhaseFunc (fan out real work, check ctx
 // between units, return once done/canceled) - it just isn't part of the
-// five-phase dependency chain pipelineResolver enforces (see that
+// phase dependency graph pipelineResolver enforces (see that
 // function's own kind check) and must never count toward
 // IsPipelineRunning (see isPipelineRunningLocked's own kind check), which
 // specifically means "book-preprocessing run in progress" (the library
@@ -136,8 +176,8 @@ const (
 
 // PipelinePhaseFunc is one phase's own real work for one book - fan out
 // whatever per-chapter/per-character tasks that phase covers (via
-// RunAttribution/RunCharacterization/RunVoiceProvision/RunDirection/
-// RunMusicScoring) and block until every one of them finishes or ctx is
+// RunScareQuote/RunAttribution/RunDescription/RunCharacterization/
+// RunVoiceProvision/RunDirection/RunMusicScoring) and block until every one of them finishes or ctx is
 // canceled. Supplied by the caller at EnqueuePipeline time (httpapi's own
 // preprocessAttributionPhase/preprocessCharacterizationPhase/
 // preprocessVoiceProvisionPhase/preprocessDirectionPhase/
@@ -343,17 +383,10 @@ func (t *pipelineTask) Promote(newTier int) {
 	}
 }
 
-// pipelineResolver is pipelineQueue's own taskqueue.Resolver - the
-// dependency graph is "phase N for a book can't dispatch until phase N-1
-// for that same book has finished" for attribution/characterization/
-// voice-provisioning, expressed once here instead of as runBookPipeline's
-// old sequential code blocks each joined by its own sync.WaitGroup before
-// the next could even start - except pipelinePhaseDirection and
-// pipelinePhaseMusic, which (like pipelinePhaseAttribution) have no
-// dependency at all: neither needs anything the other three produce, so
-// both are free to dispatch immediately rather than waiting out
-// attribution/characterization/voice-provisioning first (see the
-// pipelinePhase* constants' own doc comment). Never lazily creates a task
+// pipelineResolver is pipelineQueue's own taskqueue.Resolver - a phase
+// can't dispatch until every phase pipelinePhaseDeps lists for it, for
+// that same book, has finished (see the pipelinePhase* constants' own doc
+// comment for the graph). Never lazily creates a task
 // the way Manager.resolveDependencies' own
 // dependency kinds do (characterizationDependency et al.) - every phase
 // for a given run is pushed up front by EnqueuePipeline, so there's
@@ -371,14 +404,14 @@ func pipelineResolver(lq *taskqueue.LockedQueue, tk taskqueue.Task) []taskqueue.
 	if t.kind != pipelineTaskPreprocessPhase {
 		return nil
 	}
-	if t.phase == pipelinePhaseAttribution || t.phase == pipelinePhaseDirection || t.phase == pipelinePhaseMusic {
-		return nil
+	var deps []taskqueue.Task
+	for _, phase := range pipelinePhaseDeps[t.phase] {
+		depKey := pipelineKey(t.bookID, phase)
+		if dep, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == depKey }); ok {
+			deps = append(deps, dep)
+		}
 	}
-	depKey := pipelineKey(t.bookID, t.phase-1)
-	if dep, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == depKey }); ok {
-		return []taskqueue.Task{dep}
-	}
-	return nil
+	return deps
 }
 
 // ErrPipelineAlreadyRunning is EnqueuePipeline's own error when bookID
@@ -387,14 +420,14 @@ func pipelineResolver(lq *taskqueue.LockedQueue, tk taskqueue.Task) []taskqueue.
 // Server.pipelineRunning-based dedup returned.
 var ErrPipelineAlreadyRunning = errors.New("a preprocessing run is already in progress for this book")
 
-// EnqueuePipeline queues bookID's five preprocessing phases (see the
-// pipelinePhase* constants) as five dependent poolPipeline tasks and
+// EnqueuePipeline queues bookID's preprocessing phases (see the
+// pipelinePhase* constants) as dependent poolPipeline tasks and
 // returns immediately - httpapi.handlePreprocessBook's own "run
 // everything" meta-task (POST .../preprocess), reimplemented as real,
 // dependency-ordered tasks instead of one long-lived bare goroutine
 // (runBookPipeline) sequencing four inline code blocks by hand. phases[i]
-// is phase i's own real work (see PipelinePhaseFunc) - httpapi supplies
-// all five at once since it's the only caller with the Store/Speaker
+// is phase i's own real work (see PipelinePhaseFunc; nil skips that
+// phase) - httpapi supplies all of them at once since it's the only caller with the Store/Speaker
 // access any of them need.
 //
 // Returns ErrPipelineAlreadyRunning, pushing nothing, if bookID already
@@ -405,7 +438,7 @@ var ErrPipelineAlreadyRunning = errors.New("a preprocessing run is already in pr
 // namespaces every phase both by bookID and by phase, so two full pushes
 // for the same book landing back to back would otherwise interleave two
 // independent four-phase chains rather than cleanly rejecting the second.
-func (m *Manager) EnqueuePipeline(bookID string, phases [pipelinePhaseCount]PipelinePhaseFunc) error {
+func (m *Manager) EnqueuePipeline(bookID string, phases PipelinePhases) error {
 	m.pipelineMu.Lock()
 	defer m.pipelineMu.Unlock()
 
@@ -413,6 +446,12 @@ func (m *Manager) EnqueuePipeline(bookID string, phases [pipelinePhaseCount]Pipe
 		return ErrPipelineAlreadyRunning
 	}
 	for phase, fn := range phases {
+		if fn == nil {
+			// An omitted phase is simply absent from this run - any phase
+			// depending on it finds nothing to wait on (see
+			// pipelineResolver).
+			continue
+		}
 		m.pipelineQueue.Push(&pipelineTask{
 			bookID: bookID,
 			phase:  phase,
@@ -582,6 +621,7 @@ func (m *Manager) EnqueueChapter(bookID, chapterID string, chapterIdx int) {
 		tier:       TierBackground,
 		run: func(ctx context.Context, _ func() int) error {
 			m.enqueueChapter(ctx, bookID, chapterID, chapterIdx, 0)
+			m.waitForChapterAudio(ctx, map[string]bool{chapterID: true})
 			return nil
 		},
 	})
@@ -616,6 +656,8 @@ func (m *Manager) enqueueBookGenerate(ctx context.Context, bookID string) {
 		log.Printf("jobs: generate book %s: list chapters: %v", bookID, err)
 		return
 	}
+	pushed := make(map[string]bool, len(chapters))
+	defer func() { m.waitForChapterAudio(ctx, pushed) }()
 	for _, cs := range chapters {
 		select {
 		case <-ctx.Done():
@@ -623,6 +665,7 @@ func (m *Manager) enqueueBookGenerate(ctx context.Context, bookID string) {
 		default:
 		}
 		m.enqueueChapter(ctx, bookID, cs.Chapter.ID, cs.Chapter.Idx, 0)
+		pushed[cs.Chapter.ID] = true
 	}
 }
 
@@ -662,6 +705,8 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 
 	fromChapterIdx := book.PosChapterIdx
 	chapterIdx := fromChapterIdx
+	pushed := map[string]bool{}
+	defer func() { m.waitForChapterAudio(ctx, pushed) }()
 	for {
 		select {
 		case <-ctx.Done():
@@ -689,7 +734,65 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 		for _, rp := range resolved {
 			m.pushResolvedTask(bookID, ch.ID, chapterIdx, TierBackground, rp)
 		}
+		pushed[ch.ID] = true
 		chapterIdx++
+	}
+}
+
+// waitForChapterAudio blocks a "generate audio" meta-task (EnqueueChapter/
+// EnqueueBookGenerate/EnqueueRemaining) until no paragraph-audio task
+// (KindVoiceClone/KindVoiceDesign) for any of chapterIDs is queued or in
+// flight any more - so the meta-task's own Jobs-dashboard row, and the
+// frontend's per-chapter "generating" state derived from it
+// (useGeneratingChapters), last as long as the audio it asked for is
+// actually still being produced, rather than vanishing the instant its
+// paragraphs were merely queued (a whole chapter queues in well under a
+// second). Waits on the queue's own change notifications, with a periodic
+// recheck as a backstop.
+//
+// If ctx is canceled first (this row's own Cancel button, CancelAll, or
+// CancelPipeline), every still-queued paragraph-audio task for chapterIDs
+// is removed too - canceling "generate this chapter" means stop generating
+// it, not just stop watching. Already-dispatched paragraphs finish on
+// their own, the same in-flight caveat every other cancel here has.
+func (m *Manager) waitForChapterAudio(ctx context.Context, chapterIDs map[string]bool) {
+	if len(chapterIDs) == 0 {
+		return
+	}
+	isChapterAudio := func(c taskqueue.Task) bool {
+		t, ok := c.(*task)
+		return ok && (t.kind == KindVoiceClone || t.kind == KindVoiceDesign) && chapterIDs[t.chapterID]
+	}
+	changes := m.SubscribeChanges()
+	defer m.UnsubscribeChanges(changes)
+	for {
+		if _, ok := m.queue.Find(isChapterAudio); !ok {
+			// handleResult finishes a failed task before pushing its
+			// retry (see requeueCopy), so an empty moment can be just
+			// the chapter's last paragraph between attempts - only
+			// treat it as done if it's still empty a moment later.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+			if _, ok := m.queue.Find(isChapterAudio); !ok {
+				return
+			}
+		}
+		select {
+		case <-ctx.Done():
+			for {
+				t, ok := m.queue.Cancel(isChapterAudio)
+				if !ok {
+					break
+				}
+				m.dropCanceledQueued(t.(*task))
+			}
+			return
+		case <-changes:
+		case <-time.After(5 * time.Second):
+		}
 	}
 }
 

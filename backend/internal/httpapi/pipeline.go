@@ -76,8 +76,8 @@ func (s *Server) handleGenerateRemaining(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
 }
 
-// handlePreprocessBook kicks off the five-phase preprocessing pipeline for
-// the whole book (see jobs.Manager.EnqueuePipeline) and returns
+// handlePreprocessBook kicks off the preprocessing pipeline for the whole
+// book (see jobs.Manager.EnqueuePipeline) and returns
 // immediately (202) - the same fire-and-forget shape as
 // handleAttributeSpeakers/handleTagDirections, for the same reason: a
 // whole book can take anywhere from minutes to hours to fully attribute/
@@ -96,8 +96,7 @@ func (s *Server) handleGenerateRemaining(w http.ResponseWriter, r *http.Request)
 // running - see jobs.ErrPipelineAlreadyRunning.
 //
 // chapters is listed once here, before any phase is even enqueued, and
-// shared unchanged by preprocessAttributionPhase, preprocessDirectionPhase,
-// and preprocessMusicPhase below (see their own doc comments for why that
+// shared unchanged by every chapter-scoped phase below (see their own doc comments for why that
 // staleness is safe) - mirroring the one piece of shared, hoisted state
 // the old single-goroutine runBookPipeline used to keep across its own
 // four inline phases; a failure listing it aborts the whole preprocessing
@@ -123,12 +122,14 @@ func (s *Server) handlePreprocessBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	phases := [5]jobs.PipelinePhaseFunc{
-		s.preprocessAttributionPhase(book, chapters),
-		s.preprocessCharacterizationPhase(book),
-		s.preprocessVoiceProvisionPhase(book),
-		s.preprocessDirectionPhase(book, chapters),
-		s.preprocessMusicPhase(book, chapters),
+	phases := jobs.PipelinePhases{
+		jobs.PhaseScareQuote:       s.preprocessScareQuotePhase(book, chapters),
+		jobs.PhaseAttribution:      s.preprocessAttributionPhase(book, chapters),
+		jobs.PhaseDescription:      s.preprocessDescriptionPhase(book, chapters),
+		jobs.PhaseCharacterization: s.preprocessCharacterizationPhase(book),
+		jobs.PhaseVoiceProvision:   s.preprocessVoiceProvisionPhase(book),
+		jobs.PhaseDirection:        s.preprocessDirectionPhase(book, chapters),
+		jobs.PhaseMusic:            s.preprocessMusicPhase(book, chapters),
 	}
 	if err := s.Jobs.EnqueuePipeline(book.ID, phases); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -138,8 +139,70 @@ func (s *Server) handlePreprocessBook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
 }
 
-// preprocessAttributionPhase is book preprocessing's Phase 1 (see
-// jobs.PipelinePhaseFunc/jobs.Manager.EnqueuePipeline): speaker attribution
+// preprocessScareQuotePhase is the scare-quote tagging phase - the root of
+// the pipeline's dependency graph (attribution and description tagging
+// both wait on it - see jobs.pipelinePhaseDeps). Runs every one of
+// chapters whose Passes.ScareQuote isn't set yet; chapters' Passes were
+// read before any phase ran, but nothing else sets Passes.ScareQuote, so
+// the check can't go stale in the wrong direction. Same concurrent
+// fan-out/join/best-effort shape as preprocessAttributionPhase.
+func (s *Server) preprocessScareQuotePhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
+	return s.chapterPhase(book, chapters, "scare-quote tagging",
+		func(p store.Passes) bool { return p.ScareQuote },
+		func(ctx context.Context, tier int, ch *store.Chapter) error {
+			_, err := s.Jobs.RunScareQuote(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
+				return s.scareQuoteChapterForJob(ctx, book, ch)
+			})
+			return err
+		})
+}
+
+// preprocessDescriptionPhase is the description tagging phase - waits on
+// scare-quote tagging, runs alongside attribution, and characterization
+// waits on it (jobs.pipelinePhaseDeps). Same skip reasoning as
+// preprocessScareQuotePhase, for Passes.Description.
+func (s *Server) preprocessDescriptionPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
+	return s.chapterPhase(book, chapters, "description tagging",
+		func(p store.Passes) bool { return p.Description },
+		func(ctx context.Context, tier int, ch *store.Chapter) error {
+			_, err := s.Jobs.RunDescription(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
+				return s.describeChapterForJob(ctx, book, ch)
+			})
+			return err
+		})
+}
+
+// chapterPhase is the shared fan-out/join/best-effort body of the
+// per-chapter phases above: one goroutine per chapter whose pass isn't
+// already done, each blocking on run, joined before the phase returns.
+// A chapter's failure is logged and skipped, never aborts the phase.
+func (s *Server) chapterPhase(book *store.Book, chapters []store.ChapterSummary, what string, done func(store.Passes) bool, run func(ctx context.Context, tier int, ch *store.Chapter) error) jobs.PipelinePhaseFunc {
+	return func(ctx context.Context, tier func() int) error {
+		var wg sync.WaitGroup
+		for _, cs := range chapters {
+			if done(cs.Passes) {
+				continue
+			}
+			ch := cs.Chapter
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := run(ctx, tier(), &ch); err != nil {
+					log.Printf("httpapi: preprocess book %s: %s for chapter %d: %v", book.ID, what, ch.Idx, err)
+				}
+			}()
+		}
+		wg.Wait()
+		if ctx.Err() != nil {
+			log.Printf("httpapi: preprocess book %s: canceled during %s", book.ID, what)
+		}
+		return nil
+	}
+}
+
+// preprocessAttributionPhase is book preprocessing's attribution phase
+// (see jobs.PipelinePhaseFunc/jobs.Manager.EnqueuePipeline), which waits on
+// preprocessScareQuotePhase: speaker attribution
 // for every one of chapters that hasn't already finished it -
 // store.Passes.Attribution (chapters.passes) already tells us this
 // directly, without needing attributeChapter's own onlyUnattributed
@@ -236,6 +299,9 @@ func (s *Server) preprocessCharacterizationPhase(book *store.Book) jobs.Pipeline
 		}
 		var wg sync.WaitGroup
 		for _, char := range characters {
+			if char.Invalid {
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -294,6 +360,9 @@ func (s *Server) preprocessVoiceProvisionPhase(book *store.Book) jobs.PipelinePh
 		}
 		var wg sync.WaitGroup
 		for _, char := range characters {
+			if char.Invalid {
+				continue
+			}
 			if presetID, err := s.Store.CharacterVoiceForModel(char.ID, cloneModel); err != nil {
 				log.Printf("httpapi: preprocess book %s: check voice for %q: %v", book.ID, char.Name, err)
 				continue
@@ -330,8 +399,8 @@ func (s *Server) preprocessVoiceProvisionPhase(book *store.Book) jobs.PipelinePh
 // for Phases 1-3 to clear first. chapters' own Passes values were read
 // before any phase ever ran and are otherwise stale by the time this phase
 // actually starts, but that's safe specifically for this check: no other
-// phase ever sets Passes.Direction (Phase 1 only ever sets
-// Passes.Attribution/Passes.Description), so a chapter this condition sees
+// phase ever sets Passes.Direction (each other phase only sets its own
+// pass), so a chapter this condition sees
 // as not-yet-directed genuinely still isn't, regardless of what any other
 // phase did to it in the meantime, running concurrently or not.
 // directChapter's own two Higgs-only sub-passes still silently no-op for

@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -97,6 +98,12 @@ func (s *Server) buildChapterMusic(bookID string, chapterIdx int) (any, error) {
 	}
 	dto := chapterMusicDTO{Enabled: book.MusicEnabled, Scored: ch.Passes.Music, Regions: make([]musicRegionDTO, len(regions))}
 	for i, region := range regions {
+		// "generating" is tracked in memory, never stored (see
+		// jobs.Manager.MusicRegionGenerating) - overlay it here so the
+		// reader still sees which region is being rendered.
+		if s.Jobs.MusicRegionGenerating(region.ID) {
+			region.Status = store.AudioGenerating
+		}
 		dto.Regions[i] = musicRegionDTOFrom(region)
 	}
 	return dto, nil
@@ -152,6 +159,43 @@ func (s *Server) handleScoreChapterMusic(w http.ResponseWriter, r *http.Request)
 		return s.scoreChapterMusic(ctx, book, ch)
 	})
 	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+}
+
+// handleGenerateChapterMusic queues the whole-chapter music run for one
+// chapter right now (jobs.Manager.GenerateChapterMusic) - the Speakers
+// page's per-chapter button. 202 {"queued": n} with how many regions it
+// queued (0 if every region already has music); 409 if the chapter isn't
+// scored or its narration isn't fully generated yet, since each region's
+// clip is sized to its own narration.
+func (s *Server) handleGenerateChapterMusic(w http.ResponseWriter, r *http.Request) {
+	bookID := r.PathValue("id")
+	chapterIdx, err := strconv.Atoi(r.PathValue("idx"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid chapter index")
+		return
+	}
+	ch, err := s.Store.GetChapterByIdx(bookID, chapterIdx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if ch == nil {
+		writeError(w, http.StatusNotFound, "chapter not found")
+		return
+	}
+	queued, err := s.Jobs.GenerateChapterMusic(bookID, ch.ID)
+	switch {
+	case errors.Is(err, jobs.ErrChapterNotScored), errors.Is(err, jobs.ErrChapterNotVoiced):
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case errors.Is(err, jobs.ErrTaskNotFound):
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
 }
 
 // musicTransitionFromString maps a speakerattr.MusicRegionResult's own

@@ -407,6 +407,12 @@ type chapterSummaryDTO struct {
 	// when direction-tagging was tracked per-clone-model); a client reads
 	// passes.attribution/passes.direction directly instead.
 	Passes store.Passes `json:"passes"`
+	// Music* are this chapter's background-music regions: how many were
+	// scored, and how many of those have a ready clip / failed. All 0 for
+	// a chapter that isn't scored.
+	MusicRegionCount int `json:"musicRegionCount"`
+	MusicReadyCount  int `json:"musicReadyCount"`
+	MusicErrorCount  int `json:"musicErrorCount"`
 }
 
 type bookDetailDTO struct {
@@ -431,11 +437,18 @@ func (s *Server) buildBook(id string) (any, error) {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 
+	musicCounts, err := s.Store.MusicRegionCounts(b.ID)
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+
 	dto := bookDetailDTO{bookSummaryDTO: summary}
 	for _, c := range chapters {
+		mc := musicCounts[c.ID]
 		dto.Chapters = append(dto.Chapters, chapterSummaryDTO{
 			Idx: c.Idx, Title: c.Title, ParagraphCount: c.ParagraphCount, ReadyCount: c.ReadyCount,
-			Passes: c.Passes,
+			Passes:           c.Passes,
+			MusicRegionCount: mc.Total, MusicReadyCount: mc.Ready, MusicErrorCount: mc.Error,
 		})
 	}
 	return dto, nil

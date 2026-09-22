@@ -74,9 +74,9 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	// Only books/book show the saved reading position (see
 	// store.PositionTable).
 	h.Register("books", noParams("books", withDeps(narrationDeps, DBDep(store.PositionTable), DepJobs), time.Second, s.buildBooks))
-	h.Register("book", bookTopic("book", withDeps(narrationDeps, DBDep(store.PositionTable), DepJobs), 500*time.Millisecond, s.buildBook))
+	h.Register("book", bookTopic("book", withDeps(narrationDeps, DBDep(store.PositionTable), DBDep("music_regions"), DepJobs), 500*time.Millisecond, s.buildBook))
 	h.Register("chapter", chapterTopic("chapter", withDeps(narrationDeps, DBDep("images"), DBDep("breaks"), DBDep("sfx"), DepJobs), 0, s.buildChapter))
-	h.Register("chapterMusic", chapterTopic("chapterMusic", dbDeps("books", "chapters", "music_regions"), 0, s.buildChapterMusic))
+	h.Register("chapterMusic", chapterTopic("chapterMusic", withDeps(dbDeps("books", "chapters", "music_regions"), DepJobs), 0, s.buildChapterMusic))
 	h.Register("voice", bookTopic("voice", dbDeps("books"), 0, s.buildVoice))
 	h.Register("speakers", bookTopic("speakers", narrationDeps, 2*time.Second, s.buildSpeakers))
 	h.Register("characterAppearances", characterTopic("characterAppearances", narrationDeps, 2*time.Second, s.buildCharacterAppearances))

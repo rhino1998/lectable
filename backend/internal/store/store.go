@@ -211,6 +211,7 @@ CREATE TABLE IF NOT EXISTS characters (
 	summary TEXT NOT NULL DEFAULT '',
 	ref_line TEXT NOT NULL DEFAULT '',
 	is_role BOOLEAN NOT NULL DEFAULT false,
+	invalid BOOLEAN NOT NULL DEFAULT false,
 	created_at BIGINT NOT NULL,
 	UNIQUE(scope, name)
 );
@@ -434,6 +435,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateCharactersInvalid(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := migrateParagraphsScareQuote(db); err != nil {
 		db.Close()
 		return nil, err
@@ -554,6 +559,16 @@ func migrateParagraphAudioPointer(db *sql.DB) error {
 func migrateCharactersIsRole(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS is_role BOOLEAN DEFAULT false`); err != nil {
 		return fmt.Errorf("migrate characters.is_role: %w", err)
+	}
+	return nil
+}
+
+// migrateCharactersInvalid is migrateCharactersIsRole's own shape again,
+// applied to invalid: an already-existing character row predating this
+// column backfills to false (a real speaker), same as a brand-new one.
+func migrateCharactersInvalid(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS invalid BOOLEAN DEFAULT false`); err != nil {
+		return fmt.Errorf("migrate characters.invalid: %w", err)
 	}
 	return nil
 }
@@ -1420,6 +1435,41 @@ func (s *Store) GetMusicRegion(id string) (*MusicRegion, error) {
 	return &r, nil
 }
 
+// MusicRegionCount is one chapter's background-music progress - see
+// MusicRegionCounts.
+type MusicRegionCount struct {
+	Total, Ready, Error int
+}
+
+// MusicRegionCounts returns every scored chapter of bookID's own music
+// region counts, keyed by chapter id - a chapter with no regions (not
+// scored) is simply absent. One grouped query for the whole book, for the
+// Speakers page's chapter table.
+func (s *Store) MusicRegionCounts(bookID string) (map[string]MusicRegionCount, error) {
+	rows, err := s.db.Query(`
+		SELECT r.chapter_id, COUNT(*),
+			COALESCE(SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END), 0)
+		FROM music_regions r
+		JOIN chapters c ON c.id = r.chapter_id
+		WHERE c.book_id = ?
+		GROUP BY r.chapter_id`, AudioReady, AudioError, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]MusicRegionCount{}
+	for rows.Next() {
+		var id string
+		var c MusicRegionCount
+		if err := rows.Scan(&id, &c.Total, &c.Ready, &c.Error); err != nil {
+			return nil, err
+		}
+		out[id] = c
+	}
+	return out, rows.Err()
+}
+
 // SetMusicRegionGenerating/SetMusicRegionReady/SetMusicRegionError are
 // music_regions' own status-transition writes - SetParagraphGenerating/
 // SetParagraphReady/SetParagraphError's own counterparts (upsertSFXStatus
@@ -1475,11 +1525,8 @@ func (s *Store) ResetChapterMusicAudio(chapterID string) ([]MusicRegion, error) 
 	return regions, nil
 }
 
-// SetChapterAttributed marks chapterID's own PassAttribution/PassDescription/
-// PassScareQuote true in one write (a single attributeChapter run always
-// triggers all three together - see Passes.Description/Passes.ScareQuote's
-// own doc comments), leaving PassDirection completely untouched either way.
-// Set by httpapi.attributeChapter once a run finishes covering the whole
+// SetChapterAttributed marks chapterID's own passes.attribution true,
+// leaving every other pass untouched. Set by httpapi.attributeChapter once a run finishes covering the whole
 // chapter in one uninterrupted pass, never on a pause or a genuine failure
 // partway through.
 //
@@ -1494,7 +1541,29 @@ func (s *Store) ResetChapterMusicAudio(chapterID string) ([]MusicRegion, error) 
 // query), so it's inlined directly rather than bound as a parameter.
 func (s *Store) SetChapterAttributed(chapterID string) error {
 	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"attribution": true, "description": true, "scareQuote": true}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_merge_patch(passes, '{"attribution": true}') WHERE id = ?`,
+		chapterID,
+	)
+	return err
+}
+
+// SetChapterScareQuoted marks chapterID's own passes.scareQuote true - set
+// by httpapi.scareQuoteChapterForJob once a scare-quote tagging run
+// completes over the whole chapter. SetChapterAttributed's shape.
+func (s *Store) SetChapterScareQuoted(chapterID string) error {
+	_, err := s.db.Exec(
+		`UPDATE chapters SET passes = json_merge_patch(passes, '{"scareQuote": true}') WHERE id = ?`,
+		chapterID,
+	)
+	return err
+}
+
+// SetChapterDescribed marks chapterID's own passes.description true - set
+// by httpapi.describeChapterForJob once a description tagging run
+// completes over the whole chapter. SetChapterAttributed's shape.
+func (s *Store) SetChapterDescribed(chapterID string) error {
+	_, err := s.db.Exec(
+		`UPDATE chapters SET passes = json_merge_patch(passes, '{"description": true}') WHERE id = ?`,
 		chapterID,
 	)
 	return err
@@ -1684,7 +1753,7 @@ func (s *Store) GetParagraph(id string) (*Paragraph, error) {
 // discovery order. Identity/summary only - see CharacterVoicesForModel for
 // their (per-clone-model) voice assignments.
 func (s *Store) ListCharacters(scope string) ([]Character, error) {
-	rows, err := s.db.Query(`SELECT id, scope, name, summary, ref_line, is_role, created_at FROM characters WHERE scope = ? ORDER BY created_at ASC`, scope)
+	rows, err := s.db.Query(`SELECT id, scope, name, summary, ref_line, is_role, invalid, created_at FROM characters WHERE scope = ? ORDER BY created_at ASC`, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1693,7 +1762,7 @@ func (s *Store) ListCharacters(scope string) ([]Character, error) {
 	var out []Character
 	for rows.Next() {
 		var c Character
-		if err := rows.Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -1705,8 +1774,8 @@ func (s *Store) ListCharacters(scope string) ([]Character, error) {
 // routes, which address a character directly rather than by scope+name).
 func (s *Store) GetCharacter(id string) (*Character, error) {
 	var c Character
-	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, created_at FROM characters WHERE id = ?`, id).
-		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.CreatedAt)
+	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, created_at FROM characters WHERE id = ?`, id).
+		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1718,8 +1787,8 @@ func (s *Store) GetCharacter(id string) (*Character, error) {
 
 func (s *Store) GetCharacterByName(scope, name string) (*Character, error) {
 	var c Character
-	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, created_at FROM characters WHERE scope = ? AND name = ?`, scope, name).
-		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.CreatedAt)
+	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, created_at FROM characters WHERE scope = ? AND name = ?`, scope, name).
+		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1877,6 +1946,14 @@ func (s *Store) SetCharacterVoice(characterID, cloneModel, voicePresetID string)
 // either.
 func (s *Store) SetCharacterSummary(id, summary, refLine string) error {
 	_, err := s.db.Exec(`UPDATE characters SET summary = ?, ref_line = ? WHERE id = ?`, summary, refLine, id)
+	return err
+}
+
+// SetCharacterInvalid marks (or, with false, unmarks) id as invalid - see
+// store.Character.Invalid. Identity/summary/voice assignments are left
+// alone either way, so unmarking restores the character exactly as it was.
+func (s *Store) SetCharacterInvalid(id string, invalid bool) error {
+	_, err := s.db.Exec(`UPDATE characters SET invalid = ? WHERE id = ?`, invalid, id)
 	return err
 }
 
@@ -2649,23 +2726,6 @@ func (s *Store) GetParagraphAudioStatus(paragraphID, voiceID string) (string, er
 		return AudioPending, nil
 	}
 	return status, err
-}
-
-// GetParagraphAudioDuration is GetParagraphAudioStatus's own sibling for
-// jobs.Manager.maybeAdvanceChapterMusic, which needs one paragraph's own
-// real narration duration (not just its status) to size a music region's
-// own target generation length - see store.MusicRegion's own doc comment.
-// A single-row lookup, not the batch ParagraphAudioStatuses above: a
-// region's own paragraph range is checked one at a time as narration
-// completes, not all at once the way a chapter's full audio-status table
-// is rendered.
-func (s *Store) GetParagraphAudioDuration(paragraphID, voiceID string) (status string, durationSeconds float64, err error) {
-	err = s.db.QueryRow(`SELECT status, duration_seconds FROM paragraph_audio WHERE paragraph_id = ? AND voice_id = ?`, paragraphID, voiceID).
-		Scan(&status, &durationSeconds)
-	if err == sql.ErrNoRows {
-		return AudioPending, 0, nil
-	}
-	return status, durationSeconds, err
 }
 
 // ListImages returns a chapter's inline images ordered by their position

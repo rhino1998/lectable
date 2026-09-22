@@ -14,10 +14,12 @@ type queueTaskDTO struct {
 	ID string `json:"id"`
 	// Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
 	// | "voice_provision" | "speaker_attribution" | "speaker_characterization"
-	// | "speech_direction" | "music_scoring" (per-item work, see jobs.Kind) or
-	// "pipeline_attribution" | "pipeline_characterization" |
+	// | "speech_direction" | "music_scoring" | "scare_quote_tagging" |
+	// "description_tagging" (per-item work, see jobs.Kind) or
+	// "pipeline_scare_quote" | "pipeline_attribution" |
+	// "pipeline_description" | "pipeline_characterization" |
 	// "pipeline_voice_provision" | "pipeline_direction" | "pipeline_music"
-	// (one of a book's own five preprocessing phases - see
+	// (one of a book's own preprocessing phases - see
 	// jobs.EnqueuePipeline/toPipelineQueueTask; deliberately "pipeline_"-
 	// prefixed so these can never collide with the per-item kind sharing a
 	// phase's own bare name, e.g. "voice_provision").
@@ -41,7 +43,7 @@ type queueTaskDTO struct {
 	// paragraph-scoped - the frontend should key its display on Kind
 	// rather than assuming every task has a paragraph.
 	ParagraphIdx int    `json:"paragraphIdx"`
-	Tier         string `json:"tier"` // "urgent" | "lookahead" | "background"
+	Tier         string `json:"tier"` // "urgent" | "lookahead" | "normal" | "background"
 	// PresetID/Instruct are "" for a "speaker_attribution" task, and for a
 	// "voice_design" task PresetID alone is "" (a pure custom instruct with
 	// no preset backing it) - the frontend resolves PresetID to a friendly
@@ -111,6 +113,8 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 			tier = "urgent"
 		case jobs.TierLookahead:
 			tier = "lookahead"
+		case jobs.TierNormal:
+			tier = "normal"
 		}
 		return queueTaskDTO{
 			ID:           t.ID,
@@ -159,11 +163,11 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 }
 
 // jobTierRequest is PUT /api/jobs/{id}/tier's own request body - the same
-// three string values queueTaskDTO.Tier already reports (buildJobsSnapshot's
+// four string values queueTaskDTO.Tier already reports (buildJobsSnapshot's
 // own toDTO), so the frontend can round-trip a row's Tier field straight
 // back as a request without a separate encoding to keep in sync.
 type jobTierRequest struct {
-	Tier string `json:"tier"` // "urgent" | "lookahead" | "background"
+	Tier string `json:"tier"` // "urgent" | "lookahead" | "normal" | "background"
 }
 
 // parseTier maps a tier DTO string to its jobs.Tier* int constant - the
@@ -174,6 +178,8 @@ func parseTier(s string) (int, bool) {
 		return jobs.TierUrgent, true
 	case "lookahead":
 		return jobs.TierLookahead, true
+	case "normal":
+		return jobs.TierNormal, true
 	case "background":
 		return jobs.TierBackground, true
 	default:
@@ -198,7 +204,7 @@ func (s *Server) handleSetJobTier(w http.ResponseWriter, r *http.Request) {
 	}
 	tier, ok := parseTier(req.Tier)
 	if !ok {
-		writeError(w, http.StatusBadRequest, `tier must be one of: "urgent", "lookahead", "background"`)
+		writeError(w, http.StatusBadRequest, `tier must be one of: "urgent", "lookahead", "normal", "background"`)
 		return
 	}
 
