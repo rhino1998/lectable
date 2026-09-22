@@ -126,8 +126,8 @@ const ParagraphGroup = memo(function ParagraphGroup({
   // reader actually edits it; sfxBusy/sfxLocalError track onGenerateSFX's
   // own promise, which only covers the enqueue request itself (see
   // useGenerateParagraphSFX's own doc comment) - actual completion is
-  // reflected by segments[0].sfxStatus once the chapter query's poll
-  // catches up, not by this promise settling.
+  // reflected by segments[0].sfxStatus once the chapter topic pushes it,
+  // not by this promise settling.
   const [sfxOpen, setSFXOpen] = useState(false)
   const [sfxDraft, setSFXDraft] = useState<string | undefined>(undefined)
   const [sfxBusy, setSFXBusy] = useState(false)

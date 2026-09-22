@@ -9,7 +9,7 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8080',
         changeOrigin: true,
-        ws: true, // also proxy the /api/books/{id}/ws WebSocket upgrade
+        ws: true, // also proxy the /api/events live-state WebSocket upgrade
       },
     },
   },

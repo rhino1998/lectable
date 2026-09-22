@@ -1,21 +1,13 @@
 import type {
-  Bookmark,
-  BookDetail,
   BookSummary,
-  ChapterDetail,
-  ChapterMusic,
   CustomVoicePreset,
   CustomVoicePresetInput,
-  JobsSnapshot,
   LLMTestOptions,
   Position,
   QueueTask,
   SearchResult,
   SFXTestOptions,
-  Speaker,
-  SpeakerAppearance,
   VoicePreset,
-  VoicePresets,
   VoiceSettings,
 } from './types'
 
@@ -29,11 +21,8 @@ class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // Belt-and-suspenders alongside the backend's own Cache-Control:
-  // no-store (see httpapi.writeJSON) - several of these hit a fixed URL
-  // on a short poll (the Jobs page, a chapter with pending paragraphs),
-  // so a browser serving a cached response instead of actually asking
-  // the network would make a live view look frozen even while the
-  // backend keeps progressing.
+  // no-store (see httpapi.writeJSON) - a browser serving a cached response
+  // instead of actually asking the network would return stale state.
   const res = await fetch(path, { cache: 'no-store', ...init })
   if (!res.ok) {
     let message = `HTTP ${res.status}`
@@ -73,10 +62,6 @@ async function requestBlob(path: string, init: RequestInit): Promise<Blob> {
 }
 
 export const api = {
-  listBooks: () => request<BookSummary[]>('/api/books'),
-
-  getBook: (id: string) => request<BookDetail>(`/api/books/${id}`),
-
   uploadBook: async (file: File): Promise<BookSummary> => {
     const form = new FormData()
     form.append('file', file)
@@ -97,9 +82,6 @@ export const api = {
   // counterpart, see httpapi.handleDeleteChapterAudio/store.DeleteChapterAudio.
   deleteChapterAudio: (bookId: string, chapterIdx: number) =>
     request<{ ok: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/audio`, { method: 'DELETE' }),
-
-  getChapter: (bookId: string, idx: number) =>
-    request<ChapterDetail>(`/api/books/${bookId}/chapters/${idx}`),
 
   generateChapter: (bookId: string, idx: number) =>
     request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${idx}/generate`, { method: 'POST' }),
@@ -174,8 +156,8 @@ export const api = {
   // to regenerate from whatever prompt is already saved. Dispatched
   // through the backend's own pooled job queue (see httpapi.
   // handleGenerateParagraphSFX's own doc comment) - returns 202
-  // immediately, not the finished clip; the chapter query's own poll
-  // (see api/queries.ts) picks up completion.
+  // immediately, not the finished clip; completion arrives on the chapter
+  // topic (sfxStatus - see api/queries.ts).
   generateParagraphSFX: (
     bookId: string,
     chapterIdx: number,
@@ -201,12 +183,6 @@ export const api = {
       json('POST', { chapterIdx, paragraphIdx }),
     ),
 
-  // Background-music regions for one chapter - see backend
-  // httpapi.handleGetChapterMusic. useBackgroundMusic polls this while
-  // playing a chapter with the book's own musicEnabled turned on.
-  getChapterMusic: (bookId: string, chapterIdx: number) =>
-    request<ChapterMusic>(`/api/books/${bookId}/chapters/${chapterIdx}/music`),
-
   // Triggers background-music tone-region scoring for one chapter -
   // attributeSpeakers/tagDirections' own exact fire-and-forget shape, see
   // backend httpapi.handleScoreChapterMusic. Explicit and always allowed
@@ -222,12 +198,8 @@ export const api = {
   regenerateMusicRegion: (regionId: string) =>
     request<{ queued: boolean }>(`/api/music-regions/${regionId}/regenerate`, { method: 'POST' }),
 
-  getVoice: (bookId: string) => request<VoiceSettings>(`/api/books/${bookId}/voice`),
-
   updateVoice: (bookId: string, settings: VoiceSettings) =>
     request<VoiceSettings>(`/api/books/${bookId}/voice`, json('PUT', settings)),
-
-  listSpeakers: (bookId: string) => request<Speaker[]>(`/api/books/${bookId}/speakers`),
 
   // Clears this book's own paragraph attribution and deletes the whole
   // series scope's character roster - identity, voice assignments, and
@@ -243,8 +215,8 @@ export const api = {
   // attribution runs a whole chapter through the LLM in batches and can
   // take minutes, so this no longer blocks on the actual run finishing -
   // see backend jobs.Manager.EnqueueAttribution's own doc comment.
-  // Progress/completion is observed via useAttributingChapters (polls
-  // GET /api/jobs), not this call's own response.
+  // Progress/completion is observed via useAttributingChapters (the live
+  // jobs topic), not this call's own response.
   attributeSpeakers: (bookId: string, chapterIdx: number) =>
     request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/attribute-speakers`, {
       method: 'POST',
@@ -282,8 +254,8 @@ export const api = {
   // can take a long time. 503 if SPEAKER_LLM_MODEL_PATH is unconfigured,
   // 409 if a run is already in progress for this book - see
   // httpapi.handlePreprocessBook. Progress is observable via
-  // BookSummary.preprocessing (see useBooks' own polling) and GET
-  // /api/jobs, same as the individual buttons.
+  // BookSummary.preprocessing (the books topic) and the jobs topic, same
+  // as the individual buttons.
   preprocessBook: (bookId: string) =>
     request<{ queued: boolean }>(`/api/books/${bookId}/preprocess`, { method: 'POST' }),
 
@@ -335,9 +307,9 @@ export const api = {
   // shape as attributeSpeakers/tagDirections (queued here counts chapters
   // dispatched, not paragraphs) - 503 if SPEAKER_LLM_MODEL_PATH is
   // unconfigured, 404 if name isn't "Unknown" and isn't a real character
-  // either. Progress is observable via GET /api/jobs
-  // (kind: 'speaker-reattribute') and by refetching this book's speaker
-  // table once each chapter's task clears. Deliberately doesn't delete
+  // either. Progress is observable via the jobs topic
+  // (kind: 'speaker-reattribute'), and the speakers topic reflects each
+  // chapter's result as its task clears. Deliberately doesn't delete
   // the character's own identity/voice afterward even if it ends up
   // empty - a reader can follow up with deleteCharacter once they see
   // the row is actually empty.
@@ -375,18 +347,6 @@ export const api = {
       json('POST', { characterIds }),
     ),
 
-  characterAppearances: (bookId: string, characterId: string) =>
-    request<SpeakerAppearance[]>(`/api/books/${bookId}/characters/${characterId}/appearances`),
-
-  // Every paragraph tagged as describing this character's physical
-  // appearance or personality (see httpapi.handleCharacterDescriptions) -
-  // characterAppearances' own description-tagging counterpart, same DTO
-  // shape (SpeakerAppearance is reused as-is; a description paragraph just
-  // never has an audioUrl tied to *this* character's own voice, since they
-  // don't speak it - see the backend's own doc comment).
-  characterDescriptions: (bookId: string, characterId: string) =>
-    request<SpeakerAppearance[]>(`/api/books/${bookId}/characters/${characterId}/descriptions`),
-
   // Force re-runs characterization for one character (503 if the backend
   // has no SPEAKER_LLM_MODEL_PATH configured), even if it's already been
   // characterized - unlike attributeSpeakers' own auto-discovery, which
@@ -408,9 +368,8 @@ export const api = {
   // instead of just firing characterizeSpeaker once per character from
   // here (the browser's own per-origin connection cap, plus a page reload
   // before every request even went out, could otherwise silently drop
-  // whichever characters hadn't been dispatched yet). Progress shows up by
-  // refetching this book's speaker table, same as any other
-  // characterization.
+  // whichever characters hadn't been dispatched yet). Progress shows up on
+  // the speakers topic, same as any other characterization.
   characterizeSpeakers: (bookId: string, characterIds: string[]) =>
     request<{ queued: number }>(
       `/api/books/${bookId}/characters/characterize`,
@@ -425,8 +384,6 @@ export const api = {
   searchBook: (bookId: string, q: string) =>
     request<SearchResult[]>(`/api/books/${bookId}/search?q=${encodeURIComponent(q)}`),
 
-  listBookmarks: (bookId: string) => request<Bookmark[]>(`/api/books/${bookId}/bookmarks`),
-
   // Flags (chapterIdx, paragraphIdx) as bookmarked, or updates its note if
   // it already is - see backend Store.UpsertBookmark.
   createBookmark: (bookId: string, chapterIdx: number, paragraphIdx: number, note = '') =>
@@ -436,10 +393,6 @@ export const api = {
     request<{ ok: boolean }>(`/api/bookmarks/${id}`, json('PUT', { note })),
 
   deleteBookmark: (id: string) => request<void>(`/api/bookmarks/${id}`, { method: 'DELETE' }),
-
-  // Live TTS generation queue state - what's dispatched to tts-service
-  // right now vs. still waiting - for the jobs dashboard.
-  jobsSnapshot: () => request<JobsSnapshot>('/api/jobs'),
 
   // Cancels one job-queue task by id (QueueTask.id) - see
   // httpapi.handleCancelJob. encodeURIComponent since an LLM-kind task's id
@@ -475,15 +428,9 @@ export const api = {
   // few seconds.
   restartWorker: () => request<{ restarted: boolean }>('/api/jobs/restart-worker', { method: 'POST' }),
 
-  voicePresets: () => request<VoicePresets>('/api/voices/presets'),
-
   voiceLanguages: () => request<{ languages: string[] }>('/api/voices/languages'),
 
-  getDefaultVoice: () => request<VoiceSettings>('/api/voices/default'),
-
   updateDefaultVoice: (settings: VoiceSettings) => request<VoiceSettings>('/api/voices/default', json('PUT', settings)),
-
-  customVoicePresets: () => request<CustomVoicePreset[]>('/api/voices/custom-presets'),
 
   createCustomVoicePreset: (input: CustomVoicePresetInput) =>
     request<CustomVoicePreset>('/api/voices/custom-presets', json('POST', input)),

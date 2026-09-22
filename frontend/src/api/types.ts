@@ -17,8 +17,8 @@ export interface BookSummary {
   // True while the backend's whole-book preprocess meta-task (attribution
   // -> characterization -> voice provisioning -> direction tagging) is
   // still running for this book - see backend httpapi.isPreprocessing.
-  // useBooks polls while any book has this set so the library page's
-  // spinner clears on its own once the run finishes.
+  // Pushed live on the books topic, so the library page's spinner clears
+  // on its own once the run finishes.
   preprocessing: boolean
   // Reader-facing background-music toggle - book-wide (unlike
   // ChapterSummary.passes.music below, which is chapter-scoped scoring
@@ -116,8 +116,8 @@ export interface Paragraph {
   // backend store.Paragraph.DescribesCharacters. Always empty when
   // isQuote is true.
   describesCharacters?: string[]
-  // Empty until alignment finishes (arrives later via useBookUpdates'
-  // WebSocket push, or already populated on a fresh chapter fetch) -
+  // Empty until alignment finishes (arrives later as a chapter-topic
+  // patch - see api/live.ts) -
   // ParagraphText falls back to estimating word timing from character
   // position until then.
   words: WordTiming[]

@@ -7,10 +7,8 @@ import { LLMPage } from './pages/LLMPage'
 import { SpeakersPage } from './pages/SpeakersPage'
 import { JobsPage } from './pages/JobsPage'
 import { ThemeToggle } from './components/ThemeToggle'
-import { useJobsUpdates } from './hooks/useJobsUpdates'
 
 function RootLayout() {
-  useJobsUpdates()
   return (
     <div className="app-shell-sidebar">
       <nav className="app-sidebar">

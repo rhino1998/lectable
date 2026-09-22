@@ -38,7 +38,6 @@ import { usePlayback } from '../hooks/usePlayback'
 import { useBackgroundMusic } from '../hooks/useBackgroundMusic'
 import { useInView } from '../hooks/useInView'
 import { useClickOutside } from '../hooks/useClickOutside'
-import { useBookUpdates } from '../hooks/useBookUpdates'
 import { useMediaSession } from '../hooks/useMediaSession'
 import { READER_FONT_FAMILIES, useReaderTypography } from '../hooks/useReaderTypography'
 import { PlayerBar } from '../components/PlayerBar'
@@ -82,7 +81,6 @@ export function ReaderPage() {
   const bookQuery = useBook(bookId)
   const updatePosition = useUpdatePosition(bookId)
   const lookahead = useLookahead(bookId)
-  useBookUpdates(bookId)
   const typography = useReaderTypography()
 
   const bookmarksQuery = useBookmarks(bookId)
@@ -114,8 +112,7 @@ export function ReaderPage() {
   // panel drives its busy/error state directly off it - the promise only
   // covers the enqueue request itself (generation is a pooled backend
   // job), so the panel still separately watches sfxStatus for real
-  // completion (see chapterQueryOptions' own tighter poll while it's
-  // 'generating').
+  // completion (pushed on the chapter topic).
   const setSFXPrompt = useSetParagraphSFXPrompt(bookId)
   const generateSFX = useGenerateParagraphSFX(bookId)
   const setSFXPromptAt = useStableCallback((chapterIdx: number, paragraphIdx: number, prompt: string, triggerWord?: number) => {
@@ -151,7 +148,7 @@ export function ReaderPage() {
   // useRetagDescriptions/useRetagScareQuotes are blocking (see SpeakersPage's
   // own retaggingIdx/retaggingScareQuoteIdx doc comment for why) - unlike
   // attributingIdxs/directingIdxs/scoringMusicIdxs/generatingIdxs above,
-  // which are all derived from the shared job-queue poll, "which chapter is
+  // which are all derived from the live job-queue topic, "which chapter is
   // retagging right now" needs its own locally-tracked id per button.
   const [retaggingDescriptionsIdx, setRetaggingDescriptionsIdx] = useState<number | null>(null)
   const [retaggingScareQuotesIdx, setRetaggingScareQuotesIdx] = useState<number | null>(null)
@@ -189,11 +186,9 @@ export function ReaderPage() {
   // Right-click "reassign speaker"/"reassign description" menu (annotations
   // view only) - see openSpeakerMenu/reassignSpeaker/reassignDescription
   // below and their render near the end of this component. speakersQuery
-  // backs the menu's own "reassign to…" list, same query
-  // useSetParagraphSpeaker/useSetParagraphDescription's own onSuccess
-  // invalidates, so a name just typed in via UpsertCharacter (a brand-new
-  // speaker) shows up here next time the menu opens without a separate
-  // fetch.
+  // backs the menu's own "reassign to…" list - a live topic, so a name just
+  // typed in via UpsertCharacter (a brand-new speaker) shows up here next
+  // time the menu opens without a separate fetch.
   const speakersQuery = useSpeakers(bookId)
   const setParagraphSpeaker = useSetParagraphSpeaker(bookId)
   const setParagraphDescription = useSetParagraphDescription(bookId)
@@ -430,10 +425,10 @@ export function ReaderPage() {
 
   // Background-music regions for every currently-loaded chapter - backs
   // annotations view's region boundary markers (ChapterSection.
-  // MusicRegionBoundary). Only actually polled while annotations view is
-  // on (see useChapterMusicRange's own `enabled` doc comment) - otherwise
-  // every loaded chapter would pay for a music-regions fetch a reader who
-  // never opens annotations view will never see. ChapterMusic itself
+  // MusicRegionBoundary). Only actually subscribed while annotations view
+  // is on (see useChapterMusicRange's own `enabled` doc comment) -
+  // otherwise every loaded chapter would pay for a music-regions topic a
+  // reader who never opens annotations view will never see. ChapterMusic itself
   // carries no chapter idx of its own (unlike ChapterDetail), so this maps
   // by the range's own position rather than reading one back off the data.
   const musicResults = useChapterMusicRange(bookId, range?.start ?? 0, range?.end ?? -1, annotationsView)
@@ -633,7 +628,7 @@ export function ReaderPage() {
 
   // Recomputed client-side from the book's chapter/paragraph counts plus
   // live playback position, so it updates in real time as the reader
-  // listens rather than only refreshing when the book query refetches.
+  // listens rather than only when the book topic's saved position changes.
   // Mirrors the backend's toBookSummary calculation exactly.
   const { liveProgressPercent, liveFinished } = useMemo(() => {
     const bookChapters = bookQuery.data?.chapters ?? []

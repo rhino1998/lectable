@@ -101,8 +101,8 @@ export function SpeakersPage() {
   const generateVoices = useGenerateCharacterVoices(bookId)
   const regenerateVoices = useRegenerateCharacterVoices(bookId)
 
-  // Derived from the shared backend job queue (polled), not local mutation
-  // state - attribution is fire-and-forget now (see useAttributingChapters'
+  // Derived from the shared backend job queue (the live jobs topic), not
+  // local mutation state - attribution is fire-and-forget now (see useAttributingChapters'
   // own doc comment), so "is this chapter still attributing" isn't
   // something a mutation's own lifecycle can answer any more.
   const attributingIdxs = useAttributingChapters(bookId)
@@ -138,7 +138,7 @@ export function SpeakersPage() {
   const [retagScareQuoteError, setRetagScareQuoteError] = useState<string | null>(null)
   // The single-row "Regenerate" button is still a genuinely blocking
   // request (useCharacterizeSpeaker), so it tracks its own in-flight
-  // character id locally rather than through the job-queue poll above - a
+  // character id locally rather than through the job-queue topic above - a
   // Set, not a single id, purely so a rapid double-click or two rows
   // regenerating independently don't clobber each other's spinner.
   const [characterizingIds, setCharacterizingIds] = useState<Set<string>>(new Set())
@@ -152,7 +152,7 @@ export function SpeakersPage() {
   // "Auto Split" is fire-and-forget across several per-chapter tasks (see
   // useReattributeSpeaker/useReattributingSpeakers' own doc comments), so
   // "is this speaker's split still running" is tracked through the shared
-  // job-queue poll (by name - Auto Split works on "Unknown" too, which has
+  // job-queue topic (by name - Auto Split works on "Unknown" too, which has
   // no character id to key a local Set on) rather than local mutation
   // state, the same split attributingIdxs/characterizingNames already use
   // for their own fire-and-forget actions.
@@ -177,8 +177,8 @@ export function SpeakersPage() {
   const customs = customPresetsQuery.data ?? []
   const speakers = speakersQuery.data ?? []
 
-  // Derived from the shared backend job queue (polled), not local mutation
-  // state - "Recharacterize all" is fire-and-forget (see
+  // Derived from the shared backend job queue (the live jobs topic), not
+  // local mutation state - "Recharacterize all" is fire-and-forget (see
   // useCharacterizeSpeakers/useCharacterizingCharacters' own doc comments);
   // tracked by character *name* since that's the only identifier a
   // speaker_characterization QueueTask carries. onFinished bumps
@@ -1309,11 +1309,11 @@ function AppearanceRow({
     )
   }
 
-  // Reassigned lines disappear from this list once the appearances query
-  // refetches (they're no longer this character's) - reassigned stays true
-  // in the meantime so a still-visible stale row shows as done rather than
-  // silently reappearing enabled, in the gap between the mutation
-  // resolving and that refetch landing.
+  // Reassigned lines disappear from this list once the appearances topic
+  // pushes the change (they're no longer this character's) - reassigned
+  // stays true in the meantime so a still-visible stale row shows as done
+  // rather than silently reappearing enabled, in the gap between the
+  // mutation resolving and that update landing.
   return (
     <div className="speaker-appearance-item">
       <div className="speaker-appearance-item-main">
@@ -1405,7 +1405,7 @@ function DescriptionRow({
 
   // Same "stays visible as done rather than silently reappearing enabled"
   // reasoning as AppearanceRow's own reassigned flag - this row disappears
-  // from the list once the descriptions query refetches.
+  // from the list once the descriptions topic pushes the change.
   return (
     <div className="speaker-appearance-item">
       <div className="speaker-appearance-item-main">

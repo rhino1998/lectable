@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { RiCloseCircleLine, RiPauseCircleLine, RiPlayCircleLine, RiRefreshLine, RiRestartLine, RiStopCircleLine } from 'react-icons/ri'
+import { RiCloseCircleLine, RiPauseCircleLine, RiPlayCircleLine, RiRestartLine, RiStopCircleLine } from 'react-icons/ri'
 import {
   useCancelAllJobs,
   useCancelJob,
@@ -254,7 +254,8 @@ function TaskTable({
 // clone/design generation and speaker attribution alike, all sorted
 // through one tier-ordered priority queue (see internal/jobs.Kind) - what's
 // actually dispatched to a worker slot right now (at most maxInFlight, see
-// manager.go) vs. everything still waiting, refreshed every 2s. Useful for
+// manager.go) vs. everything still waiting, pushed live as it changes
+// (the jobs topic - see api/live.ts). Useful for
 // seeing whether a big "generate this chapter" job is actually moving, or
 // to check what a burst of lookahead work looks like as you jump around a
 // book.
@@ -394,14 +395,6 @@ export function JobsPage() {
             <RiStopCircleLine />
           </button>
           <button
-            className="icon-action-button"
-            onClick={() => jobsQuery.refetch()}
-            disabled={jobsQuery.isFetching}
-            title="Refresh now"
-          >
-            <RiRefreshLine className={jobsQuery.isFetching ? 'spin' : undefined} />
-          </button>
-          <button
             className="icon-action-button icon-action-button-danger"
             onClick={runRestartWorker}
             disabled={restartWorker.isPending}
@@ -415,7 +408,7 @@ export function JobsPage() {
         Live view of the backend's job queue - voice-clone/design generation, speaker attribution, and
         speaker characterization runs sharing one priority queue, plus each book's own "Preprocess" run
         shown as its four ordered phases - what's actually running right now, and what's waiting.
-        Refreshes automatically every 2s.
+        Updates live as the queue changes.
       </p>
       {paused && (
         <p className="jobs-paused-banner">Paused — no new jobs will be dispatched. Anything already in flight is still running.</p>

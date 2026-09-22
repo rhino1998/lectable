@@ -18,14 +18,30 @@ export PATH=/home/rhino/node-toolchains/v24.21.0/bin:$PATH
 - `src/api/types.ts` — hand-written types mirroring the Go backend's JSON
   DTOs exactly (see `../backend/internal/httpapi/*.go`). Keep these in
   sync by hand if a backend DTO changes shape.
-- `src/api/client.ts` — thin `fetch` wrappers, one per backend endpoint.
-- `src/api/queries.ts` — TanStack Query hooks built on `client.ts`.
-  `useChapter`/`chapterQueryOptions` poll every 1.5s while any paragraph in
-  that chapter is still pending/generating, and stop once everything is
-  settled. `useChapterRange(bookId, start, end)` fetches a contiguous,
-  inclusive range of chapters via `useQueries` — this backs the
-  infinite-scroll reader, which can have several chapters loaded (and
-  polling) at once.
+- `src/api/client.ts` — thin `fetch` wrappers for mutations and the few
+  plain request/response reads (search, voice languages). Server *state*
+  is not fetched here - see `live.ts`.
+- `src/api/live.ts` — the client for the backend's live-state WebSocket
+  (`GET /api/events`, backend `internal/live`). All displayed server state
+  (books, a book, each chapter, chapter music, voice settings, speakers,
+  character appearances/descriptions, bookmarks, the job queue, voice
+  presets, default voice) is a *topic*: subscribing yields a full
+  `snapshot`, then a `patch` (JSON ops, applied with structural sharing -
+  unchanged paragraphs keep object identity, so memoized components don't
+  re-render) whenever the backend's value changes, whatever changed it.
+  One socket per page; subscriptions are ref-counted per (topic, params),
+  linger 5s after the last unmount, and are all resent on reconnect.
+  `useLive(topic, params | null)` / `useLiveMany(topic, paramsList)` return
+  `{data, error, isLoading, isError}` (the subset of TanStack's result
+  shape pages read). There is no polling and no cache invalidation
+  anywhere - a mutation's write is itself what produces the update.
+- `src/api/queries.ts` — hooks over both: `useBooks`/`useChapter`/
+  `useChapterRange`/... are thin `useLive` wrappers (`useChapterRange`
+  backs the infinite-scroll reader, one subscription per loaded chapter);
+  mutations are plain TanStack `useMutation`s with no `onSuccess`
+  invalidation. "Is chapter N still attributing/directing/generating"
+  hooks (`useAttributingChapters` etc.) are pure derivations from the live
+  jobs topic.
 - `src/hooks/usePlayback.ts` — the sequential-chunk audio player. A book
   has one `.wav` per paragraph, not one per chapter; this hook owns a
   single `<audio>` element and advances to the next paragraph's URL on
@@ -38,8 +54,8 @@ export PATH=/home/rhino/node-toolchains/v24.21.0/bin:$PATH
   chapter isn't loaded yet when a chapter ends, it calls `onNeedChapter`
   and parks in a "pending advance" ref until that chapter's data shows up.
   Effects are keyed on the *resolved ready audio URL* (a string), not the
-  whole chapter object, specifically so the 1.5s poll doesn't restart
-  playback on every refetch.
+  whole chapter object, specifically so a live chapter patch (another
+  paragraph finishing) doesn't restart playback.
 - `src/hooks/useSleepTimer.ts` — sleep timer for `PlayerBar`'s
   `SleepTimerButton.tsx`: either a real-wall-clock countdown (5/10/15/30/
   45/60 min, ticks regardless of play/pause, same as e.g. Audible's) that
