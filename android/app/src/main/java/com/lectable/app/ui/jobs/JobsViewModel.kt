@@ -156,5 +156,7 @@ fun kindLabel(kind: String): String = when (kind) {
     "pipeline_generate_chapter" -> "Generate: Chapter"
     "pipeline_generate_book" -> "Generate: All"
     "pipeline_generate_remaining" -> "Generate: Remaining"
+    "speaker-reattribute" -> "Auto Split"
+    "pipeline_auto_split" -> "Auto Split: All Chapters"
     else -> kind
 }
