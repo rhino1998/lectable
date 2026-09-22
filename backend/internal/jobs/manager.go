@@ -2547,10 +2547,100 @@ func (m *Manager) pushDependency(lq *taskqueue.LockedQueue, nt *task) taskqueue.
 		m.notePushed(nt)
 		return nt
 	}
-	if existing, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == nt.Key() }); ok {
+	if existing, ok := lq.Get(nt.Key()); ok {
 		return existing
 	}
 	return nil
+}
+
+// The memo* helpers below wrap every store/disk lookup the dependency
+// resolvers make in taskqueue.LockedQueue.Memo, so each distinct book/
+// chapter/character/preset is looked up once per resolve pass instead of
+// once per queued task - with hundreds of a book's paragraphs queued,
+// that's the difference between a handful of queries and thousands on
+// every single Pop (and every Snapshot/HasHigherPriorityWork), all on the
+// store's one shared DuckDB connection. Errors are memoized alongside the
+// value; every caller already treats a lookup error as "no dependency".
+
+type bookLookup struct {
+	book *store.Book
+	err  error
+}
+
+func (m *Manager) memoBook(lq *taskqueue.LockedQueue, bookID string) (*store.Book, error) {
+	r := lq.Memo("book:"+bookID, func() any {
+		b, err := m.store.GetBook(bookID)
+		return bookLookup{b, err}
+	}).(bookLookup)
+	return r.book, r.err
+}
+
+type chapterLookup struct {
+	ch  *store.Chapter
+	err error
+}
+
+func (m *Manager) memoChapterByID(lq *taskqueue.LockedQueue, chapterID string) (*store.Chapter, error) {
+	r := lq.Memo("chapter:"+chapterID, func() any {
+		ch, err := m.store.GetChapterByID(chapterID)
+		return chapterLookup{ch, err}
+	}).(chapterLookup)
+	return r.ch, r.err
+}
+
+type chapterIdxKey struct {
+	bookID string
+	idx    int
+}
+
+func (m *Manager) memoChapterByIdx(lq *taskqueue.LockedQueue, bookID string, idx int) (*store.Chapter, error) {
+	r := lq.Memo(chapterIdxKey{bookID, idx}, func() any {
+		ch, err := m.store.GetChapterByIdx(bookID, idx)
+		return chapterLookup{ch, err}
+	}).(chapterLookup)
+	return r.ch, r.err
+}
+
+type characterKey struct{ scope, name string }
+
+type characterLookup struct {
+	char *store.Character
+	err  error
+}
+
+func (m *Manager) memoCharacterByName(lq *taskqueue.LockedQueue, scope, name string) (*store.Character, error) {
+	r := lq.Memo(characterKey{scope, name}, func() any {
+		c, err := m.store.GetCharacterByName(scope, name)
+		return characterLookup{c, err}
+	}).(characterLookup)
+	return r.char, r.err
+}
+
+// characterizationTaskByLabel indexes every queued/in-flight
+// KindSpeakerCharacterization task by label, built once per resolve pass -
+// characterizationDependency matches on speaker name rather than an exact
+// Key, so without this each clone task paid a full linear scan of the
+// queue. A characterization task pushed later in the same pass isn't in
+// the index, but a second lookup for that speaker still finds it: it
+// falls through to pushDependency, whose Push dedups on Key and returns
+// the existing task.
+type characterizationIndex struct{}
+
+func characterizationTaskByLabel(lq *taskqueue.LockedQueue, name string) (taskqueue.Task, bool) {
+	idx := lq.Memo(characterizationIndex{}, func() any {
+		byLabel := map[string]taskqueue.Task{}
+		lq.Find(func(c taskqueue.Task) bool {
+			if ct := c.(*task); ct.kind == KindSpeakerCharacterization {
+				if _, ok := byLabel[ct.label]; !ok {
+					byLabel[ct.label] = c
+				}
+			}
+			return false
+		})
+		return byLabel
+	}).(map[string]taskqueue.Task)
+	t, ok := idx[name]
+	return t, ok
 }
 
 // characterizationDependency returns t's own speaker's currently queued
@@ -2583,20 +2673,17 @@ func (m *Manager) characterizationDependency(lq *taskqueue.LockedQueue, t *task)
 	if name == "" || name == "Narrator" {
 		return nil
 	}
-	if found, ok := lq.Find(func(c taskqueue.Task) bool {
-		ct := c.(*task)
-		return ct.kind == KindSpeakerCharacterization && ct.label == name
-	}); ok {
+	if found, ok := characterizationTaskByLabel(lq, name); ok {
 		return found
 	}
 	if m.characterize == nil {
 		return nil
 	}
-	book, err := m.store.GetBook(t.bookID)
+	book, err := m.memoBook(lq, t.bookID)
 	if err != nil || book == nil {
 		return nil
 	}
-	char, err := m.store.GetCharacterByName(store.SeriesScope(book), name)
+	char, err := m.memoCharacterByName(lq, store.SeriesScope(book), name)
 	if err != nil || char == nil {
 		return nil
 	}
@@ -2632,16 +2719,16 @@ func (m *Manager) characterizationDependency(lq *taskqueue.LockedQueue, t *task)
 // changing what a voice sounds like mid-flight.
 func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
 	chapterID := t.chapterID
-	if found, ok := lq.Find(func(c taskqueue.Task) bool {
-		ct := c.(*task)
-		return ct.kind == KindSpeechDirection && ct.chapterID == chapterID
-	}); ok {
+	// Every KindSpeechDirection task is keyed by its own chapterID (see
+	// dedupKey), so an exact-key lookup finds the same task a scan by
+	// kind+chapterID would.
+	if found, ok := lq.Get("direction:" + chapterID); ok {
 		return found
 	}
 	if m.direct == nil {
 		return nil
 	}
-	book, err := m.store.GetBook(t.bookID)
+	book, err := m.memoBook(lq, t.bookID)
 	if err != nil || book == nil {
 		return nil
 	}
@@ -2663,7 +2750,7 @@ func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) 
 	if narration.BookCloneModel(book) != voices.HiggsCloneModel {
 		return nil
 	}
-	ch, err := m.store.GetChapterByID(chapterID)
+	ch, err := m.memoChapterByID(lq, chapterID)
 	if err != nil || ch == nil {
 		return nil
 	}
@@ -2696,18 +2783,17 @@ func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) 
 // dispatched before it finishes would just be deleted again.
 func (m *Manager) pronunciationDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
 	chapterID := t.chapterID
-	key := "pronunciation:" + chapterID
-	if found, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == key }); ok {
+	if found, ok := lq.Get("pronunciation:" + chapterID); ok {
 		return found
 	}
 	if m.pronounce == nil {
 		return nil
 	}
-	book, err := m.store.GetBook(t.bookID)
+	book, err := m.memoBook(lq, t.bookID)
 	if err != nil || book == nil || !book.SpeechDirection {
 		return nil
 	}
-	ch, err := m.store.GetChapterByID(chapterID)
+	ch, err := m.memoChapterByID(lq, chapterID)
 	if err != nil || ch == nil {
 		return nil
 	}
@@ -2745,21 +2831,20 @@ func (m *Manager) pronunciationDependency(lq *taskqueue.LockedQueue, t *task) ta
 // attribution against unflagged scare quotes would bake in wrong speakers.
 func (m *Manager) scareQuoteDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
 	chapterID := t.chapterID
-	key := "scare_quote:" + chapterID
-	if found, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == key }); ok {
+	if found, ok := lq.Get("scare_quote:" + chapterID); ok {
 		return found
 	}
 	if m.scareQuote == nil {
 		return nil
 	}
-	ch, err := m.store.GetChapterByID(chapterID)
+	ch, err := m.memoChapterByID(lq, chapterID)
 	if err != nil || ch == nil {
 		return nil
 	}
 	if ch.Passes.ScareQuote {
 		return nil // already tagged
 	}
-	book, err := m.store.GetBook(t.bookID)
+	book, err := m.memoBook(lq, t.bookID)
 	if err != nil || book == nil {
 		return nil
 	}
@@ -2809,11 +2894,14 @@ func (m *Manager) referenceClipDependency(lq *taskqueue.LockedQueue, t *task) ta
 		// check or render anything for.
 		return nil
 	}
-	if _, err := os.Stat(audiopath.VoicePresetRefFile(m.dataDir, t.presetID)); err == nil {
+	rendered := lq.Memo("refclip:"+t.presetID, func() any {
+		_, err := os.Stat(audiopath.VoicePresetRefFile(m.dataDir, t.presetID))
+		return err == nil
+	}).(bool)
+	if rendered {
 		return nil // already rendered - the overwhelmingly common case
 	}
-	key := "voice_provision:generate:" + t.presetID
-	if found, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == key }); ok {
+	if found, ok := lq.Get("voice_provision:generate:" + t.presetID); ok {
 		return found
 	}
 	// Nobody's rendering it yet - create the task now, carrying everything
@@ -2884,12 +2972,11 @@ func (m *Manager) attributionOrderDependency(lq *taskqueue.LockedQueue, t *task)
 	if prevIdx < 0 {
 		return nil
 	}
-	prevCh, err := m.store.GetChapterByIdx(t.bookID, prevIdx)
+	prevCh, err := m.memoChapterByIdx(lq, t.bookID, prevIdx)
 	if err != nil || prevCh == nil {
 		return nil
 	}
-	key := "attr:" + prevCh.ID
-	if found, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == key }); ok {
+	if found, ok := lq.Get("attr:" + prevCh.ID); ok {
 		return found
 	}
 	if prevCh.Passes.Attribution {
@@ -2898,7 +2985,7 @@ func (m *Manager) attributionOrderDependency(lq *taskqueue.LockedQueue, t *task)
 	if m.attribute == nil {
 		return nil
 	}
-	book, err := m.store.GetBook(t.bookID)
+	book, err := m.memoBook(lq, t.bookID)
 	if err != nil || book == nil {
 		return nil
 	}

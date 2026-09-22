@@ -410,8 +410,7 @@ func pipelineResolver(lq *taskqueue.LockedQueue, tk taskqueue.Task) []taskqueue.
 	}
 	var deps []taskqueue.Task
 	for _, phase := range pipelinePhaseDeps[t.phase] {
-		depKey := pipelineKey(t.bookID, phase)
-		if dep, ok := lq.Find(func(c taskqueue.Task) bool { return c.Key() == depKey }); ok {
+		if dep, ok := lq.Get(pipelineKey(t.bookID, phase)); ok {
 			deps = append(deps, dep)
 		}
 	}

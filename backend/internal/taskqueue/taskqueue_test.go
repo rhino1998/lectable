@@ -602,3 +602,44 @@ func TestAnyEligibleQueuedIgnoresBlockedMatches(t *testing.T) {
 		t.Fatalf("expected the now-unblocked urgent task to count as eligible work")
 	}
 }
+
+// TestMemoIsSharedWithinOnePassAndResetBetweenPasses pins LockedQueue.Memo's
+// scope: every Resolver call within one Pop shares it (so a lookup common
+// to many queued tasks runs once, not once per task), and the next Pop
+// starts fresh (so a value never goes stale across passes).
+func TestMemoIsSharedWithinOnePassAndResetBetweenPasses(t *testing.T) {
+	calls := 0
+	q := NewQueue(func(lq *LockedQueue, _ Task) []Task {
+		lq.Memo("shared", func() any { calls++; return nil })
+		return nil
+	})
+	for _, k := range []string{"a", "b", "c"} {
+		q.Push(newTask(k, "p", 0))
+	}
+	q.Finish(mustPop(t, q).Key())
+	if calls != 1 {
+		t.Fatalf("expected one memoized call across 3 resolved tasks, got %d", calls)
+	}
+	mustPop(t, q)
+	if calls != 2 {
+		t.Fatalf("expected the next pass to recompute, got %d total calls", calls)
+	}
+}
+
+func TestLockedQueueGetFindsQueuedAndInFlight(t *testing.T) {
+	var got []bool
+	q := NewQueue(func(lq *LockedQueue, _ Task) []Task {
+		_, queued := lq.Get("queued")
+		_, inFlight := lq.Get("inflight")
+		_, missing := lq.Get("missing")
+		got = []bool{queued, inFlight, missing}
+		return nil
+	})
+	q.Push(newTask("inflight", "p", 0))
+	mustPop(t, q)
+	q.Push(newTask("queued", "p", 0))
+	q.Snapshot()
+	if !got[0] || !got[1] || got[2] {
+		t.Fatalf("Get(queued, inflight, missing) = %v, want [true true false]", got)
+	}
+}

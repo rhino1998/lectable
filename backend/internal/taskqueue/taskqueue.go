@@ -138,6 +138,45 @@ type LockedQueue struct {
 	// readOnly disables Push (see its own doc comment) - set only by
 	// Snapshot's own read-only computeState pass, never by Pop's.
 	readOnly bool
+	// memo backs Memo - scoped to this one LockedQueue, i.e. one
+	// computeState pass, never shared across passes.
+	memo map[any]any
+}
+
+// Memo returns fn's result for key, calling fn only the first time key is
+// seen during this one resolve pass (a single computeState call - every
+// Resolver call within one Pop/Snapshot/AnyEligibleQueued shares it, and
+// the next pass starts empty). A Resolver runs once per queued task per
+// pass, so any lookup it makes that depends on something coarser than the
+// task itself (its book, its chapter, a disk check keyed by preset) would
+// otherwise repeat once per task - a real, measured stall: several
+// hundred queued paragraphs each re-querying the same book/chapter rows
+// made a single Pop take over a second. Values are only ever as fresh as
+// the start of the pass, which is fine: the whole pass runs under Queue's
+// own lock, and the next Pop recomputes from scratch anyway.
+func (lq *LockedQueue) Memo(key any, fn func() any) any {
+	if v, ok := lq.memo[key]; ok {
+		return v
+	}
+	if lq.memo == nil {
+		lq.memo = make(map[any]any)
+	}
+	v := fn()
+	lq.memo[key] = v
+	return v
+}
+
+// Get returns the task (queued or in flight) whose Key is exactly key - an
+// O(1) lookup, unlike Find's linear scan, for a Resolver that already
+// knows the exact key of the dependency it's looking for.
+func (lq *LockedQueue) Get(key string) (Task, bool) {
+	if e, ok := lq.q.queued[key]; ok {
+		return e.task, true
+	}
+	if t, ok := lq.q.inFlight[key]; ok {
+		return t, true
+	}
+	return nil, false
 }
 
 // Push adds t if its Key isn't already queued or in flight, reporting
@@ -183,7 +222,9 @@ func (lq *LockedQueue) Find(pred func(Task) bool) (Task, bool) { return lq.q.fin
 // dispatch first; every other one then finds that one in flight and
 // correctly waits, without ever depending on a peer that is itself
 // waiting on it.
-func (lq *LockedQueue) FindInFlight(pred func(Task) bool) (Task, bool) { return lq.q.findInFlightLocked(pred) }
+func (lq *LockedQueue) FindInFlight(pred func(Task) bool) (Task, bool) {
+	return lq.q.findInFlightLocked(pred)
+}
 
 // Resolver reports every task t currently depends on - other tasks that
 // must finish before t may dispatch, and whose own urgency t's should be
@@ -207,10 +248,11 @@ func (lq *LockedQueue) FindInFlight(pred func(Task) bool) (Task, bool) { return 
 // harder to reintroduce).
 //
 // Called by Queue with its own internal lock already held, once per task
-// per Pop/computeState pass - keep it cheap, or cache internally, if it
-// does anything like a real store lookup (internal/jobs' own real
-// resolvers do, and are documented as fine given how small this queue
-// gets in practice).
+// per Pop/computeState pass - keep it cheap. A lookup shared by many
+// tasks (their book, their chapter) belongs behind LockedQueue.Memo, and
+// a search for a dependency with a known key behind LockedQueue.Get
+// rather than Find: with hundreds of tasks queued, anything per-task that
+// isn't O(1) runs on every single Pop.
 type Resolver func(lq *LockedQueue, t Task) []Task
 
 // entry is one queued (not yet dispatched) task plus its own insertion
