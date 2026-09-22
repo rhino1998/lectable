@@ -6,7 +6,7 @@ in the audio.cpp repo for the full contract). It embeds audio.cpp
 in-process — no `audiocpp_cli` subprocess, no server — so a loaded model and
 a warm session are reused across calls.
 
-This module lives in the `epub-reader` (lectable) repo but is a self-contained
+This module lives in the `lectable` repo but is a self-contained
 binding for a separate, external project. It's the Go analogue of audio.cpp's
 own `bindings/python`, and is imported by `backend/internal/audioworker`
 (built only into the separate `backend/cmd/ttsworker` binary - see

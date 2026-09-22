@@ -14,7 +14,7 @@ package llamacpp_test
 //	cd /path/to/llama.cpp
 //	cmake -S . -B build -DBUILD_SHARED_LIBS=ON
 //	cmake --build build --target llama
-//	cd /path/to/epub-reader/llamacpp-go
+//	cd /path/to/lectable/llamacpp-go
 //	LLAMACPP_TEST_MODEL=/path/to/qwen2.5-0.5b-instruct-q4_k_m.gguf \
 //	CGO_LDFLAGS="-L/path/to/llama.cpp/build/bin" \
 //	LD_LIBRARY_PATH="/path/to/llama.cpp/build/bin" \

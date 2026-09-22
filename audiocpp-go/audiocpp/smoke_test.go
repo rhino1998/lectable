@@ -13,7 +13,7 @@ package audiocpp_test
 //	cd /path/to/audio.cpp
 //	cmake -S . -B build -DAUDIOCPP_BUILD_C_API=ON
 //	cmake --build build --target audiocpp
-//	cd /path/to/epub-reader/audiocpp-go
+//	cd /path/to/lectable/audiocpp-go
 //	AUDIOCPP_CHECKOUT=/path/to/audio.cpp \
 //	CGO_LDFLAGS="-L/path/to/audio.cpp/build/bin" \
 //	LD_LIBRARY_PATH="/path/to/audio.cpp/build/bin" \
