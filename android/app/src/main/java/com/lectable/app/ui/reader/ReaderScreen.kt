@@ -270,6 +270,17 @@ fun ReaderScreen(
                             leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null) },
                             onClick = { showVoicePicker = true; showMenu = false },
                         )
+                        // Same book-wide toggle as VoicePickerSheet's "Background music" switch,
+                        // surfaced here too so it's one tap away while listening. Leaves the menu
+                        // open - it's a toggle, and the switch shows the new state as it lands.
+                        DropdownMenuItem(
+                            text = { Text("Background music") },
+                            leadingIcon = { Icon(Icons.Filled.MusicNote, contentDescription = null) },
+                            trailingIcon = {
+                                Switch(checked = uiState.musicEnabled, onCheckedChange = viewModel::setMusicEnabled)
+                            },
+                            onClick = { viewModel.setMusicEnabled(!uiState.musicEnabled) },
+                        )
                         DropdownMenuItem(
                             text = { Text("Speakers") },
                             leadingIcon = { Icon(Icons.Filled.RecordVoiceOver, contentDescription = null) },

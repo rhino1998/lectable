@@ -252,7 +252,8 @@ compiled-in default in place if nothing answers in time.
   something's downloaded, "Delete downloaded data"), bookmarks/search
   sheets, and a long-press paragraph menu (regenerate/bookmark/copy/set
   speaker). Book-level
-  settings (Narrator voice, Speakers, offline-download controls) live
+  settings (Narrator voice, a Background music switch - the same toggle
+  `VoicePickerSheet` has, Speakers, offline-download controls) live
   behind one `⋮` overflow menu rather than always-visible icons - occasional
   settings a reader dips into, unlike Play/Pause which stays in the bottom
   `PlaybackBar`. `ReaderViewModel` subscribes to the book, voice,
