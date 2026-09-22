@@ -8,10 +8,11 @@ import {
   useChapterMusicRange,
   useChapterRange,
   useCreateBookmark,
-  useCustomVoicePresets,
   useDeleteBookmark,
   useDeleteChapterAudio,
   useDirectingChapters,
+  usePronouncingChapters,
+  useResolvePronunciation,
   useDescribingChapters,
   useGenerateChapter,
   useGenerateParagraphSFX,
@@ -32,10 +33,9 @@ import {
   useTagDirections,
   useUpdatePosition,
   useVoice,
-  useVoicePresets,
 } from '../api/queries'
 import { ApiError } from '../api/client'
-import { DEFAULT_CLONE_MODEL } from '../components/VoiceEditorForm'
+import { DEFAULT_CLONE_MODEL, HIGGS_CLONE_MODEL } from '../api/types'
 import { usePlayback } from '../hooks/usePlayback'
 import { useBackgroundMusic } from '../hooks/useBackgroundMusic'
 import { useInView } from '../hooks/useInView'
@@ -141,6 +141,8 @@ export function ReaderPage() {
   const retagScareQuotes = useRetagScareQuotes(bookId)
   const tagDirections = useTagDirections(bookId)
   const directingIdxs = useDirectingChapters(bookId)
+  const resolvePronunciation = useResolvePronunciation(bookId)
+  const pronouncingIdxs = usePronouncingChapters(bookId)
   const scoreChapterMusic = useScoreChapterMusic(bookId)
   const scoringMusicIdxs = useScoringMusicChapters(bookId)
   const generateChapter = useGenerateChapter(bookId)
@@ -154,19 +156,13 @@ export function ReaderPage() {
 
   // Mirrors SpeakersPage's own effectiveCloneModel/directionSupported: the
   // chapter-header direction-tagging button is only offered when the
-  // book's resolved voice actually clones through Higgs, the only clone
+  // book's own clone model is Higgs, the only clone
   // model whose tokenizer understands this tag vocabulary - see
   // SpeakersPage's own doc comment on directionSupported for the fuller
   // reasoning (the backend enforces the same check server-side regardless,
   // this is just so the button isn't offered when it can't work).
   const voiceQuery = useVoice(bookId)
-  const builtinPresetsQuery = useVoicePresets()
-  const customPresetsQuery = useCustomVoicePresets()
-  const effectiveCloneModel =
-    builtinPresetsQuery.data?.presets.find((p) => p.id === voiceQuery.data?.presetId)?.cloneModel ??
-    customPresetsQuery.data?.find((p) => p.id === voiceQuery.data?.presetId)?.cloneModel ??
-    DEFAULT_CLONE_MODEL
-  const directionSupported = effectiveCloneModel === DEFAULT_CLONE_MODEL
+  const directionSupported = (voiceQuery.data?.cloneModel || DEFAULT_CLONE_MODEL) === HIGGS_CLONE_MODEL
 
   // Colors narrator/speaker/description segments in the paragraph list
   // instead of leaving that distinction to the speaker-hint badge alone
@@ -365,6 +361,17 @@ export function ReaderPage() {
       })
     },
     [tagDirections],
+  )
+
+  const runResolvePronunciationChapter = useCallback(
+    (idx: number) => {
+      setChapterActionError(null)
+      resolvePronunciation.mutate(idx, {
+        onError: (err) =>
+          setChapterActionError(err instanceof ApiError ? err.message : 'Pronunciation resolution failed'),
+      })
+    },
+    [resolvePronunciation],
   )
 
   const runScoreMusicChapter = useCallback(
@@ -1042,9 +1049,11 @@ export function ReaderPage() {
               chapterRetaggingDescriptions={describingIdxs.has(idx)}
               chapterRetaggingScareQuotes={scareQuotingIdxs.has(idx)}
               chapterDirecting={directingIdxs.has(idx)}
+              chapterPronouncing={pronouncingIdxs.has(idx)}
               chapterScoringMusic={scoringMusicIdxs.has(idx)}
               chapterGenerating={generatingIdxs.has(idx)}
               hasDirection={!!chapterSummary?.passes.direction}
+              hasPronunciation={!!chapterSummary?.passes.pronunciation}
               hasMusic={!!chapterSummary?.passes.music}
               isGenerated={!!chapterSummary && chapterSummary.readyCount >= chapterSummary.paragraphCount}
               directionSupported={directionSupported}
@@ -1059,6 +1068,7 @@ export function ReaderPage() {
               onRetagDescriptions={runRetagDescriptionsChapter}
               onRetagScareQuotes={runRetagScareQuotesChapter}
               onTagDirections={runTagDirectionsChapter}
+              onResolvePronunciation={runResolvePronunciationChapter}
               onScoreMusic={runScoreMusicChapter}
               onGenerate={runGenerateChapter}
               musicRegions={chapterMusicRegions.get(idx) ?? EMPTY_MUSIC_REGIONS}

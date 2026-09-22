@@ -10,11 +10,18 @@ import {
   useVoicePresets,
 } from '../api/queries'
 import { ApiError } from '../api/client'
-import { DEFAULT_CHARACTER_VOICE_MODE } from '../api/types'
+import {
+  CLONE_MODELS,
+  CLONE_MODEL_LABELS,
+  DEFAULT_CHARACTER_VOICE_MODE,
+  DEFAULT_CLONE_MODEL,
+  type CloneModel,
+} from '../api/types'
 
-// Voice *selection* for one book - just a dropdown of built-in and custom
-// voices plus a language, nothing else. Creating/editing custom voices
-// lives on its own page (see VoicesPage), not here. Also hosts the link to
+// Voice *selection* for one book - a dropdown of built-in and custom voices,
+// a language, and the clone model every voice in the book narrates through,
+// nothing else. Creating/editing custom voices lives on its own page (see
+// VoicesPage), not here. Also hosts the link to
 // the Speakers page (character roster/attribution) - moved in here from
 // the reader header since it's a voice-adjacent, occasional-use screen,
 // not something that needs to be one click away from the reading view.
@@ -28,6 +35,7 @@ export function VoicePanel({ bookId }: { bookId: string }) {
 
   const [presetId, setPresetId] = useState('')
   const [language, setLanguage] = useState('Auto')
+  const [cloneModel, setCloneModel] = useState<string>(DEFAULT_CLONE_MODEL)
   const [dirty, setDirty] = useState(false)
   const [deleteAudioError, setDeleteAudioError] = useState<string | null>(null)
 
@@ -36,6 +44,7 @@ export function VoicePanel({ bookId }: { bookId: string }) {
     if (voiceQuery.data && !dirty) {
       setPresetId(voiceQuery.data.presetId)
       setLanguage(voiceQuery.data.language || 'Auto')
+      setCloneModel(voiceQuery.data.cloneModel || DEFAULT_CLONE_MODEL)
     }
   }, [voiceQuery.data, dirty])
 
@@ -44,12 +53,22 @@ export function VoicePanel({ bookId }: { bookId: string }) {
   const languages = languagesQuery.data?.languages ?? ['auto']
 
   const save = () => {
+    // Switching clone model deletes the book's generated audio server-side
+    // (it isn't part of any voice's cache key) - confirm first.
+    if (
+      voiceQuery.data &&
+      cloneModel !== voiceQuery.data.cloneModel &&
+      !confirm('Changing the cloning model deletes all generated audio for this book. Continue?')
+    ) {
+      return
+    }
     const preset = builtins.find((p) => p.id === presetId) ?? customs.find((p) => p.id === presetId)
     updateVoice.mutate(
       {
         presetId,
         instruct: preset?.instruct ?? '',
         language,
+        cloneModel,
         characterVoiceMode: voiceQuery.data?.characterVoiceMode ?? DEFAULT_CHARACTER_VOICE_MODE,
         speechDirection: voiceQuery.data?.speechDirection ?? false,
         musicEnabled: voiceQuery.data?.musicEnabled ?? false,
@@ -113,6 +132,24 @@ export function VoicePanel({ bookId }: { bookId: string }) {
           {languages.map((l) => (
             <option key={l} value={l}>
               {l}
+            </option>
+          ))}
+        </select>
+      </label>
+
+      <label>
+        Cloning model
+        <select
+          value={cloneModel}
+          onChange={(e) => {
+            setDirty(true)
+            setCloneModel(e.target.value)
+          }}
+        >
+          {!CLONE_MODELS.includes(cloneModel as CloneModel) && <option value={cloneModel}>{cloneModel}</option>}
+          {CLONE_MODELS.map((m) => (
+            <option key={m} value={m}>
+              {CLONE_MODEL_LABELS[m]}
             </option>
           ))}
         </select>

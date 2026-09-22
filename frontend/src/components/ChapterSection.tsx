@@ -12,6 +12,7 @@ import {
   RiPlayFill,
   RiPriceTag3Line,
   RiRefreshLine,
+  RiSpeakLine,
   RiUser3Line,
   RiVoiceprintLine,
   RiVolumeUpLine,
@@ -509,12 +510,15 @@ interface ChapterSectionProps {
   chapterRetaggingDescriptions: boolean
   chapterRetaggingScareQuotes: boolean
   chapterDirecting: boolean
+  chapterPronouncing: boolean
   chapterScoringMusic: boolean
   chapterGenerating: boolean
-  // Passes.direction/Passes.music - only used for the direction/music
-  // buttons' own "Tag"/"Re-tag" and "Score"/"Re-score" title wording, the
-  // same way hasAttribution already does for the attribute button.
+  // Passes.direction/Passes.pronunciation/Passes.music - only used for the
+  // direction/pronunciation/music buttons' own "Tag"/"Re-tag"-style title
+  // wording, the same way hasAttribution already does for the attribute
+  // button.
   hasDirection: boolean
+  hasPronunciation: boolean
   hasMusic: boolean
   // c.readyCount >= c.paragraphCount (SpeakersPage's own isGenerated) -
   // only used for the generate button's own title wording.
@@ -549,6 +553,7 @@ interface ChapterSectionProps {
   onRetagDescriptions: (idx: number) => void
   onRetagScareQuotes: (idx: number) => void
   onTagDirections: (idx: number) => void
+  onResolvePronunciation: (idx: number) => void
   onScoreMusic: (idx: number) => void
   onGenerate: (idx: number) => void
   // This chapter's own background-music regions (see backend
@@ -591,9 +596,11 @@ export const ChapterSection = memo(function ChapterSection({
   chapterRetaggingDescriptions,
   chapterRetaggingScareQuotes,
   chapterDirecting,
+  chapterPronouncing,
   chapterScoringMusic,
   chapterGenerating,
   hasDirection,
+  hasPronunciation,
   hasMusic,
   isGenerated,
   directionSupported,
@@ -610,6 +617,7 @@ export const ChapterSection = memo(function ChapterSection({
   onRetagDescriptions,
   onRetagScareQuotes,
   onTagDirections,
+  onResolvePronunciation,
   onScoreMusic,
   onGenerate,
   musicRegions,
@@ -723,6 +731,20 @@ export const ChapterSection = memo(function ChapterSection({
               <RiEmotionLine className={chapterDirecting ? 'spin' : undefined} />
             </button>
           )}
+          <button
+            className="icon-action-button"
+            onClick={() => onResolvePronunciation(idx)}
+            disabled={chapterPronouncing}
+            title={
+              chapterPronouncing
+                ? 'Resolving…'
+                : hasPronunciation
+                  ? 'Re-resolve pronunciation for this chapter (ambiguous abbreviations like "Dr." or "St.")'
+                  : 'Resolve pronunciation for this chapter (ambiguous abbreviations like "Dr." or "St.")'
+            }
+          >
+            <RiSpeakLine className={chapterPronouncing ? 'spin' : undefined} />
+          </button>
           <button
             className="icon-action-button"
             onClick={() => onScoreMusic(idx)}

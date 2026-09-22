@@ -260,6 +260,13 @@ export function useTagDirections(bookId: string) {
   return useMutation({ mutationFn: (chapterIdx: number) => api.tagDirections(bookId, chapterIdx) })
 }
 
+// Same fire-and-forget shape as useTagDirections (see
+// api.resolvePronunciation) - see usePronouncingChapters for tracking the
+// run.
+export function useResolvePronunciation(bookId: string) {
+  return useMutation({ mutationFn: (chapterIdx: number) => api.resolvePronunciation(bookId, chapterIdx) })
+}
+
 // The library page's "Preprocess" button (attribution -> characterization
 // -> voice provisioning -> direction tagging, for the whole book - see
 // api.preprocessBook). BookSummary.preprocessing flips on the books topic
@@ -310,6 +317,11 @@ export function useAttributingChapters(bookId: string): Set<number> {
 // useAttributingChapters' own counterpart for speech-direction tagging.
 export function useDirectingChapters(bookId: string): Set<number> {
   return useChapterIdxSet(bookId, 'speech_direction')
+}
+
+// useAttributingChapters' own counterpart for pronunciation resolution.
+export function usePronouncingChapters(bookId: string): Set<number> {
+  return useChapterIdxSet(bookId, 'pronunciation')
 }
 
 // useAttributingChapters' own counterpart for scare-quote tagging.
@@ -546,15 +558,33 @@ export function useRegenerateCustomVoicePreset() {
 
 export function useTestCustomVoicePreset() {
   return useMutation({
-    mutationFn: ({ id, text, cloneModel }: { id: string; text: string; cloneModel?: string }) =>
-      api.testCustomVoicePreset(id, text, cloneModel),
+    mutationFn: ({
+      id,
+      text,
+      cloneModel,
+      temperature,
+    }: {
+      id: string
+      text: string
+      cloneModel?: string
+      temperature?: number
+    }) => api.testCustomVoicePreset(id, text, cloneModel, temperature),
   })
 }
 
 export function useTestPreset() {
   return useMutation({
-    mutationFn: ({ id, text, cloneModel }: { id: string; text: string; cloneModel?: string }) =>
-      api.testPreset(id, text, cloneModel),
+    mutationFn: ({
+      id,
+      text,
+      cloneModel,
+      temperature,
+    }: {
+      id: string
+      text: string
+      cloneModel?: string
+      temperature?: number
+    }) => api.testPreset(id, text, cloneModel, temperature),
   })
 }
 
@@ -582,13 +612,15 @@ export function useTestVoiceDesign() {
       seed,
       designModel,
       guidanceScale,
+      temperature,
     }: {
       instruct: string
       text: string
       seed?: number
       designModel?: string
       guidanceScale?: number
-    }) => api.testVoiceDesign(instruct, text, seed, designModel, guidanceScale),
+      temperature?: number
+    }) => api.testVoiceDesign(instruct, text, seed, designModel, guidanceScale, temperature),
   })
 }
 

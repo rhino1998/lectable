@@ -25,15 +25,16 @@ import {
 } from '../api/queries'
 import { ApiError } from '../api/client'
 import {
+  CLONE_MODELS,
   CLONE_MODEL_LABELS,
   DEFAULT_CHARACTER_VOICE_MODE,
+  DEFAULT_CLONE_MODEL,
   DEFAULT_DESIGN_MODEL,
   DESIGN_MODEL_LABELS,
-  type CloneModel,
   type CustomVoicePreset,
   type DesignModel,
 } from '../api/types'
-import { DEFAULT_CLONE_MODEL, DEFAULT_REF_TEXT, VoiceEditorForm, randomSeed } from '../components/VoiceEditorForm'
+import { DEFAULT_REF_TEXT, VoiceEditorForm, randomSeed } from '../components/VoiceEditorForm'
 import { withCacheBust } from '../utils/cacheBust'
 
 // "Regenerate" control for a single list row - built-in and custom preset
@@ -182,11 +183,14 @@ export function VoicesPage() {
   const [audioVersion, setAudioVersion] = useState<Record<string, number>>({})
   const bumpAudioVersion = (id: string) => setAudioVersion((v) => ({ ...v, [id]: (v[id] ?? 0) + 1 }))
 
-  const selectDefault = (p: { id: string; instruct: string }) => {
+  const updateDefaults = (patch: { presetId: string; instruct: string } | { cloneModel: string }) => {
+    const current = defaultVoiceQuery.data
     updateDefaultVoice.mutate({
-      presetId: p.id,
-      instruct: p.instruct,
-      language: defaultVoiceQuery.data?.language ?? 'Auto',
+      presetId: current?.presetId ?? '',
+      instruct: current?.instruct ?? '',
+      language: current?.language ?? 'Auto',
+      cloneModel: current?.cloneModel ?? DEFAULT_CLONE_MODEL,
+      ...patch,
       // characterVoiceMode/speechDirection/musicEnabled are per-book
       // settings (see SpeakersPage) - meaningless for "what a freshly
       // uploaded book starts with", so none of them are read by
@@ -197,13 +201,18 @@ export function VoicesPage() {
       musicEnabled: false,
     })
   }
+  const selectDefault = (p: { id: string; instruct: string }) => updateDefaults({ presetId: p.id, instruct: p.instruct })
 
   const [target, setTarget] = useState<FormTarget>(null)
   const [name, setName] = useState('')
   const [instruct, setInstruct] = useState('')
   const [refText, setRefText] = useState('')
   const [speedMultiplier, setSpeedMultiplier] = useState(1)
-  const [cloneModel, setCloneModel] = useState<string>(DEFAULT_CLONE_MODEL)
+  // Preview-only - which clone model "Play test" runs a saved voice
+  // through. Not part of the voice (it has none); starts at the default
+  // clone model new books get.
+  const [previewCloneModel, setPreviewCloneModel] = useState<string | null>(null)
+  const effectivePreviewCloneModel = previewCloneModel ?? defaultVoiceQuery.data?.cloneModel ?? DEFAULT_CLONE_MODEL
   // Which VoiceDesign engine renders the reference clip - always reset to
   // DEFAULT_DESIGN_MODEL for a brand-new voice (openNew) or one derived
   // from an existing preset (openDerive), regardless of what that source
@@ -245,7 +254,6 @@ export function VoicesPage() {
     // design preview and the eventual Create voice call are guaranteed to
     // agree on one - see randomSeed's own comment.
     setSeed(randomSeed())
-    setCloneModel(DEFAULT_CLONE_MODEL)
     setDesignModel(DEFAULT_DESIGN_MODEL)
     setError(null)
     resetTest()
@@ -258,7 +266,6 @@ export function VoicesPage() {
     setRefText(p.refText)
     setSpeedMultiplier(p.speedMultiplier)
     setSeed(p.seed)
-    setCloneModel(p.cloneModel || DEFAULT_CLONE_MODEL)
     setDesignModel(p.designModel || DEFAULT_DESIGN_MODEL)
     setError(null)
     resetTest()
@@ -266,8 +273,8 @@ export function VoicesPage() {
   }
 
   // Starts a new voice pre-filled from an existing preset's recipe (built-in
-  // or custom), keeping the same seed - instruct/refText/seed/cloneModel
-  // together are what a rendered reference clip is deterministic on, so
+  // or custom), keeping the same seed - instruct/refText/seed together
+  // are what a rendered reference clip is deterministic on, so
   // leaving them unchanged is what lets the backend recognize a speed-only
   // derivation and reuse the source's clip instead of paying for a full
   // re-render. Changing the instruct text (a common reason to derive) still
@@ -283,14 +290,12 @@ export function VoicesPage() {
     refText: string
     speedMultiplier: number
     seed: number
-    cloneModel: string
   }) => {
     setName(`${source.name} (derived)`)
     setInstruct(source.instruct)
     setRefText(source.refText)
     setSpeedMultiplier(source.speedMultiplier)
     setSeed(source.seed)
-    setCloneModel(source.cloneModel || DEFAULT_CLONE_MODEL)
     setDesignModel(DEFAULT_DESIGN_MODEL)
     setError(null)
     resetTest()
@@ -300,12 +305,21 @@ export function VoicesPage() {
   // Design-preview guidance_scale override - see VoiceEditorForm's
   // test.guidance. "" = the design engine's own default.
   const [designGuidanceScale, setDesignGuidanceScale] = useState('')
+  // Sampling-temperature override for either test path - see
+  // VoiceEditorForm's test.temperature. "" = the model's own default.
+  const [testTemperature, setTestTemperature] = useState('')
+  const temperatureOverride = testTemperature.trim() ? Number(testTemperature) : undefined
 
   const runTest = () => {
     setTestError(null)
     if (editing) {
       testPreset.mutate(
-        { id: editing.id, text: testText, cloneModel },
+        {
+          id: editing.id,
+          text: testText,
+          cloneModel: effectivePreviewCloneModel,
+          temperature: temperatureOverride,
+        },
         {
           onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
           onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not synthesize test text'),
@@ -318,7 +332,14 @@ export function VoicesPage() {
     // right after, unchanged, reuses this exact clip - see backend
     // voicerefs.DesignConfigHash.
     testDesign.mutate(
-      { instruct, text: refText, seed, designModel, guidanceScale: designGuidanceScale.trim() ? Number(designGuidanceScale) : undefined },
+      {
+        instruct,
+        text: refText,
+        seed,
+        designModel,
+        guidanceScale: designGuidanceScale.trim() ? Number(designGuidanceScale) : undefined,
+        temperature: temperatureOverride,
+      },
       {
         onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
         onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not preview this voice'),
@@ -349,7 +370,6 @@ export function VoicesPage() {
   const renderPreset = (p: CustomVoicePreset) => (
     <li key={p.id}>
       <span>{p.name}</span>
-      <span className="muted voice-model-badge">{CLONE_MODEL_LABELS[p.cloneModel as CloneModel] ?? p.cloneModel}</span>
       <span className="muted voice-model-badge">
         {DESIGN_MODEL_LABELS[(p.designModel || DEFAULT_DESIGN_MODEL) as DesignModel] ?? p.designModel}
       </span>
@@ -386,7 +406,6 @@ export function VoicesPage() {
             refText: p.refText,
             speedMultiplier: p.speedMultiplier,
             seed: p.seed,
-            cloneModel: p.cloneModel,
           })
         }
         title="Derive a new voice"
@@ -406,7 +425,7 @@ export function VoicesPage() {
 
   const save = () => {
     setError(null)
-    const input = { name, instruct, refText, speedMultiplier, seed, cloneModel, designModel }
+    const input = { name, instruct, refText, speedMultiplier, seed, designModel }
     const onError = (err: unknown) => setError(err instanceof ApiError ? err.message : 'Could not save voice')
     if (editing) {
       updatePreset.mutate({ id: editing.id, input }, { onSuccess: () => setTarget(null), onError })
@@ -428,6 +447,26 @@ export function VoicesPage() {
 
       {target === null && (
         <>
+          <label>
+            Default cloning model for new books
+            <select
+              value={defaultVoiceQuery.data?.cloneModel ?? DEFAULT_CLONE_MODEL}
+              onChange={(e) => updateDefaults({ cloneModel: e.target.value })}
+              disabled={!defaultVoiceQuery.data || updateDefaultVoice.isPending}
+            >
+              {CLONE_MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {CLONE_MODEL_LABELS[m]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="muted">
+            Each book picks its own cloning model in its voice settings. This only sets what a newly added
+            book starts with. Voices don't have a cloning model of their own, and previews here use this
+            default.
+          </p>
+
           <h2>Built-in</h2>
           {builtinsQuery.isLoading && <p>Loading…</p>}
           {builtinsQuery.isError && <p className="error-text">Could not load built-in voices.</p>}
@@ -435,7 +474,6 @@ export function VoicesPage() {
             {builtins.map((p) => (
               <li key={p.id}>
                 <span>{p.name}</span>
-                <span className="muted voice-model-badge">{CLONE_MODEL_LABELS[p.cloneModel as CloneModel] ?? p.cloneModel}</span>
                 <span className="muted voice-model-badge">
                   {DESIGN_MODEL_LABELS[(p.designModel || DEFAULT_DESIGN_MODEL) as DesignModel] ?? p.designModel}
                 </span>
@@ -463,7 +501,6 @@ export function VoicesPage() {
                       refText: p.ref_text,
                       speedMultiplier: p.speed_multiplier,
                       seed: p.seed,
-                      cloneModel: p.cloneModel,
                     })
                   }
                   title="Derive a new voice"
@@ -513,8 +550,6 @@ export function VoicesPage() {
           onRefTextChange={setRefText}
           speedMultiplier={speedMultiplier}
           onSpeedChange={setSpeedMultiplier}
-          cloneModel={cloneModel}
-          onCloneModelChange={setCloneModel}
           designModel={designModel}
           onDesignModelChange={setDesignModel}
           currentAudioUrl={editing?.audioUrl}
@@ -533,10 +568,12 @@ export function VoicesPage() {
             disabled: editing ? !testText.trim() : !instruct.trim() || !refText.trim(),
             buttonLabel: editing ? 'Play test' : 'Preview',
             hint: editing
-              ? 'Uses the saved voice, except the cloning model above is applied live - save any other changes first to hear them reflected here.'
+              ? 'Uses the saved voice through the preview cloning model above - save any other changes first to hear them reflected here.'
               : 'Preview renders the reference line above via VoiceDesign directly - no preset saved yet. Creating the voice right after, unchanged, reuses this exact clip instead of rendering again.',
             onRun: runTest,
             guidance: editing ? undefined : { value: designGuidanceScale, onChange: setDesignGuidanceScale },
+            temperature: { value: testTemperature, onChange: setTestTemperature },
+            cloneModel: editing ? { value: effectivePreviewCloneModel, onChange: setPreviewCloneModel } : undefined,
           }}
         />
       )}

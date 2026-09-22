@@ -2,9 +2,11 @@ import type { CSSProperties } from 'react'
 import {
   CLONE_MODELS,
   CLONE_MODEL_LABELS,
+  CLONE_MODEL_TEMPERATURE_DEFAULTS,
   DESIGN_MODELS,
   DESIGN_MODEL_GUIDANCE_DEFAULTS,
   DESIGN_MODEL_LABELS,
+  DESIGN_MODEL_TEMPERATURE_DEFAULTS,
   DEFAULT_DESIGN_MODEL,
   type CloneModel,
   type DesignModel,
@@ -25,10 +27,6 @@ export const DEFAULT_REF_TEXT =
 export const SPEED_MIN = 0.5
 export const SPEED_MAX = 4
 export const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4]
-
-// Kept identical to the backend's httpapi.DefaultCloneModel - what a
-// fresh voice starts with before the user picks otherwise.
-export const DEFAULT_CLONE_MODEL: CloneModel = 'audiocpp-higgs-4b'
 
 // A positive 31-bit seed, same shape as the backend's own store.RandomSeed
 // (doesn't need to match bit-for-bit, just "some positive int"). A brand
@@ -62,8 +60,6 @@ export function VoiceEditorForm({
   onRefTextChange,
   speedMultiplier,
   onSpeedChange,
-  cloneModel,
-  onCloneModelChange,
   designModel,
   onDesignModelChange,
   currentAudioUrl,
@@ -83,11 +79,9 @@ export function VoiceEditorForm({
   onRefTextChange: (v: string) => void
   speedMultiplier: number
   onSpeedChange: (v: number) => void
-  cloneModel: string
-  onCloneModelChange: (v: string) => void
-  // Which VoiceDesign engine renders this voice's reference clip - a
-  // separate concern from cloneModel above, which is what clones
-  // per-paragraph audio from that already-rendered clip.
+  // Which VoiceDesign engine renders this voice's reference clip. A voice
+  // has no clone model of its own - that's each book's choice
+  // (VoiceSettings.cloneModel).
   designModel: string
   onDesignModelChange: (v: string) => void
   // Shown as "Current reference clip" when set - only a preset being
@@ -117,9 +111,30 @@ export function VoiceEditorForm({
       value: string
       onChange: (v: string) => void
     }
+    // Set only while the test clones from an already-rendered reference
+    // clip (a saved voice) - which clone model this preview runs through.
+    // Not part of the voice itself (a voice has no clone model - each book
+    // picks its own), so it lives down here with the test controls, below
+    // Save, rather than among the recipe fields above.
+    cloneModel?: {
+      value: string
+      onChange: (v: string) => void
+    }
+    // A one-off sampling-temperature override for this test, "" for the
+    // model's own default - applied to whichever model the test runs
+    // through: cloneModel above when set (a saved voice), otherwise the
+    // design model (a preview of an unsaved one). Hidden for a model with
+    // no temperature option at all.
+    temperature?: {
+      value: string
+      onChange: (v: string) => void
+    }
   }
 }) {
   const guidanceDefault = DESIGN_MODEL_GUIDANCE_DEFAULTS[(designModel || DEFAULT_DESIGN_MODEL) as DesignModel]
+  const temperatureDefault = test.cloneModel
+    ? CLONE_MODEL_TEMPERATURE_DEFAULTS[test.cloneModel.value as CloneModel]
+    : DESIGN_MODEL_TEMPERATURE_DEFAULTS[(designModel || DEFAULT_DESIGN_MODEL) as DesignModel]
 
   return (
     <div className="custom-voice-form">
@@ -190,16 +205,6 @@ export function VoiceEditorForm({
         </div>
       </label>
       <label>
-        Cloning model
-        <select value={cloneModel} onChange={(e) => onCloneModelChange(e.target.value)}>
-          {CLONE_MODELS.map((b) => (
-            <option key={b} value={b}>
-              {CLONE_MODEL_LABELS[b]}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
         Design model
         <select value={designModel || DEFAULT_DESIGN_MODEL} onChange={(e) => onDesignModelChange(e.target.value)}>
           {DESIGN_MODELS.map((b) => (
@@ -247,6 +252,37 @@ export function VoiceEditorForm({
               the description, lower values sound more natural but drift from it. Applies to this preview
               only: a preview with a custom value is never reused on save, which renders the reference clip
               at the model's default.
+            </p>
+          </>
+        )}
+        {test.cloneModel && (
+          <label>
+            Preview cloning model
+            <select value={test.cloneModel.value} onChange={(e) => test.cloneModel?.onChange(e.target.value)}>
+              {CLONE_MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {CLONE_MODEL_LABELS[m]}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {test.temperature && temperatureDefault !== undefined && (
+          <>
+            <label>
+              Temperature
+              <input
+                type="number"
+                min={0.05}
+                step={0.05}
+                placeholder={`default (${temperatureDefault})`}
+                value={test.temperature.value}
+                onChange={(e) => test.temperature?.onChange(e.target.value)}
+              />
+            </label>
+            <p className="muted">
+              How much randomness the model samples with - lower is steadier and more monotone, higher is more
+              expressive but more prone to glitches. Applies to this test only.
             </p>
           </>
         )}

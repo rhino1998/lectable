@@ -93,7 +93,7 @@ function BookCard({
           )}
           {book.finished && <span className="book-finished-badge">Finished</span>}
           {book.preprocessing && (
-            <div className="book-cover-processing" title="Preprocessing: attributing speakers, characterizing, provisioning voices, tagging directions…">
+            <div className="book-cover-processing" title="Preprocessing: attributing speakers, characterizing, provisioning voices, tagging directions, resolving pronunciation…">
               <RiLoader4Line className="spin" />
             </div>
           )}
@@ -131,7 +131,7 @@ function BookCard({
       </Link>
       <button
         className="icon-button icon-button-preprocess"
-        title="Preprocess: attribute speakers, characterize, provision voices, and tag directions for the whole book"
+        title="Preprocess: attribute speakers, characterize, provision voices, tag directions, and resolve pronunciation for the whole book"
         onClick={handlePreprocess}
         disabled={book.preprocessing || preprocessBook.isPending}
       >

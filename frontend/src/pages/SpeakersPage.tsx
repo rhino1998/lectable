@@ -7,6 +7,7 @@ import {
   RiDiscLine,
   RiDoubleQuotesL,
   RiEmotionLine,
+  RiSpeakLine,
   RiEqualizerLine,
   RiForbidLine,
   RiGitMergeLine,
@@ -35,6 +36,8 @@ import {
   useDeleteSpeakerData,
   useDescribingChapters,
   useDirectingChapters,
+  usePronouncingChapters,
+  useResolvePronunciation,
   useGenerateChapter,
   useGenerateChapterMusic,
   useGenerateCharacterVoice,
@@ -67,7 +70,7 @@ import {
   useVoicePresets,
 } from '../api/queries'
 import { ApiError } from '../api/client'
-import { DEFAULT_CLONE_MODEL, DEFAULT_REF_TEXT, VoiceEditorForm, randomSeed } from '../components/VoiceEditorForm'
+import { DEFAULT_REF_TEXT, VoiceEditorForm, randomSeed } from '../components/VoiceEditorForm'
 import { withCacheBust } from '../utils/cacheBust'
 import {
   CHARACTER_VOICE_MODE_DESCRIPTIONS,
@@ -75,6 +78,8 @@ import {
   CHARACTER_VOICE_MODES,
   DEFAULT_CHARACTER_VOICE_MODE,
   DEFAULT_DESIGN_MODEL,
+  DEFAULT_CLONE_MODEL,
+  HIGGS_CLONE_MODEL,
   INSTRUCTED_CLONE_MODEL,
   type CharacterVoiceMode,
 } from '../api/types'
@@ -99,6 +104,7 @@ export function SpeakersPage() {
   const retagDescriptions = useRetagDescriptions(bookId)
   const retagScareQuotes = useRetagScareQuotes(bookId)
   const tagDirections = useTagDirections(bookId)
+  const resolvePronunciation = useResolvePronunciation(bookId)
   const scoreChapterMusic = useScoreChapterMusic(bookId)
   const generateChapterMusic = useGenerateChapterMusic(bookId)
   const generateChapter = useGenerateChapter(bookId)
@@ -123,6 +129,8 @@ export function SpeakersPage() {
   // direction-tagging pass - see useDirectingChapters' own doc comment.
   const directingIdxs = useDirectingChapters(bookId)
   const [directionError, setDirectionError] = useState<string | null>(null)
+  const pronouncingIdxs = usePronouncingChapters(bookId)
+  const [pronunciationError, setPronunciationError] = useState<string | null>(null)
   // Same job-queue-derived tracking as attributingIdxs/directingIdxs, for
   // background-music tone-region scoring - see useScoringMusicChapters'
   // own doc comment.
@@ -225,23 +233,19 @@ export function SpeakersPage() {
     builtins.find((p) => p.id === voiceQuery.data?.presetId)?.name ??
     customs.find((p) => p.id === voiceQuery.data?.presetId)?.name
 
-  // Mirrors backend narration.EffectiveCloneModel: the resolved preset's
-  // own cloneModel, or DEFAULT_CLONE_MODEL (Higgs) when the book's voice is
-  // a fully custom instruct with no preset backing it at all. Direction
-  // tagging's own tag vocabulary is specific to Higgs's tokenizer (see
+  // Mirrors backend narration.BookCloneModel: the book's own clone model
+  // (a property of the book, not of any voice), or DEFAULT_CLONE_MODEL if
+  // it's somehow unset. Direction tagging's own tag vocabulary is specific to Higgs's tokenizer (see
   // backend speakerattr.validDirectionTags), so this gates whether the
   // tag-directions buttons below do anything - the backend enforces the
   // same check server-side regardless (400 for any other clone model),
   // this is just so the UI doesn't offer an action that can't work.
-  const effectiveCloneModel =
-    builtins.find((p) => p.id === voiceQuery.data?.presetId)?.cloneModel ??
-    customs.find((p) => p.id === voiceQuery.data?.presetId)?.cloneModel ??
-    DEFAULT_CLONE_MODEL
-  const directionSupported = effectiveCloneModel === DEFAULT_CLONE_MODEL
+  const effectiveCloneModel = voiceQuery.data?.cloneModel || DEFAULT_CLONE_MODEL
+  const directionSupported = effectiveCloneModel === HIGGS_CLONE_MODEL
 
   // Same gating shape as directionSupported, for
   // instructCharacterVoices - only actually does anything when the book's
-  // resolved voice clones through INSTRUCTED_CLONE_MODEL (the one family
+  // clone model is INSTRUCTED_CLONE_MODEL (the one family
   // that honors a clone-time style instruction alongside a reference
   // clip). Backend narration.Resolver already no-ops the setting itself
   // for any other clone model; this is just so the toggle's own copy
@@ -274,6 +278,14 @@ export function SpeakersPage() {
     setDirectionError(null)
     tagDirections.mutate(idx, {
       onError: (err) => setDirectionError(err instanceof ApiError ? err.message : 'Speech-direction tagging failed'),
+    })
+  }
+
+  const runPronunciation = (idx: number) => {
+    setPronunciationError(null)
+    resolvePronunciation.mutate(idx, {
+      onError: (err) =>
+        setPronunciationError(err instanceof ApiError ? err.message : 'Pronunciation resolution failed'),
     })
   }
 
@@ -455,10 +467,8 @@ export function SpeakersPage() {
 
   // isDirected/hasUndirected mirror c.passes.attribution/hasUnattributed
   // exactly - passes.direction is a single flat bool, not keyed by clone
-  // model (see ChapterSummary.passes' own doc comment for why: only Higgs
-  // ever actually produced sentence/inline tags, but pronunciation
-  // resolution, direction's third sub-pass, runs for every clone model).
-  // runDirectionAll/runDirectionUndirected fire every chapter's own
+  // model (only Higgs ever produces sentence/inline tags - see
+  // directionSupported). runDirectionAll/runDirectionUndirected fire every chapter's own
   // request at once, same batching rationale as runAttributeAll/
   // runAttributeUnattributed - the backend queues them one at a time
   // regardless (poolLLM, KindSpeechDirection).
@@ -470,6 +480,16 @@ export function SpeakersPage() {
     book.chapters.filter((c) => !isDirected(c)).forEach((c) => runDirection(c.idx))
   }
   const hasUndirected = book.chapters.some((c) => !isDirected(c))
+
+  // Same shape again, for pronunciation resolution (c.passes.pronunciation)
+  // - available for every clone model, unlike direction tagging.
+  const runPronunciationAll = () => {
+    book.chapters.forEach((c) => runPronunciation(c.idx))
+  }
+  const runPronunciationUnresolved = () => {
+    book.chapters.filter((c) => !c.passes.pronunciation).forEach((c) => runPronunciation(c.idx))
+  }
+  const hasUnresolvedPronunciation = book.chapters.some((c) => !c.passes.pronunciation)
 
   // isScoredMusic/hasUnscoredMusic/runScoreMusicAll/runScoreMusicUnscored
   // mirror isDirected/hasUndirected/runDirectionAll/runDirectionUndirected
@@ -641,7 +661,7 @@ export function SpeakersPage() {
         {!instructedCloneSupported && (
           <p className="muted">
             The two "style" options above are only available for the "{INSTRUCTED_CLONE_MODEL}" clone
-            model - this book's current voice resolves to "{effectiveCloneModel}".
+            model - this book uses "{effectiveCloneModel}".
           </p>
         )}
 
@@ -649,15 +669,17 @@ export function SpeakersPage() {
           <input
             type="checkbox"
             checked={voiceQuery.data?.speechDirection ?? false}
-            disabled={!voiceQuery.data || !directionSupported || updateVoice.isPending}
+            disabled={!voiceQuery.data || updateVoice.isPending}
             onChange={(e) => toggleSpeechDirection(e.target.checked)}
           />
-          Wait for speech-direction tagging before generating audio
+          {directionSupported
+            ? 'Wait for direction tagging and pronunciation before generating audio'
+            : 'Wait for pronunciation resolution before generating audio'}
         </label>
         <p className="muted">
           {directionSupported
-            ? "When on, a chapter's audio waits for direction tagging to finish first, so its narration picks up any delivery tags right away instead of needing a later regenerate. Off by default, since most books never touch direction tagging."
-            : `Only available for the "${DEFAULT_CLONE_MODEL}" clone model - this book's current voice resolves to "${effectiveCloneModel}".`}
+            ? "When on, a chapter's audio waits for direction tagging and pronunciation resolution to finish first, so its narration picks up any delivery tags and resolved abbreviations right away instead of needing a later regenerate. Off by default."
+            : `When on, a chapter's audio waits for pronunciation resolution to finish first, so ambiguous abbreviations are read correctly right away instead of needing a later regenerate. Off by default. (Direction tagging is only available for the "${HIGGS_CLONE_MODEL}" clone model - this book uses "${effectiveCloneModel}".)`}
         </p>
 
         <label className="checkbox-label">
@@ -708,6 +730,17 @@ export function SpeakersPage() {
             )}
             <button
               className="text-button"
+              onClick={runPronunciationUnresolved}
+              disabled={pronouncingIdxs.size > 0 || !hasUnresolvedPronunciation}
+              title="Resolve pronunciation for every chapter that isn't resolved yet, skipping ones already done"
+            >
+              Resolve unresolved pronunciation
+            </button>
+            <button className="text-button" onClick={runPronunciationAll} disabled={pronouncingIdxs.size > 0}>
+              Resolve all pronunciation
+            </button>
+            <button
+              className="text-button"
               onClick={runScoreMusicUnscored}
               disabled={scoringMusicIdxs.size > 0 || !hasUnscoredMusic}
               title="Score background music for every chapter that isn't scored yet, skipping ones already done"
@@ -741,7 +774,7 @@ export function SpeakersPage() {
         {!directionSupported && (
           <p className="muted">
             Speech-direction tagging (inline delivery tags like <code>&lt;|emotion:anger|&gt;</code>) is only
-            available for the "{DEFAULT_CLONE_MODEL}" clone model - this book's current voice resolves to "
+            available for the "{HIGGS_CLONE_MODEL}" clone model - this book uses "
             {effectiveCloneModel}".
           </p>
         )}
@@ -749,6 +782,7 @@ export function SpeakersPage() {
         {retagError && <p className="error-text">{retagError}</p>}
         {retagScareQuoteError && <p className="error-text">{retagScareQuoteError}</p>}
         {directionError && <p className="error-text">{directionError}</p>}
+        {pronunciationError && <p className="error-text">{pronunciationError}</p>}
         {musicScoreError && <p className="error-text">{musicScoreError}</p>}
         {musicGenerateError && <p className="error-text">{musicGenerateError}</p>}
         {generateError && <p className="error-text">{generateError}</p>}
@@ -760,6 +794,7 @@ export function SpeakersPage() {
               <th>Description</th>
               <th>Scare quotes</th>
               {directionSupported && <th>Direction</th>}
+              <th>Pronunciation</th>
               <th>Music</th>
               <th>Audio</th>
               <th>Music audio</th>
@@ -772,6 +807,7 @@ export function SpeakersPage() {
               const retagging = describingIdxs.has(c.idx)
               const retaggingScareQuotes = scareQuotingIdxs.has(c.idx)
               const directing = directingIdxs.has(c.idx)
+              const pronouncing = pronouncingIdxs.has(c.idx)
               const scoringMusic = scoringMusicIdxs.has(c.idx)
               const generating = generatingIdxs.has(c.idx)
               const generatingMusic = generatingMusicIdxs.has(c.idx)
@@ -792,6 +828,9 @@ export function SpeakersPage() {
                       <PassStatus done={c.passes.direction} busy={directing} label="Direction tagging" />
                     </td>
                   )}
+                  <td>
+                    <PassStatus done={c.passes.pronunciation} busy={pronouncing} label="Pronunciation resolution" />
+                  </td>
                   <td>
                     <PassStatus done={c.passes.music} busy={scoringMusic} label="Music scoring" />
                   </td>
@@ -875,6 +914,20 @@ export function SpeakersPage() {
                           <RiEmotionLine className={directing ? 'spin' : undefined} />
                         </button>
                       )}
+                      <button
+                        className="icon-action-button"
+                        disabled={pronouncing}
+                        onClick={() => runPronunciation(c.idx)}
+                        title={
+                          pronouncing
+                            ? 'Resolving…'
+                            : c.passes.pronunciation
+                              ? 'Re-resolve pronunciation for this chapter (ambiguous abbreviations like "Dr." or "St.")'
+                              : 'Resolve pronunciation for this chapter (ambiguous abbreviations like "Dr." or "St.")'
+                        }
+                      >
+                        <RiSpeakLine className={pronouncing ? 'spin' : undefined} />
+                      </button>
                       <button
                         className="icon-action-button"
                         disabled={scoringMusic}
@@ -1037,6 +1090,7 @@ export function SpeakersPage() {
                 customs={customs}
                 bookVoiceName={bookVoiceName}
                 narratorPresetId={voiceQuery.data?.presetId}
+                bookCloneModel={effectiveCloneModel}
                 onCharacterize={() => s.id && runCharacterize(s.id)}
                 characterizing={characterizingIds.has(s.id) || characterizingNames.has(s.name)}
                 onGenerateVoice={() => s.id && runGenerateVoice(s.id)}
@@ -1078,6 +1132,7 @@ function SpeakerRow({
   customs,
   bookVoiceName,
   narratorPresetId,
+  bookCloneModel,
   onCharacterize,
   characterizing,
   onGenerateVoice,
@@ -1114,6 +1169,9 @@ function SpeakerRow({
   // base" control can default to the narrator, the base a reader will
   // pick most often (see store.Book.InstructCharacterVoices).
   narratorPresetId: string | undefined
+  // This book's own clone model - what CharacterVoiceEditor's test
+  // previews through by default.
+  bookCloneModel: string
   onCharacterize: () => void
   characterizing: boolean
   onGenerateVoice: () => void
@@ -1306,6 +1364,7 @@ function SpeakerRow({
           builtins={builtins}
           customs={customs}
           narratorPresetId={narratorPresetId}
+          bookCloneModel={bookCloneModel}
           onDone={onToggleCustomize}
         />
       )}
@@ -1573,6 +1632,7 @@ function CharacterVoiceEditor({
   builtins,
   customs,
   narratorPresetId,
+  bookCloneModel,
   onDone,
 }: {
   bookId: string
@@ -1580,6 +1640,7 @@ function CharacterVoiceEditor({
   builtins: VoicePreset[]
   customs: CustomVoicePreset[]
   narratorPresetId: string | undefined
+  bookCloneModel: string
   onDone: () => void
 }) {
   const createPreset = useCreateCustomVoicePreset()
@@ -1603,7 +1664,10 @@ function CharacterVoiceEditor({
   const [speedMultiplier, setSpeedMultiplier] = useState(
     customSource?.speedMultiplier ?? builtinSource?.speed_multiplier ?? 1,
   )
-  const [cloneModel, setCloneModel] = useState(customSource?.cloneModel || DEFAULT_CLONE_MODEL)
+  // Preview-only - which clone model "Play test" runs the saved voice
+  // through. Not part of the voice (it has none); starts at this book's
+  // own clone model, what the voice will actually narrate through here.
+  const [previewCloneModel, setPreviewCloneModel] = useState(bookCloneModel)
   // Only ever inherited from an already-editable custom preset, never from
   // a builtinSource - same "a new voice never inherits another preset's
   // design model" reasoning as VoicesPage's own openDerive.
@@ -1655,12 +1719,21 @@ function CharacterVoiceEditor({
   // Design-preview guidance_scale override - see VoiceEditorForm's
   // test.guidance. "" = the design engine's own default.
   const [designGuidanceScale, setDesignGuidanceScale] = useState('')
+  // Sampling-temperature override for either test path - see
+  // VoiceEditorForm's test.temperature. "" = the model's own default.
+  const [testTemperature, setTestTemperature] = useState('')
+  const temperatureOverride = testTemperature.trim() ? Number(testTemperature) : undefined
 
   const runTest = () => {
     setTestError(null)
     if (isEditingCustom) {
       testPreset.mutate(
-        { id: customSource.id, text: testText, cloneModel },
+        {
+          id: customSource.id,
+          text: testText,
+          cloneModel: previewCloneModel,
+          temperature: temperatureOverride,
+        },
         {
           onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
           onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not synthesize test text'),
@@ -1669,7 +1742,14 @@ function CharacterVoiceEditor({
       return
     }
     testDesign.mutate(
-      { instruct, text: refText, seed, designModel, guidanceScale: designGuidanceScale.trim() ? Number(designGuidanceScale) : undefined },
+      {
+        instruct,
+        text: refText,
+        seed,
+        designModel,
+        guidanceScale: designGuidanceScale.trim() ? Number(designGuidanceScale) : undefined,
+        temperature: temperatureOverride,
+      },
       {
         onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
         onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not preview this voice'),
@@ -1698,7 +1778,7 @@ function CharacterVoiceEditor({
 
   const save = () => {
     setError(null)
-    const input = { name, instruct, refText, speedMultiplier, seed, cloneModel, designModel }
+    const input = { name, instruct, refText, speedMultiplier, seed, designModel }
     const onError = (err: unknown) => setError(err instanceof ApiError ? err.message : 'Could not save voice')
     if (isEditingCustom) {
       updatePreset.mutate({ id: customSource.id, input }, { onSuccess: onDone, onError })
@@ -1722,8 +1802,6 @@ function CharacterVoiceEditor({
         onRefTextChange={setRefText}
         speedMultiplier={speedMultiplier}
         onSpeedChange={setSpeedMultiplier}
-        cloneModel={cloneModel}
-        onCloneModelChange={setCloneModel}
         designModel={designModel}
         onDesignModelChange={setDesignModel}
         currentAudioUrl={isEditingCustom ? speaker.refAudioUrl : undefined}
@@ -1742,10 +1820,12 @@ function CharacterVoiceEditor({
           disabled: isEditingCustom ? !testText.trim() : !instruct.trim() || !refText.trim(),
           buttonLabel: isEditingCustom ? 'Play test' : 'Preview',
           hint: isEditingCustom
-            ? 'Uses the saved voice, except the cloning model above is applied live - save any other changes first to hear them reflected here.'
+            ? 'Uses the saved voice through the preview cloning model above - save any other changes first to hear them reflected here.'
             : 'Preview renders the reference line above via VoiceDesign directly - no preset saved yet. Saving right after, unchanged, reuses this exact clip instead of rendering again.',
           onRun: runTest,
           guidance: isEditingCustom ? undefined : { value: designGuidanceScale, onChange: setDesignGuidanceScale },
+          temperature: { value: testTemperature, onChange: setTestTemperature },
+          cloneModel: isEditingCustom ? { value: previewCloneModel, onChange: setPreviewCloneModel } : undefined,
         }}
       />
 
@@ -1770,8 +1850,8 @@ function CharacterVoiceEditor({
           clone-time style direction, instead of designing a brand-new voice from scratch - previews
           exactly what "Style unassigned characters with the narrator's own voice" (Speakers page settings)
           does automatically. Only the "{INSTRUCTED_CLONE_MODEL}" clone model actually honors the
-          instruction this way, so this always tests through that model regardless of the cloning model
-          selected above.
+          instruction this way, so this always tests through that model regardless of this book's own
+          cloning model.
         </p>
         <label>
           Guidance scale

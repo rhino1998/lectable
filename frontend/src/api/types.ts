@@ -35,10 +35,10 @@ export interface ChapterSummary {
   paragraphCount: number
   readyCount: number
   // Persisted (not derived) - see backend store.Passes. Independent
-  // per-pipeline-pass facts; direction is no longer keyed by clone_model
-  // (only "audiocpp-higgs-4b" ever actually produced sentence/inline tags,
-  // but pronunciation resolution - the third sub-pass - runs regardless
-  // of clone model, so this is just one flat bool now). music is set once
+  // per-pipeline-pass facts. direction (sentence/inline delivery tags) is
+  // Higgs-only; pronunciation (ambiguous-abbreviation resolution, e.g.
+  // "Dr." -> "Doctor") is its own pass and applies to every clone model.
+  // music is set once
   // background-music tone-region scoring (api.scoreChapterMusic) has
   // completed a full pass over this chapter - independent of the book-wide
   // BookSummary.musicEnabled toggle, the same way direction is independent
@@ -48,6 +48,7 @@ export interface ChapterSummary {
     description: boolean
     scareQuote: boolean
     direction: boolean
+    pronunciation: boolean
     music: boolean
   }
   // Background-music regions: how many were scored, and how many have a
@@ -292,7 +293,6 @@ export interface VoicePreset {
   seed: number
   ref_text: string
   speed_multiplier: number
-  cloneModel: string
   // Which VoiceDesign engine renders this preset's reference clip - ""
   // defers to the worker's own process-wide default (see DESIGN_MODELS
   // below).
@@ -343,9 +343,15 @@ export interface VoiceSettings {
   instruct: string
   language: string
   seed?: number
+  // Which clone model narrates the book - every voice in it, narrator and
+  // characters alike (backend store.Book.CloneModel). A property of the
+  // book, never of a voice. For the default voice (useDefaultVoice), the
+  // clone model a newly created book starts with. Changing a book's clone
+  // model deletes its generated audio.
+  cloneModel: string
   // See CharacterVoiceMode's own doc comment above. The two instruct_*
-  // values only actually change anything when the book's resolved clone
-  // model is audiocpp-breeze-tts (see INSTRUCTED_CLONE_MODEL below) - a
+  // values only actually change anything when the book's clone model is
+  // audiocpp-breeze-tts (see INSTRUCTED_CLONE_MODEL below) - a
   // no-op (same as "assigned") otherwise.
   characterVoiceMode: CharacterVoiceMode
   // Opts this book into waiting for speech-direction tagging (a chapter's
@@ -373,7 +379,6 @@ export interface CustomVoicePreset {
   refText: string
   seed: number
   speedMultiplier: number
-  cloneModel: string
   // Which VoiceDesign engine renders this preset's reference clip - ""
   // defers to the worker's own process-wide default (see DESIGN_MODELS
   // below). A brand-new preset is always created with an explicit value
@@ -390,15 +395,21 @@ export interface CustomVoicePreset {
   groupLabel?: string
 }
 
-// Keep in sync with tts-service/app.py's CLONE_MODELS - one flat enum
-// covering both the cloning backend/API and the checkpoint size, since
-// every combination maps to a distinct loadable model anyway.
+// Keep in sync with backend/internal/audioworker's cloneModelFamilies - one
+// flat enum covering both the cloning backend/API and the checkpoint size,
+// since every combination maps to a distinct loadable model anyway. Chosen
+// per book (VoiceSettings.cloneModel), never per voice.
 export const CLONE_MODELS = [
   "audiocpp-qwen3-0.6b",
   "audiocpp-higgs-4b",
   "audiocpp-breeze-tts",
   "audiocpp-omnivoice",
   "audiocpp-pocket-100m",
+  "audiocpp-moss-local",
+  "audiocpp-moss-nano",
+  "audiocpp-zipvoice",
+  "audiocpp-voxcpm2",
+  "audiocpp-voxcpm1",
   "audiocpp-fireredtts3",
   "audiocpp-firered",
   "audiocpp-auk",
@@ -412,6 +423,11 @@ export const CLONE_MODEL_LABELS: Record<CloneModel, string> = {
   "audiocpp-breeze-tts": "BreezeTTS 2 (audio.cpp)",
   "audiocpp-omnivoice": "OmniVoice (audio.cpp)",
   "audiocpp-pocket-100m": "PocketTTS 100M, English (audio.cpp)",
+  "audiocpp-moss-local": "MOSS-TTS-Local v1.5 (audio.cpp)",
+  "audiocpp-moss-nano": "MOSS-TTS-Nano 100M (audio.cpp)",
+  "audiocpp-zipvoice": "ZipVoice-Distill, English/Chinese (audio.cpp)",
+  "audiocpp-voxcpm2": "VoxCPM2 (audio.cpp)",
+  "audiocpp-voxcpm1": "VoxCPM1 0.5B (audio.cpp)",
   "audiocpp-fireredtts3": "FireRedTTS3 Instruct (audio.cpp)",
   "audiocpp-firered": "FireRedAudio (audio.cpp)",
   "audiocpp-auk": "AuK (audio.cpp, CUDA only)",
@@ -426,10 +442,20 @@ export const CLONE_MODEL_LABELS: Record<CloneModel, string> = {
 // any other clone model.
 export const INSTRUCTED_CLONE_MODEL: CloneModel = "audiocpp-breeze-tts"
 
+// Kept identical to the backend's voices.HiggsCloneModel - the only clone
+// model whose tokenizer understands speech-direction tags, so direction
+// tagging is only offered for a book narrated through it.
+export const HIGGS_CLONE_MODEL: CloneModel = "audiocpp-higgs-4b"
+
+// Kept identical to the backend's voices.DefaultCloneModel - the factory
+// default for the clone model new books start with (settable on the
+// Voices page), and the fallback for a book with none set.
+export const DEFAULT_CLONE_MODEL: CloneModel = "audiocpp-higgs-4b"
+
 // Keep in sync with backend/internal/audioworker's designEngines - which
 // VoiceDesign engine renders a preset's reference clip (a separate concern
-// from CLONE_MODELS above, which is what clones per-paragraph audio from
-// that already-rendered clip).
+// from CLONE_MODELS above, which is what a book clones per-paragraph audio
+// through from that already-rendered clip).
 export const DESIGN_MODELS = [
   "breeze_tts",
   "qwen3_tts",
@@ -438,6 +464,7 @@ export const DESIGN_MODELS = [
   "firered_audio",
   "auk",
   "auk_flash",
+  "voxcpm2",
 ] as const
 export type DesignModel = (typeof DESIGN_MODELS)[number]
 
@@ -449,6 +476,7 @@ export const DESIGN_MODEL_LABELS: Record<DesignModel, string> = {
   firered_audio: "FireRedAudio (audio.cpp)",
   auk: "AuK (audio.cpp, CUDA only)",
   auk_flash: "AuK-Flash (audio.cpp, CUDA only)",
+  voxcpm2: "VoxCPM2 (audio.cpp)",
 }
 
 // Each design engine's own default guidance_scale, for the ones that have
@@ -462,6 +490,26 @@ export const DESIGN_MODEL_GUIDANCE_DEFAULTS: Partial<Record<DesignModel, number>
   fireredtts3: 1.2,
   firered_audio: 2,
   auk: 2,
+  voxcpm2: 2,
+}
+
+// Each model's own default sampling temperature, for the ones whose
+// audio.cpp session reads a "temperature" request option at all (backend
+// audioworker's cloneFamily.temperature/designEngine.temperature) - shown as
+// the voice tester's placeholder. Absent = the model has no such knob
+// (flow/diffusion models, OmniVoice), so the tester hides the control.
+export const CLONE_MODEL_TEMPERATURE_DEFAULTS: Partial<Record<CloneModel, number>> = {
+  "audiocpp-qwen3-0.6b": 0.9,
+  "audiocpp-higgs-4b": 0.8,
+  "audiocpp-breeze-tts": 0.9,
+  "audiocpp-pocket-100m": 0.7,
+  "audiocpp-moss-local": 1.7,
+  "audiocpp-moss-nano": 1.7,
+}
+
+export const DESIGN_MODEL_TEMPERATURE_DEFAULTS: Partial<Record<DesignModel, number>> = {
+  qwen3_tts: 0.9,
+  breeze_tts: 0.9,
 }
 
 // Kept identical to the backend's voices.DefaultDesignModel - what a
@@ -475,7 +523,6 @@ export interface CustomVoicePresetInput {
   refText: string
   seed?: number
   speedMultiplier?: number
-  cloneModel?: string
   designModel?: string
 }
 
@@ -537,6 +584,10 @@ export interface QueueTask {
     // jobs.KindScareQuote/KindDescription.
     | 'scare_quote_tagging'
     | 'description_tagging'
+    // Per-chapter pronunciation resolution (LLM, chapter-scoped like
+    // speech_direction, but for every clone model) - see backend
+    // jobs.KindPronunciation.
+    | 'pronunciation'
     // Background-music tone-region scoring for one chapter (LLM,
     // chapter-scoped) and rendering one already-scored region's own clip
     // (Stable Audio, not chapter/paragraph-scoped the way the others
@@ -575,6 +626,7 @@ export interface QueueTask {
     | 'pipeline_voice_provision'
     | 'pipeline_direction'
     | 'pipeline_music'
+    | 'pipeline_pronunciation'
     // The library page's "Generate audio" -> All/Remaining and the
     // reader's "Generate chapter audio" - moved off bare fire-and-forget
     // goroutines onto this same cancelable poolPipeline machinery (see

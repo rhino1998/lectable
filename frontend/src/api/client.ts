@@ -253,6 +253,16 @@ export const api = {
       method: 'POST',
     }),
 
+  // Enqueues pronunciation resolution (ambiguous abbreviations like "Dr." ->
+  // "Doctor") for one chapter - fire-and-forget, same {queued} shape as
+  // tagDirections, but for any clone model (a word substitution reads
+  // correctly under all of them). 503 without SPEAKER_LLM_MODEL_PATH - see
+  // httpapi.handleResolvePronunciation.
+  resolvePronunciation: (bookId: string, chapterIdx: number) =>
+    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/resolve-pronunciation`, {
+      method: 'POST',
+    }),
+
   // Kicks off the whole-book meta-task: attribution, then characterization,
   // then voice provisioning, then direction-tagging, for every chapter/
   // character in the book, in the backend, without needing the Speakers
@@ -466,15 +476,15 @@ export const api = {
 
   // Synthesizes arbitrary text with an existing custom preset's actual
   // saved voice, for previewing in the editor. Returns a playable blob
-  // rather than JSON, so it bypasses the request() helper. `cloneModel`,
-  // when given, overrides the preset's saved model - lets the editor
-  // preview the model currently selected in the form before it's saved.
-  testCustomVoicePreset: (id: string, text: string, cloneModel?: string) =>
-    requestBlob(`/api/voices/custom-presets/${id}/test`, json('POST', { text, cloneModel })),
+  // rather than JSON, so it bypasses the request() helper. `cloneModel`
+  // is which clone model to preview through (a voice has none of its own);
+  // omitted, the backend uses the default clone model new books get.
+  testCustomVoicePreset: (id: string, text: string, cloneModel?: string, temperature?: number) =>
+    requestBlob(`/api/voices/custom-presets/${id}/test`, json('POST', { text, cloneModel, temperature })),
 
   // Same, for a curated built-in preset.
-  testPreset: (id: string, text: string, cloneModel?: string) =>
-    requestBlob(`/api/voices/presets/${id}/test`, json('POST', { text, cloneModel })),
+  testPreset: (id: string, text: string, cloneModel?: string, temperature?: number) =>
+    requestBlob(`/api/voices/presets/${id}/test`, json('POST', { text, cloneModel, temperature })),
 
   // Force re-renders a built-in preset's reference clip from its fixed,
   // compiled-in recipe - see httpapi.handleRegeneratePreset.
@@ -488,8 +498,15 @@ export const api = {
   // httpapi.handleTestVoiceDesign / handleCreateCustomVoicePreset.
   // designModel previews a specific VoiceDesign engine - "" defers to the
   // worker's own process-wide default.
-  testVoiceDesign: (instruct: string, text: string, seed?: number, designModel?: string, guidanceScale?: number) =>
-    requestBlob('/api/voices/design-test', json('POST', { instruct, text, seed, designModel, guidanceScale })),
+  testVoiceDesign: (
+    instruct: string,
+    text: string,
+    seed?: number,
+    designModel?: string,
+    guidanceScale?: number,
+    temperature?: number,
+  ) =>
+    requestBlob('/api/voices/design-test', json('POST', { instruct, text, seed, designModel, guidanceScale, temperature })),
 
   // Standalone sound-effect/music test (the SFX page) - stateless, not
   // attached to any book/paragraph; one endpoint for every generation-only
@@ -508,8 +525,9 @@ export const api = {
   // rendered reference clip while applying instruct as a clone-time style
   // instruction (only actually honored by INSTRUCTED_CLONE_MODEL) - the
   // voice/character editor's "test with another voice as a base" control.
-  // baseId is any existing voice id (built-in or custom); cloneModel, when
-  // given, overrides baseId's own resolved clone model. guidanceScale, when
+  // baseId is any existing voice id (built-in or custom); cloneModel is
+  // which clone model to preview through (the default clone model new
+  // books get, if omitted). guidanceScale, when
   // given, overrides the backend's own configured instruct-time
   // guidance_scale (LECTABLE_AUDIOCPP_BREEZE_CLONE_GUIDANCE_SCALE) for this
   // one preview call, letting a reader experiment with adherence strength
