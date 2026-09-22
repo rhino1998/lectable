@@ -29,6 +29,31 @@ Each component has its own `CLAUDE.md` with implementation details. See the
 top-level [`CLAUDE.md`](./CLAUDE.md) for how the pieces fit together and full
 setup/run instructions.
 
+## Models
+
+All models run locally as GGUF checkpoints (q8_0 unless noted) inside
+`ttsworker`. audio.cpp models are loaded from `~/audio.cpp/models` by
+default (override the directory with `LECTABLE_AUDIOCPP_MODELS_DIR`), and
+the LLM from `~/llm-models`. Each model's path can also be overridden
+individually with the env var shown.
+
+| Model | Used for | Env var |
+| --- | --- | --- |
+| **Higgs Audio v3 TTS 4B** | Default narration model: clones each voice preset's reference clip to speak every paragraph. Also the only model that supports inline speech-direction tags (emotion/SFX/prosody). | `LECTABLE_AUDIOCPP_HIGGS_MODEL_PATH` |
+| **Breeze TTS 2** | Default VoiceDesign engine: renders a new voice's reference clip from its natural-language description. Also a selectable narration model, and the only one that takes a style instruction at clone time. | `LECTABLE_AUDIOCPP_BREEZE_DESIGN_MODEL_PATH` / `LECTABLE_AUDIOCPP_BREEZE_MODEL_PATH` |
+| **Qwen3-TTS 12Hz 1.7B VoiceDesign** | VoiceDesign for the built-in `velvet-narrator` preset (the default book voice). Selectable for other presets too. | `LECTABLE_AUDIOCPP_QWEN3_DESIGN_MODEL_PATH` |
+| **PocketTTS (English, 100M)** | Fast throwaway samples used to estimate speech length (chars/sec). | `LECTABLE_AUDIOCPP_POCKET_MODEL_PATH` |
+| **Qwen3-ForcedAligner 0.6B** | Word-level timestamps for generated audio, which drive word highlighting during playback. | `LECTABLE_ALIGNER_MODEL_PATH` |
+| **Qwen3-4B-Instruct-2507** (Q4_K_M, via llama.cpp) | Speaker attribution, character voice descriptions, speech-direction tagging, pronunciation resolution, and music scoring prompts. Optional: those features are turned off if the model file isn't there. | `SPEAKER_LLM_MODEL_PATH` |
+| **Stable Audio 3 Medium** | Background music for chapters. | `LECTABLE_AUDIOCPP_STABLE_AUDIO_MEDIUM_MODEL_PATH` |
+| **Stable Audio 3 Small SFX** | Sound effects. | `LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_MODEL_PATH` |
+
+The design engine can be switched between `breeze_tts` and `qwen3_tts` with
+`LECTABLE_AUDIOCPP_DESIGN_ENGINE`. These optional narration models can
+also be picked per voice preset: Qwen3-TTS 12Hz 0.6B Base, OmniVoice, and
+Soprano 1.1 80M. The standalone SFX/music test page can also use
+ACE-Step 1.5 Turbo and Stable Audio 3 Small Music.
+
 ## Quick start
 
 1. **Backend**: from `backend/`, build both binaries
