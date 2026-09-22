@@ -175,7 +175,14 @@ type Worker struct {
 	sched    *llamacpp.Scheduler
 	primed   map[string]*primed
 
-	lastUsed atomic.Int64 // UnixNano of the most recent LLMGenerate call; 0 = never used
+	lastUsed atomic.Int64 // UnixNano of the most recent LLMGenerate call's start or finish; 0 = never used
+	// inFlight counts LLMGenerate calls currently running (or waiting on
+	// load/the scheduler) - idleLoop never unloads while it's nonzero.
+	// lastUsed alone wasn't enough: it only marked a call's *start*, so one
+	// long generation (several minutes) looked "idle" after IdleUnloadAfter,
+	// and the resulting Unload then sat on loadGate.Lock waiting for that
+	// call to finish - blocking every new call's RLock behind it meanwhile.
+	inFlight atomic.Int64
 
 	reqCounter atomic.Int64 // monotonic id for LLMGenerate's own debug logging - see LLMGenerate
 
@@ -237,6 +244,23 @@ func (w *Worker) unloadLocked() {
 	w.model, w.ctx, w.sched, w.primed = nil, nil, nil, nil
 }
 
+// unloadIfIdle is idleLoop's own Unload, re-checking inFlight/lastUsed
+// once it actually holds loadGate - a call that started between
+// idleLoop's lock-free check and here has already bumped inFlight (before
+// ever taking its own RLock), so it's never unloaded out from under.
+func (w *Worker) unloadIfIdle() {
+	w.loadGate.Lock()
+	defer w.loadGate.Unlock()
+	if w.model == nil || w.inFlight.Load() > 0 {
+		return
+	}
+	if time.Since(time.Unix(0, w.lastUsed.Load())) < w.cfg.IdleUnloadAfter {
+		return
+	}
+	log.Printf("llmworker: unloading model after %s idle", w.cfg.IdleUnloadAfter)
+	w.unloadLocked()
+}
+
 // idleLoop periodically checks whether the model has sat unused past
 // Config.IdleUnloadAfter and, if so, unloads it - see Config.
 // IdleUnloadAfter's own doc comment for why this is timeout-based rather
@@ -254,13 +278,15 @@ func (w *Worker) idleLoop() {
 			if !w.Loaded() {
 				continue
 			}
+			if w.inFlight.Load() > 0 {
+				continue
+			}
 			lastNano := w.lastUsed.Load()
 			if lastNano == 0 {
 				continue
 			}
 			if time.Since(time.Unix(0, lastNano)) >= w.cfg.IdleUnloadAfter {
-				log.Printf("llmworker: unloading model after %s idle", w.cfg.IdleUnloadAfter)
-				w.Unload()
+				w.unloadIfIdle()
 			}
 		}
 	}
@@ -450,7 +476,12 @@ func (w *Worker) tryPrimed(model *llamacpp.Model, systemPrompt, fullPrompt strin
 // concurrently, multiplexed by the Scheduler's own multi-sequence batching
 // onto the one loaded model.
 func (w *Worker) LLMGenerate(ctx context.Context, systemPrompt, userPrompt string, temp float32, maxTokens int) (out string, err error) {
+	w.inFlight.Add(1)
 	w.lastUsed.Store(time.Now().UnixNano())
+	defer func() {
+		w.lastUsed.Store(time.Now().UnixNano())
+		w.inFlight.Add(-1)
+	}()
 
 	// Debug instrumentation for diagnosing calls that take far longer than
 	// expected (a real, observed problem: some batches through the live
