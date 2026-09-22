@@ -82,7 +82,7 @@ func (w *Worker) HandleDesign(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	audio, err := w.Design(req.RefText, req.Instruct, req.Language, req.DesignModel, req.Seed)
+	audio, err := w.Design(req.RefText, req.Instruct, req.Language, req.DesignModel, req.Seed, req.GuidanceScale)
 	if err != nil {
 		writeError(rw, http.StatusInternalServerError, err)
 		return

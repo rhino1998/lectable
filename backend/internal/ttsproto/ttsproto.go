@@ -45,6 +45,12 @@ type DesignRequest struct {
 	// audioworker's designEngines - "qwen3_tts"/"breeze_tts") - ""
 	// defers to the worker's own process-wide default.
 	DesignModel string `json:"designModel,omitempty"`
+	// GuidanceScale, when set, overrides the engine's own
+	// "guidance_scale" for this one call - the voice editor's design
+	// preview control. Ignored by an engine with no guidance option
+	// (qwen3_tts, omnivoice, auk_flash - see audioworker's
+	// designEngine.guidanceScale).
+	GuidanceScale *float64 `json:"guidanceScale,omitempty"`
 }
 
 // MusicRequest is POST /music's body: render an ACE-Step music clip from

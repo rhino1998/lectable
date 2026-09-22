@@ -836,6 +836,12 @@ type testVoiceDesignRequest struct {
 	// "" defers to the worker's own process-wide default, same as an
 	// unset preset field.
 	DesignModel string `json:"designModel"`
+	// GuidanceScale, when set, overrides the design engine's own guidance
+	// strength for this one preview (nil for the engine's default). A
+	// preview rendered this way is never cached for reuse on save - a saved
+	// preset has no guidance setting of its own, so its clip is always
+	// rendered at the engine's default.
+	GuidanceScale *float64 `json:"guidanceScale"`
 }
 
 // handleTestVoiceDesign previews a voice instruction directly via the
@@ -871,19 +877,24 @@ func (s *Server) handleTestVoiceDesign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.GuidanceScale != nil && *req.GuidanceScale < 0 {
+		writeError(w, http.StatusBadRequest, "guidanceScale must be non-negative")
+		return
+	}
+
 	var seed64 *int64
 	if req.Seed != nil {
 		v := int64(*req.Seed)
 		seed64 = &v
 	}
 	audio, err := s.Jobs.RunVoiceDesignPreview(r.Context(), instruct, func(ctx context.Context) ([]byte, error) {
-		return s.TTS.Design(ctx, text, instruct, "Auto", req.DesignModel, seed64)
+		return s.TTS.DesignWithGuidance(ctx, text, instruct, "Auto", req.DesignModel, seed64, req.GuidanceScale)
 	})
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
 	}
-	if req.Seed != nil {
+	if req.Seed != nil && req.GuidanceScale == nil {
 		voicerefs.CacheDesignRender(s.DataDir, voicerefs.DesignConfigHash(instruct, *req.Seed, text, "Auto", req.DesignModel), audio)
 	}
 	w.Header().Set("Content-Type", "audio/wav")

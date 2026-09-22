@@ -52,10 +52,15 @@ individually with the env var shown.
 | **Stable Audio 3 Medium** | Background music for chapters. | `LECTABLE_AUDIOCPP_STABLE_AUDIO_MEDIUM_MODEL_PATH` |
 | **Stable Audio 3 Small SFX** | Sound effects. | `LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_MODEL_PATH` |
 
-The design engine can be switched between `breeze_tts` and `qwen3_tts` with
+The design engine can be switched between `breeze_tts`, `qwen3_tts`,
+`omnivoice`, `fireredtts3`, `firered_audio`, `auk`, and `auk_flash` with
 `LECTABLE_AUDIOCPP_DESIGN_ENGINE`. These optional narration models can
-also be picked per voice preset: Qwen3-TTS 12Hz 0.6B Base, OmniVoice, and
-Soprano 1.1 80M. The standalone SFX/music test page can also use
+also be picked per voice preset: Qwen3-TTS 12Hz 0.6B Base, OmniVoice,
+Soprano 1.1 80M, FireRedTTS3 Instruct (`LECTABLE_AUDIOCPP_FIREREDTTS3_MODEL_PATH`),
+FireRedAudio (`LECTABLE_AUDIOCPP_FIRERED_AUDIO_MODEL_PATH`), and AuK /
+AuK-Flash (`LECTABLE_AUDIOCPP_AUK_MODEL_DIR`, a directory - audio.cpp
+currently runs AuK on CUDA only, not HIP). FireRedTTS3, FireRedAudio, and
+AuK each clone *and* design voices from one checkpoint. The standalone SFX/music test page can also use
 ACE-Step 1.5 Turbo and Stable Audio 3 Small Music.
 
 ## Quick start

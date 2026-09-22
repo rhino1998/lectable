@@ -544,6 +544,12 @@ func (m *Manager) Generate(ctx context.Context, text, cloneModel string, refAudi
 // (unstretched), returning WAV bytes. designModel selects which engine -
 // "" defers to the worker's own process-wide default.
 func (m *Manager) Design(ctx context.Context, refText, instruct, language, designModel string, seed *int64) ([]byte, error) {
+	return m.DesignWithGuidance(ctx, refText, instruct, language, designModel, seed, nil)
+}
+
+// DesignWithGuidance is Design with a one-off guidance-scale override (see
+// ttsproto.DesignRequest.GuidanceScale) - nil is exactly Design.
+func (m *Manager) DesignWithGuidance(ctx context.Context, refText, instruct, language, designModel string, seed *int64, guidanceScale *float64) ([]byte, error) {
 	m.restartGate.RLock()
 	defer m.restartGate.RUnlock()
 	jobID := m.beginJob()
@@ -551,11 +557,12 @@ func (m *Manager) Design(ctx context.Context, refText, instruct, language, desig
 
 	var out []byte
 	err := m.do(ctx, http.MethodPost, "/design", ttsproto.DesignRequest{
-		RefText:     refText,
-		Instruct:    instruct,
-		Seed:        seed,
-		Language:    language,
-		DesignModel: designModel,
+		RefText:       refText,
+		Instruct:      instruct,
+		Seed:          seed,
+		Language:      language,
+		DesignModel:   designModel,
+		GuidanceScale: guidanceScale,
 	}, &out)
 	return out, err
 }

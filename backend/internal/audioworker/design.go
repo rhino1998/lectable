@@ -22,7 +22,12 @@ import (
 // process-wide regardless of this pool, and reusing an already-loaded
 // model/session means that call only actually happens once per engine
 // switch, not once per Design call at all.
-func (w *Worker) Design(refText, instruct, language, designModel string, seed *int64) (*audiocpp.AudioBuffer, error) {
+//
+// guidanceScale, when non-nil, overrides engine's own "guidance_scale"
+// (including a defaultRequestOptions value, e.g. breeze_tts's "4") for this
+// call - silently ignored for an engine that has no such option (see
+// designEngine.guidanceScale).
+func (w *Worker) Design(refText, instruct, language, designModel string, seed *int64, guidanceScale *float64) (*audiocpp.AudioBuffer, error) {
 	w.touch()
 
 	engine := resolveDesignEngine(designModel)
@@ -43,6 +48,9 @@ func (w *Worker) Design(refText, instruct, language, designModel string, seed *i
 	}
 
 	lang := languageOption(language)
+	if engine.languageTag != nil {
+		lang = engine.languageTag(lang, refText)
+	}
 	if engine.noLanguageOption {
 		lang = ""
 	}
@@ -52,6 +60,12 @@ func (w *Worker) Design(refText, instruct, language, designModel string, seed *i
 	request.SetText(refText, lang).SetOption(instructOption, instruct)
 	for k, v := range engine.defaultRequestOptions {
 		request.SetOption(k, v)
+	}
+	if engine.guidanceScale && guidanceScale != nil {
+		request.SetOption("guidance_scale", strconv.FormatFloat(*guidanceScale, 'f', -1, 64))
+	}
+	if engine.estimateDuration {
+		request.SetOption("duration_sec", formatSeconds(textSeconds(refText, 0, 0)))
 	}
 	if seed != nil {
 		request.SetOption("seed", strconv.FormatInt(*seed, 10))

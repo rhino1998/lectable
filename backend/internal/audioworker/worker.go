@@ -289,8 +289,9 @@ type Worker struct {
 	// both of which fully release one before acquiring the other) so
 	// there's no lock-ordering hazard between the two "evict the other
 	// kind before loading my own" steps each performs. Keyed by
-	// designEngine.family (e.g. "qwen3_tts", "breeze_tts") - the same
-	// stable identifier resolveDesignEngine's own designEngines map uses.
+	// designEngine.id (e.g. "qwen3_tts", "breeze_tts") - the same stable
+	// identifier resolveDesignEngine's own designEngines map uses (not
+	// family, which auk and auk_flash share).
 	designMu      sync.Mutex
 	loadedDesigns map[string]*loadedDesign
 
@@ -643,9 +644,9 @@ func (w *Worker) newCloneSessionLocked(model *audiocpp.Model, fam cloneFamily) (
 
 // getDesignModel returns engine's loaded instance, loading it on first use
 // - loadedClone/getCloneModel's counterpart for a VoiceDesign engine (see
-// loadedDesign's own doc comment). Keyed by engine.family.
+// loadedDesign's own doc comment). Keyed by engine.id.
 func (w *Worker) getDesignModel(engine designEngine) (*loadedDesign, error) {
-	key := engine.family
+	key := engine.id
 
 	w.designMu.Lock()
 	if ld, ok := w.loadedDesigns[key]; ok {

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"unicode"
 )
 
 // One entry per clone_model id the Go backend can ask for (see
@@ -91,6 +93,29 @@ type cloneFamily struct {
 	// for once a clone/design/LLM model is also resident - see the
 	// "audiocpp-higgs" entry below and backend/CLAUDE.md.
 	poolSizeOverride int
+	// languageTag, if set, maps languageOption's own output ("Auto" or a
+	// lowercased display name like "english") plus the text being spoken
+	// onto the language tag this family actually expects - fireredtts3
+	// wants its tokenizer's own capitalized tags ("English"), firered_audio
+	// ISO-style codes ("en"/"zh"), and both default to Chinese when given
+	// nothing usable. nil passes languageOption's value through unchanged.
+	languageTag func(language, text string) string
+	// noRefText: true for a family that conditions on reference audio alone
+	// and has no transcript request option at all (auk - its spec validates
+	// request options strictly, so sending "reference_text" would throw).
+	// Generate still sends the reference clip itself.
+	noRefText bool
+	// wrapText, if set, rewrites the text sent to the model - auk's clone
+	// path has no voice-description option to pair with a reference, so its
+	// text has to carry the complete upstream zero-shot instruction instead
+	// of just the words to speak (see aukCloneText).
+	wrapText func(text string) string
+	// estimateDuration: true for a fixed-duration flow family (auk) that
+	// renders exactly as many seconds as requested rather than stopping on
+	// its own - Generate derives "duration_sec" from the reference clip's
+	// own pace (seconds per character of its transcript) projected onto the
+	// text being spoken; see estimateCloneDuration.
+	estimateDuration bool
 }
 
 func envOr(key, def string) string {
@@ -124,6 +149,15 @@ func envIntOr(key string, def int) int {
 	if v := os.Getenv(key); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+func envFloatOr(key string, def float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return f
 		}
 	}
 	return def
@@ -300,6 +334,112 @@ var cloneModelFamilies = map[string]string{
 	"audiocpp-breeze-tts":  "audiocpp-breeze",
 	"audiocpp-omnivoice":   "audiocpp-omnivoice",
 	"audiocpp-soprano":     "audiocpp-soprano",
+	"audiocpp-fireredtts3": "audiocpp-fireredtts3",
+	"audiocpp-firered":     "audiocpp-firered",
+	"audiocpp-auk":         "audiocpp-auk",
+	"audiocpp-auk-flash":   "audiocpp-auk-flash",
+}
+
+// fireRedTTS3PoolSize/fireRedAudioPoolSize/aukPoolSize: each of these
+// families is new here and not yet profiled under concurrent load on this
+// box, so all start at 1 - the same conservative starting point
+// higgsClonePoolSize's own doc comment argues for on a GPU with no spare
+// VRAM headroom. FireRedAudio especially: its q8_0 package alone is ~14GB.
+var fireRedTTS3PoolSize = envIntOr("LECTABLE_AUDIOCPP_FIREREDTTS3_CLONE_POOL_SIZE", 1)
+var fireRedAudioPoolSize = envIntOr("LECTABLE_AUDIOCPP_FIRERED_AUDIO_CLONE_POOL_SIZE", 1)
+var aukPoolSize = envIntOr("LECTABLE_AUDIOCPP_AUK_CLONE_POOL_SIZE", 1)
+
+// fireRedTTS3ModelPath: the Instruct package, not Base - Instruct covers
+// both cloning (template_name=instruct_tts) and VoiceDesign
+// (template_name=voice_design) from one GGUF, and accepts the "tts" task
+// every clone session here is opened with (getCloneModel), whereas Base
+// only accepts the "clon" task and can't design at all (see
+// docs/models/fireredtts3.md in the local audio.cpp checkout).
+var fireRedTTS3ModelPath = envOr(
+	"LECTABLE_AUDIOCPP_FIREREDTTS3_MODEL_PATH",
+	modelPath("FireRedTTS3-Instruct-GGUF/fireredtts3-instruct-q8_0.gguf"),
+)
+
+var fireRedAudioModelPath = envOr(
+	"LECTABLE_AUDIOCPP_FIRERED_AUDIO_MODEL_PATH",
+	modelPath("FireRedAudio-GGUF/firered-audio-q8_0.gguf"),
+)
+
+// aukModelDir: AuK loads from a directory holding its component GGUFs plus
+// config/tokenizer sidecars (audio-cpp/AuK-Base-and-Flash-GGUF), not a
+// single file - see docs/community_models/auk.md in the local audio.cpp
+// checkout. Base and Flash share this one directory; which generator is
+// used is a session option (aukSessionOptions).
+var aukModelDir = envOr("LECTABLE_AUDIOCPP_AUK_MODEL_DIR", modelPath("AuK-Base-and-Flash-GGUF"))
+
+// aukQwenGGUF/aukBaseGGUF/aukFlashGGUF pick AuK's component files within
+// aukModelDir. Defaults are q8_0 throughout rather than audio.cpp's own
+// defaults (BF16 Qwen, F32 generator), which would need far more VRAM.
+var aukQwenGGUF = envOr("LECTABLE_AUDIOCPP_AUK_QWEN_GGUF", "qwen2.5-omni-3b-q8_0.gguf")
+var aukBaseGGUF = envOr("LECTABLE_AUDIOCPP_AUK_BASE_GGUF", "auk-base-q8_0.gguf")
+var aukFlashGGUF = envOr("LECTABLE_AUDIOCPP_AUK_FLASH_GGUF", "auk-flash-q8_0.gguf")
+
+func aukSessionOptions(flash bool) map[string]string {
+	if flash {
+		return map[string]string{"auk.variant": "flash", "auk.model_gguf": aukFlashGGUF, "auk.qwen_gguf": aukQwenGGUF}
+	}
+	return map[string]string{"auk.variant": "base", "auk.model_gguf": aukBaseGGUF, "auk.qwen_gguf": aukQwenGGUF}
+}
+
+// aukCharsPerSecond is the speaking pace auk's output duration is sized
+// from whenever there's no reference clip to measure one from (VoiceDesign,
+// or a clone call whose reference has no transcript) - auk renders exactly
+// the duration it's asked for, so too low a value drags speech out and too
+// high a value rushes it. ~14 chars/sec is an ordinary audiobook pace.
+var aukCharsPerSecond = envFloatOr("LECTABLE_AUDIOCPP_AUK_CHARS_PER_SEC", 14)
+
+// aukCloneText wraps text in AuK's upstream zero-shot-cloning instruction
+// (Tencent-Hunyuan/AuK's COOKBOOK.md) - without an "instruct" option,
+// audio.cpp's auk session passes text through verbatim as the model's
+// whole instruction, so the words alone would not be read as speech to
+// render in the reference voice.
+func aukCloneText(text string) string {
+	return `Say the following with the same voice: "` + text + `"`
+}
+
+// fireRedTTS3Language maps a language onto one of fireredtts3's own
+// capitalized language tags. "Auto" (or nothing) guesses Chinese vs.
+// English from the text itself - fireredtts3 has no auto-detection of its
+// own and would otherwise default to Chinese normalization for English
+// text.
+func fireRedTTS3Language(language, text string) string {
+	if language == "" || strings.EqualFold(language, "auto") {
+		if hasCJK(text) {
+			return "Chinese"
+		}
+		return "English"
+	}
+	return strings.ToUpper(language[:1]) + strings.ToLower(language[1:])
+}
+
+// fireRedAudioLanguage maps a language onto firered_audio's own tag, which
+// it only uses to decide whether reference transcript and text are joined
+// with a space ("en") or not ("zh") - so every language written without
+// spaces between words maps to "zh", everything else to "en".
+func fireRedAudioLanguage(language, text string) string {
+	switch strings.ToLower(language) {
+	case "chinese", "japanese", "cantonese", "zh", "ja":
+		return "zh"
+	case "", "auto":
+		if hasCJK(text) {
+			return "zh"
+		}
+	}
+	return "en"
+}
+
+func hasCJK(text string) bool {
+	for _, r := range text {
+		if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) {
+			return true
+		}
+	}
+	return false
 }
 
 var cloneFamilies = map[string]cloneFamily{
@@ -407,12 +547,75 @@ var cloneFamilies = map[string]cloneFamily{
 		noLanguageOption: true,
 		noReference:      true,
 	},
+	// FireRedTTS3 (FireRedTeam, Apache-2.0) - the Instruct package, which
+	// clones via template_name=instruct_tts on a plain "tts" session (see
+	// fireRedTTS3ModelPath's own doc comment for why not Base). Its clone
+	// template reads the reference transcript from "reference_text", this
+	// package's default. Language is its own capitalized tag, defaulting to
+	// Chinese if unset - see fireRedTTS3Language.
+	"audiocpp-fireredtts3": {
+		family:                "fireredtts3",
+		modelPath:             fireRedTTS3ModelPath,
+		sessionOptions:        map[string]string{"fireredtts3.reference_cache_slots": cloneCacheSlots},
+		defaultRequestOptions: map[string]string{"template_name": "instruct_tts"},
+		languageTag:           fireRedTTS3Language,
+		poolSizeOverride:      fireRedTTS3PoolSize,
+	},
+	// FireRedAudio (FireRedTeam, Apache-2.0) - one multimodal GGUF covering
+	// ASR/understanding as well as cloning (template_name=tts_clone, used
+	// here) and VoiceDesign (see designEngines' own "firered_audio" entry).
+	"audiocpp-firered": {
+		family:                "firered_audio",
+		modelPath:             fireRedAudioModelPath,
+		sessionOptions:        map[string]string{"firered_audio.reference_cache_slots": cloneCacheSlots},
+		defaultRequestOptions: map[string]string{"template_name": "tts_clone"},
+		languageTag:           fireRedAudioLanguage,
+		poolSizeOverride:      fireRedAudioPoolSize,
+	},
+	// AuK / AuK-Flash (Tencent, MIT) - an experimental flow-matching family
+	// conditioned on reference audio alone (no transcript - noRefText), with
+	// a fixed output duration it never stops short of on its own
+	// (estimateDuration) and a text prompt that must carry the full upstream
+	// cloning instruction (wrapText). Its spec lists no "language" option at
+	// all, so none is sent. Flash is the same family and directory with a
+	// fixed 4-step schedule instead of Base's 32 - much faster, at some
+	// quality cost.
+	//
+	// audio.cpp's auk session currently refuses every backend but CUDA
+	// ("AuK native session currently requires CUDA" - HIP is a separate
+	// backend type there), so on this box's AMD GPU (LECTABLE_AUDIOCPP_
+	// BACKEND=hip) every call fails at session creation until that check is
+	// relaxed upstream. Wired in anyway for CUDA hosts.
+	"audiocpp-auk": {
+		family:           "auk",
+		modelPath:        aukModelDir,
+		sessionOptions:   aukSessionOptions(false),
+		noLanguageOption: true,
+		noRefText:        true,
+		wrapText:         aukCloneText,
+		estimateDuration: true,
+		poolSizeOverride: aukPoolSize,
+	},
+	"audiocpp-auk-flash": {
+		family:           "auk",
+		modelPath:        aukModelDir,
+		sessionOptions:   aukSessionOptions(true),
+		noLanguageOption: true,
+		noRefText:        true,
+		wrapText:         aukCloneText,
+		estimateDuration: true,
+		poolSizeOverride: aukPoolSize,
+	},
 }
 
 // designEngine bundles everything Design (design.go) needs to render a
 // fresh reference clip via one VoiceDesign-capable family - see
 // designEngines/activeDesignEngine below for why more than one now exists.
 type designEngine struct {
+	// id is this engine's own designEngines key - what loadedDesigns is
+	// keyed by (not family: auk and auk_flash are the same family, loaded
+	// with different session options).
+	id string
 	// ggml family name audio.cpp's registry loads by.
 	family string
 	// Path to this family's VoiceDesign GGUF.
@@ -423,8 +626,9 @@ type designEngine struct {
 	// engine, before instruct/seed - e.g. breeze_tts's guidance_scale.
 	defaultRequestOptions map[string]string
 	// instructOption is the request-option key this engine reads the
-	// design instruction from - "instruct" for qwen3_tts, "instruction"
-	// for breeze_tts/omnivoice. Empty defaults to "instruct" in Design.
+	// design instruction from - "instruct" for qwen3_tts/auk, "instruction"
+	// for breeze_tts/omnivoice/fireredtts3/firered_audio. Empty defaults to
+	// "instruct" in Design.
 	instructOption string
 	// noLanguageOption: see cloneFamily's own doc comment - same issue,
 	// same fix, on the design path.
@@ -439,6 +643,19 @@ type designEngine struct {
 	// every family's cloning session as "tts" for the same reason. Empty
 	// defaults to "vdes" in Design.
 	designTask string
+	// languageTag: see cloneFamily's own doc comment - same mapping, on the
+	// design path.
+	languageTag func(language, text string) string
+	// estimateDuration: true for auk, which can't render without an
+	// explicit "duration_sec" when there's no reference clip - Design sizes
+	// it from aukCharsPerSecond.
+	estimateDuration bool
+	// guidanceScale: true if this engine's own model spec has a
+	// "guidance_scale" request option, so Design may pass a caller's
+	// per-call override through (breeze_tts, fireredtts3, firered_audio,
+	// auk). False for qwen3_tts/omnivoice (no such option - their specs
+	// would reject it) and auk_flash (always runs without guidance).
+	guidanceScale bool
 }
 
 // designEngines: qwen3_tts's own VoiceDesign checkpoint was the sole engine
@@ -451,6 +668,7 @@ type designEngine struct {
 // env-var controlled only, for now, not yet exposed as a per-preset choice.
 var designEngines = map[string]designEngine{
 	"qwen3_tts": {
+		id:     "qwen3_tts",
 		family: "qwen3_tts",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_QWEN3_DESIGN_MODEL_PATH",
@@ -464,7 +682,9 @@ var designEngines = map[string]designEngine{
 		// different weight_type) if those crashes resurface.
 	},
 	"breeze_tts": {
-		family: "breeze_tts",
+		id:            "breeze_tts",
+		family:        "breeze_tts",
+		guidanceScale: true,
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_BREEZE_DESIGN_MODEL_PATH",
 			modelPath("Breeze-TTS-2-GGUF/breeze-tts-2-q8_0.gguf"),
@@ -485,6 +705,7 @@ var designEngines = map[string]designEngine{
 	// uses with a reference attached (see getCloneModel's own "tts"
 	// session, shared by every family for exactly this reason).
 	"omnivoice": {
+		id:     "omnivoice",
 		family: "omnivoice",
 		modelPath: envOr(
 			"LECTABLE_AUDIOCPP_OMNIVOICE_MODEL_PATH",
@@ -492,6 +713,56 @@ var designEngines = map[string]designEngine{
 		),
 		instructOption: "instruction",
 		designTask:     "tts",
+	},
+	// FireRedTTS3 Instruct - the same GGUF as cloneFamilies' own
+	// "audiocpp-fireredtts3" entry, on a "vdes" session with
+	// template_name=voice_design and the description in "instruction".
+	"fireredtts3": {
+		id:                    "fireredtts3",
+		guidanceScale:         true,
+		family:                "fireredtts3",
+		modelPath:             fireRedTTS3ModelPath,
+		defaultRequestOptions: map[string]string{"template_name": "voice_design"},
+		instructOption:        "instruction",
+		languageTag:           fireRedTTS3Language,
+	},
+	// FireRedAudio - same GGUF as cloneFamilies' own "audiocpp-firered"
+	// entry, same template/instruction shape as fireredtts3 above.
+	"firered_audio": {
+		id:                    "firered_audio",
+		guidanceScale:         true,
+		family:                "firered_audio",
+		modelPath:             fireRedAudioModelPath,
+		defaultRequestOptions: map[string]string{"template_name": "voice_design"},
+		instructOption:        "instruction",
+		languageTag:           fireRedAudioLanguage,
+	},
+	// AuK / AuK-Flash - design is auk's own "instruction TTS": a plain "tts"
+	// request with no reference and the voice description in "instruct",
+	// which audio.cpp wraps in AuK's upstream "Generate speech based on the
+	// following description" template itself. Needs an explicit duration
+	// (estimateDuration). Same CUDA-only caveat as cloneFamilies' own
+	// "audiocpp-auk" entry.
+	"auk": {
+		id:               "auk",
+		guidanceScale:    true,
+		family:           "auk",
+		modelPath:        aukModelDir,
+		sessionOptions:   aukSessionOptions(false),
+		instructOption:   "instruct",
+		noLanguageOption: true,
+		designTask:       "tts",
+		estimateDuration: true,
+	},
+	"auk_flash": {
+		id:               "auk_flash",
+		family:           "auk",
+		modelPath:        aukModelDir,
+		sessionOptions:   aukSessionOptions(true),
+		instructOption:   "instruct",
+		noLanguageOption: true,
+		designTask:       "tts",
+		estimateDuration: true,
 	},
 }
 

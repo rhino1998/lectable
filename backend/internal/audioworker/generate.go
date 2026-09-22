@@ -3,7 +3,10 @@ package audioworker
 import (
 	"fmt"
 	"log"
+	"math"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/rhino1998/lectable/audiocpp-go/audiocpp"
 )
@@ -126,13 +129,21 @@ func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
 	defer w.releaseCloneModel(lc)
 
 	lang := languageOption(req.Language)
+	if fam.languageTag != nil {
+		lang = fam.languageTag(lang, req.Text)
+	}
 	if fam.noLanguageOption {
 		lang = ""
 	}
 
+	text := req.Text
+	if fam.wrapText != nil {
+		text = fam.wrapText(text)
+	}
+
 	request := audiocpp.NewRequest()
 	defer request.Close()
-	request.SetText(req.Text, lang)
+	request.SetText(text, lang)
 	if fam.noReference {
 		// No voice-cloning capability at all (a single fixed built-in
 		// voice) - skip SetVoiceAudio/refTextOption entirely rather than
@@ -145,9 +156,13 @@ func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
 		if refTextOption == "" {
 			refTextOption = "reference_text"
 		}
-		request.
-			SetVoiceAudio(req.RefSamples, req.RefSampleRate, req.RefChannels).
-			SetOption(refTextOption, req.RefText)
+		request.SetVoiceAudio(req.RefSamples, req.RefSampleRate, req.RefChannels)
+		if !fam.noRefText {
+			request.SetOption(refTextOption, req.RefText)
+		}
+	}
+	if fam.estimateDuration {
+		request.SetOption("duration_sec", formatSeconds(estimateCloneDuration(req)))
 	}
 	if fam.instructOption != "" && req.Instruct != "" {
 		request.SetOption(fam.instructOption, req.Instruct)
@@ -210,4 +225,40 @@ func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
 		return nil, fmt.Errorf("generation produced no audio")
 	}
 	return audio, nil
+}
+
+// estimateCloneDuration sizes a fixed-duration family's output (see
+// cloneFamily.estimateDuration) for req.Text: the reference clip's own
+// seconds-per-character pace, measured from its samples and transcript,
+// times req.Text's length - so a voice cloned from a slow, deliberate
+// reference gets proportionally more time than a brisk one. Falls back to
+// aukCharsPerSecond when there's no transcript to measure a pace from.
+func estimateCloneDuration(req GenerateRequest) float64 {
+	var refSeconds float64
+	if req.RefSampleRate > 0 && req.RefChannels > 0 {
+		refSeconds = float64(len(req.RefSamples)) / float64(req.RefChannels) / float64(req.RefSampleRate)
+	}
+	return textSeconds(req.Text, refSeconds, speechChars(req.RefText))
+}
+
+// textSeconds estimates how long text takes to speak at refSeconds per
+// refChars characters, or at aukCharsPerSecond if either is zero - never
+// less than one second.
+func textSeconds(text string, refSeconds float64, refChars int) float64 {
+	perChar := 1 / aukCharsPerSecond
+	if refSeconds > 0 && refChars > 0 {
+		perChar = refSeconds / float64(refChars)
+	}
+	return math.Max(1, perChar*float64(speechChars(text)))
+}
+
+// speechChars counts text's characters with runs of whitespace collapsed
+// to one, so indentation or line breaks in a paragraph don't inflate its
+// estimated duration.
+func speechChars(text string) int {
+	return utf8.RuneCountInString(strings.Join(strings.Fields(text), " "))
+}
+
+func formatSeconds(s float64) string {
+	return strconv.FormatFloat(s, 'f', 2, 64)
 }
