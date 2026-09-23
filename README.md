@@ -1,4 +1,4 @@
-# lectable
+# Lectable
 
 A self-hosted epub reader that narrates books aloud using
 [audio.cpp](https://github.com/0xShug0/audio.cpp)'s Qwen3-TTS/Higgs Audio
@@ -8,6 +8,10 @@ the rest of the chapter finishes.
 
 Single-user, local-first: no auth, no accounts, everything runs on your own
 machine.
+
+
+https://github.com/user-attachments/assets/af7fa5f5-fa79-4711-ae6b-a8bb0db093b4
+
 
 ## Components
 
