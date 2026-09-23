@@ -10,7 +10,7 @@ Single-user, local-first: no auth, no accounts, everything runs on your own
 machine.
 
 
-https://github.com/user-attachments/assets/af7fa5f5-fa79-4711-ae6b-a8bb0db093b4
+https://github.com/user-attachments/assets/9c1ec9c6-6b5c-41b9-adc1-40ff6035b324
 
 
 ## Components
