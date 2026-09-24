@@ -351,7 +351,7 @@ func TestManagerUrgentColdCacheCloneDoesNotDeadlock(t *testing.T) {
 	// never been rendered in this fresh temp dir, so this is a genuine
 	// cold-cache, urgent clone task that would have hung forever if it were
 	// ever nested-blocked on its own dependency the old way.
-	mgr.EnqueueLookahead(book.ID, 0, 0)
+	mgr.EnqueueLookahead(book.ID, 0, 0, 0)
 
 	bookVoice, err := mgr.narration.BookVoice(book)
 	if err != nil {

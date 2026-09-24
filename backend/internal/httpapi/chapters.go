@@ -1080,6 +1080,9 @@ func (s *Server) handleSetParagraphScareQuote(w http.ResponseWriter, r *http.Req
 type lookaheadRequest struct {
 	ChapterIdx   int `json:"chapterIdx"`
 	ParagraphIdx int `json:"paragraphIdx"`
+	// Optional: how many paragraphs ahead to generate. Omitted/0 means
+	// jobs.LookaheadParagraphCount; clamped to jobs.MaxLookaheadParagraphCount.
+	ParagraphCount int `json:"paragraphCount,omitempty"`
 }
 
 // handleLookahead keeps some runway of generated audio ahead of wherever
@@ -1095,7 +1098,7 @@ func (s *Server) handleLookahead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Jobs.EnqueueLookahead(bookID, req.ChapterIdx, req.ParagraphIdx)
+	s.Jobs.EnqueueLookahead(bookID, req.ChapterIdx, req.ParagraphIdx, req.ParagraphCount)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
 }
 

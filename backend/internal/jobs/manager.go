@@ -33,8 +33,15 @@ import (
 )
 
 // LookaheadParagraphCount is how far ahead of the reader's current position
-// EnqueueLookahead generates, regardless of chapter boundaries.
+// EnqueueLookahead generates, regardless of chapter boundaries, when the
+// caller doesn't ask for a specific count.
 const LookaheadParagraphCount = 25
+
+// MaxLookaheadParagraphCount caps a caller-requested lookahead window (see
+// EnqueueLookahead), so one client setting can't queue an arbitrarily
+// large chunk of a book at TierLookahead - generating a whole book is
+// what EnqueueBook/TierBackground is for.
+const MaxLookaheadParagraphCount = 1000
 
 // This many paragraphs are kept in flight to tts-service at once: while
 // one response is still crossing the network and being written to disk,
@@ -2242,8 +2249,9 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 	m.pushResolvedTask(bookID, chapterID, chapterIdx, TierUrgent, resolvedParagraph{paragraph: paragraph, voice: v})
 }
 
-// EnqueueLookahead generates up to LookaheadParagraphCount upcoming
-// paragraphs starting at (fromChapterIdx, fromParagraphIdx), continuing
+// EnqueueLookahead generates up to count upcoming paragraphs (count <= 0
+// means LookaheadParagraphCount; anything above MaxLookaheadParagraphCount
+// is clamped to it) starting at (fromChapterIdx, fromParagraphIdx), continuing
 // into later chapters as needed instead of stopping at the current
 // chapter's end - so there's always some runway ahead regardless of where
 // a chapter boundary falls relative to the reader's position. Paragraphs
@@ -2259,11 +2267,15 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 // among themselves like any other same-tier poolGeneration work - by plain
 // book/chapter/paragraph position (see lessByPosition), not by distance
 // from wherever the reader happens to be right now.
-func (m *Manager) EnqueueLookahead(bookID string, fromChapterIdx, fromParagraphIdx int) {
-	go m.enqueueLookahead(bookID, fromChapterIdx, fromParagraphIdx)
+func (m *Manager) EnqueueLookahead(bookID string, fromChapterIdx, fromParagraphIdx, count int) {
+	if count <= 0 {
+		count = LookaheadParagraphCount
+	}
+	count = min(count, MaxLookaheadParagraphCount)
+	go m.enqueueLookahead(bookID, fromChapterIdx, fromParagraphIdx, count)
 }
 
-func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphIdx int) {
+func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphIdx, count int) {
 	book, err := m.store.GetBook(bookID)
 	if err != nil || book == nil {
 		log.Printf("jobs: book %s not found: %v", bookID, err)
@@ -2271,7 +2283,7 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 	}
 
 	chapterIdx := fromChapterIdx
-	remaining := LookaheadParagraphCount
+	remaining := count
 	for remaining > 0 {
 		select {
 		case <-m.ctx.Done():
