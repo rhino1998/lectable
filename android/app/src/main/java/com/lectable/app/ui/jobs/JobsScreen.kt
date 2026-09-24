@@ -223,7 +223,8 @@ private fun JobRow(task: QueueTaskDto, voiceName: String, canceling: Boolean, on
                 Text(
                     buildString {
                         append(targetLabel(task))
-                        if (task.kind == "voice_clone" || task.kind == "voice_design") append(" · ¶${task.paragraphIdx + 1}")
+                        // music_live_generation: one region per task, paragraphIdx is where it starts.
+                        if (task.kind in setOf("voice_clone", "voice_design", "music_live_generation")) append(" · ¶${task.paragraphIdx + 1}")
                         append(" · $voiceName")
                     },
                     style = MaterialTheme.typography.bodySmall,

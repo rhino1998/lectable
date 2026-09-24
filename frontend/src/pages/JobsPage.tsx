@@ -73,7 +73,9 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
 // (see backend jobs.EnqueueMusicGeneration's own doc comment), not one
 // task per region, so there's no single paragraph/region position left to
 // show for it any more than there is for a "pipeline_*" row.
-const PARAGRAPH_SCOPED_KINDS = new Set<QueueTask['kind']>(['voice_clone', 'voice_design', 'sfx_generation'])
+// "music_live_generation" is one task per region, so it shows the paragraph
+// its region starts at.
+const PARAGRAPH_SCOPED_KINDS = new Set<QueueTask['kind']>(['voice_clone', 'voice_design', 'sfx_generation', 'music_live_generation'])
 
 // Ordered most urgent first, matching backend jobs.TierUrgent/TierLookahead/
 // TierBackground's own numeric ordering - used both to compute which tiers
