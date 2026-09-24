@@ -270,6 +270,9 @@ export interface MusicRegion {
   // (a short label for compact display); shown as the reader's
   // annotations-view boundary marker's own tooltip.
   prompt: string
+  // The ambient-soundscape prompt mixed under the music (ocean, tavern,
+  // city...) - absent when the region is music only.
+  ambience?: string
   transition: 'cut' | 'continuation'
   status: AudioStatus
   error?: string

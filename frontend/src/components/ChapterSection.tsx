@@ -407,7 +407,8 @@ function MusicRegionBoundary({
   // shown inline - the inline chip stays short (mood + transition/status),
   // so duration goes wherever a reader is already looking to read the rest
   // of this region's own "score" anyway.
-  const tooltipText = durationLabel ? `${region.prompt} (${durationLabel})` : region.prompt
+  const promptText = region.ambience ? `${region.prompt}\nAmbience: ${region.ambience}` : region.prompt
+  const tooltipText = durationLabel ? `${promptText} (${durationLabel})` : promptText
   const busy = region.status === 'generating'
   return (
     <div
