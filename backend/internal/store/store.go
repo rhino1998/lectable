@@ -3286,6 +3286,84 @@ func (s *Store) DeleteParagraphAudioForSpeaker(bookIDs []string, name string) ([
 	return out, nil
 }
 
+// DeleteParagraphAudioForIdxs deletes every paragraph_audio row (across
+// every voice_id) for the paragraphs of chapterID at idxs - plus, per
+// voice, every other row in the same scare-quote merge group (see
+// paragraph_audio.pointer_offset), since a pointer paragraph's speech lives
+// in its group head's file and the head's file holds every member's: one
+// member's text changing means the whole group's clip is stale. The
+// paragraph-scoped counterpart of DeleteChapterAudio, used by
+// httpapi.pronounceChapter so re-resolving pronunciation only throws away
+// the audio whose generation text actually changed. Returns every deleted
+// row so the caller can remove the matching files (a pointer row has no
+// file of its own - removing its path is a harmless no-op).
+func (s *Store) DeleteParagraphAudioForIdxs(bookID, chapterID string, idxs []int) ([]SpeakerAudioRef, error) {
+	if len(idxs) == 0 {
+		return nil, nil
+	}
+	want := make(map[int]bool, len(idxs))
+	for _, idx := range idxs {
+		want[idx] = true
+	}
+	type audioRow struct {
+		paragraphID, voiceID string
+		idx, pointerOffset   int
+	}
+	rows, err := s.db.Query(`
+		SELECT pa.paragraph_id, pa.voice_id, p.idx, pa.pointer_offset
+		FROM paragraph_audio pa
+		JOIN paragraphs p ON p.id = pa.paragraph_id
+		WHERE p.chapter_id = ?`, chapterID)
+	if err != nil {
+		return nil, err
+	}
+	var all []audioRow
+	for rows.Next() {
+		var r audioRow
+		if err := rows.Scan(&r.paragraphID, &r.voiceID, &r.idx, &r.pointerOffset); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		all = append(all, r)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	type groupKey struct {
+		voiceID string
+		head    int
+	}
+	stale := make(map[groupKey]bool)
+	for _, r := range all {
+		if want[r.idx] {
+			stale[groupKey{r.voiceID, r.idx - r.pointerOffset}] = true
+		}
+	}
+	if len(stale) == 0 {
+		return nil, nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var out []SpeakerAudioRef
+	for _, r := range all {
+		if !stale[groupKey{r.voiceID, r.idx - r.pointerOffset}] {
+			continue
+		}
+		if _, err := tx.Exec(`DELETE FROM paragraph_audio WHERE paragraph_id = ? AND voice_id = ?`, r.paragraphID, r.voiceID); err != nil {
+			return nil, err
+		}
+		out = append(out, SpeakerAudioRef{BookID: bookID, ChapterID: chapterID, VoiceID: r.voiceID, Idx: r.idx})
+	}
+	return out, tx.Commit()
+}
+
 // DeleteParagraphAudioByVoiceID deletes every paragraph_audio row within
 // bookID matching voiceID exactly - the voice-preset-scoped counterpart of
 // DeleteParagraphAudioForSpeaker (which filters by speaker name across

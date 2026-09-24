@@ -693,26 +693,68 @@ building/running `ttsworker` does, since both now link into that binary.
     - `C'mon`/`c'mon` (straight or curly apostrophe, case-insensitive) -
       always returns exactly one reading ("Come on"/"come on"), so it
       never actually reaches the LLM at all.
-    - A bare `M/D` number pair ("3/4") - parses the month/day digits and
-      discards the match entirely for anything that isn't a plausible
-      calendar date (month outside 1-12, day outside 1-31); otherwise a
-      fully spelled-out date reading ("March the fourth") as the default,
-      original text unchanged as the other option - a deliberately cheap
-      fallback sidestepping any fraction-reading logic for the
-      "actually a fraction, not a date" case. A full `M/D/YYYY` is left
-      alone entirely - unambiguously a date already.
+    - Homographs `read`/`lead`/`wind`/`tear`/`bow`, each with two
+      respellings (reed/red, leed/led, winned/wined, tare/tier, beau/bough).
+    - A capitalized word + Roman numeral: a heading word
+      (`romanNumeralNonNames`, matched case-insensitively) reads as a
+      cardinal with no LLM call ("ACT II" → "Act two", "World War II" →
+      "World War two"); anything else is a possible regnal number,
+      unchanged vs. "Henry the eighth".
+    - Numbers (`numbers.go`/`findNumberTerms`, a scanner rather than a
+      table regex, since it needs neighbouring characters RE2 can't check):
+      integers (plain or comma-grouped) spelled out British-style ("7456" →
+      "seven thousand four hundred and fifty six"), fractions ("2/3" → "two
+      thirds", "1/2" → "one half", "3/4" → "three quarters") - or a count
+      ("six of six", "one of three") when the top is >= the bottom, after
+      a "Label:", or ending a short label line ("Technique 1/3"), decimals
+      ("three point five"), ordinals ("21st" → "twenty first"), and years
+      ("nineteen ninety eight") only in a clear year context (after "Month
+      D," or a cue like "in"/"since" with punctuation following). Skipped:
+      a token glued to a letter ("A4", "3D") or currency sign, a leading
+      zero ("007"), times ("3:45"), full dates ("3/4/2024"), and dotted
+      labels ("1.2.3", "1.E.8"). A bare `M/D` that parses as a calendar
+      date gets the date as a second, LLM-chosen candidate only after a
+      date preposition ("on 3/4"); otherwise it's always the fraction - on
+      real LitRPG books every `M/D` was a stat counter ("Capacity: 3/6").
+      A number overlapping a table match (e.g. inside "No. 5"'s span) is
+      dropped in favour of the table term.
 
   Within a batch, a term with only one candidate is resolved immediately -
-  no LLM call spent confirming a foregone conclusion; only a term with 2+
-  candidates is actually sent to the model. For those, the model's only
-  job is picking an index into that pre-computed list per span (reply
-  shape `[{"id", "choice"}, ...]`), so it can never invent replacement
-  text - the safety property that makes this safe to change what's spoken
-  at all. A response entry that's missing, malformed, or out-of-range
-  defaults silently to index 0 (always the more common reading) rather
-  than erroring, since a term was already positively identified as needing
-  *some* resolution before reaching the model. A batch with no
-  multi-candidate terms (most paragraphs) skips the LLM call entirely.
+  no LLM call spent confirming a foregone conclusion. A homograph is then
+  tried against `resolveHomographByGrammar` (`pronunciationrules.go`):
+  deterministic cues from the surrounding words - a modal/"to" before
+  "read" → present, "had/was/well" → past, a determiner before "tear" →
+  teardrop, "heavy as lead" → metal, "a slight bow" → gesture, and so on.
+  Only terms no rule settles reach the model, whose only job is picking a
+  lettered option per span (reply shape `{"0": "A", ...}`), so it can
+  never invent replacement text - the safety property that makes this safe
+  to change what's spoken at all. Each term is shown as its own short
+  passage with the word marked `⟦inline⟧` and each option described by
+  *meaning* (`pronunciationCandidate.senses`), not by respelling. A
+  response entry that's missing, malformed, or out-of-range defaults
+  silently to index 0 (always the more common reading).
+
+  **Benchmarked** (2026-09-24) against ~500 hand-labeled terms from this
+  library's own books (a 380-term gold set plus a 120-term held-out set
+  from chapters not used to write the grammar rules), Qwen3-4B-Instruct-
+  2507: the earlier prompt (whole numbered lines + a separate "term id in
+  line N -> 0=winned, 1=wined" list) scored 45% - *worse* than always
+  taking candidate 0 (72%): the model couldn't bind a bare respelling to
+  its sense, and a line containing the word twice made id→occurrence
+  ambiguous. The sense-labeled per-term prompt alone scored ~89%; rules +
+  that prompt score ~96% on both sets and resolve most terms with no LLM
+  call. Known remaining misses: "lead" misspelled for past-tense "led"
+  in narration, weapon-vs-gesture "bow" with no archery words nearby, and
+  "read" in present-tense narration (the rules assume past-tense
+  narration - `pronunciationNarrationPastTense`).
+
+  Re-running the pass (`httpapi.pronounceChapter`) only invalidates audio
+  for paragraphs whose stored substitutions actually changed, plus their
+  scare-quote merge groups (`Store.DeleteParagraphAudioForIdxs`) - not the
+  whole chapter, since a detection change (e.g. adding numbers) would
+  otherwise discard nearly every chapter's audio for a handful of changed
+  paragraphs each. It also clears a now-stale list for a paragraph the new
+  pass finds nothing in.
 
   The result is stored as `internal/pronounce.Substitution` (`{Offset,
   Length, Replacement}`, byte-indexed into the paragraph's own real
@@ -1057,7 +1099,7 @@ build does, since both now link into that one binary.
 - `PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker` — `{"speaker": "..."}`; corrects one paragraph's speaker attribution directly, without touching its already-generated audio - a caller wanting the new voice actually narrated still needs a separate `regenerate` call above. `""`/`"Narrator"` both mean "no character"; any other name is registered as a real character if it wasn't one already. 400s if the target paragraph isn't quoted dialogue (`IsQuote`) - narration/description can't be attributed to a speaker
 - `POST /api/books/{id}/chapters/{idx}/attribute-speakers` — enqueues LLM speaker attribution for one chapter and returns `202 {"queued": true}` immediately, not the result (503 if the LLM model file is missing) - fire-and-forget; registers any newly-discovered character with no voice yet - characterization/voice assignment happens lazily later, the first time that character's voice is actually needed for generation
 - `POST /api/books/{id}/chapters/{idx}/retag-scare-quotes` / `.../retag-descriptions` — enqueue a `KindScareQuote` / `KindDescription` task for one chapter, `202 {"queued": true}` (always re-runs, even if already tagged); description tagging waits on the chapter's scare-quote tagging
-- `POST /api/books/{id}/chapters/{idx}/resolve-pronunciation` — enqueues pronunciation resolution (ambiguous abbreviations like "Dr.") for one chapter, any clone model, `202 {"queued": true}` (503 if the LLM model file is missing) - fire-and-forget
+- `POST /api/books/{id}/chapters/{idx}/resolve-pronunciation` — enqueues pronunciation resolution (ambiguous abbreviations like "Dr.", homographs, numbers) for one chapter, any clone model, `202 {"queued": true}` (503 if the LLM model file is missing) - fire-and-forget
 - `POST /api/books/{id}/chapters/{idx}/tag-directions` — enqueues speech-direction tagging (Higgs's own inline delivery tags) for one chapter, `202 {"queued": true}` immediately (503 if the LLM model file is missing, 400 if the book's resolved clone model isn't `audiocpp-higgs-4b`) - fire-and-forget
 - `POST /api/books/{id}/chapters/{idx}/generate-music` — queues the whole-chapter background-music run now (`jobs.Manager.GenerateChapterMusic`, `TierNormal`), regardless of the book's `musicEnabled` toggle; resets failed regions to pending first so they're retried. `202 {"queued": n}` (regions queued, 0 if all already have music), `409` if the chapter isn't scored or its narration isn't fully generated. Separately, `KindMusicLiveGeneration` tasks (one per region, keyed `music_live:<regionID>`) chain forward from the reader's region as soon as each region's own paragraphs are voiced: a live task queues the next region's task the moment it dispatches, and that task depends on it (its seed clip) so it starts as soon as the first finishes - at most one live task per chapter is queued ahead, and a queued one the reader has moved past is canceled. The chain crosses chapter boundaries: past a chapter's last region it continues into the next chapter's first (waiting on the previous chapter's last live task for ordering, but not seeded from it), and an unscored next chapter gets its `music_score` task promoted to `TierLookahead` so the chain can cross once it's scored; reader-position lookahead only drives/promotes this live path (and scoring), never the whole-chapter batch, which stays `TierBackground` unless run explicitly; a region's "generating" state is tracked in memory (`Manager.MusicRegionGenerating`), never stored
 - `POST /api/books/{id}/preprocess` — the "run everything" meta-task: scare-quote tagging, attribution, description tagging, characterization, voice provisioning, direction-tagging, and music scoring for every chapter/character in the book. Phase dependencies are declared in `jobs.pipelinePhaseDeps`: scare-quote tagging before attribution and description tagging, both of those before characterization, characterization before voice provisioning; direction-tagging and music scoring depend on none of them (`directChapter` only needs the book's own already-resolved voice and each paragraph's own `IsQuote`/`Text`, none of which the other three touch), so it dispatches immediately alongside attribution rather than waiting on the other three to clear first - see `jobs.pipelineResolver`'s own doc comment. `202 {"queued": true}` immediately (503 if the LLM model file is missing, `409` if a run is already in progress for this book) - the four phases are real, dependency-ordered tasks (`jobs.Manager.EnqueuePipeline`, one `pipelineTask` per phase, `httpapi`'s `preprocess*Phase` closures supplying each phase's actual work), each phase task blocking on its own chapter's/character's real per-item task (`RunAttribution`/`RunCharacterization` via `ensureCharacterized`/`RunVoiceProvision`/`RunDirection`) exactly the way a single-item button dispatch already does - so no nested-queue-call deadlock risk (a phase task never occupies the `poolLLM`/`poolGeneration`/`poolDesign` slot it's waiting on). The four phase tasks themselves dispatch through `poolPipeline`, on a second, independent `taskqueue.Queue` (`jobs.Manager.pipelineQueue`) separate from the one `poolGeneration`/`poolDesign`/`poolLLM` share - see `internal/jobs/pipeline.go`'s own doc comment: this is what lets book preprocessing actually run concurrently with ordinary generation/attribution instead of being subject to those three pools' own "one pool active at a time" mutual exclusion, since a phase task does no GPU/LLM work itself. Progress observable exactly like the individual buttons' own. Best-effort and idempotent per item, so rerunning it (or an individual button) after a partial failure only redoes what didn't finish

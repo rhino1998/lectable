@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
@@ -1770,7 +1772,9 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 // Pronunciation, jobs.KindPronunciation), split out of directChapter: a
 // plain word substitution reads correctly under every clone model, so
 // unlike direction tagging it isn't gated on Higgs. Invalidates the
-// chapter's generated audio if anything was resolved, and marks
+// generated audio of just the paragraphs whose substitutions changed (and
+// their scare-quote merge groups - see Store.DeleteParagraphAudioForIdxs),
+// and marks
 // Passes.Pronunciation only on a full, uninterrupted run - directChapter's
 // exact contract, including onlyIdx's meaning (non-nil only for a paused
 // run's own continuation).
@@ -1797,18 +1801,46 @@ func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *sto
 	}
 
 	pronunciation, remaining, resolveErr := s.Speaker.ResolvePronunciation(ctx, book.Title, ch.Title, inputs, nil)
+
+	// Every paragraph this run actually reached gets its stored
+	// substitutions replaced - including clearing a stale list the new
+	// pass no longer produces (ResolvePronunciation omits paragraphs with
+	// nothing to substitute). Only paragraphs whose substitutions really
+	// changed lose their audio: unlike directChapter's blunt whole-chapter
+	// invalidation, re-running this pass after a detection/prompt change
+	// would otherwise throw away nearly every chapter's audio (numbers
+	// alone touch almost every chapter) to regenerate a small fraction of
+	// paragraphs.
+	unreached := make(map[int]bool, len(remaining))
+	for _, p := range remaining {
+		unreached[p.Idx] = true
+	}
+	updates := make(map[int][]pronounce.Substitution, len(paragraphs))
+	var changed []int
+	for _, p := range paragraphs {
+		if unreached[p.Idx] {
+			continue
+		}
+		subs := pronunciation[p.Idx]
+		if !slices.Equal(subs, []pronounce.Substitution(p.Pronunciation)) {
+			changed = append(changed, p.Idx)
+			updates[p.Idx] = subs
+		}
+	}
 	// Persisted regardless of any error - see directChapter's own "persist
 	// what succeeded" note.
-	if serr := s.Store.SetParagraphPronunciation(ch.ID, pronunciation); serr != nil {
+	if serr := s.Store.SetParagraphPronunciation(ch.ID, updates); serr != nil {
 		return 0, nil, serr
 	}
-	if len(pronunciation) > 0 {
-		// Same blunt whole-chapter invalidation directChapter does - see
-		// its own comment.
-		if serr := s.Store.DeleteChapterAudio(ch.ID); serr != nil {
-			log.Printf("pronounceChapter: invalidate audio for chapter %s: %v", ch.ID, serr)
-		} else {
-			_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s/%s", s.DataDir, book.ID, ch.ID))
+	if len(changed) > 0 {
+		refs, derr := s.Store.DeleteParagraphAudioForIdxs(book.ID, ch.ID, changed)
+		if derr != nil {
+			log.Printf("pronounceChapter: invalidate audio for chapter %s: %v", ch.ID, derr)
+		}
+		for _, ref := range refs {
+			if rerr := os.Remove(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil && !os.IsNotExist(rerr) {
+				log.Printf("pronounceChapter: remove stale audio file: %v", rerr)
+			}
 		}
 	}
 	if resolveErr != nil {

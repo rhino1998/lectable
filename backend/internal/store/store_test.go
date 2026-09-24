@@ -1369,3 +1369,49 @@ func TestClearMusicRegionsResetsPassesMusic(t *testing.T) {
 		t.Fatalf("expected 0 regions after ClearMusicRegions, got %d", len(regions))
 	}
 }
+
+// TestDeleteParagraphAudioForIdxs: invalidating one member of a
+// scare-quote merge group (paragraphs 1-2 pointing into 0's clip) must drop
+// the whole group, for that voice only, and leave unrelated paragraphs'
+// audio alone.
+func TestDeleteParagraphAudioForIdxs(t *testing.T) {
+	s := openTestStore(t)
+	bookID, chapterID := oneChapterBook(t, s, "", 0, "a", "b", "c", "d")
+	paras, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	insert := func(idx int, voice string, pointer int) {
+		t.Helper()
+		if _, err := s.db.Exec(`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, pointer_offset) VALUES (?, ?, 'ready', ?)`, paras[idx].ID, voice, pointer); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert(0, "v1", 0)
+	insert(1, "v1", 1)
+	insert(2, "v1", 2)
+	insert(3, "v1", 0)
+	insert(2, "v2", 0) // same paragraph, different voice, no group
+
+	refs, err := s.DeleteParagraphAudioForIdxs(bookID, chapterID, []int{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 3 {
+		t.Errorf("deleted %d rows, want 3 (the v1 group 0-2): %+v", len(refs), refs)
+	}
+	var left []string
+	rows, err := s.db.Query(`SELECT p.idx || ':' || pa.voice_id FROM paragraph_audio pa JOIN paragraphs p ON p.id = pa.paragraph_id ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var k string
+		_ = rows.Scan(&k)
+		left = append(left, k)
+	}
+	rows.Close()
+	if len(left) != 2 || left[0] != "2:v2" || left[1] != "3:v1" {
+		t.Errorf("remaining rows = %v, want [2:v2 3:v1]", left)
+	}
+}

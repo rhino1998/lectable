@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 )
@@ -54,13 +55,35 @@ type pronunciationCandidate struct {
 	// and a term with only one candidate resolves directly to it without
 	// ever reaching the LLM at all (see ResolvePronunciation).
 	dynamicCandidates func(groups []string) []string
+	// senses describes what each candidate means, index-aligned with the
+	// candidate list - what the LLM is actually shown and asked to pick
+	// between (see pronunciationBatch). Measured on real chapters, the
+	// model can't reliably bind a bare respelling like "winned"/"wined" to
+	// the sense it stands for, so every multi-candidate entry needs one.
+	senses []string
+	// kind names a homograph (its lowercase spelling) for
+	// resolveHomographByGrammar's deterministic rules; "" for everything
+	// else.
+	kind string
 }
 
 var pronunciationCandidates = []pronunciationCandidate{
-	{re: regexp.MustCompile(`\bDr\.`), candidates: []string{"Doctor", "Drive"}},
-	{re: regexp.MustCompile(`\bSt\.`), candidates: []string{"Street", "Saint"}},
-	{re: regexp.MustCompile(`\bFt\.`), candidates: []string{"Fort", "Feet"}},
-	{re: regexp.MustCompile(`\bMt\.`), candidates: []string{"Mount", "Mountain"}},
+	{re: regexp.MustCompile(`\bDr\.`), candidates: []string{"Doctor", "Drive"}, senses: []string{
+		"Doctor - a title before a person's name (Dr. Chen)",
+		"Drive - part of a road name or address (Mulholland Dr.)",
+	}},
+	{re: regexp.MustCompile(`\bSt\.`), candidates: []string{"Street", "Saint"}, senses: []string{
+		"Street - part of a road name or address (Main St., 42nd St.)",
+		"Saint - before a saint's or a place's name (St. Andrews, St. Louis)",
+	}},
+	{re: regexp.MustCompile(`\bFt\.`), candidates: []string{"Fort", "Feet"}, senses: []string{
+		"Fort - part of a place name (Ft. Worth)",
+		"Feet - a measurement after a number (6 Ft. tall)",
+	}},
+	{re: regexp.MustCompile(`\bMt\.`), candidates: []string{"Mount", "Mountain"}, senses: []string{
+		"Mount - before a mountain's name (Mt. Rainier)",
+		"Mountain - only where \"Mount\" would read strangely",
+	}},
 	// "No." only when immediately followed by a number ("No. 5", "Room
 	// No. 12") - RE2 has no lookahead, so the digit(s) have to be part of
 	// the match itself even though they're never part of the
@@ -68,7 +91,10 @@ var pronunciationCandidates = []pronunciationCandidate{
 	// it). Requiring a following number is what keeps this from matching
 	// an ordinary "No." ending a sentence - real prose essentially never
 	// follows that with a bare number.
-	{re: regexp.MustCompile(`(No\.)\s*\d+`), spanGroup: 1, candidates: []string{"Number", "No"}},
+	{re: regexp.MustCompile(`(No\.)\s*\d+`), spanGroup: 1, candidates: []string{"Number", "No"}, senses: []string{
+		"Number - labels a numbered item (Room No. 5)",
+		"No - the word \"no\", a refusal or negation that a number just happens to follow",
+	}},
 	// "C'mon"/"c'mon" - straight apostrophe ('), right single curly quote
 	// (’, U+2019, the typographically "correct" smart-quote apostrophe),
 	// or left single curly quote (‘, U+2018) - epub smart-quote
@@ -101,19 +127,17 @@ var pronunciationCandidates = []pronunciationCandidate{
 	// "M/D" date is: TTS has no reliable way to read "VIII" as anything but
 	// individual letters, but respelling it as an ordinal is only correct
 	// when it's actually a person's own regnal/ordinal number, not a
-	// heading/label/version number ("World War II", "Chapter IV", "Level
-	// III") that reads as a plain cardinal or shouldn't be touched at all -
-	// romanNumeralCandidates screens out a denylist of common non-name
-	// words for exactly that reason before ever offering the respelling.
-	{re: romanNumeralRE, dynamicCandidates: romanNumeralCandidates},
-	// A bare "M/D" number pair ("3/4") - genuinely ambiguous between a
-	// calendar date and a fraction/ratio, unlike a full "M/D/YYYY" (left
-	// alone entirely - unambiguously a date already, not worth a
-	// substitution). dateCandidates discards anything that isn't a
-	// plausible date (month outside 1-12, day outside 1-31) rather than
-	// guessing at a fraction reading of its own - see its own doc
-	// comment for why "leave it unchanged" is the fallback instead.
-	{re: regexp.MustCompile(`\b(\d{1,2})/(\d{1,2})\b`), dynamicCandidates: dateCandidates},
+	// heading/label/version number ("World War II", "Chapter IV", "ACT
+	// II") - romanNumeralCandidates reads a denylisted heading word's
+	// numeral as a plain cardinal instead ("Act two").
+	{re: romanNumeralRE, dynamicCandidates: romanNumeralCandidates, senses: []string{
+		"leave as written - the numeral isn't a person's regnal number",
+		"a monarch's or person's regnal number, read as \"the Nth\" (Henry VIII)",
+	}},
+	// Numbers - including the "M/D" fraction-or-date choice - aren't in
+	// this table: findNumberTerms scans them separately, since telling
+	// "3/4" apart from the "3/4" inside "3/4/2024" or "A3/4" needs the
+	// neighbouring characters, which RE2 (no lookaround) can't check here.
 
 	// Classic English homographs - identical spelling, different
 	// pronunciation depending on sense/part of speech - joining the
@@ -165,11 +189,26 @@ var pronunciationCandidates = []pronunciationCandidate{
 	//   waist, or a ship's own front - both share the same sound, unlike
 	//   the weapon/ribbon sense - already an exact real-word homophone, a
 	//   tree branch).
-	{re: regexp.MustCompile(`\b[Rr]ead\b`), dynamicCandidates: homographCandidates("reed", "red")},
-	{re: regexp.MustCompile(`\b[Ll]ead\b`), dynamicCandidates: homographCandidates("leed", "led")},
-	{re: regexp.MustCompile(`\b[Ww]ind\b`), dynamicCandidates: homographCandidates("winned", "wined")},
-	{re: regexp.MustCompile(`\b[Tt]ear\b`), dynamicCandidates: homographCandidates("tare", "tier")},
-	{re: regexp.MustCompile(`\b[Bb]ow\b`), dynamicCandidates: homographCandidates("beau", "bough")},
+	{re: regexp.MustCompile(`\b[Rr]ead\b`), dynamicCandidates: homographCandidates("reed", "red"), kind: "read", senses: []string{
+		"present tense, infinitive, command, or the noun \"a good read\" (can read, to read, will read, read this!) - sounds like REED",
+		"past tense or past participle (he read it yesterday, had read, it read:, well-read) - sounds like RED",
+	}},
+	{re: regexp.MustCompile(`\b[Ll]ead\b`), dynamicCandidates: homographCandidates("leed", "led"), kind: "lead", senses: []string{
+		"to guide, go first, or be ahead; a head start (lead the way, will lead, in the lead, follow her lead) - sounds like LEED",
+		"the heavy metal (lead pipe, heavy as lead), or a misspelling of the past tense \"led\" (yesterday he lead them) - sounds like LED",
+	}},
+	{re: regexp.MustCompile(`\b[Ww]ind\b`), dynamicCandidates: homographCandidates("winned", "wined"), kind: "wind", senses: []string{
+		"moving air, a breeze, breath, or anything named after it (the wind blew, Wind Strike, second wind) - rhymes with PINNED",
+		"to twist, coil, crank, or meander (wind the clock, wind up, the road winds) - rhymes with FIND",
+	}},
+	{re: regexp.MustCompile(`\b[Tt]ear\b`), dynamicCandidates: homographCandidates("tare", "tier"), kind: "tear", senses: []string{
+		"to rip, or a rip/hole (tear it apart, a tear in the fabric) - rhymes with BARE",
+		"a teardrop, or eyes filling with tears (a tear rolled down, tear-streaked, her eyes tear up) - rhymes with FEAR",
+	}},
+	{re: regexp.MustCompile(`\b[Bb]ow\b`), dynamicCandidates: homographCandidates("beau", "bough"), kind: "bow", senses: []string{
+		"a weapon for shooting arrows, or a ribbon knot (drew his bow, bow and arrow, tied a bow) - rhymes with GO",
+		"bending at the waist, or the front of a ship (took a bow, a stiff bow, the ship's bow) - rhymes with COW",
+	}},
 }
 
 // caseMatch title-cases alt to match sample's own leading letter -
@@ -219,30 +258,21 @@ var dayOrdinals = [...]string{
 	"thirty-first",
 }
 
-// dateCandidates is the bare-"M/D" pattern's own dynamicCandidates -
-// groups[1]/groups[2] are the month/day digit strings (see its own regexp
-// literal above). Returns nil (discard the match entirely) for anything
-// that isn't a plausible calendar date, rather than guess - the same
-// "parse it properly or leave it alone" principle asked for roman
-// numerals elsewhere, applied here too. Candidate 0 (the default) is the
-// fully spelled-out date reading, since a bare "M/D" is far more often a
-// date than a fraction in narrative prose; candidate 1 is the original
-// text completely unchanged - a safe "this was actually a fraction/ratio,
-// don't touch it" fallback that needs no fraction-reading logic of its
-// own to get right.
-func dateCandidates(groups []string) []string {
-	month, err := strconv.Atoi(groups[1])
-	if err != nil || month < 1 || month > 12 {
-		return nil
+// dateReading spells a bare "M/D" token as a calendar date ("March the
+// fourth"), or returns "" when it isn't a plausible one (month outside 1-12,
+// day outside 1-31, or either part longer than two digits) - see
+// findNumberTerms, which offers it as a fraction token's second candidate.
+func dateReading(tok string) string {
+	m := fractionRE.FindStringSubmatch(tok)
+	if m == nil || len(m[1]) > 2 || len(m[2]) > 2 {
+		return ""
 	}
-	day, err := strconv.Atoi(groups[2])
-	if err != nil || day < 1 || day > 31 {
-		return nil
+	month, _ := strconv.Atoi(m[1])
+	day, _ := strconv.Atoi(m[2])
+	if month < 1 || month > 12 || day < 1 || day > 31 {
+		return ""
 	}
-	return []string{
-		fmt.Sprintf("%s the %s", monthNames[month], dayOrdinals[day]),
-		groups[0],
-	}
+	return fmt.Sprintf("%s the %s", monthNames[month], dayOrdinals[day])
 }
 
 // romanNumeralPattern is every multi-character Roman numeral from 2 up to
@@ -316,11 +346,9 @@ var romanNumeralRE = regexp.MustCompile(`\b([A-Z][a-zA-Z]+) (` + romanNumeralPat
 
 // romanNumeralNonNames is a denylist of common capitalized words that often
 // precede a Roman numeral in ordinary prose without it being a person's own
-// ordinal - a title/heading/grouping number instead, which either reads as
-// a cardinal or shouldn't be touched at all ("World War II", "Chapter IV",
-// "Level III", "Super Bowl LVIII" - wrong here would be the jarring "World
-// War the Second"). Checked before ever offering the ordinal respelling;
-// see romanNumeralCandidates.
+// ordinal - a title/heading/grouping number instead, read as a cardinal
+// ("World War II", "Chapter IV", "ACT II" - wrong here would be the jarring
+// "World War the Second"). Keys are title-cased; see romanNumeralCandidates.
 var romanNumeralNonNames = map[string]bool{
 	"War": true, "Act": true, "Chapter": true, "Part": true, "Book": true,
 	"Volume": true, "Level": true, "Section": true, "World": true,
@@ -334,21 +362,30 @@ var romanNumeralNonNames = map[string]bool{
 
 // romanNumeralCandidates is the Name-plus-Roman-numeral pattern's own
 // dynamicCandidates - groups[1] is the leading word, groups[2] its Roman
-// numeral (see romanNumeralRE). Candidate 0 (the default) is the unchanged
-// original text; candidate 1, offered only past the romanNumeralNonNames
-// screen and a successful parse, is the ordinal respelling ("Henry VIII"
-// -> "Henry the Eighth") - reusing dayOrdinals rather than a second lookup
-// table, since the two passes need the exact same word for the same
-// number.
+// numeral (see romanNumeralRE). A leading word on the romanNumeralNonNames
+// list (matched case-insensitively, so a play's "ACT II" heading counts)
+// labels a heading/grouping number, read as a plain cardinal - one
+// candidate, no LLM call: "ACT II" -> "Act two", "World War II" -> "World
+// War two". An all-caps leading word is title-cased so the TTS front-end
+// doesn't spell it out letter by letter. Anything else is a possible
+// regnal number: candidate 0 (the default) is the unchanged original text,
+// candidate 1 the ordinal respelling ("Henry VIII" -> "Henry the eighth") -
+// reusing dayOrdinals rather than a second lookup table, since the two
+// passes need the exact same word for the same number.
 func romanNumeralCandidates(groups []string) []string {
-	if romanNumeralNonNames[groups[1]] {
-		return nil
-	}
 	val, ok := romanToInt(groups[2])
 	if !ok || val < 1 || val >= len(dayOrdinals) {
 		return nil
 	}
-	return []string{groups[0], fmt.Sprintf("%s the %s", groups[1], dayOrdinals[val])}
+	word := groups[1]
+	titled := strings.ToUpper(word[:1]) + strings.ToLower(word[1:])
+	if romanNumeralNonNames[titled] {
+		if word == strings.ToUpper(word) {
+			word = titled
+		}
+		return []string{fmt.Sprintf("%s %s", word, numberWords(int64(val)))}
+	}
+	return []string{groups[0], fmt.Sprintf("%s the %s", word, dayOrdinals[val])}
 }
 
 // cmonCandidates is the C'mon pattern's own dynamicCandidates - always
@@ -388,6 +425,10 @@ type pronunciationTerm struct {
 	Length       int
 	Text         string
 	Candidates   []string
+	// Senses/Kind are copied from the matching pronunciationCandidate (or
+	// set by findNumberTerms) - see its own fields.
+	Senses []string
+	Kind   string
 }
 
 // findPronunciationTerms scans every paragraph in batch (against its own
@@ -404,6 +445,7 @@ type pronunciationTerm struct {
 func findPronunciationTerms(batch []ParagraphInput) []pronunciationTerm {
 	var out []pronunciationTerm
 	for _, p := range batch {
+		first := len(out)
 		for _, c := range pronunciationCandidates {
 			for _, loc := range c.re.FindAllStringSubmatchIndex(p.Text, -1) {
 				groups := make([]string, len(loc)/2)
@@ -428,7 +470,26 @@ func findPronunciationTerms(batch []ParagraphInput) []pronunciationTerm {
 					Length:       spanEnd - spanStart,
 					Text:         p.Text[spanStart:spanEnd],
 					Candidates:   candidates,
+					Senses:       c.senses,
+					Kind:         c.kind,
 				})
+			}
+		}
+		// Numbers (findNumberTerms) go last so a table pattern whose span
+		// overlaps one keeps it, and the number term is dropped rather
+		// than producing two substitutions for one span.
+		tableTerms := out[first:]
+		for _, nt := range findNumberTerms(p.Text) {
+			overlaps := false
+			for _, t := range tableTerms {
+				if nt.Offset < t.Offset+t.Length && t.Offset < nt.Offset+nt.Length {
+					overlaps = true
+					break
+				}
+			}
+			if !overlaps {
+				nt.ParagraphIdx = p.Idx
+				out = append(out, nt)
 			}
 		}
 	}
@@ -444,60 +505,89 @@ func findPronunciationTerms(batch []ParagraphInput) []pronunciationTerm {
 	return out
 }
 
-// pronunciationBatchParagraphs/pronunciationMaxTokens mirror
-// sfxBatchParagraphs/sfxMaxTokens's own reasoning (a small batch, real
-// token headroom) - kept slightly larger than sfx's since this pass's own
-// response is much smaller per item (one {id, choice} pair, not an echoed
-// full line of text), so token pressure is lighter for the same batch
-// size.
+// pronunciationBatchParagraphs is how many paragraphs' terms go into one
+// LLM call. pronunciationMaxTokens leaves ample room for the reply - one
+// short {"id": "letter"} pair per term.
 const pronunciationBatchParagraphs = 20
-const pronunciationMaxTokens = 8192
+const pronunciationMaxTokens = 2048
 
 // pronunciationSystemPrompt asks a narrower, more mechanical question than
-// any other pass in this package: it's never shown a fixed universal tag
-// vocabulary, and never asked to find anything itself - findPronunciationTerms
-// (plain regex, no LLM involved at all) already found every term and its
-// own small set of candidate readings; the model's only job is picking
-// one, by index, per term. This is deliberate: it bounds the model to a
-// closed choice instead of ever generating replacement text, which is what
-// makes it safe to actually change what's spoken (see this package's own
-// pronounce subpackage doc comment for the full safety story). Only
-// genuinely multi-candidate terms are ever listed here at all - a
-// single-candidate term (e.g. "C'mon") is resolved before this prompt is
-// even built (see ResolvePronunciation), so the model never wastes effort
-// confirming a foregone conclusion.
-const pronunciationSystemPrompt = `You are a pronunciation disambiguator for an audiobook narrator. You'll be given numbered lines from a novel, and a list of ambiguous words/abbreviations already found in them, each with a small set of possible readings. For each one, decide which reading is correct given how it's actually used in its own line.
+// any other pass in this package: findPronunciationTerms (plain regex, no
+// LLM) already found every term and its own small set of candidate
+// readings, and resolveHomographByGrammar already settled every term a
+// grammatical cue decides; the model's only job is picking one lettered
+// meaning per remaining term. It never generates replacement text, which
+// is what makes it safe to actually change what's spoken (see the pronounce
+// package doc comment for the full safety story).
+//
+// Each term is shown as its own short passage with the word marked
+// ⟦inline⟧ and each option described by *meaning* (pronunciationCandidate.
+// senses). Benchmarked on hand-labeled terms from real chapters, an earlier
+// shape - whole numbered lines plus a separate "term id -> line number"
+// list whose options were bare respellings ("0=winned, 1=wined") - scored
+// 45%, worse than always taking the default reading (72%): the model
+// couldn't bind a respelling to its sense, and a line containing the same
+// word twice made the id-to-occurrence mapping ambiguous. This shape
+// scored 89% on the same terms.
+const pronunciationSystemPrompt = `You decide how an audiobook narrator should pronounce ambiguous words. Each numbered item is a short passage from a novel with one word marked ⟦like this⟧, followed by its possible meanings, lettered A, B, and so on. For each item, decide which meaning the marked word has in that exact spot. Judge each item on its own grammar and context - items are independent.
 
-Reply with ONLY a JSON array, no other text: [{"id": <term id>, "choice": <candidate index>}, ...] - exactly one entry for every term listed below, no more, no fewer, using the exact id and one of the candidate indices given for that term. If you genuinely can't tell from context, pick index 0 (always the more common reading).
+Reply with ONLY a JSON object mapping each item number to a letter, e.g. {"0": "A", "1": "B"}. Answer every item.`
 
-Rules:
-- Base your choice on how the abbreviation is actually used in its own line - what kind of word follows it, and the surrounding context. "Dr." immediately before a name ("Dr. Chen") is almost always "Doctor"; before a place-sounding word with no name attached ("the old Dr. curved north") is "Drive". "St." before a name-like word ("St. Andrews", "St. Louis") is usually "Saint"; as part of a street address or ending a location name ("Main St.", "42nd St.") is "Street". "Ft." before a place name ("Ft. Worth") is "Fort"; after a number ("6 Ft. tall") is "Feet". "Mt." before a place name ("Mt. Rainier") is almost always "Mount"; "Mountain" is rare - only pick it if "Mount" would read strangely in context.
-- "No." is only ever listed here when a number immediately follows it ("No. 5", "Room No. 12") - almost always "Number". Only pick "No" if the sentence is unmistakably a negation despite the number that happens to follow.
-- A bare number pair like "3/4" is listed with a fully spelled-out date reading as one option and the original text completely unchanged as the other. Pick the spelled-out date unless the sentence clearly means a fraction or ratio instead of a calendar date (e.g. "drank 3/4 of the bottle," "won 3/4 of the votes") - in that case pick the unchanged option.
-- "read"/"lead"/"wind"/"tear"/"bow" are each listed with two respellings, one per sense, never their own original ambiguous spelling - index 0 is always the more common sense in ordinary narrative prose, the safe default whenever you're not sure. Pick index 0 unless the sentence clearly means the other, less common sense: "read" is index 0 (present/infinitive tense, "will you read this") unless it's clearly past tense ("she read it yesterday"), which is index 1. "lead" is index 0 (the verb/front-position sense, "lead the charge", "in the lead") unless it clearly means the metal or the past tense of "to lead" ("a lead pipe", "she had led them"), which is index 1. "wind" is index 0 (the weather noun) unless it clearly means the verb sense ("wind the clock", "the road will wind"), which is index 1. "tear" is index 0 (the verb "to rip") unless it clearly means a teardrop, which is index 1. "bow" is index 0 (a weapon, ribbon, or knot) unless it clearly means bending at the waist or a ship's own front - both read the same way - which is index 1.
-- A capitalized word immediately followed by a Roman numeral ("Henry VIII", "Elizabeth II") is listed with the unchanged text as one option and a spelled-out ordinal ("Henry the Eighth") as the other. Pick the ordinal only when the leading word is genuinely a person's own name and the numeral is their regnal/ordinal number. Pick unchanged for anything else the numeral could be labeling - a war, chapter, act, part, level, section, round, or version number, or any other heading/grouping/count that wouldn't naturally be spoken as "the Nth". If genuinely unsure, pick unchanged.
-- Every term listed must get exactly one answer - never omit one, even if you're unsure (pick index 0 instead of skipping it).`
+// pronunciationSnippetContext bounds how much of a term's paragraph is
+// shown on either side of it (in bytes, before trimming to a sentence
+// boundary) - enough for the sentence it's in, without a whole paragraph.
+const pronunciationSnippetContext = 220
 
-func (c *Client) pronunciationBatch(ctx context.Context, bookTitle, chapterTitle string, batch []ParagraphInput, terms []pronunciationTerm) (map[int]int, error) {
-	var user strings.Builder
-	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
-	user.WriteString("\nLines:\n")
-	for i, p := range batch {
-		if i > 0 && !p.Inline {
-			user.WriteString("\n")
-		}
-		fmt.Fprintf(&user, "%d: %s\n", p.Idx, oneLine(p.Text))
+// markedSnippet returns the sentence(s) around text[start:end], whitespace-
+// collapsed, with the term wrapped in ⟦⟧ and "…" where the paragraph was
+// cut.
+func markedSnippet(text string, start, end int) string {
+	from := max(0, start-pronunciationSnippetContext)
+	for from > 0 && !utf8.RuneStart(text[from]) {
+		from++
 	}
-	user.WriteString("\nTerms:\n")
-	for _, t := range terms {
-		opts := make([]string, len(t.Candidates))
-		for i, cand := range t.Candidates {
-			opts[i] = fmt.Sprintf("%d=%s", i, cand)
+	pre := text[from:start]
+	if from > 0 {
+		// Start after the last sentence end before the term, if any.
+		if j := strings.LastIndexAny(pre, ".!?"); j >= 0 {
+			pre = pre[j+1:]
 		}
-		fmt.Fprintf(&user, "%d: %q in line %d -> %s\n", t.ID, t.Text, t.ParagraphIdx, strings.Join(opts, ", "))
+		pre = "…" + pre
+	}
+	to := min(len(text), end+pronunciationSnippetContext)
+	for to < len(text) && !utf8.RuneStart(text[to]) {
+		to--
+	}
+	post := text[end:to]
+	if to < len(text) {
+		// End at the first sentence end after the term, if any.
+		if j := strings.IndexAny(post, ".!?"); j >= 0 {
+			post = post[:j+1]
+		}
+		post += "…"
+	}
+	return oneLine(pre + "⟦" + text[start:end] + "⟧" + post)
+}
+
+func (c *Client) pronunciationBatch(ctx context.Context, batch []ParagraphInput, terms []pronunciationTerm) (map[int]int, error) {
+	textByIdx := make(map[int]string, len(batch))
+	for _, p := range batch {
+		textByIdx[p.Idx] = p.Text
+	}
+	var user strings.Builder
+	for _, t := range terms {
+		fmt.Fprintf(&user, "%d. %s\n", t.ID, markedSnippet(textByIdx[t.ParagraphIdx], t.Offset, t.Offset+t.Length))
+		for i, cand := range t.Candidates {
+			sense := cand
+			if i < len(t.Senses) {
+				sense = t.Senses[i]
+			}
+			fmt.Fprintf(&user, "   %c: %s\n", 'A'+i, sense)
+		}
+		user.WriteString("\n")
 	}
 	if c.cfg.NoThink {
-		user.WriteString("\n/no_think")
+		user.WriteString("/no_think")
 	}
 
 	content, err := c.generate(ctx, pronunciationSystemPrompt, user.String(), 0, pronunciationMaxTokens)
@@ -507,28 +597,16 @@ func (c *Client) pronunciationBatch(ctx context.Context, bookTitle, chapterTitle
 	return parsePronunciationChoices(content, terms), nil
 }
 
-// pronunciationChoice is one raw {id, choice} entry from the model's own
-// JSON reply - see parsePronunciationChoices.
-type pronunciationChoice struct {
-	ID     int `json:"id"`
-	Choice int `json:"choice"`
-}
-
-// parsePronunciationChoices extracts the JSON array from content
-// (tolerating prose/code-fence wrapping, the same as parseTaggedLines/
-// parseAttributions) and returns a map from every term's own ID to its
-// resolved candidate index. Unlike parseTaggedLines, this never returns an
-// error and never drops a term: every id in terms starts defaulted to 0
+// parsePronunciationChoices extracts the JSON object from content
+// (tolerating prose/code-fence wrapping) and returns a map from every
+// term's own ID to its resolved candidate index. It never returns an error
+// and never drops a term: every id in terms starts defaulted to 0
 // (candidates[0], always the more common reading - see
-// pronunciationCandidate's own doc comment), then overridden only by a
-// response entry whose id is one of terms' own and whose choice is a
-// genuinely valid index into that specific term's own candidate list.
-// This is safe precisely because every term was already positively
-// identified as ambiguous by the caller's own regex before the model ever
-// saw it - unlike a delivery tag (where "drop it, do nothing" is always a
-// valid fallback), a term needs *some* reading resolved, and its own
-// index 0 is always a reasonable one, never a broken result the way an
-// unparseable delivery-tag response would be.
+// pronunciationCandidate's own doc comment), then is overridden only by a
+// reply entry naming one of terms' own ids with a letter that's a valid
+// option for that specific term. That's safe because every term was
+// already positively identified by the caller's own regex before the model
+// ever saw it, and its index 0 is always a reasonable reading.
 func parsePronunciationChoices(content string, terms []pronunciationTerm) map[int]int {
 	out := make(map[int]int, len(terms))
 	byID := make(map[int]pronunciationTerm, len(terms))
@@ -536,21 +614,28 @@ func parsePronunciationChoices(content string, terms []pronunciationTerm) map[in
 		out[t.ID] = 0
 		byID[t.ID] = t
 	}
-	start := strings.IndexByte(content, '[')
-	end := strings.LastIndexByte(content, ']')
+	start := strings.IndexByte(content, '{')
+	end := strings.LastIndexByte(content, '}')
 	if start == -1 || end == -1 || end < start {
 		return out
 	}
-	var choices []pronunciationChoice
+	var choices map[string]string
 	if err := json.Unmarshal([]byte(content[start:end+1]), &choices); err != nil {
 		return out
 	}
-	for _, c := range choices {
-		t, ok := byID[c.ID]
-		if !ok || c.Choice < 0 || c.Choice >= len(t.Candidates) {
+	for key, letter := range choices {
+		id, err := strconv.Atoi(strings.TrimSpace(key))
+		if err != nil {
 			continue
 		}
-		out[c.ID] = c.Choice
+		t, ok := byID[id]
+		letter = strings.ToUpper(strings.TrimSpace(letter))
+		if !ok || letter == "" {
+			continue
+		}
+		if choice := int(letter[0] - 'A'); choice >= 0 && choice < len(t.Candidates) {
+			out[id] = choice
+		}
 	}
 	return out
 }
@@ -558,16 +643,18 @@ func parsePronunciationChoices(content string, terms []pronunciationTerm) map[in
 // ResolvePronunciation resolves every pronunciation-worthy span
 // (pronunciationCandidates - "Dr.", "St.", "Ft.", "Mt.", "No.", "C'mon",
 // "etc."/"e.g."/"i.e."/"vs."/"approx."/"Jr."/"Sr.", a Name-plus-Roman-
-// numeral pair, and ambiguous "M/D" number pairs) found by regex in
+// numeral pair, and numbers - see findNumberTerms) found by regex in
 // chapterTitle's
 // paragraphs, batching in groups of pronunciationBatchParagraphs.
 // findPronunciationTerms (plain regex, no LLM involved at all) does 100%
 // of the actual *detection* and candidate-list computation; within each
 // batch, a term with only one candidate (e.g. "C'mon" - see
 // cmonCandidates) is resolved immediately, without ever touching the LLM,
-// since there's nothing left to disambiguate - only genuinely
-// multi-candidate terms are ever sent to the model, and a batch with none
-// at all (the overwhelmingly common case) skips the LLM call entirely.
+// since there's nothing left to disambiguate, and so is a homograph whose
+// sense a grammatical cue settles (resolveHomographByGrammar) - only the
+// terms left after both are sent to the model, and a batch with none at
+// all (the common case) skips the LLM call entirely. bookTitle and
+// chapterTitle are unused since the prompt switched to per-term passages.
 //
 // Returns a map from paragraph Idx to the pronounce.Substitutions
 // resolved for that paragraph (absent = no pronunciation-worthy span
@@ -583,7 +670,7 @@ func parsePronunciationChoices(content string, terms []pronunciationTerm) map[in
 // send the LLM at all, since there's no LLM call to interrupt); remaining
 // holds whatever wasn't reached so the caller can persist real progress
 // and requeue just the rest.
-func (c *Client) ResolvePronunciation(ctx context.Context, bookTitle, chapterTitle string, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int][]pronounce.Substitution, remaining []ParagraphInput, err error) {
+func (c *Client) ResolvePronunciation(ctx context.Context, _, _ string, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int][]pronounce.Substitution, remaining []ParagraphInput, err error) {
 	out = make(map[int][]pronounce.Substitution, len(paragraphs))
 
 	addSubstitution := func(t pronunciationTerm, choice int) {
@@ -605,6 +692,10 @@ func (c *Client) ResolvePronunciation(ctx context.Context, bookTitle, chapterTit
 		}
 		batch := paragraphs[start:end]
 
+		byIdx := make(map[int]ParagraphInput, len(batch))
+		for _, p := range batch {
+			byIdx[p.Idx] = p
+		}
 		allTerms := findPronunciationTerms(batch)
 		var ambiguous []pronunciationTerm
 		for _, t := range allTerms {
@@ -615,12 +706,21 @@ func (c *Client) ResolvePronunciation(ctx context.Context, bookTitle, chapterTit
 				addSubstitution(t, 0)
 				continue
 			}
+			if t.Kind != "" {
+				p := byIdx[t.ParagraphIdx]
+				if choice, ok := resolveHomographByGrammar(t.Kind, p.Text, t.Offset, t.Offset+t.Length, p.IsQuote); ok {
+					addSubstitution(t, choice)
+					continue
+				}
+			}
+			// Renumbered so the model sees a contiguous 0..n-1 item list.
+			t.ID = len(ambiguous)
 			ambiguous = append(ambiguous, t)
 		}
 		if len(ambiguous) == 0 {
 			continue
 		}
-		choices, berr := c.pronunciationBatch(ctx, bookTitle, chapterTitle, batch, ambiguous)
+		choices, berr := c.pronunciationBatch(ctx, batch, ambiguous)
 		if berr != nil {
 			return out, paragraphs[start:], fmt.Errorf("paragraphs %d-%d: %w", batch[0].Idx, batch[len(batch)-1].Idx, berr)
 		}
