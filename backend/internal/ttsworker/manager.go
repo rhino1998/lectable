@@ -466,7 +466,15 @@ func readRSSBytes(pid int) (int64, error) {
 
 // do sends a request to the worker and decodes its response, translating a
 // non-2xx status into an error using the worker's {detail} JSON shape.
-func (m *Manager) do(ctx context.Context, method, path string, reqBody, respBody any) error {
+func (m *Manager) do(ctx context.Context, method, path string, reqBody, respBody any) (err error) {
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if err != nil {
+			status = "err: " + err.Error()
+		}
+		log.Printf("ttsworker: timing %s %s took %s (%s)", method, path, time.Since(start).Round(time.Millisecond), status)
+	}()
 	var bodyReader io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)

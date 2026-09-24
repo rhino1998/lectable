@@ -671,6 +671,13 @@ type task struct {
 	tier       int
 	chapterIdx int // this task's chapter's index in the book
 
+	// pushedAt/startedAt time this task's queue wait and run for
+	// handleResult's per-task timing log line. Set before the task is
+	// visible to the queue (pushedAt) or to its runner (startedAt), so
+	// never read concurrently with a write.
+	pushedAt  time.Time
+	startedAt time.Time
+
 	// skipDependencies opts t out of resolveDependencies entirely (see
 	// that function's own early check) - set on KindLengthEstimate tasks,
 	// whose sample has no chapter-pipeline state (characterization/
@@ -2498,6 +2505,7 @@ func (m *Manager) PromoteChapterMusicNear(bookID, chapterID string) {
 // eventual mismatch there still self-heals the same way it always did,
 // via the next check finding it not-ready under the current voice.
 func (m *Manager) pushTask(t *task) {
+	t.pushedAt = time.Now()
 	if !m.queue.Push(t) {
 		// Via WithTask, not a plain Find + direct field mutation: this
 		// task's own tier/chapterIdx/waiters are read concurrently by
@@ -2627,6 +2635,7 @@ func (m *Manager) resolveDependencies(lq *taskqueue.LockedQueue, tk taskqueue.Ta
 // primary dedup path) - shared by every dependency kind below instead of
 // each hand-rolling the same fallback.
 func (m *Manager) pushDependency(lq *taskqueue.LockedQueue, nt *task) taskqueue.Task {
+	nt.pushedAt = time.Now()
 	if lq.Push(nt) {
 		m.notePushed(nt)
 		return nt
@@ -3203,6 +3212,22 @@ func (m *Manager) globalAttributionSlotDependency(lq *taskqueue.LockedQueue, t *
 		return nil
 	}
 	return found
+}
+
+// logTaskTiming logs one line per finished task: how long it sat queued
+// (including time blocked on dependencies) and how long it ran.
+func logTaskTiming(t *task, err error) {
+	now := time.Now()
+	var waited time.Duration
+	if !t.pushedAt.IsZero() {
+		waited = t.startedAt.Sub(t.pushedAt)
+	}
+	status := "ok"
+	if err != nil {
+		status = "err: " + err.Error()
+	}
+	log.Printf("jobs: timing %s %s tier=%d attempt=%d waited=%s ran=%s (%s)",
+		t.kind, t.dedupKey(), t.tier, t.attempt, waited.Round(time.Millisecond), now.Sub(t.startedAt).Round(time.Millisecond), status)
 }
 
 func (m *Manager) finishTask(t *task) {
@@ -5524,6 +5549,7 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 	// from finishing with exactly the paused/partial result that follow-up
 	// is meant to complete.
 	m.finishTask(t)
+	logTaskTiming(t, result.err)
 	m.maybeRecoverWorker(result.err)
 	if t.kind == KindLengthEstimate {
 		// Best-effort, throwaway: no waiters, no paragraph, nothing to
@@ -6068,6 +6094,7 @@ func (m *Manager) worker(ctx context.Context) {
 			t := tk.(*task)
 			taskCtx, cancel := context.WithCancel(ctx)
 			t.cancel = cancel
+			t.startedAt = time.Now()
 			m.notifyChanged()
 			dispatched[t.dedupKey()] = &inflight{task: t, ch: m.startTask(taskCtx, t)}
 		}
