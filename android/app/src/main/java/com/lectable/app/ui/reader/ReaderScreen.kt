@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
@@ -46,6 +47,7 @@ import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.MusicOff
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
@@ -106,6 +108,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
@@ -183,11 +186,13 @@ fun ReaderScreen(
     var showBookmarksSheet by remember { mutableStateOf(false) }
     var showSearchSheet by remember { mutableStateOf(false) }
     var showSleepTimerSheet by remember { mutableStateOf(false) }
+    var showMusicVolumeSheet by remember { mutableStateOf(false) }
     // Underlines dialogue segments and caret-marks descriptive ones (see annotationKind) -
     // purely a display toggle, not persisted, and deliberately minimal for now: no background
     // color-coding, no legend, no "select a speaker to highlight their lines" - just the marks.
     var annotationsMode by remember { mutableStateOf(false) }
     val sleepTimerState by viewModel.player.sleepTimer.collectAsState()
+    val musicVolume by viewModel.musicVolume.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
@@ -272,16 +277,23 @@ fun ReaderScreen(
                             leadingIcon = { Icon(Icons.Filled.GraphicEq, contentDescription = null) },
                             onClick = { showVoicePicker = true; showMenu = false },
                         )
-                        // Same book-wide toggle as VoicePickerSheet's "Background music" switch,
-                        // surfaced here too so it's one tap away while listening. Leaves the menu
-                        // open - it's a toggle, and the switch shows the new state as it lands.
                         DropdownMenuItem(
-                            text = { Text("Background music") },
-                            leadingIcon = { Icon(Icons.Filled.MusicNote, contentDescription = null) },
-                            trailingIcon = {
-                                Switch(checked = uiState.musicEnabled, onCheckedChange = viewModel::setMusicEnabled)
+                            text = { Text("Sleep timer") },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Filled.Bedtime,
+                                    contentDescription = null,
+                                    tint = if (sleepTimerState.option != SleepTimerOption.Off) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                                )
                             },
-                            onClick = { viewModel.setMusicEnabled(!uiState.musicEnabled) },
+                            trailingIcon = {
+                                when (sleepTimerState.option) {
+                                    SleepTimerOption.Off -> {}
+                                    SleepTimerOption.EndOfChapter -> Text("End of ch.", style = MaterialTheme.typography.labelMedium)
+                                    else -> Text(formatTime(sleepTimerState.remainingSeconds.toDouble()), style = MaterialTheme.typography.labelMedium)
+                                }
+                            },
+                            onClick = { showSleepTimerSheet = true; showMenu = false },
                         )
                         DropdownMenuItem(
                             text = { Text("Speakers") },
@@ -471,8 +483,9 @@ fun ReaderScreen(
                 onChapterInfoClick = { showChapterPicker = true },
                 onBookmarksClick = { showBookmarksSheet = true },
                 onSearchClick = { showSearchSheet = true },
-                sleepTimerActive = sleepTimerState.option != SleepTimerOption.Off,
-                onSleepTimerClick = { showSleepTimerSheet = true },
+                musicEnabled = uiState.musicEnabled,
+                onToggleMusic = { viewModel.setMusicEnabled(!uiState.musicEnabled) },
+                onMusicVolumeClick = { showMusicVolumeSheet = true },
                 annotationsMode = annotationsMode,
                 onToggleAnnotationsMode = { annotationsMode = !annotationsMode },
             )
@@ -610,6 +623,14 @@ fun ReaderScreen(
             playbackSpeed = uiState.playback.playbackSpeed,
             onSpeedChange = { viewModel.setPlaybackRate(snapPlaybackSpeed(it)) },
             onDismiss = { showSpeedPicker = false },
+        )
+    }
+
+    if (showMusicVolumeSheet) {
+        MusicVolumeSheet(
+            volume = musicVolume,
+            onVolumeChange = viewModel::setMusicVolume,
+            onDismiss = { showMusicVolumeSheet = false },
         )
     }
 
@@ -1617,6 +1638,7 @@ private fun wordLineBounds(layout: TextLayoutResult, token: WordToken): List<Rec
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PlaybackBar(
     isPlaying: Boolean,
@@ -1635,8 +1657,9 @@ private fun PlaybackBar(
     onChapterInfoClick: () -> Unit,
     onBookmarksClick: () -> Unit,
     onSearchClick: () -> Unit,
-    sleepTimerActive: Boolean,
-    onSleepTimerClick: () -> Unit,
+    musicEnabled: Boolean,
+    onToggleMusic: () -> Unit,
+    onMusicVolumeClick: () -> Unit,
     annotationsMode: Boolean,
     onToggleAnnotationsMode: () -> Unit,
 ) {
@@ -1697,7 +1720,7 @@ private fun PlaybackBar(
                     contentDescription = if (isPlaying) "Pause" else "Play",
                 )
             }
-            // Annotations/Sleep/Bookmarks on the left, sized down from IconButton's own 48dp
+            // Annotations/Music/Bookmarks on the left, sized down from IconButton's own 48dp
             // default touch target so all three plus Play/Pause's own footprint leave clear
             // room in the middle.
             Row(
@@ -1711,11 +1734,26 @@ private fun PlaybackBar(
                         tint = if (annotationsMode) MaterialTheme.colorScheme.primary else LocalContentColor.current,
                     )
                 }
-                IconButton(onClick = onSleepTimerClick, modifier = Modifier.size(SecondaryIconButtonSize)) {
+                // Tap toggles book-wide background music (the same setting as VoicePickerSheet's
+                // "Background music" switch); long-press opens its volume slider. A plain
+                // IconButton has no long-press, hence combinedClickable on a same-sized circle.
+                Box(
+                    modifier = Modifier
+                        .size(SecondaryIconButtonSize)
+                        .clip(CircleShape)
+                        .combinedClickable(
+                            role = Role.Button,
+                            onClickLabel = if (musicEnabled) "Turn off background music" else "Turn on background music",
+                            onLongClickLabel = "Music volume",
+                            onClick = onToggleMusic,
+                            onLongClick = onMusicVolumeClick,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Icon(
-                        Icons.Filled.Bedtime,
-                        contentDescription = "Sleep timer",
-                        tint = if (sleepTimerActive) MaterialTheme.colorScheme.primary else LocalContentColor.current,
+                        if (musicEnabled) Icons.Filled.MusicNote else Icons.Filled.MusicOff,
+                        contentDescription = if (musicEnabled) "Background music on" else "Background music off",
+                        tint = if (musicEnabled) MaterialTheme.colorScheme.primary else LocalContentColor.current,
                     )
                 }
                 IconButton(onClick = onBookmarksClick, modifier = Modifier.size(SecondaryIconButtonSize)) {
@@ -1750,7 +1788,7 @@ private fun PlaybackBar(
     }
 }
 
-// PlaybackBar's own secondary icon buttons (annotations/sleep/bookmarks/search/chapter selector)
+// PlaybackBar's own secondary icon buttons (annotations/music/bookmarks/search/chapter selector)
 // - smaller than IconButton's own 48dp default touch target, see its call sites' own comment.
 private val SecondaryIconButtonSize = 40.dp
 
@@ -1776,6 +1814,33 @@ private fun SpeedPickerSheet(playbackSpeed: Float, onSpeedChange: (Float) -> Uni
             steps = PLAYBACK_SPEED_STEPS,
             startLabel = "${formatSpeed(PLAYBACK_SPEED_MIN)}×",
             endLabel = "${formatSpeed(PLAYBACK_SPEED_MAX)}×",
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+        )
+    }
+}
+
+/** Background music's own volume slider - opened by long-pressing PlaybackBar's music button.
+ *  Device-local (see PlaybackSettingsRepository.musicVolume), relative to narration's full
+ *  volume, applied live as it's dragged. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MusicVolumeSheet(volume: Float, onVolumeChange: (Float) -> Unit, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Text(
+            "Music volume (${(volume * 100).roundToInt()}%)",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        )
+        CleanSlider(
+            value = volume,
+            onValueChange = onVolumeChange,
+            valueRange = 0f..1f,
+            steps = 19,
+            startLabel = "0%",
+            endLabel = "100%",
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)

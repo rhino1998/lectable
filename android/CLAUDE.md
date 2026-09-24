@@ -171,39 +171,34 @@ compiled-in default in place if nothing answers in time.
   backend `store.MusicRegion`) in underneath narration as `ParagraphPlayer`
   advances, entirely client-side - the backend only ever hands over
   per-region clips, never a chapter-length stitched track. Runs two
-  independent ExoPlayer "decks" so a region switch can crossfade the
-  outgoing clip into the incoming one (a `MusicTransitionCut` region) or,
-  for a genuine adjacent hand-off into a `MusicTransitionContinuation`
-  region (seeded server-side from the preceding region's own tail), cut
-  over instantly with no fade. Each deck's real ExoPlayer volume is two
-  independently-ramped stages multiplied together (`Deck.ownLevel` ×
-  `masterLevel`, see `applyVolume`) - mirroring the hook's own two-GainNode
-  chain (a deck's own gain feeding into one shared master gain) - so a
-  region crossfade (`CROSSFADE_SECONDS`, 1.5s) and the book-wide toggle's
-  own fade (`MASTER_FADE_SECONDS`, 0.8s, see `setMusicEnabled`) never fight
-  over one shared value. A region switch also overlaps its neighbor by
-  `REGION_OVERLAP_FRACTION` (5%, matching the hook's own constant) of each
-  clip's own duration on both ends: the *incoming* region starts fading in
-  this fraction of its own length before the paragraph boundary that owns
-  it actually arrives (pre-roll, in `tick()`), and the *outgoing* region
-  symmetrically keeps playing at full volume this same fraction of its own
-  length past that boundary before its own fade-out even starts
-  (post-roll, `stopDeckAfter`'s own `delaySeconds`) - a genuine overlap
-  window, not just a same-instant crossfade. This overlap works across a
-  chapter boundary too, not just between two regions of the same chapter:
-  `tick()` checks `chapterParagraphCounts` (fed by `ReaderViewModel
-  .mergeChapter` unconditionally, same as `ParagraphPlayer
+  independent ExoPlayer "decks" so every region switch (either transition
+  type - `MusicTransition` only affects server-side seeding) crossfades
+  the outgoing clip into the incoming one, **centred on the paragraph
+  boundary**: `BBB(Ba)|(bA)AAA`. The incoming region starts
+  `CROSSFADE_HALF_SECONDS` (5s real time, matching the hook) before the
+  boundary (pre-roll, in `tick()`, dividing the paragraph's remaining
+  media time by `playbackRate`), and both decks fade over twice that, so
+  they cross at equal level at the boundary - never both loud, never a
+  gap. Fades are equal-power; each deck's volume is `sin(fadeIn) ×
+  cos(fadeOut) × masterLevel` (see `applyVolume`), mirroring the hook's
+  fadeIn → fadeOut → master GainNode chain, so a deck switched away from
+  mid-fade-in never has its fade re-anchored. `runFade` only advances a
+  fade's clock while that deck's player is actually playing, so pausing
+  narration (both decks pause - see `applyPlayPause`) or a still-buffering
+  clip freezes the crossfade. Clips loop (`REPEAT_MODE_ONE`, backend
+  musicgen renders a loop-ready seam) while their paragraphs outlast them.
+  The book-wide toggle's own fade (`MASTER_FADE_SECONDS`, 0.8s, see
+  `setMusicEnabled`) is a separate multiplied stage. Pre-roll works across
+  a chapter boundary too: `tick()` checks `chapterParagraphCounts` (fed by
+  `ReaderViewModel.mergeChapter` unconditionally, same as `ParagraphPlayer
   .setChapter`) to tell "paragraphIdx is this chapter's real last
   paragraph" apart from merely "the last one some region happens to cover"
   (an unscored trailing paragraph must never trigger this early), and if
   so looks at the *next* chapter's own first region (already present in
-  `chapterMusic` - every loaded chapter's regions are live regardless of
-  which one is currently playing) for the pre-roll target instead of
-  bailing out at the chapter's own edge. A region's own transition never
-  actually spans chapters in practice (scoring has no cross-chapter
-  context to seed a continuation from), so a cross-chapter switch always
-  falls back to an ordinary crossfade, never the seamless cut - that falls
-  out naturally rather than needing its own special case. **App-scoped (`@Singleton`) like
+  `chapterMusic`) for the pre-roll target. Jump detection only
+  re-evaluates on an actual paragraph change (re-deriving it every tick
+  misread every tick after a paragraph's first as a jump, silently
+  disabling pre-roll). **App-scoped (`@Singleton`) like
   `ParagraphPlayer`** - owns its own tick loop observing `ParagraphPlayer
   .state`/`.positionMs()`/`.durationMs()` directly (constructor-injects
   `ParagraphPlayer`) rather than requiring a ViewModel to push per-tick
@@ -211,7 +206,10 @@ compiled-in default in place if nothing answers in time.
   `chapterMusic` topic subscription per loaded chapter while
   `VoiceSettingsDto.musicEnabled` (the reader-facing, book-wide toggle -
   `VoicePickerSheet`'s "Background music" switch, alongside its existing
-  multi-voice one) is on; `onChapterMusic` feeds each value to the player
+  multi-voice one, and a tap on `PlaybackBar`'s music button, whose
+  long-press opens `MusicVolumeSheet` - a device-local volume,
+  `PlaybackSettingsRepository.musicVolume`, default 0.22, multiplied into
+  `applyVolume`) is on; `onChapterMusic` feeds each value to the player
   via `setChapterMusic` and lazily triggers `POST .../score-music` once
   per chapter (`scoringMusicChapters` plus a job-queue check guard against
   re-triggering it). The reader's own per-region "Generate"/

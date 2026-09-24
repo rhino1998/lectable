@@ -32,6 +32,7 @@ import com.lectable.app.data.repository.VoiceRepository
 import com.lectable.app.data.repository.voiceKeyOf
 import com.lectable.app.data.settings.ReaderFontFamily
 import com.lectable.app.data.settings.DEFAULT_FONT_SIZE_SP
+import com.lectable.app.data.settings.DEFAULT_MUSIC_VOLUME
 import com.lectable.app.data.settings.PlaybackSettingsRepository
 import com.lectable.app.data.settings.ReadingSettingsRepository
 import com.lectable.app.playback.BackgroundMusicPlayer
@@ -45,10 +46,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -860,6 +863,15 @@ class ReaderViewModel @Inject constructor(
     fun resolveImageUrl(path: String): Any? = downloadRepository.localImageFile(bookId, path) ?: mediaUrlResolver.resolve(path)
 
     fun setSleepTimer(option: SleepTimerOption) = player.setSleepTimer(option)
+
+    /** Background music's own device-local volume (see [PlaybackSettingsRepository.musicVolume]) -
+     *  read live by [BackgroundMusicPlayer] itself, exposed here only for the reader's slider. */
+    val musicVolume: StateFlow<Float> = playbackSettingsRepository.musicVolume
+        .stateIn(viewModelScope, SharingStarted.Eagerly, DEFAULT_MUSIC_VOLUME)
+
+    fun setMusicVolume(volume: Float) {
+        viewModelScope.launch { playbackSettingsRepository.setMusicVolume(volume) }
+    }
 
     /** Forces one already-generated paragraph to be reset and re-rendered from scratch - unlike
      *  [libraryRepository]'s lookahead call (used elsewhere for "not generated yet" paragraphs),

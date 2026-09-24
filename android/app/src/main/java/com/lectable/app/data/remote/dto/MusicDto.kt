@@ -19,9 +19,8 @@ data class MusicRegionDto(
     // boundary marker - see backend musicRegionDTO.Prompt's own doc comment.
     val prompt: String,
     // "cut" or "continuation" - see backend store.MusicTransition. A "continuation" region was
-    // generated with its first chunk seeded from the immediately preceding region's own tail, so
-    // [BackgroundMusicPlayer] switches into it with a hard, instant cut instead of a crossfade -
-    // the seeded generation is what already makes it sound continuous.
+    // generated with its first chunk seeded from the immediately preceding region's own tail. Only
+    // affects generation - [BackgroundMusicPlayer] crossfades every region switch the same way.
     val transition: String,
     val status: AudioStatus,
     val error: String? = null,

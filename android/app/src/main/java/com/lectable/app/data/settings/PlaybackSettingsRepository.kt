@@ -14,6 +14,13 @@ import kotlinx.coroutines.flow.map
 private val Context.playbackDataStore by preferencesDataStore(name = "playback_settings")
 private val PLAYBACK_SPEED_KEY = floatPreferencesKey("speed")
 private val LOOKAHEAD_PARAGRAPHS_KEY = intPreferencesKey("lookahead_paragraphs")
+private val MUSIC_VOLUME_KEY = floatPreferencesKey("music_volume")
+
+/** Background music's own volume (0..1, the ExoPlayer volume [com.lectable.app.playback
+ *  .BackgroundMusicPlayer] mixes it in at, relative to narration's full volume) - set from the
+ *  reader's PlaybackBar music button (long-press). Defaults well under narration, mirroring
+ *  frontend useBackgroundMusic.ts's own fixed MUSIC_GAIN. */
+const val DEFAULT_MUSIC_VOLUME = 0.22f
 
 /** How many paragraphs ahead of playback the backend is asked to generate (the lookahead
  *  request's paragraphCount). Default matches backend jobs.LookaheadParagraphCount; the max
@@ -49,5 +56,13 @@ class PlaybackSettingsRepository @Inject constructor(
         context.playbackDataStore.edit { prefs ->
             prefs[LOOKAHEAD_PARAGRAPHS_KEY] = count.coerceIn(MIN_LOOKAHEAD_PARAGRAPHS, MAX_LOOKAHEAD_PARAGRAPHS)
         }
+    }
+
+    val musicVolume: Flow<Float> = context.playbackDataStore.data.map { prefs ->
+        (prefs[MUSIC_VOLUME_KEY] ?: DEFAULT_MUSIC_VOLUME).coerceIn(0f, 1f)
+    }
+
+    suspend fun setMusicVolume(volume: Float) {
+        context.playbackDataStore.edit { prefs -> prefs[MUSIC_VOLUME_KEY] = volume.coerceIn(0f, 1f) }
     }
 }
