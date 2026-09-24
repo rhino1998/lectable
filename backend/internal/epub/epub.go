@@ -891,6 +891,32 @@ func extractChapter(
 				addImage(src)
 			}
 			text := collectText(n)
+			pieces := strings.Split(text, string(paragraphBreak))
+			if len(pieces) > 1 {
+				for _, piece := range pieces {
+					piece = strings.TrimSpace(piece)
+					if piece == "" {
+						continue
+					}
+					if isSceneBreakText(piece) {
+						blocks = append(blocks, Block{Kind: BlockBreak})
+						continue
+					}
+					blockIdx := 0
+					for _, seg := range splitQuoteSegments(piece) {
+						cleanText, emphasis := extractEmphasis(seg.Text)
+						blocks = append(blocks, Block{Kind: BlockText, Text: cleanText, Inline: blockIdx > 0, IsQuote: seg.IsQuote, Emphasis: emphasis})
+						blockIdx++
+					}
+				}
+				text = strings.Join(strings.Fields(strings.ReplaceAll(text, string(paragraphBreak), " ")), " ")
+				if title == "" && headingTags[n.Data] && text != "" {
+					cleanTitle, _ := extractEmphasis(text)
+					title = cleanTitle
+					titleFromHeading = true
+				}
+				return
+			}
 			if text != "" {
 				if isSceneBreakText(text) {
 					// A scene break spelled out as text rather than a real
@@ -997,6 +1023,18 @@ var (
 	italicEnd   = rune(0xE003)
 )
 
+// paragraphBreak is another Private Use Area sentinel, written by
+// collectText in place of the second of two consecutive <br>s (with only
+// whitespace between them). Some epubs put a whole scene inside one <p>
+// and separate its real paragraphs with <br/><br/> - flattened to spaces,
+// every turn of dialogue in that scene became one giant paragraph, which
+// both reads as a wall of text and tells speakerattr those turns are one
+// continuous speaker's beat. extractChapter splits a block's text on this
+// sentinel into separate paragraphs. A single <br> stays a line break (a
+// space), so verse and addresses laid out with one <br> per line are
+// unaffected.
+var paragraphBreak = rune(0xE004)
+
 // collectText flattens n's own text content, wrapping any boldTags/
 // italicTags descendant's content in the matching sentinel pair
 // (extracted later by extractEmphasis, once per final split chunk - see
@@ -1013,6 +1051,10 @@ var (
 func collectText(n *html.Node) string {
 	var b strings.Builder
 	boldDepth, italicDepth := 0, 0
+	// lastBr is b.Len() just after the most recent single <br>'s space, or
+	// -1 - a second <br> with only whitespace written since becomes a
+	// paragraphBreak instead (see its own doc comment).
+	lastBr := -1
 	var walk func(n *html.Node)
 	walk = func(n *html.Node) {
 		switch n.Type {
@@ -1020,7 +1062,13 @@ func collectText(n *html.Node) string {
 			b.WriteString(n.Data)
 		case html.ElementNode:
 			if n.Data == "br" {
+				if lastBr >= 0 && strings.TrimSpace(b.String()[lastBr:]) == "" {
+					b.WriteRune(paragraphBreak)
+					lastBr = -1
+					return
+				}
 				b.WriteByte(' ')
+				lastBr = b.Len()
 				return
 			}
 			if boldTags[n.Data] || italicTags[n.Data] {

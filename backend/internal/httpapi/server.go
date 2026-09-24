@@ -173,6 +173,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/music-regions/{id}/regenerate", s.handleRegenerateMusicRegion)
 	mux.HandleFunc("POST /api/books/{id}/preprocess", s.handlePreprocessBook)
 	mux.HandleFunc("DELETE /api/books/{id}/chapters/{idx}/audio", s.handleDeleteChapterAudio)
+	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/reimport", s.handleReimportChapter)
 	mux.HandleFunc("POST /api/books/{id}/lookahead", s.handleLookahead)
 
 	mux.HandleFunc("GET /api/books/{id}/speakers", s.handleListSpeakers)
@@ -267,6 +268,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// writeErrorCode is writeError plus a machine-readable "code" the client
+// can branch on (e.g. handleReimportChapter's "no_source_epub"), for an
+// error it's expected to recover from rather than just display.
+func writeErrorCode(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]string{"error": message, "code": code})
 }
 
 // httpError is how a build* function (the shared core of a GET handler and

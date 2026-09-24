@@ -4980,6 +4980,42 @@ func (m *Manager) Cancel(id string) bool {
 	return m.cancelPipelineTask(id)
 }
 
+// CancelChapter cancels every queued task for chapterID and every in-flight
+// one's context, then waits (until ctx is done) for the in-flight ones to
+// actually finish - httpapi's single-chapter re-import, which is about to
+// replace the chapter's paragraphs and can't have a task still writing
+// results keyed by the old paragraphs' idx into the new ones. Keeps
+// cancelling while it waits, since a still-running whole-book bulk group
+// can push fresh tasks for this chapter in the meantime. Book-level
+// pipeline tasks themselves are left alone: whatever they enqueue after
+// the replace reads the new content. Returns false if ctx ran out with
+// work for chapterID still in flight.
+func (m *Manager) CancelChapter(ctx context.Context, chapterID string) bool {
+	ofChapter := func(c taskqueue.Task) bool { return c.(*task).chapterID == chapterID }
+	for {
+		for {
+			t, ok := m.queue.Cancel(ofChapter)
+			if !ok {
+				break
+			}
+			m.dropCanceledQueued(t.(*task))
+		}
+		for _, t := range m.queue.InFlightTasks() {
+			if bt := t.(*task); bt.chapterID == chapterID && bt.cancel != nil {
+				bt.cancel()
+			}
+		}
+		if !m.IsGenerating(chapterID) {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
 // dropCanceledQueued does the bookkeeping for bt, a task just removed from
 // m.queue while still queued (taskqueue.Queue.Cancel): chapterPending,
 // a change notification, and delivering a canceled outcome to any waiter.

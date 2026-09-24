@@ -32,6 +32,17 @@ func EnsureCoverDir(dataDir string) error {
 	return os.MkdirAll(filepath.Join(dataDir, "covers"), 0o755)
 }
 
+// SourceEpubFile is the original uploaded epub a book was imported from,
+// kept so a single chapter can later be re-imported from it (httpapi's
+// handleReimportChapter) - e.g. after a parser fix - without re-uploading.
+func SourceEpubFile(dataDir, bookID string) string {
+	return filepath.Join(dataDir, "epubs", bookID+".epub")
+}
+
+func EnsureSourceEpubDir(dataDir string) error {
+	return os.MkdirAll(filepath.Join(dataDir, "epubs"), 0o755)
+}
+
 func ImageDir(dataDir, bookID, chapterID string) string {
 	return filepath.Join(dataDir, "images", bookID, chapterID)
 }

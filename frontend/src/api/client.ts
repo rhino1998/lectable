@@ -13,9 +13,13 @@ import type {
 
 class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  // Machine-readable error code, when the backend sends one (see
+  // httpapi.writeErrorCode) - for errors the UI can recover from.
+  code?: string
+  constructor(status: number, message: string, code?: string) {
     super(message)
     this.status = status
+    this.code = code
   }
 }
 
@@ -26,13 +30,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { cache: 'no-store', ...init })
   if (!res.ok) {
     let message = `HTTP ${res.status}`
+    let code: string | undefined
     try {
       const body = await res.json()
       if (body?.error) message = body.error
+      if (typeof body?.code === 'string') code = body.code
     } catch {
       // ignore non-JSON error bodies
     }
-    throw new ApiError(res.status, message)
+    throw new ApiError(res.status, message, code)
   }
   if (res.status === 204) return undefined as T
   return res.json() as Promise<T>
@@ -82,6 +88,23 @@ export const api = {
   // counterpart, see httpapi.handleDeleteChapterAudio/store.DeleteChapterAudio.
   deleteChapterAudio: (bookId: string, chapterIdx: number) =>
     request<{ ok: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/audio`, { method: 'DELETE' }),
+
+  // Chapter-header "Re-import" - re-parses one chapter from the book's
+  // stored source epub and replaces its content (httpapi.
+  // handleReimportChapter). file uploads the epub too (and keeps it as the
+  // stored copy); force skips the chapter-title check.
+  reimportChapter: (bookId: string, chapterIdx: number, opts: { file?: File; force?: boolean } = {}) => {
+    let body: FormData | undefined
+    if (opts.file) {
+      body = new FormData()
+      body.append('file', opts.file)
+    }
+    const query = opts.force ? '?force=true' : ''
+    return request<{ ok: boolean; title: string; paragraphs: number }>(
+      `/api/books/${bookId}/chapters/${chapterIdx}/reimport${query}`,
+      { method: 'POST', body },
+    )
+  },
 
   generateChapter: (bookId: string, idx: number) =>
     request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${idx}/generate`, { method: 'POST' }),

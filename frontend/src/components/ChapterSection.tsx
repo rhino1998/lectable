@@ -5,6 +5,7 @@ import {
   RiChatVoiceLine,
   RiCodeSSlashLine,
   RiDeleteBinLine,
+  RiFileHistoryLine,
   RiDoubleQuotesL,
   RiEmotionLine,
   RiMusic2Line,
@@ -500,6 +501,7 @@ interface ChapterSectionProps {
   chapterTitle: string
   chapterAttributing: boolean
   chapterClearing: boolean
+  chapterReimporting: boolean
   hasAttribution: boolean
   // The rest of the chapter-header action buttons - SpeakersPage's own
   // per-chapter row, mirrored here so a reader can run any of these
@@ -544,6 +546,7 @@ interface ChapterSectionProps {
   audioElement: HTMLAudioElement
   bookmarkByKey: Map<string, string>
   onClearAudio: (idx: number, title: string) => void
+  onReimport: (idx: number, title: string) => void
   onAttribute: (idx: number) => void
   onRetagDescriptions: (idx: number) => void
   onRetagScareQuotes: (idx: number) => void
@@ -587,6 +590,7 @@ export const ChapterSection = memo(function ChapterSection({
   chapterTitle,
   chapterAttributing,
   chapterClearing,
+  chapterReimporting,
   hasAttribution,
   chapterRetaggingDescriptions,
   chapterRetaggingScareQuotes,
@@ -607,6 +611,7 @@ export const ChapterSection = memo(function ChapterSection({
   audioElement,
   bookmarkByKey,
   onClearAudio,
+  onReimport,
   onAttribute,
   onRetagDescriptions,
   onRetagScareQuotes,
@@ -670,6 +675,14 @@ export const ChapterSection = memo(function ChapterSection({
             title="Clear generated audio for this chapter"
           >
             <RiDeleteBinLine className={chapterClearing ? 'spin' : undefined} />
+          </button>
+          <button
+            className="icon-action-button"
+            onClick={() => onReimport(idx, chapterTitle)}
+            disabled={chapterReimporting}
+            title="Re-import this chapter from the book's epub (resets its speakers, emotions and audio)"
+          >
+            <RiFileHistoryLine className={chapterReimporting ? 'spin' : undefined} />
           </button>
           <button
             className="icon-action-button"

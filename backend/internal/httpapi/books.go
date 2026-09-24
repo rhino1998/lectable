@@ -1,12 +1,16 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/epub"
@@ -252,18 +256,8 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 	var imageBytes [][]byte
 	chapterInputs := make([]store.ChapterInput, len(book.Chapters))
 	for i, ch := range book.Chapters {
-		blocks := make([]store.BlockInput, len(ch.Blocks))
-		for j, b := range ch.Blocks {
-			switch b.Kind {
-			case epub.BlockImage:
-				blocks[j] = store.BlockInput{Kind: store.BlockImage, Ext: b.ImageExt}
-				imageBytes = append(imageBytes, b.ImageData)
-			case epub.BlockBreak:
-				blocks[j] = store.BlockInput{Kind: store.BlockBreak}
-			default:
-				blocks[j] = store.BlockInput{Kind: store.BlockText, Text: b.Text, Inline: b.Inline, IsQuote: b.IsQuote, Emphasis: b.Emphasis}
-			}
-		}
+		blocks, chImages := chapterBlockInputs(ch)
+		imageBytes = append(imageBytes, chImages...)
 		chapterInputs[i] = store.ChapterInput{Title: ch.Title, Blocks: blocks}
 	}
 
@@ -276,6 +270,14 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
+	}
+
+	// Keep the original epub so single chapters can be re-imported from
+	// it later (handleReimportChapter) - best-effort, like the cover and
+	// images below: a book without it can still be re-imported by
+	// uploading the epub again.
+	if _, err := tmp.Seek(0, io.SeekStart); err == nil {
+		_ = saveSourceEpub(s.DataDir, bookID, tmp)
 	}
 
 	if coverExt != "" {
@@ -321,6 +323,178 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, summary)
+}
+
+// chapterBlockInputs converts one parsed epub chapter into store block
+// inputs, plus each image block's bytes in the same order, for the caller
+// to write to disk under whatever IDs the store hands back.
+func chapterBlockInputs(ch epub.Chapter) (blocks []store.BlockInput, imageBytes [][]byte) {
+	blocks = make([]store.BlockInput, len(ch.Blocks))
+	for j, b := range ch.Blocks {
+		switch b.Kind {
+		case epub.BlockImage:
+			blocks[j] = store.BlockInput{Kind: store.BlockImage, Ext: b.ImageExt}
+			imageBytes = append(imageBytes, b.ImageData)
+		case epub.BlockBreak:
+			blocks[j] = store.BlockInput{Kind: store.BlockBreak}
+		default:
+			blocks[j] = store.BlockInput{Kind: store.BlockText, Text: b.Text, Inline: b.Inline, IsQuote: b.IsQuote, Emphasis: b.Emphasis}
+		}
+	}
+	return blocks, imageBytes
+}
+
+// saveSourceEpub writes r to bookID's kept source epub
+// (audiopath.SourceEpubFile), via a temp file + rename so a failed write
+// never leaves a truncated copy behind.
+func saveSourceEpub(dataDir, bookID string, r io.Reader) error {
+	if err := audiopath.EnsureSourceEpubDir(dataDir); err != nil {
+		return err
+	}
+	dst := audiopath.SourceEpubFile(dataDir, bookID)
+	f, err := os.CreateTemp(filepath.Dir(dst), bookID+"-*.tmp")
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(f.Name())
+		return err
+	}
+	return os.Rename(f.Name(), dst)
+}
+
+// reimportCancelWait bounds how long handleReimportChapter waits for the
+// chapter's in-flight jobs to notice their cancellation before giving up.
+const reimportCancelWait = 30 * time.Second
+
+// handleReimportChapter re-parses one chapter from the book's source epub
+// and replaces its content (store.ReplaceChapterContent) - for applying a
+// parser fix to the chapters that need it without deleting the whole book
+// and losing every other chapter's attribution, manual fixes, and audio.
+// The source is the epub kept at upload (audiopath.SourceEpubFile), or a
+// multipart "file" field, which also becomes the kept copy (for books
+// imported before uploads were kept, or to swap in a corrected epub).
+//
+// The re-parsed book must have the same number of chapters, so idx still
+// names the same chapter; its title must match too unless ?force=true
+// (a parser change can legitimately retitle a chapter). Those two
+// recoverable 409s carry a code (writeErrorCode): "no_source_epub" and
+// "title_mismatch". Every queued and
+// in-flight job for the chapter is cancelled first (jobs.Manager.
+// CancelChapter) - 409 if something is still running after
+// reimportCancelWait. Everything derived from the old text goes: audio,
+// speakers, emotions, pronunciation, SFX, music regions, pass flags. The
+// chapter then needs preprocessing again like a fresh import.
+func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
+	bookID := r.PathValue("id")
+	idx, err := strconv.Atoi(r.PathValue("idx"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid chapter index")
+		return
+	}
+	ch, err := s.Store.GetChapterByIdx(bookID, idx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if ch == nil {
+		writeError(w, http.StatusNotFound, "chapter not found")
+		return
+	}
+
+	var src *os.File
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		if err := r.ParseMultipartForm(200 << 20); err != nil {
+			writeError(w, http.StatusBadRequest, "could not parse upload: "+err.Error())
+			return
+		}
+		file, _, err := r.FormFile("file")
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "missing 'file' field")
+			return
+		}
+		defer file.Close()
+		if err := saveSourceEpub(s.DataDir, bookID, file); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to store epub: "+err.Error())
+			return
+		}
+	}
+	src, err = os.Open(audiopath.SourceEpubFile(s.DataDir, bookID))
+	if errors.Is(err, os.ErrNotExist) {
+		writeErrorCode(w, http.StatusConflict, "no_source_epub", "no source epub is stored for this book - upload it with this request")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer src.Close()
+	info, err := src.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	parsed, err := epub.Parse(src, info.Size())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not parse epub: "+err.Error())
+		return
+	}
+
+	count, err := s.Store.CountChapters(bookID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(parsed.Chapters) != count {
+		writeError(w, http.StatusConflict, fmt.Sprintf("epub has %d chapters but the book has %d - is this the right epub?", len(parsed.Chapters), count))
+		return
+	}
+	fresh := parsed.Chapters[idx]
+	if fresh.Title != ch.Title && r.URL.Query().Get("force") != "true" {
+		writeErrorCode(w, http.StatusConflict, "title_mismatch", fmt.Sprintf("chapter %d is titled %q in the epub but %q in the library", idx, fresh.Title, ch.Title))
+		return
+	}
+
+	cancelCtx, cancel := context.WithTimeout(r.Context(), reimportCancelWait)
+	defer cancel()
+	if !s.Jobs.CancelChapter(cancelCtx, ch.ID) {
+		writeError(w, http.StatusConflict, "this chapter still has a job running - try again in a moment")
+		return
+	}
+
+	blocks, imageBytes := chapterBlockInputs(fresh)
+	oldImages, newImages, err := s.Store.ReplaceChapterContent(ch.ID, fresh.Title, blocks)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// The whole chapter audio dir (narration under every voice, SFX,
+	// music) belonged to the old paragraphs.
+	_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s/%s", s.DataDir, bookID, ch.ID))
+	for _, img := range oldImages {
+		_ = os.Remove(audiopath.ImageFile(s.DataDir, bookID, ch.ID, img.ImageID, img.Ext))
+	}
+	for i, img := range newImages {
+		if i >= len(imageBytes) {
+			break
+		}
+		if err := audiopath.EnsureImageDir(s.DataDir, bookID, ch.ID); err == nil {
+			_ = os.WriteFile(audiopath.ImageFile(s.DataDir, bookID, ch.ID, img.ImageID, img.Ext), imageBytes[i], 0o644)
+		}
+	}
+
+	paragraphs := 0
+	for _, b := range blocks {
+		if b.Kind == store.BlockText {
+			paragraphs++
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "title": fresh.Title, "paragraphs": paragraphs})
 }
 
 func extensionForMediaType(mt string) string {
@@ -480,6 +654,7 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 	if b.CoverExt != "" {
 		_ = os.Remove(audiopath.CoverFile(s.DataDir, id, b.CoverExt))
 	}
+	_ = os.Remove(audiopath.SourceEpubFile(s.DataDir, id))
 	w.WriteHeader(http.StatusNoContent)
 }
 

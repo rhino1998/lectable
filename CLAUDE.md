@@ -140,7 +140,8 @@ client, not a browser.)
 - No auth, no multi-user support — this is a single-user local app.
 - All persistent state lives under the backend's `DATA_DIR` (default
   `./data`): `library.duckdb`, `audio/<bookID>/<chapterID>/<idx>.wav`,
-  `covers/<bookID>.<ext>`, `voice-refs/<presetID>.wav`,
+  `covers/<bookID>.<ext>`, `epubs/<bookID>.epub` (the source epub, kept for
+  single-chapter re-import), `voice-refs/<presetID>.wav`,
   `voice-refs/variants/<presetID>/<emotion>.wav`. Nothing is stored
   in `ttsworker` or `frontend` - the worker is intentionally stateless
   aside from which model checkpoints happen to be loaded in VRAM.

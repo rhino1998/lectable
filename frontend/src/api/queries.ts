@@ -61,6 +61,14 @@ export function useDeleteChapterAudio(bookId: string) {
   return useMutation({ mutationFn: (chapterIdx: number) => api.deleteChapterAudio(bookId, chapterIdx) })
 }
 
+// Chapter-header "Re-import" - see api.reimportChapter.
+export function useReimportChapter(bookId: string) {
+  return useMutation({
+    mutationFn: ({ chapterIdx, file, force }: { chapterIdx: number; file?: File; force?: boolean }) =>
+      api.reimportChapter(bookId, chapterIdx, { file, force }),
+  })
+}
+
 export function useChapter(bookId: string, idx: number): LiveResult<ChapterDetail> {
   return useLive('chapter', idx >= 0 ? { bookId, chapterIdx: idx } : null)
 }
