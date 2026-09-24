@@ -812,8 +812,17 @@ building/running `ttsworker` does, since both now link into that binary.
     - `KindVoiceClone`/`KindVoiceDesign` (`poolGeneration`) walk a
       chapter's not-yet-ready paragraphs and generate each one (via
       `internal/voicerefs` + `internal/ttsworker`), writing `.wav` files
-      and updating paragraph status, then kicking off forced alignment as
-      a detached follow-up. Each paragraph resolves its own voice via
+      and updating paragraph status. Clone generations are force-aligned
+      inline as a completeness check (`jobs.generateCloneChecked`):
+      audio.cpp's aligner places words missing from the audio *past the
+      clip's end*, and Higgs occasionally reaches EOC early and drops a
+      paragraph's final sentence (measured: 16 of 3838 paragraphs in one
+      real book, 3-17 words each). >=2 such words triggers a regeneration
+      with a smaller audio.cpp `text_chunk_size` request option (half,
+      then a quarter of the text's length, floored at 80 chars - see
+      `retryChunkSizes`), keeping the most complete attempt; its word
+      timings are saved directly. Everything else (VoiceDesign, or a
+      failed check) still aligns as a detached follow-up. Each paragraph resolves its own voice via
       `internal/narration.Resolver` before being queued, so a chapter's
       paragraphs can dispatch to, and cache audio under, several different
       `voice_id`s in one generation run.

@@ -18,6 +18,7 @@
 package ttsworkertest
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -215,11 +216,18 @@ func (s *Server) handleAlign(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default: one word per whitespace-separated token, evenly spaced -
-	// enough for tests asserting word count/ordering, not real timing.
+	// Default: one word per whitespace-separated token, evenly spaced
+	// across the clip's own duration - enough for tests asserting word
+	// count/ordering, not real timing, and never past the clip's end (which
+	// jobs' completeness check would read as dropped words).
 	fields := strings.Fields(req.Text)
 	words := make([]ttsproto.Word, len(fields))
-	const perWord = 0.3
+	perWord := 0.3
+	if raw, err := base64.StdEncoding.DecodeString(req.AudioBase64); err == nil && len(fields) > 0 {
+		if dur, err := wav.Duration(raw); err == nil {
+			perWord = dur.Seconds() / float64(len(fields))
+		}
+	}
 	for i, f := range fields {
 		words[i] = ttsproto.Word{Text: f, Start: float64(i) * perWord, End: float64(i+1) * perWord}
 	}

@@ -522,7 +522,14 @@ func (m *Manager) do(ctx context.Context, method, path string, reqBody, respBody
 // configured default, same as every caller but the voice/character
 // editor's "test with another voice as a base" control.
 func (m *Manager) Generate(ctx context.Context, text, cloneModel string, refAudio []byte, refText, language, instruct, guidanceScale string) ([]byte, error) {
-	return m.generate(ctx, text, cloneModel, refAudio, refText, language, instruct, guidanceScale, nil)
+	return m.generate(ctx, text, cloneModel, refAudio, refText, language, instruct, guidanceScale, nil, 0)
+}
+
+// GenerateChunked is Generate with the clone family's own long-text chunk
+// budget overridden to textChunkSize codepoints (see ttsproto.
+// GenerateRequest.TextChunkSize) - 0 is exactly Generate.
+func (m *Manager) GenerateChunked(ctx context.Context, text, cloneModel string, refAudio []byte, refText, language, instruct string, textChunkSize int) ([]byte, error) {
+	return m.generate(ctx, text, cloneModel, refAudio, refText, language, instruct, "", nil, textChunkSize)
 }
 
 // GeneratePreview is Generate for the voice editor's saved-voice test,
@@ -530,10 +537,10 @@ func (m *Manager) Generate(ctx context.Context, text, cloneModel string, refAudi
 // ttsproto.GenerateRequest.Temperature) - nil is exactly Generate with no
 // instruction.
 func (m *Manager) GeneratePreview(ctx context.Context, text, cloneModel string, refAudio []byte, refText, language string, temperature *float64) ([]byte, error) {
-	return m.generate(ctx, text, cloneModel, refAudio, refText, language, "", "", temperature)
+	return m.generate(ctx, text, cloneModel, refAudio, refText, language, "", "", temperature, 0)
 }
 
-func (m *Manager) generate(ctx context.Context, text, cloneModel string, refAudio []byte, refText, language, instruct, guidanceScale string, temperature *float64) ([]byte, error) {
+func (m *Manager) generate(ctx context.Context, text, cloneModel string, refAudio []byte, refText, language, instruct, guidanceScale string, temperature *float64, textChunkSize int) ([]byte, error) {
 	m.restartGate.RLock()
 	defer m.restartGate.RUnlock()
 	jobID := m.beginJob()
@@ -549,6 +556,7 @@ func (m *Manager) generate(ctx context.Context, text, cloneModel string, refAudi
 		Instruct:       instruct,
 		GuidanceScale:  guidanceScale,
 		Temperature:    temperature,
+		TextChunkSize:  textChunkSize,
 	}, &out)
 	return out, err
 }

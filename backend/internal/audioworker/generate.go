@@ -102,6 +102,11 @@ type GenerateRequest struct {
 	// ignored for a family with no temperature option (see
 	// cloneFamily.temperature).
 	Temperature *float64
+	// TextChunkSize, when > 0, sets audio.cpp's framework-wide
+	// "text_chunk_size" request option (codepoints per internal text chunk)
+	// for this one call, overriding the family's own compiled-in default -
+	// see ttsproto.GenerateRequest.TextChunkSize.
+	TextChunkSize int
 }
 
 // isMaxTokensOverflow reports whether err is Higgs generation running out
@@ -193,6 +198,9 @@ func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
 		if gs != "" {
 			request.SetOption("guidance_scale", gs)
 		}
+	}
+	if req.TextChunkSize > 0 {
+		request.SetOption("text_chunk_size", strconv.Itoa(req.TextChunkSize))
 	}
 	if fam.temperature && req.Temperature != nil {
 		request.SetOption("temperature", strconv.FormatFloat(*req.Temperature, 'f', -1, 64))

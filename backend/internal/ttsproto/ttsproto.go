@@ -36,6 +36,13 @@ type GenerateRequest struct {
 	// control. Ignored by a family with no temperature option (see
 	// audioworker's cloneFamily.temperature).
 	Temperature *float64 `json:"temperature,omitempty"`
+	// TextChunkSize, when > 0, overrides the clone family's own long-text
+	// chunk budget (audio.cpp's framework-wide "text_chunk_size" request
+	// option, in codepoints) for this one call - jobs' incomplete-
+	// generation retry (see jobs.generateCloneChecked) re-renders a
+	// paragraph whose alignment shows missing words in smaller chunks. 0
+	// (every other caller) keeps the family's own default.
+	TextChunkSize int `json:"textChunkSize,omitempty"`
 }
 
 // DesignRequest is POST /design's body: render a fresh reference clip via

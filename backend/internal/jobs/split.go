@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rhino1998/lectable/backend/internal/textsplit"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
@@ -42,6 +43,23 @@ const (
 	// covers a wide size range: 3 levels quarters the original length
 	// down to an eighth.
 	maxGenerationSplitDepth = 3
+
+	// alignPastEndTolerance is how far past a clip's own end an aligned
+	// word's End may land before it counts as missing from the audio (see
+	// missingWordCount) - absorbs the aligner's own frame-rounding slop.
+	alignPastEndTolerance = 0.1 // seconds
+	// minMissingWords is how many words must align past the clip's end
+	// before a generation counts as incomplete. Measured against a real
+	// library (3838 ready paragraphs of "Spire's Spite", Higgs): 16
+	// truncated paragraphs each had 3-17 words past the end (a whole
+	// dropped final sentence or more); the only single-word cases were
+	// one-word paragraphs, where the aligner's own minimum word span
+	// alone can overrun a sub-second clip.
+	minMissingWords = 2
+	// minRetryChunkChars floors retryChunkSizes - chunks much shorter than
+	// a typical sentence make audio.cpp's chunker cut mid-sentence, at a
+	// real prosody cost.
+	minRetryChunkChars = 80
 )
 
 // expectedDuration estimates how long text should take a narrator to
@@ -137,14 +155,122 @@ func bisectSentencesFrac(sentences []string) (left, right string, leftFrac float
 // from a long paragraph or (confirmed live) a short one at a slow,
 // deliberate voice's own pace.
 func (m *Manager) generateClone(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct string) ([]byte, error) {
-	return m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, text, cloneInstruct, maxGenerationSplitDepth)
+	return m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, text, cloneInstruct, 0, maxGenerationSplitDepth)
 }
 
-func (m *Manager) generateCloneSplit(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct string, splitBudget int) ([]byte, error) {
+// generateCloneChecked is generateClone plus a completeness check: it
+// force-aligns alignText (the plain spoken words - never the tagged
+// generation text, see generate's own comment) against the result and, if
+// the clip is missing words (missingWordCount - a real, observed failure
+// mode where Higgs reaches EOC early and silently drops a paragraph's
+// final sentence or more), regenerates with a smaller audio.cpp
+// text_chunk_size (retryChunkSizes), so each internal chunk is short
+// enough to render in full. Keeps whichever attempt is missing the fewest
+// words - a later attempt can be worse, and a clip with most of its words
+// still beats an error - and returns that attempt's own word timings so
+// the caller needn't align it again.
+//
+// words is nil when alignText is "" or alignment itself failed - the
+// caller falls back to its ordinary detached alignment then, and the
+// audio is returned unchecked rather than failed.
+func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct, alignText string) ([]byte, []ttsproto.Word, error) {
+	audio, err := m.generateClone(ctx, cloneModel, refAudio, refText, language, text, cloneInstruct)
+	if err != nil || alignText == "" {
+		return audio, nil, err
+	}
+	words, missing, err := m.alignForCompleteness(ctx, alignText, audio, language)
+	if err != nil {
+		log.Printf("jobs: completeness check alignment failed, keeping audio unchecked: %v", err)
+		return audio, nil, nil
+	}
+	for _, chunkSize := range retryChunkSizes(text) {
+		if missing < minMissingWords {
+			break
+		}
+		log.Printf(
+			"jobs: generated audio is missing %d of %d words (aligned past the clip's end); regenerating with text_chunk_size=%d",
+			missing, len(words), chunkSize,
+		)
+		retryAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, text, cloneInstruct, chunkSize, maxGenerationSplitDepth)
+		if err != nil {
+			log.Printf("jobs: text_chunk_size=%d retry failed: %v", chunkSize, err)
+			continue
+		}
+		retryWords, retryMissing, err := m.alignForCompleteness(ctx, alignText, retryAudio, language)
+		if err != nil {
+			log.Printf("jobs: text_chunk_size=%d retry alignment failed: %v", chunkSize, err)
+			continue
+		}
+		if retryMissing < missing {
+			audio, words, missing = retryAudio, retryWords, retryMissing
+		}
+	}
+	if missing >= minMissingWords {
+		log.Printf("jobs: generated audio still missing %d of %d words after every chunking retry; keeping the most complete attempt", missing, len(words))
+	}
+	return audio, words, nil
+}
+
+// alignForCompleteness aligns text against audioWav and reports how many
+// of its words fell past the clip's own end (missingWordCount).
+func (m *Manager) alignForCompleteness(ctx context.Context, text string, audioWav []byte, language string) ([]ttsproto.Word, int, error) {
+	dur, err := wav.Duration(audioWav)
+	if err != nil {
+		return nil, 0, fmt.Errorf("parse wav duration: %w", err)
+	}
+	words, err := m.alignWithSplit(ctx, text, audioWav, language)
+	if err != nil {
+		return nil, 0, err
+	}
+	return words, missingWordCount(words, dur.Seconds()), nil
+}
+
+// missingWordCount counts aligned words that end past clipSeconds (plus
+// alignPastEndTolerance). audio.cpp's forced aligner places every
+// transcript word somewhere regardless of whether it was actually spoken,
+// and confirmed live, it places words absent from the audio *beyond the
+// clip's own end* (one aligner frame apiece) rather than squeezing them
+// into what's there - so words past the end are words the generation
+// dropped.
+func missingWordCount(words []ttsproto.Word, clipSeconds float64) int {
+	n := 0
+	for _, w := range words {
+		if w.End > clipSeconds+alignPastEndTolerance {
+			n++
+		}
+	}
+	return n
+}
+
+// retryChunkSizes is generateCloneChecked's escalation ladder of
+// text_chunk_size overrides (codepoints): half of text's own length, then
+// a quarter - each forcing audio.cpp's chunker (which prefers sentence,
+// then clause, boundaries within the budget) to render text as more,
+// shorter chunks, the shorter the less room each leaves Higgs to stop
+// early. Floored at minRetryChunkChars and deduplicated, so a short text
+// gets a single retry at the floor (still a fresh sample, even when that's
+// no smaller than the family's own default chunk).
+func retryChunkSizes(text string) []int {
+	n := utf8.RuneCountInString(text)
+	var sizes []int
+	for _, div := range []int{2, 4} {
+		size := max((n+div-1)/div, minRetryChunkChars)
+		if len(sizes) == 0 || sizes[len(sizes)-1] != size {
+			sizes = append(sizes, size)
+		}
+	}
+	return sizes
+}
+
+// generateCloneSplit is generateClone's implementation. textChunkSize > 0
+// overrides the clone family's own internal text chunk budget (see
+// ttsworker.Manager.GenerateChunked) for this call and every split half
+// it recurses into.
+func (m *Manager) generateCloneSplit(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct string, textChunkSize, splitBudget int) ([]byte, error) {
 	expected := expectedDuration(text)
 	durationAttempt := 0
 	for {
-		audio, err := m.tts.Generate(ctx, text, cloneModel, refAudio, refText, language, cloneInstruct, "")
+		audio, err := m.tts.GenerateChunked(ctx, text, cloneModel, refAudio, refText, language, cloneInstruct, textChunkSize)
 		if err != nil {
 			if isMaxTokensExceeded(err) && splitBudget > 0 {
 				if leftText, rightText, ok := bisectForGeneration(text); ok {
@@ -152,11 +278,11 @@ func (m *Manager) generateCloneSplit(ctx context.Context, cloneModel string, ref
 						"jobs: generation ran out of tokens for a %d-word text; splitting at a sentence boundary into %d + %d words",
 						len(strings.Fields(text)), len(strings.Fields(leftText)), len(strings.Fields(rightText)),
 					)
-					leftAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, leftText, cloneInstruct, splitBudget-1)
+					leftAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, leftText, cloneInstruct, textChunkSize, splitBudget-1)
 					if err != nil {
 						return nil, err
 					}
-					rightAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, rightText, cloneInstruct, splitBudget-1)
+					rightAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, rightText, cloneInstruct, textChunkSize, splitBudget-1)
 					if err != nil {
 						return nil, err
 					}

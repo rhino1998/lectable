@@ -1107,7 +1107,12 @@ func comparePosition(a, b *task) int {
 }
 
 type taskResult struct {
-	audio      []byte // KindVoiceClone/KindVoiceDesign/KindVoiceDesignPreview/KindSFXPreview only
+	audio []byte // KindVoiceClone/KindVoiceDesign/KindVoiceDesignPreview/KindSFXPreview only
+	// words is audio's own word timings when generate already aligned it
+	// for its completeness check (see generateCloneChecked) - nil
+	// otherwise, leaving alignment to saveParagraphAudio's own detached
+	// pass.
+	words      []ttsproto.Word
 	text       string // KindLLMPreview only - the raw generated text
 	presetID   string // KindVoiceProvision only - the character's (created or reused) voice preset id
 	attributed int    // KindSpeakerAttribution only - paragraphs (re)attributed
@@ -5269,7 +5274,7 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 	// itself still runs exactly as it would for a real KindVoiceClone task.
 	if t.kind == KindLengthEstimate {
 		go func() {
-			audio, err := m.generate(ctx, t)
+			audio, _, err := m.generate(ctx, t)
 			ch <- taskResult{audio: audio, err: err}
 		}()
 		return ch
@@ -5289,8 +5294,8 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 		}
 	}
 	go func() {
-		audio, err := m.generate(ctx, t)
-		ch <- taskResult{audio: audio, err: err}
+		audio, words, err := m.generate(ctx, t)
+		ch <- taskResult{audio: audio, words: words, err: err}
 	}()
 	return ch
 }
@@ -5340,7 +5345,7 @@ func mergedGenerationText(members []store.Paragraph, cloneModel string) string {
 	return strings.Join(texts, " ")
 }
 
-func (m *Manager) generate(ctx context.Context, t *task) ([]byte, error) {
+func (m *Manager) generate(ctx context.Context, t *task) ([]byte, []ttsproto.Word, error) {
 	if t.kind == KindVoiceDesign {
 		var seed *int64
 		// 0 means no seed anchor (see httpapi.resolveVoiceSeed) - leave nil
@@ -5354,7 +5359,8 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, error) {
 		if len(t.mergeParagraphs) > 1 {
 			text = mergedGenerationText(t.mergeParagraphs, "")
 		}
-		return m.tts.Design(ctx, text, t.instruct, t.language, t.designModel, seed)
+		audio, err := m.tts.Design(ctx, text, t.instruct, t.language, t.designModel, seed)
+		return audio, nil, err
 	}
 
 	cloneModel := t.cloneModel
@@ -5363,7 +5369,7 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, error) {
 	}
 	refPath, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, t.presetID, t.instruct, t.seed, t.refText, t.speedMultiplier, t.designModel)
 	if err != nil {
-		return nil, fmt.Errorf("ensure reference clip: %w", err)
+		return nil, nil, fmt.Errorf("ensure reference clip: %w", err)
 	}
 	refText := t.refText
 	if path, line, ok := m.emotionVariant(t); ok {
@@ -5371,7 +5377,7 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, error) {
 	}
 	refAudio, err := os.ReadFile(refPath)
 	if err != nil {
-		return nil, fmt.Errorf("read reference clip: %w", err)
+		return nil, nil, fmt.Errorf("read reference clip: %w", err)
 	}
 	// t.paragraph.ResolveGenerationText applies pronunciation/emphasis
 	// substitutions (and, for Higgs, pause tags) to t.paragraph.Text, or
@@ -5386,11 +5392,22 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, error) {
 	// treatment is applied to every member and joined into one string - one
 	// TTS call renders the whole group together, later split back into each
 	// member's own audio file by handleMergedResult.
+	//
+	// alignText is what the completeness check (generateCloneChecked)
+	// aligns against - the same text each result path would otherwise
+	// align itself (alignParagraph/handleMergedResult), so the check's own
+	// word timings are reused rather than aligning twice. A length
+	// estimate's throwaway sample is never saved, so it skips the check.
 	text := t.paragraph.ResolveGenerationText(cloneModel)
+	alignText := t.paragraph.Text
 	if len(t.mergeParagraphs) > 1 {
 		text = mergedGenerationText(t.mergeParagraphs, cloneModel)
+		alignText = text
 	}
-	return m.generateClone(ctx, cloneModel, refAudio, refText, t.language, text, t.cloneInstruct)
+	if t.kind == KindLengthEstimate {
+		alignText = ""
+	}
+	return m.generateCloneChecked(ctx, cloneModel, refAudio, refText, t.language, text, t.cloneInstruct, alignText)
 }
 
 // emotionVariant returns the emotion-variant reference clip (and the line
@@ -5632,10 +5649,10 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		return
 	}
 	if len(t.mergeParagraphs) > 1 {
-		m.handleMergedResult(t, result.audio)
+		m.handleMergedResult(t, result.audio, result.words)
 		return
 	}
-	m.saveParagraphAudio(t, t.paragraph, result.audio)
+	m.saveParagraphAudio(t, t.paragraph, result.audio, result.words)
 }
 
 // failParagraph marks one paragraph AudioError and publishes it - shared by
@@ -5651,8 +5668,10 @@ func (m *Manager) failParagraph(t *task, paragraph store.Paragraph, err error) {
 // shared by the ordinary single-paragraph success path, handleMergedResult
 // (once per split-out clip), and generateIndependently's own fallback loop,
 // so every way a paragraph's audio can end up on disk goes through exactly
-// one write/publish/error-handling path.
-func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio []byte) {
+// one write/publish/error-handling path. words, when non-nil, are audio's
+// own already-computed word timings (generateCloneChecked's), saved
+// directly instead of running alignParagraph.
+func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio []byte, words []ttsproto.Word) {
 	outPath := audiopath.ParagraphFile(m.dataDir, t.bookID, t.chapterID, t.voiceID, paragraph.Idx)
 	if err := os.WriteFile(outPath, audio, 0o644); err != nil {
 		log.Printf("jobs: write audio file: %v", err)
@@ -5682,6 +5701,10 @@ func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio [
 	// clip's own split-out piece is by this point just an ordinary,
 	// independent wav file on disk, so there's no merged-alignment offset
 	// bookkeeping to carry through here.
+	if words != nil {
+		m.saveWordTimings(t, paragraph, words)
+		return
+	}
 	go m.alignParagraph(t, paragraph, audio, dur.Seconds())
 }
 
@@ -5699,6 +5722,11 @@ func (m *Manager) alignParagraph(t *task, paragraph store.Paragraph, audio []byt
 		log.Printf("jobs: align paragraph %s: %v", paragraph.ID, err)
 		return
 	}
+	m.saveWordTimings(t, paragraph, words)
+}
+
+// saveWordTimings persists one paragraph's own word timings.
+func (m *Manager) saveWordTimings(t *task, paragraph store.Paragraph, words []ttsproto.Word) {
 	wordsJSON, err := json.Marshal(words)
 	if err != nil {
 		log.Printf("jobs: marshal word timings for %s: %v", paragraph.ID, err)
@@ -5739,7 +5767,7 @@ func (m *Manager) alignParagraph(t *task, paragraph store.Paragraph, audio []byt
 // closely enough to locate every member's own boundary with confidence:
 // merging is an audio-quality optimization, never something a paragraph's
 // own audio correctness should depend on.
-func (m *Manager) handleMergedResult(t *task, mergedAudio []byte) {
+func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, precomputed []ttsproto.Word) {
 	cloneModel := t.cloneModel
 	if cloneModel == "" {
 		cloneModel = voices.DefaultCloneModel
@@ -5750,7 +5778,7 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte) {
 	}
 	mergedText := strings.Join(texts, " ")
 
-	words, ok := m.alignMergedAudio(t, texts, mergedText, mergedAudio)
+	words, ok := m.alignMergedAudio(t, texts, mergedText, mergedAudio, precomputed)
 	if !ok {
 		log.Printf("jobs: could not align merged clip for chapter %s (%d paragraphs); regenerating independently", t.chapterID, len(t.mergeParagraphs))
 		m.generateIndependently(t)
@@ -5833,11 +5861,15 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte) {
 // split - e.g. splitting a contraction, or dropping a stray punctuation-
 // only token - and this is the one case with no graceful degradation,
 // since a boundary word is genuinely unlocatable at that point).
-func (m *Manager) alignMergedAudio(t *task, texts []string, mergedText string, mergedAudio []byte) ([]ttsproto.Word, bool) {
-	words, err := m.alignWithSplit(m.ctx, mergedText, mergedAudio, t.language)
-	if err != nil {
-		log.Printf("jobs: align merged clip for chapter %s: %v", t.chapterID, err)
-		return nil, false
+func (m *Manager) alignMergedAudio(t *task, texts []string, mergedText string, mergedAudio []byte, precomputed []ttsproto.Word) ([]ttsproto.Word, bool) {
+	words := precomputed
+	if words == nil {
+		var err error
+		words, err = m.alignWithSplit(m.ctx, mergedText, mergedAudio, t.language)
+		if err != nil {
+			log.Printf("jobs: align merged clip for chapter %s: %v", t.chapterID, err)
+			return nil, false
+		}
 	}
 	wantWords := 0
 	for _, txt := range texts {
@@ -5878,7 +5910,7 @@ func (m *Manager) generateIndependently(t *task) {
 				m.failParagraph(t, p, err)
 				continue
 			}
-			m.saveParagraphAudio(t, p, audio)
+			m.saveParagraphAudio(t, p, audio, nil)
 		}
 		return
 	}
@@ -5898,12 +5930,12 @@ func (m *Manager) generateIndependently(t *task) {
 	}
 	for _, p := range t.mergeParagraphs {
 		text := p.ResolveGenerationText(cloneModel)
-		audio, err := m.generateClone(m.ctx, cloneModel, refAudio, t.refText, t.language, text, t.cloneInstruct)
+		audio, words, err := m.generateCloneChecked(m.ctx, cloneModel, refAudio, t.refText, t.language, text, t.cloneInstruct, p.Text)
 		if err != nil {
 			m.failParagraph(t, p, err)
 			continue
 		}
-		m.saveParagraphAudio(t, p, audio)
+		m.saveParagraphAudio(t, p, audio, words)
 	}
 }
 

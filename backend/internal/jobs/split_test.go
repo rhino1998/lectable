@@ -172,3 +172,121 @@ func TestGenerateCloneNeverSplitsAnUnsplittableSingleSentence(t *testing.T) {
 		t.Fatalf("expected exactly 1 call (no split possible), got %d", calls)
 	}
 }
+
+// fixedPaceAlign makes the fake aligner place every word at a fixed
+// 0.2s/word pace regardless of the clip - the real aligner's own behavior
+// when words are missing from the audio: they land past the clip's end.
+func fixedPaceAlign(fake *ttsworkertest.Server) {
+	fake.OnAlign = func(req ttsproto.AlignRequest) ([]ttsproto.Word, error) {
+		fields := strings.Fields(req.Text)
+		words := make([]ttsproto.Word, len(fields))
+		for i, f := range fields {
+			words[i] = ttsproto.Word{Text: f, Start: float64(i) * 0.2, End: float64(i+1) * 0.2}
+		}
+		return words, nil
+	}
+}
+
+// TestGenerateCloneCheckedRetriesTruncatedAudioWithSmallerChunks is the
+// regression test for Higgs's early-EOC failure mode: a clip whose
+// alignment puts words past its end must be regenerated with a
+// text_chunk_size override, keeping the complete retry and its own words.
+func TestGenerateCloneCheckedRetriesTruncatedAudioWithSmallerChunks(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	fixedPaceAlign(fake)
+	var chunkSizes []int
+	fake.OnGenerate = func(req ttsproto.GenerateRequest) ([]byte, error) {
+		chunkSizes = append(chunkSizes, req.TextChunkSize)
+		if req.TextChunkSize == 0 {
+			return syntheticRefWav(t, 2), nil // 10 of 20 words' worth
+		}
+		return syntheticRefWav(t, 4), nil
+	}
+	mgr := newTestManager()
+	mgr.tts = fake.Manager()
+
+	text := sentencesText(4, 5) // 20 words
+	audio, words, err := mgr.generateCloneChecked(t.Context(), "audiocpp-higgs-4b", syntheticRefWav(t, 8), wordsText(20), "en", text, "", text)
+	if err != nil {
+		t.Fatalf("generateCloneChecked: %v", err)
+	}
+	if len(chunkSizes) != 2 || chunkSizes[0] != 0 || chunkSizes[1] != retryChunkSizes(text)[0] {
+		t.Fatalf("expected a default attempt then one retry at %d, got %v", retryChunkSizes(text)[0], chunkSizes)
+	}
+	if dur, _ := wav.Duration(audio); dur < 3900*time.Millisecond {
+		t.Fatalf("expected the complete 4s retry to be kept, got %v", dur)
+	}
+	if len(words) != 20 || missingWordCount(words, 4) != 0 {
+		t.Fatalf("expected the retry's own 20 in-bounds words, got %d", len(words))
+	}
+}
+
+// TestGenerateCloneCheckedSkipsRetryForCompleteAudio confirms the common
+// case costs exactly one generation.
+func TestGenerateCloneCheckedSkipsRetryForCompleteAudio(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	fixedPaceAlign(fake)
+	fake.OnGenerate = func(ttsproto.GenerateRequest) ([]byte, error) {
+		return syntheticRefWav(t, 4), nil
+	}
+	mgr := newTestManager()
+	mgr.tts = fake.Manager()
+
+	text := sentencesText(4, 5)
+	_, words, err := mgr.generateCloneChecked(t.Context(), "audiocpp-higgs-4b", syntheticRefWav(t, 8), wordsText(20), "en", text, "", text)
+	if err != nil {
+		t.Fatalf("generateCloneChecked: %v", err)
+	}
+	if n := len(fake.GenerateCalls()); n != 1 {
+		t.Fatalf("expected exactly 1 generate call, got %d", n)
+	}
+	if len(words) != 20 {
+		t.Fatalf("expected the check's own 20 words returned, got %d", len(words))
+	}
+}
+
+// TestGenerateCloneCheckedKeepsMostCompleteAttempt confirms that when no
+// retry is fully complete, the attempt missing the fewest words wins -
+// never an error.
+func TestGenerateCloneCheckedKeepsMostCompleteAttempt(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	fixedPaceAlign(fake)
+	seconds := map[int]float64{} // chunk size -> clip length
+	sizes := retryChunkSizes(sentencesText(20, 5))
+	seconds[0] = 5
+	seconds[sizes[0]] = 15 // best: 25 of 100 words missing
+	seconds[sizes[1]] = 10
+	fake.OnGenerate = func(req ttsproto.GenerateRequest) ([]byte, error) {
+		return syntheticRefWav(t, seconds[req.TextChunkSize]), nil
+	}
+	mgr := newTestManager()
+	mgr.tts = fake.Manager()
+
+	text := sentencesText(20, 5) // 100 words, 20s at the fake aligner's pace
+	audio, _, err := mgr.generateCloneChecked(t.Context(), "audiocpp-higgs-4b", syntheticRefWav(t, 8), wordsText(20), "en", text, "", text)
+	if err != nil {
+		t.Fatalf("generateCloneChecked: %v", err)
+	}
+	if n := len(fake.GenerateCalls()); n != 3 {
+		t.Fatalf("expected the default attempt plus both retries, got %d calls", n)
+	}
+	if dur, _ := wav.Duration(audio); dur < 14900*time.Millisecond || dur > 15100*time.Millisecond {
+		t.Fatalf("expected the 15s attempt kept, got %v", dur)
+	}
+}
+
+func TestMissingWordCount(t *testing.T) {
+	words := []ttsproto.Word{{End: 1}, {End: 2}, {End: 2.05}, {End: 2.5}, {End: 3}}
+	if got := missingWordCount(words, 2); got != 2 {
+		t.Fatalf("expected 2 words past the end (2.05 is within tolerance), got %d", got)
+	}
+}
+
+func TestRetryChunkSizes(t *testing.T) {
+	if got := retryChunkSizes(strings.Repeat("a", 600)); len(got) != 2 || got[0] != 300 || got[1] != 150 {
+		t.Fatalf("600 chars: expected [300 150], got %v", got)
+	}
+	if got := retryChunkSizes(strings.Repeat("a", 100)); len(got) != 1 || got[0] != minRetryChunkChars {
+		t.Fatalf("100 chars: expected a single retry at the floor, got %v", got)
+	}
+}

@@ -67,6 +67,7 @@ func (w *Worker) HandleGenerate(rw http.ResponseWriter, r *http.Request) {
 		Instruct:      req.Instruct,
 		GuidanceScale: req.GuidanceScale,
 		Temperature:   req.Temperature,
+		TextChunkSize: req.TextChunkSize,
 	})
 	if err != nil {
 		writeError(rw, http.StatusInternalServerError, err)
