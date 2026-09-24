@@ -1034,7 +1034,13 @@ export function ReaderPage() {
           const chapterTitle = chapter?.title ?? chapterSummary?.title ?? ''
           const isActiveChapter = idx === playback.chapterIdx
           const measuredHeight = chapterHeights.get(idx)
-          const renderFull = Math.abs(idx - focusChapterIdx) <= RENDER_WINDOW_RADIUS || measuredHeight === undefined
+          // The playing chapter always stays fully mounted too, however
+          // far the reader has scrolled away from it - otherwise its
+          // paragraph refs (paragraphRefs) unregister once it collapses to
+          // a placeholder, and "Jump to current"/autoFollow's
+          // scrollToActiveParagraph would have nothing to scroll to.
+          const renderFull =
+            isActiveChapter || Math.abs(idx - focusChapterIdx) <= RENDER_WINDOW_RADIUS || measuredHeight === undefined
           return (
             <ChapterSection
               key={idx}
