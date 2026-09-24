@@ -21,6 +21,7 @@ import {
   RiUserVoiceLine,
   RiVoiceprintLine,
 } from 'react-icons/ri'
+import type { IconType } from 'react-icons'
 import {
   useAttributeSpeakers,
   useAttributingChapters,
@@ -465,6 +466,23 @@ export function SpeakersPage() {
   }
   const hasUnattributed = book.chapters.some((c) => !c.passes.attribution)
 
+  // Same all/untagged pair for the description and scare-quote tagging
+  // passes (c.passes.description / c.passes.scareQuote).
+  const runRetagDescriptionsAll = () => {
+    book.chapters.forEach((c) => runRetagDescriptions(c.idx))
+  }
+  const runRetagDescriptionsUndescribed = () => {
+    book.chapters.filter((c) => !c.passes.description).forEach((c) => runRetagDescriptions(c.idx))
+  }
+  const hasUndescribed = book.chapters.some((c) => !c.passes.description)
+  const runRetagScareQuotesAll = () => {
+    book.chapters.forEach((c) => runRetagScareQuotes(c.idx))
+  }
+  const runRetagScareQuotesUntagged = () => {
+    book.chapters.filter((c) => !c.passes.scareQuote).forEach((c) => runRetagScareQuotes(c.idx))
+  }
+  const hasUnscareQuoted = book.chapters.some((c) => !c.passes.scareQuote)
+
   // isDirected/hasUndirected mirror c.passes.attribution/hasUnattributed
   // exactly - passes.direction is a single flat bool, not keyed by clone
   // model (only Higgs ever produces sentence/inline tags - see
@@ -523,6 +541,10 @@ export function SpeakersPage() {
     book.chapters.filter((c) => !isGenerated(c)).forEach((c) => runGenerate(c.idx))
   }
   const hasUngenerated = book.chapters.some((c) => !isGenerated(c))
+
+  // Status columns between the table's Chapter and actions columns, spanned
+  // by the bulk-action rows' one empty cell.
+  const statusColumnCount = directionSupported ? 8 : 7
 
   // A chapter's music can only generate once it's scored and its narration
   // is fully generated (each region's clip is sized to its own narration -
@@ -701,75 +723,6 @@ export function SpeakersPage() {
       <section>
         <div className="library-header">
           <h2>Attribute speakers</h2>
-          <div className="speakers-roster-actions">
-            <button
-              className="text-button"
-              onClick={runAttributeUnattributed}
-              disabled={attributingIdxs.size > 0 || !hasUnattributed}
-              title="Attribute every chapter that isn't fully attributed yet, skipping ones already done"
-            >
-              Attribute unattributed
-            </button>
-            <button className="text-button" onClick={runAttributeAll} disabled={attributingIdxs.size > 0}>
-              Attribute all
-            </button>
-            {directionSupported && (
-              <>
-                <button
-                  className="text-button"
-                  onClick={runDirectionUndirected}
-                  disabled={directingIdxs.size > 0 || !hasUndirected}
-                  title="Tag every chapter that isn't fully direction-tagged yet, skipping ones already done"
-                >
-                  Tag undirected
-                </button>
-                <button className="text-button" onClick={runDirectionAll} disabled={directingIdxs.size > 0}>
-                  Tag all directions
-                </button>
-              </>
-            )}
-            <button
-              className="text-button"
-              onClick={runPronunciationUnresolved}
-              disabled={pronouncingIdxs.size > 0 || !hasUnresolvedPronunciation}
-              title="Resolve pronunciation for every chapter that isn't resolved yet, skipping ones already done"
-            >
-              Resolve unresolved pronunciation
-            </button>
-            <button className="text-button" onClick={runPronunciationAll} disabled={pronouncingIdxs.size > 0}>
-              Resolve all pronunciation
-            </button>
-            <button
-              className="text-button"
-              onClick={runScoreMusicUnscored}
-              disabled={scoringMusicIdxs.size > 0 || !hasUnscoredMusic}
-              title="Score background music for every chapter that isn't scored yet, skipping ones already done"
-            >
-              Score unscored music
-            </button>
-            <button className="text-button" onClick={runScoreMusicAll} disabled={scoringMusicIdxs.size > 0}>
-              Score all music
-            </button>
-            <button
-              className="text-button"
-              onClick={runGenerateUngenerated}
-              disabled={generatingIdxs.size > 0 || !hasUngenerated}
-              title="Generate audio for every chapter that isn't fully generated yet, skipping ones already done"
-            >
-              Generate ungenerated
-            </button>
-            <button className="text-button" onClick={runGenerateAll} disabled={generatingIdxs.size > 0}>
-              Generate all audio
-            </button>
-            <button
-              className="text-button"
-              onClick={runGenerateMissingMusic}
-              disabled={generatingMusicIdxs.size > 0 || missingMusicChapters.length === 0}
-              title="Generate background music for every scored, fully-narrated chapter that's missing any, retrying failed regions"
-            >
-              Generate missing music
-            </button>
-          </div>
         </div>
         {!directionSupported && (
           <p className="muted">
@@ -802,6 +755,132 @@ export function SpeakersPage() {
             </tr>
           </thead>
           <tbody>
+            {/* Whole-book counterparts of each chapter row's own action
+                icons, column-aligned with them: the first row only touches
+                chapters that aren't done yet, the second re-runs every
+                chapter. Actions with no bulk variant get a spacer so the
+                columns still line up. */}
+            <tr className="chapter-attribute-bulk-row">
+              <td className="muted" title="Every chapter that isn't done yet">Rest</td>
+              <td colSpan={statusColumnCount}></td>
+              <td>
+                <div className="chapter-attribute-actions">
+                  <BulkActionButton
+                    icon={RiUserSearchLine}
+                    busy={attributingIdxs.size > 0}
+                    disabled={!hasUnattributed}
+                    onClick={runAttributeUnattributed}
+                    title="Attribute unattributed — every chapter that isn't fully attributed yet, skipping ones already done"
+                  />
+                  <BulkActionButton
+                    icon={RiPriceTag3Line}
+                    busy={describingIdxs.size > 0}
+                    disabled={!hasUndescribed}
+                    onClick={runRetagDescriptionsUndescribed}
+                    title="Tag untagged descriptions — every chapter that isn't description-tagged yet, skipping ones already done"
+                  />
+                  <BulkActionButton
+                    icon={RiDoubleQuotesL}
+                    busy={scareQuotingIdxs.size > 0}
+                    disabled={!hasUnscareQuoted}
+                    onClick={runRetagScareQuotesUntagged}
+                    title="Tag untagged scare quotes — every chapter that isn't scare-quote-tagged yet, skipping ones already done"
+                  />
+                  {directionSupported && (
+                    <BulkActionButton
+                      icon={RiEmotionLine}
+                      busy={directingIdxs.size > 0}
+                      disabled={!hasUndirected}
+                      onClick={runDirectionUndirected}
+                      title="Tag undirected — every chapter that isn't fully direction-tagged yet, skipping ones already done"
+                    />
+                  )}
+                  <BulkActionButton
+                    icon={RiSpeakLine}
+                    busy={pronouncingIdxs.size > 0}
+                    disabled={!hasUnresolvedPronunciation}
+                    onClick={runPronunciationUnresolved}
+                    title="Resolve unresolved pronunciation — every chapter that isn't resolved yet, skipping ones already done"
+                  />
+                  <BulkActionButton
+                    icon={RiMusic2Line}
+                    busy={scoringMusicIdxs.size > 0}
+                    disabled={!hasUnscoredMusic}
+                    onClick={runScoreMusicUnscored}
+                    title="Score unscored music — every chapter that isn't scored yet, skipping ones already done"
+                  />
+                  <BulkActionButton
+                    icon={RiVoiceprintLine}
+                    busy={generatingIdxs.size > 0}
+                    disabled={!hasUngenerated}
+                    onClick={runGenerateUngenerated}
+                    title="Generate ungenerated — audio for every chapter that isn't fully generated yet, skipping ones already done"
+                  />
+                  <BulkActionButton
+                    icon={RiDiscLine}
+                    busy={generatingMusicIdxs.size > 0}
+                    disabled={missingMusicChapters.length === 0}
+                    onClick={runGenerateMissingMusic}
+                    title="Generate missing music — every scored, fully-narrated chapter that's missing any, retrying failed regions"
+                  />
+                </div>
+              </td>
+            </tr>
+            <tr className="chapter-attribute-bulk-row chapter-attribute-bulk-row-last">
+              <td className="muted" title="Every chapter, including ones already done">All</td>
+              <td colSpan={statusColumnCount}></td>
+              <td>
+                <div className="chapter-attribute-actions">
+                  <BulkActionButton
+                    icon={RiUserSearchLine}
+                    busy={attributingIdxs.size > 0}
+                    onClick={runAttributeAll}
+                    title="Attribute all — every chapter, including ones already done"
+                  />
+                  <BulkActionButton
+                    icon={RiPriceTag3Line}
+                    busy={describingIdxs.size > 0}
+                    onClick={runRetagDescriptionsAll}
+                    title="Retag all descriptions — every chapter, including ones already done"
+                  />
+                  <BulkActionButton
+                    icon={RiDoubleQuotesL}
+                    busy={scareQuotingIdxs.size > 0}
+                    onClick={runRetagScareQuotesAll}
+                    title="Retag all scare quotes — every chapter, including ones already done"
+                  />
+                  {directionSupported && (
+                    <BulkActionButton
+                      icon={RiEmotionLine}
+                      busy={directingIdxs.size > 0}
+                      onClick={runDirectionAll}
+                      title="Tag all directions — every chapter, including ones already done"
+                    />
+                  )}
+                  <BulkActionButton
+                    icon={RiSpeakLine}
+                    busy={pronouncingIdxs.size > 0}
+                    onClick={runPronunciationAll}
+                    title="Resolve all pronunciation — every chapter, including ones already done"
+                  />
+                  <BulkActionButton
+                    icon={RiMusic2Line}
+                    busy={scoringMusicIdxs.size > 0}
+                    onClick={runScoreMusicAll}
+                    title="Score all music — every chapter, including ones already done"
+                  />
+                  <BulkActionButton
+                    icon={RiVoiceprintLine}
+                    busy={generatingIdxs.size > 0}
+                    onClick={runGenerateAll}
+                    title="Generate all audio — every chapter"
+                  />
+                  {/* No force variant: chapter music generation only ever
+                      fills in missing regions (see api.generateChapterMusic). */}
+                  <BulkActionButton icon={RiDiscLine} />
+                </div>
+              </td>
+            </tr>
             {book.chapters.map((c) => {
               const attributing = attributingIdxs.has(c.idx)
               const retagging = describingIdxs.has(c.idx)
@@ -1889,6 +1968,36 @@ function CharacterVoiceEditor({
 // PassStatus is one chapter-table cell for a yes/no pipeline pass: a
 // check once done, an X if not, a spinner while its task is running. The
 // full wording lives in the tooltip/aria-label to keep the table narrow.
+// A chapter-table bulk-action icon, column-aligned with the per-chapter
+// icon of the same pass. With no onClick it renders an invisible spacer
+// instead, for a per-chapter action that has no bulk variant.
+function BulkActionButton({
+  icon: Icon,
+  onClick,
+  disabled = false,
+  busy = false,
+  title,
+}: {
+  icon: IconType
+  onClick?: () => void
+  disabled?: boolean
+  busy?: boolean
+  title?: string
+}) {
+  if (!onClick) {
+    return (
+      <span className="icon-action-button icon-action-spacer" aria-hidden>
+        <Icon />
+      </span>
+    )
+  }
+  return (
+    <button className="icon-action-button" disabled={disabled || busy} onClick={onClick} title={title}>
+      <Icon className={busy ? 'spin' : undefined} />
+    </button>
+  )
+}
+
 function PassStatus({ done, busy, label }: { done: boolean; busy: boolean; label: string }) {
   const text = `${label}: ${busy ? 'running…' : done ? 'done' : 'not done'}`
   return (

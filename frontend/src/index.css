@@ -1109,6 +1109,22 @@ label {
 .chapter-attribute-table tr:last-child td {
   border-bottom: none;
 }
+/* SpeakersPage's two whole-book action rows atop the chapter table: no
+   divider between the pair, a stronger one under the last so they read as
+   a header block distinct from the per-chapter rows. */
+.chapter-attribute-table tr.chapter-attribute-bulk-row td {
+  border-bottom: none;
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+  font-size: 0.8rem;
+}
+.chapter-attribute-table tr.chapter-attribute-bulk-row-last td {
+  border-bottom: 2px solid var(--border);
+  padding-bottom: 0.45rem;
+}
+.icon-action-spacer {
+  visibility: hidden;
+}
 .chapter-attribute-actions {
   display: flex;
   justify-content: flex-end;
