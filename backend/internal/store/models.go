@@ -315,7 +315,8 @@ type Chapter struct {
 // stored) is the sum of those paragraphs' own real narration durations, so
 // the generated clip actually matches how long the region plays under
 // for, whatever that turns out to be (no artificial minimum - see
-// musicgen.GenerateRegion's own doc comment) - and, for a Transition of
+// musicgen.GenerateRegion's own doc comment; it does pad every clip by a
+// fixed crossfadePaddingSeconds to cover the clients' boundary crossfades) - and, for a Transition of
 // "continuation", for the immediately preceding region (by Idx) to have
 // already finished generating, so its own clip is available to seed this
 // one's first chunk from (see internal/musicgen's own package doc comment
@@ -362,16 +363,14 @@ type MusicTransition string
 const (
 	// MusicTransitionCut: this region's music should feel like a hard cut
 	// from whatever played before it (a new scene, a chapter break, an
-	// abrupt tonal reversal) - generated unseeded, with the frontend
-	// applying a short crossfade against the previous region's own tail at
-	// playback time. Always the value for a chapter's very first region,
-	// regardless of what ScoreMusic itself returns for it (there's nothing
-	// to continue from).
+	// abrupt tonal reversal) - generated unseeded. Always the value for a
+	// chapter's very first region, regardless of what ScoreMusic itself
+	// returns for it (there's nothing to continue from).
 	MusicTransitionCut MusicTransition = "cut"
 	// MusicTransitionContinuation: this region's music should evolve
 	// smoothly out of the previous region's own mood - generated with its
-	// first chunk seeded from the previous region's own clip, so the
-	// frontend can play the two back to back with no fade at all.
+	// first chunk seeded from the previous region's own clip. Playback
+	// crossfades every region switch the same way regardless of this value.
 	MusicTransitionContinuation MusicTransition = "continuation"
 )
 

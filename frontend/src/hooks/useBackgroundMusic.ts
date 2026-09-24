@@ -9,52 +9,41 @@ import type { MusicRegion } from '../api/types'
 // music never competes with the words being read.
 const MUSIC_GAIN = 0.22
 
-// How long a "cut" transition's crossfade runs - short and deliberately
-// unseeded (see internal/musicgen's own package doc comment): the two
-// clips either side of a cut share no generation-time relationship, so a
-// longer fade would just prolong an audible mismatch rather than smooth
-// it. A "continuation" transition needs none of this at all - its first
-// chunk was generated seeded from the previous region's own tail
-// specifically so the two can play back to back with a hard, instant cut.
-const CUT_CROSSFADE_SECONDS = 1.5
+// Half the width of every region-to-region crossfade, in real (wall-
+// clock) seconds. Each switch is centred on the paragraph boundary that
+// owns it:
+//
+//   BBBBBB(Ba)|(bA)AAAAAAAA
+//
+// the incoming region starts this long *before* the boundary (pre-roll -
+// see the region-switch effect below) and fades in over twice this, while
+// the outgoing one fades out over the same window - so the two cross at
+// equal level right at the boundary, never both at full volume and never
+// with a gap between them. Applies to every transition, "continuation"
+// included: a seeded continuation still only sounds continuous if the
+// outgoing clip is exactly at its own tail at the switch, which a looping
+// clip (see source.loop below) never guarantees.
+const CROSSFADE_HALF_SECONDS = 5
+const CROSSFADE_SECONDS = CROSSFADE_HALF_SECONDS * 2
 
-// How much of a region's own clip duration it overlaps its neighbor by,
-// on both ends - used two ways:
-//   - Pre-roll (see the region-switch effect below): the *upcoming*
-//     region starts playing this fraction of its own duration before the
-//     paragraph boundary that "owns" it actually arrives, rather than
-//     only once paragraphIdx literally crosses into it (which left a
-//     "cut" transition's own CUT_CROSSFADE_SECONDS fade, or a fresh
-//     source.start for the chapter's very first region, beginning only
-//     *after* that paragraph's narration had already started).
-//   - Post-roll (see stopDeck's own delaySeconds parameter): the
-//     *outgoing* region, symmetrically, keeps playing this same fraction
-//     of its own duration past that same boundary before its own
-//     fade-out even begins, rather than being cut off right at the
-//     instant the next region takes over.
-const REGION_OVERLAP_FRACTION = 0.05
+// Equal-power fade shapes (sin/cos quarter-waves) for setValueCurveAtTime -
+// a plain linear crossfade dips audibly toward silence at its midpoint,
+// which is exactly the boundary this is centred on.
+const CURVE_POINTS = 64
+const FADE_IN_CURVE = Float32Array.from({ length: CURVE_POINTS }, (_, i) => Math.sin(((i / (CURVE_POINTS - 1)) * Math.PI) / 2))
+const FADE_OUT_CURVE = Float32Array.from({ length: CURVE_POINTS }, (_, i) => Math.cos(((i / (CURVE_POINTS - 1)) * Math.PI) / 2))
 
-// Caps regionOverlapSeconds below - a very long region (this app's clips
-// aren't normally more than a minute or so, but nothing enforces that)
-// shouldn't overlap its neighbor by more than this many real seconds even
-// though REGION_OVERLAP_FRACTION alone would ask for more; an overlap
-// this long is no longer "smoothing a transition", it's two clips
-// genuinely both playing at once for an awkwardly long stretch.
-const MAX_OVERLAP_SECONDS = 5
-
-// The actual pre-roll/post-roll overlap for a region of `durationSeconds`
-// - REGION_OVERLAP_FRACTION of its own length, capped at
-// MAX_OVERLAP_SECONDS, whichever is lower. Shared by both call sites (the
-// region-switch effect's own pre-roll check and its outgoingPostRoll) so
-// the two stay in sync by construction rather than each re-deriving it.
-function regionOverlapSeconds(durationSeconds: number): number {
-  return Math.min(durationSeconds * REGION_OVERLAP_FRACTION, MAX_OVERLAP_SECONDS)
-}
-
+// Two gain stages per deck, each automated exactly once in its lifetime
+// (fadeIn at start, fadeOut at stop) - so a deck switched away from while
+// still mid-fade-in never needs its in-flight curve cancelled and
+// re-anchored (setValueCurveAtTime throws on overlapping automation);
+// the two simply multiply.
 interface Deck {
   regionId: string
-  gain: GainNode
+  fadeIn: GainNode
+  fadeOut: GainNode
   source: AudioBufferSourceNode
+  stopping: boolean
 }
 
 interface UseBackgroundMusicArgs {
@@ -76,7 +65,7 @@ interface UseBackgroundMusicArgs {
   paragraphIdx: number
   // Elapsed/total seconds of the *currently narrating* paragraph
   // (PlaybackController.currentTime/duration) - purely for the pre-roll
-  // check (see REGION_OVERLAP_FRACTION): how close is playback to crossing
+  // check (see CROSSFADE_HALF_SECONDS): how close is playback to crossing
   // into the next paragraph, which is what the switch used to wait for.
   paragraphCurrentTime: number
   paragraphDuration: number
@@ -119,16 +108,10 @@ interface UseBackgroundMusicArgs {
 // <audio> element; this owns a second, parallel audio graph rather than
 // touching that one at all.
 //
-// A region's own Transition ("cut" vs "continuation" - see
-// store.MusicTransition) decides how the switch into it sounds: a
-// "continuation" region was generated with its first chunk seeded from
-// the immediately preceding region's own tail (internal/musicgen), so
-// switching into it is a hard, instant cut with no fade at all - the
-// seeded generation is what already makes it sound continuous. A "cut"
-// region (or any switch that isn't actually a genuine adjacent hand-off -
-// e.g. the reader jumped/seeked past several regions at once) gets a
-// short crossfade instead, since there's nothing tying the two clips
-// together.
+// Every region switch is the same equal-power crossfade centred on the
+// paragraph boundary (see CROSSFADE_HALF_SECONDS), regardless of the
+// region's own Transition - that only affects how the backend seeds the
+// region's generation (store.MusicTransition), not playback.
 export function useBackgroundMusic({
   bookId,
   chapterIdx,
@@ -219,29 +202,20 @@ export function useBackgroundMusic({
     return ctx
   }
 
-  // delaySeconds (default 0) is stopDeck's own "post-roll" - see
-  // REGION_OVERLAP_FRACTION's own doc comment: rather than starting
-  // deck's fade-out right now, it holds at its current gain until
-  // now+delaySeconds and only starts fading (and, for the fadeSeconds<=0
-  // case, only actually stops) from there - the exact mirror of the
-  // region-switch effect's own pre-roll, which starts the *incoming*
-  // region early by the same kind of amount. Callers pass 0 (the
-  // ordinary case) for a switch that should behave exactly as before.
-  function stopDeck(deck: Deck, fadeSeconds: number, delaySeconds = 0) {
+  // Fades deck out (equal-power) over fadeSeconds starting right now, then
+  // stops it. Only ever acts once per deck (see Deck's own doc comment) -
+  // its fadeOut stage has no prior automation to collide with.
+  function stopDeck(deck: Deck, fadeSeconds: number) {
     const ctx = ctxRef.current
-    if (!ctx) return
+    if (!ctx || deck.stopping) return
+    deck.stopping = true
     const now = ctx.currentTime
-    const fadeStart = now + delaySeconds
     if (fadeSeconds <= 0) {
-      deck.gain.gain.cancelScheduledValues(fadeStart)
-      deck.gain.gain.setValueAtTime(0, fadeStart)
-      deck.source.stop(fadeStart)
+      deck.source.stop(now)
       return
     }
-    deck.gain.gain.cancelScheduledValues(now)
-    deck.gain.gain.setValueAtTime(deck.gain.gain.value, fadeStart)
-    deck.gain.gain.linearRampToValueAtTime(0, fadeStart + fadeSeconds)
-    deck.source.stop(fadeStart + fadeSeconds + 0.1)
+    deck.fadeOut.gain.setValueCurveAtTime(FADE_OUT_CURVE, now, fadeSeconds)
+    deck.source.stop(now + fadeSeconds + 0.05)
   }
 
   // Play/pause: suspend/resume the whole context so a source node's own
@@ -335,77 +309,48 @@ export function useBackgroundMusic({
       (r) => paragraphIdx >= r.startIdx && paragraphIdx <= r.endIdx && r.status === 'ready' && r.audioUrl,
     )
 
-    // Pre-roll: a region switch used to fire only once paragraphIdx
-    // literally crossed into it - meaning a "cut" transition's own
-    // CUT_CROSSFADE_SECONDS fade (or the chapter's very first region
-    // starting cold) only ever began *after* the paragraph that owns it
-    // had already started narrating. If the very next paragraph is where
-    // a new region begins, start warming its clip into the cache the
-    // moment we enter the paragraph right before it, and once that
-    // clip's own duration is known, switch to it REGION_OVERLAP_FRACTION
-    // of its own length before the current paragraph is actually due to
-    // finish - so by the time narration crosses the real boundary, this
-    // region's own fade/start is already well underway.
+    // Pre-roll: if the very next paragraph is where a new region begins,
+    // start warming its clip into the cache the moment we enter the
+    // paragraph right before it, and switch to it once the current
+    // paragraph has CROSSFADE_HALF_SECONDS of real time left - so the
+    // crossfade (see CROSSFADE_HALF_SECONDS) is centred on the boundary.
+    // paragraphCurrentTime/paragraphDuration are narration media time,
+    // hence the division by playbackRate; the crossfade itself runs on the
+    // AudioContext's own real-time clock.
     //
     // The "next region" isn't always in this same chapter's own `data` -
     // if paragraphIdx is the chapter's actual last paragraph (not merely
     // the last one some region happens to cover - an unscored trailing
     // paragraph must never trigger this early), the upcoming region is
-    // instead nextChapterData's own first region. A region's Transition
-    // never actually spans chapters in practice (server-side scoring has
-    // no cross-chapter context to seed a "continuation" from - each
-    // chapter's own regions are scored independently), so a cross-chapter
-    // switch always falls back to an ordinary crossfade below rather than
-    // the seamless cut - no special-casing needed for that, it falls out
-    // of immediatelyPrecedingId naturally being null for a chapter's own
-    // first region (see below).
+    // instead nextChapterData's own first region.
     //
     // Skipped entirely on a jump: paragraphCurrentTime/paragraphDuration
     // describe whatever paragraph was playing *before* the jump for at
     // least one tick (PlaybackController.playAt resets currentTime but
     // the new paragraph's own duration can lag a beat behind, and even
     // once both are fresh they say nothing about a position the reader
-    // didn't arrive at by simply reading through it) - comparing them
-    // against an upcoming region's own duration here would be comparing
-    // unrelated numbers. A jump always resolves to whichever region
-    // strictly covers where the reader actually clicked (currentIdx),
-    // immediately - correct is more important than early for a jump the
-    // way it isn't for the ordinary case pre-roll targets.
-    let target: { region: MusicRegion; regions: MusicRegion[] } | null =
-      currentIdx === -1 ? null : { region: data.regions[currentIdx], regions: data.regions }
+    // didn't arrive at by simply reading through it). A jump always
+    // resolves to whichever region strictly covers where the reader
+    // actually clicked (currentIdx), immediately.
+    let region: MusicRegion | null = currentIdx === -1 ? null : data.regions[currentIdx]
     if (!isJump) {
-      const upcomingInChapterIdx = data.regions.findIndex((r) => r.startIdx === paragraphIdx + 1 && r.status === 'ready' && r.audioUrl)
       const isLastParagraphOfChapter = chapterParagraphCount > 0 && paragraphIdx === chapterParagraphCount - 1
       const upcoming =
-        upcomingInChapterIdx !== -1
-          ? { region: data.regions[upcomingInChapterIdx], regions: data.regions }
-          : isLastParagraphOfChapter && nextChapterData
-            ? (() => {
-                const first = nextChapterData.regions.find((r) => r.startIdx === 0 && r.status === 'ready' && r.audioUrl)
-                return first ? { region: first, regions: nextChapterData.regions } : null
-              })()
-            : null
+        data.regions.find((r) => r.startIdx === paragraphIdx + 1 && r.status === 'ready' && r.audioUrl) ??
+        (isLastParagraphOfChapter ? nextChapterData?.regions.find((r) => r.startIdx === 0 && r.status === 'ready' && r.audioUrl) : undefined)
       if (upcoming) {
-        const cachedUpcoming = bufferCacheRef.current.get(upcoming.region.id)
-        if (!cachedUpcoming) {
-          void getBuffer(ensureContext(), upcoming.region)
+        if (!bufferCacheRef.current.has(upcoming.id)) {
+          void getBuffer(ensureContext(), upcoming)
         } else if (paragraphDuration > 0) {
-          const remaining = paragraphDuration - paragraphCurrentTime
-          if (remaining <= regionOverlapSeconds(cachedUpcoming.duration)) {
-            target = upcoming
+          const remainingRealSeconds = (paragraphDuration - paragraphCurrentTime) / (playbackRate || 1)
+          if (remainingRealSeconds <= CROSSFADE_HALF_SECONDS) {
+            region = upcoming
           }
         }
       }
     }
 
-    const region = target?.region ?? null
     const outgoing = activeDeckRef.current
-    // Post-roll (see regionOverlapSeconds/stopDeck's own delaySeconds): how
-    // long outgoing itself keeps playing, past this switch, before its own
-    // fade-out even starts - the same overlap the incoming region above got
-    // started early by. buffer is only unset if this deck was somehow
-    // never actually started; 0 falls back to the old, immediate behavior.
-    const outgoingPostRoll = outgoing?.source.buffer ? regionOverlapSeconds(outgoing.source.buffer.duration) : 0
 
     if (!region) {
       // No ready region covers the current paragraph (scoring/generation
@@ -413,7 +358,7 @@ export function useBackgroundMusic({
       // scored) - fade out whatever was playing rather than leaving it
       // running under the wrong paragraphs.
       if (outgoing) {
-        stopDeck(outgoing, CUT_CROSSFADE_SECONDS, outgoingPostRoll)
+        stopDeck(outgoing, CROSSFADE_SECONDS)
         activeDeckRef.current = null
       }
       return
@@ -422,58 +367,35 @@ export function useBackgroundMusic({
 
     const ctx = ensureContext()
     const token = ++switchTokenRef.current
-    // Only a genuine adjacent hand-off (what's currently playing is
-    // literally the region right before this one, in the SAME chapter's
-    // own regions array - see target's own doc comment above for why a
-    // cross-chapter target's own "regions" is a different chapter's array
-    // entirely, whose own indexOf(region) here is always 0) counts as a
-    // real continuation - a region tagged "continuation" whose actual
-    // predecessor isn't playing (the reader jumped/seeked past several
-    // regions, nothing was playing at all, or this is a chapter's own
-    // first region) has no seeded relationship to whatever's on the other
-    // deck, so it falls back to a crossfade. Never seamless on a jump
-    // even if outgoing happens to genuinely be the immediately-preceding
-    // region by coincidence: the seeded continuation only sounds right
-    // when the outgoing clip actually played through to near its own
-    // tail first, which a jump - landing here from some arbitrary
-    // elsewhere, not from reading through the preceding region - never
-    // guarantees.
-    // target is guaranteed non-null here (region was derived from it, and
-    // the !region check above already returned if that were null).
-    const targetOwnIdx = target!.regions.indexOf(region)
-    const immediatelyPrecedingId = targetOwnIdx > 0 ? target!.regions[targetOwnIdx - 1].id : null
-    const seamless = !isJump && region.transition === 'continuation' && outgoing?.regionId === immediatelyPrecedingId
+    const incoming = region
 
-    getBuffer(ctx, region)
+    getBuffer(ctx, incoming)
       .then((buffer) => {
         if (switchTokenRef.current !== token) return // superseded by a later switch
 
-        const gain = ctx.createGain()
-        gain.connect(masterGainRef.current!)
+        const fadeOut = ctx.createGain()
+        fadeOut.connect(masterGainRef.current!)
+        const fadeIn = ctx.createGain()
+        fadeIn.connect(fadeOut)
         const source = ctx.createBufferSource()
         source.buffer = buffer
+        // A region's paragraphs can outlast its own clip - musicgen renders
+        // every clip with an already-crossfaded loop seam for exactly this
+        // (see its trimToLoopableClip), so looping is gapless as-is. The
+        // deck only ever ends via stopDeck.
+        source.loop = true
         source.playbackRate.value = playbackRate
-        source.connect(gain)
+        source.connect(fadeIn)
 
+        // Every switch crossfades, "continuation" included - see
+        // CROSSFADE_HALF_SECONDS. A late switch (a jump, or the upcoming
+        // clip's fetch not landing in time for pre-roll) runs the same
+        // full-length crossfade, just starting from now.
         const now = ctx.currentTime
-        if (seamless) {
-          gain.gain.setValueAtTime(1, now)
-          // No post-roll here, unlike the crossfade branch below: a
-          // seamless continuation's whole point is that its first chunk
-          // was generated seeded from outgoing's own tail specifically so
-          // the two can play back to back with an instant cut - letting
-          // outgoing linger past that cut would mean genuinely playing
-          // both at once, an audible doubling of content that was
-          // designed to already flow into itself, not two independent
-          // clips that need the overlap to disguise a seam.
-          if (outgoing) stopDeck(outgoing, 0)
-        } else {
-          gain.gain.setValueAtTime(0, now)
-          gain.gain.linearRampToValueAtTime(1, now + CUT_CROSSFADE_SECONDS)
-          if (outgoing) stopDeck(outgoing, CUT_CROSSFADE_SECONDS, outgoingPostRoll)
-        }
+        fadeIn.gain.setValueCurveAtTime(FADE_IN_CURVE, now, CROSSFADE_SECONDS)
+        if (outgoing) stopDeck(outgoing, CROSSFADE_SECONDS)
         source.start(now)
-        activeDeckRef.current = { regionId: region.id, gain, source }
+        activeDeckRef.current = { regionId: incoming.id, fadeIn, fadeOut, source, stopping: false }
       })
       .catch(() => {
         // A failed fetch/decode just leaves whatever was playing before in
@@ -481,7 +403,7 @@ export function useBackgroundMusic({
         // surfacing an error to the reader over.
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [musicEnabled, data, nextChapterData, chapterParagraphCount, paragraphIdx, paragraphCurrentTime, paragraphDuration])
+  }, [musicEnabled, data, nextChapterData, chapterParagraphCount, paragraphIdx, paragraphCurrentTime, paragraphDuration, playbackRate])
 
   // Full teardown on unmount (leaving the reader, or switching books).
   useEffect(() => {

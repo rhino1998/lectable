@@ -38,15 +38,13 @@
 // client-side (Web Audio - see frontend's background-music playback
 // code), not one chapter-length file stitched here. A "continuation"
 // region only needs its own *first* chunk seeded from the *previous
-// region's* own already-generated clip (see Region.Seed) - the frontend
-// then plays that first chunk immediately after the previous region's
-// clip with no fade, mirroring the same hard-cut treatment this package
-// already gives every within-region seeded join. A "cut" region (or a
-// chapter's first region, with nothing to continue from) generates its
-// first chunk unseeded (Region.Seed nil), and the frontend applies a
-// short crossfade there instead.
+// region's* own already-generated clip (see Region.Seed) so its mood
+// evolves out of it; a "cut" region (or a chapter's first region, with
+// nothing to continue from) generates its first chunk unseeded (Region.Seed
+// nil). Playback treats both the same - every region switch is a short
+// equal-power crossfade centred on the paragraph boundary.
 //
-// A region's own served clip also loops in the frontend (source.loop=true)
+// A region's own served clip also loops in the clients (source.loop=true)
 // whenever its paragraphs outlast its own generated duration - a *third*
 // kind of seam, entirely internal to one region's own clip, distinct from
 // both of the above. GenerateRegion renders extra margin at both ends for
@@ -109,7 +107,7 @@ type Region struct {
 // at each end of a region's own clip - purely internal overhead, trimmed
 // back off before the clip is ever returned (see trimToLoopableClip) - so
 // the served clip is 2*loopCrossfadeFraction (here, 20%) longer to render
-// than TargetDurationSeconds actually asks for. Exists because Stable
+// than its own served length. Exists because Stable
 // Audio tapers its own output toward silence at the true start/end of
 // anything it renders, and a region's own clip loops indefinitely
 // whenever its paragraphs outlast it (frontend useBackgroundMusic's own
@@ -118,6 +116,17 @@ type Region struct {
 // ("substantial start/end ... periods of low music audio"). 0.1 (10%
 // margin on each end) is comfortably wider than that taper.
 const loopCrossfadeFraction = 0.1
+
+// crossfadePaddingSeconds is added on top of every region's own
+// TargetDurationSeconds (the summed narration it plays under) - the
+// clients crossfade every region switch centred on its paragraph boundary
+// (frontend useBackgroundMusic's own CROSSFADE_HALF_SECONDS, 5s), so a
+// region's clip actually plays for that long past both of its own ends:
+// starting early under the previous region's tail, and running on under
+// the next region's head. Padding by both halves means a region no longer
+// than its clip spends those overlaps on fresh material instead of
+// wrapping onto its own loop seam mid-crossfade.
+const crossfadePaddingSeconds = 10.0
 
 // GenerateRegion renders one chapter tone region's full-duration
 // background-music clip, chaining as many Stable Audio Medium calls as
@@ -128,8 +137,8 @@ const loopCrossfadeFraction = 0.1
 // different seam from the one loopCrossfadeFraction/
 // trimToLoopableClip exists for - this one is entirely within one
 // continuous render, always flowing forward). Returns raw WAV bytes,
-// already trimmed to exactly TargetDurationSeconds and loop-crossfaded,
-// ready to persist and play as-is.
+// already trimmed to exactly TargetDurationSeconds+crossfadePaddingSeconds
+// and loop-crossfaded, ready to persist and play as-is.
 //
 // Deliberately no minimum on TargetDurationSeconds - a region covering
 // only a couple of short paragraphs generates a correspondingly short
@@ -138,7 +147,7 @@ const loopCrossfadeFraction = 0.1
 // under, not a fixed musical minimum - a short region is fine to leave
 // short.
 func GenerateRegion(ctx context.Context, backend Backend, in Region) ([]byte, error) {
-	served := in.TargetDurationSeconds
+	served := in.TargetDurationSeconds + crossfadePaddingSeconds
 	margin := served * loopCrossfadeFraction
 	renderTarget := served + 2*margin
 
