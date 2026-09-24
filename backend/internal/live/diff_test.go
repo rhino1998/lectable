@@ -64,8 +64,12 @@ func TestDiffRoundTrip(t *testing.T) {
 			gotJSON, _ := json.Marshal(got)
 			wantJSON, _ := json.Marshal(next)
 			var g, w any
-			json.Unmarshal(gotJSON, &g)
-			json.Unmarshal(wantJSON, &w)
+			if err := json.Unmarshal(gotJSON, &g); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(wantJSON, &w); err != nil {
+				t.Fatal(err)
+			}
 			if !reflect.DeepEqual(g, w) {
 				t.Errorf("round trip mismatch\n got  %s\n want %s\n ops  %s", gotJSON, wantJSON, opsJSON)
 			}

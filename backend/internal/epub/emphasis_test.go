@@ -92,7 +92,7 @@ func TestCollectTextAndExtractEmphasis(t *testing.T) {
 					t.Errorf("substitution %d replacement = %q, want %q", i, sub.Replacement, tc.wantReplaced[i])
 				}
 				// Offset/Length must correctly index into clean.
-				if got := clean[sub.Offset : sub.Offset+sub.Length]; got != strings.Trim(tc.wantReplaced[i], `"`) && strings.ToUpper(got) != strings.ToUpper(strings.Trim(tc.wantReplaced[i], `"`)) {
+				if got := clean[sub.Offset : sub.Offset+sub.Length]; got != strings.Trim(tc.wantReplaced[i], `"`) && !strings.EqualFold(got, strings.Trim(tc.wantReplaced[i], `"`)) {
 					t.Errorf("substitution %d spans %q in clean text, want it to cover the original (case-insensitive) of %q", i, got, tc.wantReplaced[i])
 				}
 			}

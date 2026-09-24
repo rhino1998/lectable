@@ -11,6 +11,15 @@ android {
     namespace = "com.lectable.app"
     compileSdk = 34
 
+    // `./gradlew lint` (or the root `make lint-android`). Errors fail the
+    // build; the version-bump nags are muted since dependency upgrades are
+    // done deliberately via gradle/libs.versions.toml, not on lint's say-so.
+    lint {
+        abortOnError = true
+        checkDependencies = true
+        disable += setOf("GradleDependency", "AndroidGradlePluginVersion", "NewerVersionAvailable")
+    }
+
     defaultConfig {
         applicationId = "com.lectable.app"
         minSdk = 26

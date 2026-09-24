@@ -4,7 +4,7 @@
 // instead of this app's normal "wipe and start fresh" schema-change
 // convention:
 //
-//  1. chapters.state (a TEXT enum: '', 'attributed', 'tagged') becomes
+//  1. chapters.state (a TEXT enum: ”, 'attributed', 'tagged') becomes
 //     chapters.passes (a native JSON object - see store.Passes), one
 //     independent boolean field per pipeline pass instead of one flat,
 //     forward-only state. 'attributed' backfills to
@@ -125,9 +125,11 @@ func migrateChapters(db *sql.DB) error {
 	if err := db.QueryRow(`SELECT count(*) FROM chapters`).Scan(&total); err != nil {
 		return fmt.Errorf("count chapters: %w", err)
 	}
-	db.QueryRow(`SELECT count(*) FROM chapters WHERE state = ''`).Scan(&none)
-	db.QueryRow(`SELECT count(*) FROM chapters WHERE state = 'attributed'`).Scan(&attributed)
-	db.QueryRow(`SELECT count(*) FROM chapters WHERE state = 'tagged'`).Scan(&tagged)
+	for state, n := range map[string]*int{"": &none, "attributed": &attributed, "tagged": &tagged} {
+		if err := db.QueryRow(`SELECT count(*) FROM chapters WHERE state = ?`, state).Scan(n); err != nil {
+			return fmt.Errorf("count %q chapters: %w", state, err)
+		}
+	}
 	if err := db.QueryRow(`SELECT count(*) FROM chapters_new`).Scan(&newTotal); err != nil {
 		return fmt.Errorf("verify chapters_new row count: %w", err)
 	}

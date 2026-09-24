@@ -147,7 +147,7 @@ func TestOpenSeedsDefaultVoice(t *testing.T) {
 // TestMigrateCharactersRefLineBackfillsExisting simulates a pre-ref_line
 // database (the characters table shape before this column existed) and
 // confirms Open's migrateCharactersRefLine backfills an already-
-// characterized character's ref_line to voices.DefaultRefText - not '' -
+// characterized character's ref_line to voices.DefaultRefText - not ” -
 // matching what that character's already-cached reference clip was
 // actually rendered from (see migrateCharactersRefLine's own doc comment).
 // A regression test specifically because this is a real, one-off exception

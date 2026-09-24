@@ -121,6 +121,11 @@ client, not a browser.)
 
 ## Conventions
 
+- Lint with `make lint` from the repo root (or `lint-go` / `lint-frontend`
+  / `lint-android`): golangci-lint v2 for all three Go modules via the
+  shared root `.golangci.yml`, oxlint for `frontend`, AGP's built-in lint
+  for `android`. All three should stay at zero errors.
+
 - No auth, no multi-user support — this is a single-user local app.
 - All persistent state lives under the backend's `DATA_DIR` (default
   `./data`): `library.duckdb`, `audio/<bookID>/<chapterID>/<idx>.wav`,

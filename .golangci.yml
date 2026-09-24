@@ -1,0 +1,34 @@
+# Shared golangci-lint (v2) config for every Go module in the repo
+# (backend, audiocpp-go, llamacpp-go) - golangci-lint walks up from each
+# module to find this file. Run via the root Makefile's `make lint-go`.
+version: "2"
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  settings:
+    errcheck:
+      # Best-effort cleanup/response writes whose error has nowhere useful
+      # to go (deferred rollback after commit, websocket teardown, a body
+      # write after headers are already sent).
+      exclude-functions:
+        - (*database/sql.Tx).Rollback
+        - (*github.com/coder/websocket.Conn).CloseNow
+        - (net/http.ResponseWriter).Write
+    staticcheck:
+      checks:
+        - all
+        - -ST1000 # package comments
+        - -ST1003 # initialism naming (Id vs ID)
+        - -ST1016 # receiver name consistency
+        - -ST1020 # exported comment form
+        - -ST1021
+        - -ST1022
+        - -QF1008 # "could remove embedded field from selector" - explicit is fine
+  exclusions:
+    presets:
+      - std-error-handling # unchecked Close/Remove/Print-style errors
+      - common-false-positives
+
+formatters:
+  enable:
+    - gofmt

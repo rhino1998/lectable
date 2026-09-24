@@ -279,11 +279,9 @@ func (w *watcher) handleSnapshot(snap snapshot) {
 	for id, old := range w.known {
 		if _, ok := next[id]; !ok {
 			age := time.Since(old.firstSeen).Round(time.Second)
-			status := "gone"
+			status := "gone (canceled, dispatched, or completed while unobserved)"
 			if old.inFlight {
 				status = "finished/failed"
-			} else {
-				status = "gone (canceled, dispatched, or completed while unobserved)"
 			}
 			logf("- %-10s %s  (was present %s)", status, describe(old.task, true), age)
 		}

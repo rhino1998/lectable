@@ -3,6 +3,7 @@ package com.lectable.app.playback
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -11,6 +12,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import com.lectable.app.data.remote.MediaUrlResolver
@@ -73,6 +75,8 @@ data class SleepTimerState(
  * ReaderViewModel simply overwrites [onNeedChapter]/[onPositionUpdate] with
  * its own callbacks on init, same as before.
  */
+// UnstableApi: ForwardingPlayer, ExoPlayer.Builder's seek-increment setters.
+@OptIn(UnstableApi::class)
 @Singleton
 class ParagraphPlayer @Inject constructor(
     @ApplicationContext private val context: Context,
