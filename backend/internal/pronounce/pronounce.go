@@ -108,3 +108,80 @@ func Apply(plain string, insertions []deliverytags.Insertion, subs []Substitutio
 	b.WriteString(plain[pos:])
 	return b.String()
 }
+
+// Compose merges a paragraph's pronunciation substitutions (pron) with its
+// structural emphasis substitutions (emphasis - internal/epub's
+// extractEmphasis: a span respelled in upper case and/or wrapped in
+// quotes) into one non-overlapping list for Apply. The two routinely
+// overlap - a bold stat line "Trait 2/3" is one emphasis span containing
+// the "2/3" pronunciation fix - and Apply keeps only the first of two
+// overlapping edits, which silently dropped the pronunciation fix. Here a
+// pronunciation fix wholly inside an emphasis span is applied to that
+// span's text first, then the span's own transform is re-applied to the
+// result ("TRAIT TWO OF THREE"). A fix straddling a span's edge can't be
+// nested, so the emphasis is dropped instead: saying the right word
+// matters more than stressing it.
+func Compose(plain string, pron, emphasis []Substitution) []Substitution {
+	if len(emphasis) == 0 {
+		return pron
+	}
+	out := make([]Substitution, 0, len(pron)+len(emphasis))
+	nested := make([]bool, len(pron))
+	for _, em := range emphasis {
+		end := em.Offset + em.Length
+		if em.Offset < 0 || end > len(plain) {
+			continue
+		}
+		var inner []Substitution
+		straddles := false
+		for i, p := range pron {
+			pEnd := p.Offset + p.Length
+			switch {
+			case pEnd <= em.Offset || p.Offset >= end:
+				// disjoint
+			case p.Offset >= em.Offset && pEnd <= end:
+				inner = append(inner, Substitution{Offset: p.Offset - em.Offset, Length: p.Length, Replacement: p.Replacement})
+				nested[i] = true
+			default:
+				straddles = true
+			}
+		}
+		if straddles {
+			continue
+		}
+		if len(inner) == 0 {
+			out = append(out, em)
+			continue
+		}
+		original := plain[em.Offset:end]
+		out = append(out, Substitution{
+			Offset:      em.Offset,
+			Length:      em.Length,
+			Replacement: reapplyEmphasis(original, em.Replacement, Apply(original, nil, inner)),
+		})
+	}
+	for i, p := range pron {
+		if !nested[i] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// reapplyEmphasis applies to text whatever transform turned original into
+// replacement - the upper-casing and/or quote-wrapping extractEmphasis
+// produces.
+func reapplyEmphasis(original, replacement, text string) string {
+	quoted := len(replacement) == len(original)+2 && strings.HasPrefix(replacement, `"`) && strings.HasSuffix(replacement, `"`)
+	body := replacement
+	if quoted {
+		body = replacement[1 : len(replacement)-1]
+	}
+	if body != original && body == strings.ToUpper(original) {
+		text = strings.ToUpper(text)
+	}
+	if quoted {
+		text = `"` + text + `"`
+	}
+	return text
+}

@@ -519,7 +519,8 @@ func (p Paragraph) EffectiveEmotion() string {
 
 // ResolveGenerationText returns p's actual generation-time text for
 // cloneModel: p.Text with every Pronunciation and Emphasis substitution
-// applied, plus - for Higgs only - a <|prosody:pause|> before each
+// applied (pronounce.Compose - a fix inside an emphasized span is nested
+// into it rather than dropped), plus - for Higgs only - a <|prosody:pause|> before each
 // ellipsis/em dash (deliverytags.PauseInsertions), composed in one pass
 // (pronounce.Apply - see its own doc comment for why a single combined
 // pass keeps every offset meaningful). p.Text itself, unchanged, in the
@@ -535,10 +536,7 @@ func (p Paragraph) ResolveGenerationText(cloneModel string) string {
 	if len(insertions) == 0 && len(p.Pronunciation) == 0 && len(p.Emphasis) == 0 {
 		return p.Text
 	}
-	subs := make([]pronounce.Substitution, 0, len(p.Pronunciation)+len(p.Emphasis))
-	subs = append(subs, p.Pronunciation...)
-	subs = append(subs, p.Emphasis...)
-	return pronounce.Apply(p.Text, insertions, subs)
+	return pronounce.Apply(p.Text, insertions, pronounce.Compose(p.Text, p.Pronunciation, p.Emphasis))
 }
 
 // Character is a speaking character, discovered by speaker attribution

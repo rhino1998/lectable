@@ -1811,7 +1811,7 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 // Pronunciation, jobs.KindPronunciation), split out of directChapter: a
 // plain word substitution reads correctly under every clone model, so
 // unlike direction tagging it isn't gated on Higgs. Invalidates the
-// generated audio of just the paragraphs whose substitutions changed (and
+// generated audio of every paragraph it finds or clears a substitution in (and
 // their scare-quote merge groups - see Store.DeleteParagraphAudioForIdxs),
 // and marks
 // Passes.Pronunciation only on a full, uninterrupted run - directChapter's
@@ -1844,26 +1844,29 @@ func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *sto
 	// Every paragraph this run actually reached gets its stored
 	// substitutions replaced - including clearing a stale list the new
 	// pass no longer produces (ResolvePronunciation omits paragraphs with
-	// nothing to substitute). Only paragraphs whose substitutions really
-	// changed lose their audio: unlike directChapter's blunt whole-chapter
-	// invalidation, re-running this pass after a detection/prompt change
-	// would otherwise throw away nearly every chapter's audio (numbers
-	// alone touch almost every chapter) to regenerate a small fraction of
-	// paragraphs.
+	// nothing to substitute). Every paragraph the pass touches - one it
+	// finds a substitution in, or one whose stored list it clears - loses
+	// its audio, even when its substitutions are unchanged: existing audio
+	// can't be trusted to have actually applied them (a bug once dropped
+	// fixes nested inside emphasis - see pronounce.Compose), and re-running
+	// the pass is how a reader asks for them to be re-applied. Paragraphs
+	// with nothing to substitute before or after keep their audio.
 	unreached := make(map[int]bool, len(remaining))
 	for _, p := range remaining {
 		unreached[p.Idx] = true
 	}
 	updates := make(map[int][]pronounce.Substitution, len(paragraphs))
-	var changed []int
+	var touched []int
 	for _, p := range paragraphs {
 		if unreached[p.Idx] {
 			continue
 		}
 		subs := pronunciation[p.Idx]
 		if !slices.Equal(subs, []pronounce.Substitution(p.Pronunciation)) {
-			changed = append(changed, p.Idx)
 			updates[p.Idx] = subs
+		}
+		if len(subs) > 0 || len(p.Pronunciation) > 0 {
+			touched = append(touched, p.Idx)
 		}
 	}
 	// Persisted regardless of any error - see directChapter's own "persist
@@ -1871,8 +1874,8 @@ func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *sto
 	if serr := s.Store.SetParagraphPronunciation(ch.ID, updates); serr != nil {
 		return 0, nil, serr
 	}
-	if len(changed) > 0 {
-		refs, derr := s.Store.DeleteParagraphAudioForIdxs(book.ID, ch.ID, changed)
+	if len(touched) > 0 {
+		refs, derr := s.Store.DeleteParagraphAudioForIdxs(book.ID, ch.ID, touched)
 		if derr != nil {
 			log.Printf("pronounceChapter: invalidate audio for chapter %s: %v", ch.ID, derr)
 		}

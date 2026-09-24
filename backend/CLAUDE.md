@@ -791,13 +791,15 @@ building/running `ttsworker` does, since both now link into that binary.
   "read" in present-tense narration (the rules assume past-tense
   narration - `pronunciationNarrationPastTense`).
 
-  Re-running the pass (`httpapi.pronounceChapter`) only invalidates audio
-  for paragraphs whose stored substitutions actually changed, plus their
-  scare-quote merge groups (`Store.DeleteParagraphAudioForIdxs`) - not the
-  whole chapter, since a detection change (e.g. adding numbers) would
-  otherwise discard nearly every chapter's audio for a handful of changed
-  paragraphs each. It also clears a now-stale list for a paragraph the new
-  pass finds nothing in.
+  Running the pass (`httpapi.pronounceChapter`) invalidates audio for
+  every paragraph it touches - one it finds a substitution in, or one
+  whose stale stored list it clears - even when the substitutions are
+  unchanged, plus their scare-quote merge groups
+  (`Store.DeleteParagraphAudioForIdxs`): existing audio can't be trusted
+  to have applied them (fixes nested inside emphasis were once silently
+  dropped - see `pronounce.Compose` below), so re-running the pass is how
+  to re-apply them. Paragraphs with nothing to substitute before or after
+  keep their audio.
 
   The result is stored as `internal/pronounce.Substitution` (`{Offset,
   Length, Replacement}`, byte-indexed into the paragraph's own real
@@ -810,6 +812,11 @@ building/running `ttsworker` does, since both now link into that binary.
   composing them in one single offset-ordered pass - rather than
   substituting first and re-targeting insertion offsets against the
   now-different-length result - is what keeps every offset meaningful.
+  Emphasis spans routinely *contain* a pronunciation fix (a bold stat
+  line "Trait 2/3"), and `Apply` drops the second of two overlapping
+  edits, so `pronounce.Compose` nests each contained fix into its
+  emphasis span first ("TRAIT TWO OF THREE"); a fix straddling a span's
+  edge drops the emphasis instead.
   Forced alignment and the reader's own on-screen text always use `Text`
   untouched here too.
 
