@@ -362,6 +362,12 @@ export const api = {
   setCharacterInvalid: (bookId: string, characterId: string, invalid: boolean) =>
     request<{ ok: boolean }>(`/api/books/${bookId}/characters/${characterId}/invalid`, json('PUT', { invalid })),
 
+  // Replaces one character's aliases - see Speaker.aliases. 400 for a
+  // group ("Bert and Sid") or non-name, 409 for another character's name
+  // or alias (merge them instead).
+  setCharacterAliases: (bookId: string, characterId: string, aliases: string[]) =>
+    request<{ aliases: string[] }>(`/api/books/${bookId}/characters/${characterId}/aliases`, json('PUT', { aliases })),
+
   // Removes one character entirely - this book's own paragraphs
   // attributed to them revert to Unknown (still real dialogue, just no
   // longer attributed to this character - "Narrator" is reserved for

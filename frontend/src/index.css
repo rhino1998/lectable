@@ -517,6 +517,28 @@ label {
   color: var(--error);
 }
 
+.speaker-aliases {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  margin: 0.15rem 0;
+}
+.speaker-aliases-input {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.speaker-aliases .link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent, inherit);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: inherit;
+}
+
 .job-tier-badge {
   display: inline-block;
   font-size: 0.7rem;

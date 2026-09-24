@@ -739,6 +739,11 @@ export interface Speaker {
   // creates/assigns this name; lines already attributed to it stay put
   // until Auto Split redistributes them.
   invalid?: boolean
+  // Other names this character goes by (backend store.Character.Aliases) -
+  // attribution folds them back into this name and reads them in speech
+  // tags ("Albert said"). Set via api.setCharacterAliases, and added
+  // automatically when another character is merged into this one.
+  aliases?: string[]
   // Every emotion this speaker's dialogue uses in this book, with the
   // state of the emotion-variant reference clip those lines clone from -
   // see SpeakerEmotion. Absent when they have no emotional lines.

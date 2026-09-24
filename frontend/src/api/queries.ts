@@ -429,6 +429,14 @@ export function useSetCharacterInvalid(bookId: string) {
   })
 }
 
+// See api.setCharacterAliases.
+export function useSetCharacterAliases(bookId: string) {
+  return useMutation({
+    mutationFn: ({ characterId, aliases }: { characterId: string; aliases: string[] }) =>
+      api.setCharacterAliases(bookId, characterId, aliases),
+  })
+}
+
 export function useDeleteCharacter(bookId: string) {
   return useMutation({ mutationFn: (characterId: string) => api.deleteCharacter(bookId, characterId) })
 }

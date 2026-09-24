@@ -54,6 +54,7 @@ import {
   useReattributingSpeakers,
   useRegenerateVariant,
   useSetCharacterInvalid,
+  useSetCharacterAliases,
   useRegenerateParagraph,
   useRetagDescriptions,
   useRetagScareQuotes,
@@ -1168,6 +1169,68 @@ export function SpeakersPage() {
 // button (re-renders the variant and resets those lines' audio - see
 // api.regenerateVariant). A pending variant renders by itself the first
 // time one of its lines generates.
+// Other names a character goes by (Speaker.aliases), shown under their
+// name with an inline comma-separated editor. The speakers list is live,
+// so a save shows up without any local state beyond the draft.
+function SpeakerAliases({ bookId, characterId, aliases }: { bookId: string; characterId: string; aliases: string[] }) {
+  const setAliases = useSetCharacterAliases(bookId)
+  const [draft, setDraft] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const save = () => {
+    if (draft === null) return
+    setError(null)
+    const next = draft
+      .split(',')
+      .map((a) => a.trim())
+      .filter(Boolean)
+    setAliases.mutate(
+      { characterId, aliases: next },
+      {
+        onSuccess: () => setDraft(null),
+        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not save aliases'),
+      },
+    )
+  }
+
+  if (draft !== null) {
+    return (
+      <div className="speaker-aliases">
+        <input
+          className="speaker-aliases-input"
+          value={draft}
+          autoFocus
+          placeholder="Other names, comma-separated (e.g. Albert, Al)"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save()
+            if (e.key === 'Escape') setDraft(null)
+          }}
+        />
+        <button onClick={save} disabled={setAliases.isPending}>
+          Save
+        </button>
+        <button onClick={() => setDraft(null)} disabled={setAliases.isPending}>
+          Cancel
+        </button>
+        {error && <p className="error-text">{error}</p>}
+      </div>
+    )
+  }
+  return (
+    <div className="speaker-aliases muted">
+      {aliases.length > 0 ? <span>Also called {aliases.join(', ')}</span> : null}
+      <button
+        className="link-button"
+        onClick={() => setDraft(aliases.join(', '))}
+        title="Other names this character goes by - attribution treats them as this character"
+      >
+        {aliases.length > 0 ? 'Edit' : 'Add other names'}
+      </button>
+    </div>
+  )
+}
+
 function SpeakerEmotions({
   bookId,
   speakerName,
@@ -1352,6 +1415,7 @@ function SpeakerRow({
         </span>
       </div>
 
+      {!isNarrator && <SpeakerAliases bookId={bookId} characterId={speaker.id} aliases={speaker.aliases ?? []} />}
       {speaker.summary && <p className="muted speaker-row-summary">{speaker.summary}</p>}
       {speaker.refLine && (
         <p className="muted speaker-row-refline">
