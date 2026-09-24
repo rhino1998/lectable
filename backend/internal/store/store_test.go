@@ -1415,3 +1415,81 @@ func TestDeleteParagraphAudioForIdxs(t *testing.T) {
 		t.Errorf("remaining rows = %v, want [2:v2 3:v1]", left)
 	}
 }
+
+func TestSyncFingerprints(t *testing.T) {
+	s := openTestStore(t)
+	textBlocks := func(texts ...string) []BlockInput {
+		out := make([]BlockInput, len(texts))
+		for i, text := range texts {
+			out[i] = BlockInput{Kind: BlockText, Text: text}
+		}
+		return out
+	}
+	bookID, _, err := s.CreateBook("Book", "Author", "en", "", "", 0, []ChapterInput{
+		{Title: "One", Blocks: textBlocks("a", "b")},
+		{Title: "Two", Blocks: textBlocks("c")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprints := func() (string, map[int]string) {
+		t.Helper()
+		book, chapters, err := s.SyncFingerprints(bookID)
+		if err != nil {
+			t.Fatalf("SyncFingerprints: %v", err)
+		}
+		return book, chapters
+	}
+
+	book0, ch0 := fingerprints()
+	if len(ch0) != 2 || ch0[0] == ch0[1] {
+		t.Fatalf("expected two distinct chapter fingerprints, got %v", ch0)
+	}
+	if book1, ch1 := fingerprints(); book1 != book0 || ch1[0] != ch0[0] || ch1[1] != ch0[1] {
+		t.Fatal("fingerprints not stable")
+	}
+
+	// Reading position and the narration-rate estimate feed no hash.
+	if err := s.UpdatePosition(bookID, 1, 0, 4); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetLengthEstimate(bookID, 0.05); err != nil {
+		t.Fatal(err)
+	}
+	if book, _ := fingerprints(); book != book0 {
+		t.Fatal("position/estimate write moved the book fingerprint")
+	}
+
+	// Generated audio moves only its own chapter.
+	ch, err := s.GetChapterByIdx(bookID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := s.GetParagraphIDByIdx(ch.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetParagraphReady(pid, "voice-x", 1.5); err != nil {
+		t.Fatal(err)
+	}
+	book2, ch2 := fingerprints()
+	if book2 != book0 || ch2[0] == ch0[0] || ch2[1] != ch0[1] {
+		t.Fatalf("audio write: book %v, ch0 moved %v, ch1 moved %v", book2 != book0, ch2[0] != ch0[0], ch2[1] != ch0[1])
+	}
+
+	// Alignment alone doesn't.
+	if err := s.SetParagraphWordTimings(pid, "voice-x", `[{"text":"b","start":0,"end":1}]`); err != nil {
+		t.Fatal(err)
+	}
+	if _, ch3 := fingerprints(); ch3[0] != ch2[0] {
+		t.Fatal("word timings moved the chapter fingerprint")
+	}
+
+	// A paragraph edit moves its chapter only.
+	if err := s.SetParagraphSpeaker(pid, "Alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ch4 := fingerprints(); ch4[0] == ch2[0] || ch4[1] != ch0[1] {
+		t.Fatal("speaker write didn't move exactly its own chapter")
+	}
+}

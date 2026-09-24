@@ -809,3 +809,171 @@ func TestResolveAudioIDFallsBackWhenAnchorMissing(t *testing.T) {
 		t.Fatalf("expected fallback to own id p-9, got %q", got)
 	}
 }
+
+func TestBookManifestHashTree(t *testing.T) {
+	_, s, _, ts := newTestServer(t)
+	bookID := createTestBook(t, s, "", 0, "p1", "\"Hello,\" she said.")
+
+	getManifest := func(query string) bookManifestDTO {
+		t.Helper()
+		var m bookManifestDTO
+		resp := doJSON(t, http.MethodGet, ts.URL+"/api/books/"+bookID+"/manifest"+query, nil, &m)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET manifest: status %d", resp.StatusCode)
+		}
+		return m
+	}
+	getChapter := func() chapterDetailDTO {
+		t.Helper()
+		var c chapterDetailDTO
+		resp := doJSON(t, http.MethodGet, ts.URL+"/api/books/"+bookID+"/chapters/0", nil, &c)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET chapter: status %d", resp.StatusCode)
+		}
+		return c
+	}
+
+	before := getManifest("")
+	if before.Hash == "" || len(before.Chapters) != 1 {
+		t.Fatalf("unexpected manifest: %+v", before)
+	}
+	if again := getManifest(""); again.Hash != before.Hash {
+		t.Fatalf("root hash not stable: %s vs %s", before.Hash, again.Hash)
+	}
+	chBefore := getChapter()
+	if chBefore.Hash != before.Chapters[0].Hash {
+		t.Fatalf("chapter hash %s doesn't match manifest's %s", chBefore.Hash, before.Chapters[0].Hash)
+	}
+
+	// Reading position is deliberately outside the tree.
+	doJSON(t, http.MethodPut, ts.URL+"/api/books/"+bookID+"/position", positionDTO{ChapterIdx: 0, ParagraphIdx: 1, Seconds: 3}, nil)
+	if m := getManifest(""); m.Hash != before.Hash || m.PosParagraphIdx != 1 {
+		t.Fatalf("position change: hash %s -> %s, pos %d", before.Hash, m.Hash, m.PosParagraphIdx)
+	}
+
+	// A content-only change moves that paragraph's content hash (not its
+	// audio hash), its chapter's hash and the root.
+	ch, err := s.GetChapterByIdx(bookID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := s.GetParagraphIDByIdx(ch.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetParagraphSpeaker(pid, "Alice"); err != nil {
+		t.Fatal(err)
+	}
+	chAfter := getChapter()
+	if chAfter.Paragraphs[0].ContentHash != chBefore.Paragraphs[0].ContentHash {
+		t.Fatal("untouched paragraph's content hash changed")
+	}
+	if chAfter.Paragraphs[1].ContentHash == chBefore.Paragraphs[1].ContentHash {
+		t.Fatal("re-attributed paragraph's content hash didn't change")
+	}
+	if chAfter.Hash == chBefore.Hash {
+		t.Fatal("chapter hash didn't change")
+	}
+	if m := getManifest(""); m.Hash == before.Hash || m.Chapters[0].Hash != chAfter.Hash {
+		t.Fatalf("root/chapter hash not updated: %+v", m)
+	}
+
+	// ?chapters= limits the tree to the listed chapters.
+	if m := getManifest("?chapters=5"); len(m.Chapters) != 0 {
+		t.Fatalf("expected no chapters for an unknown idx, got %+v", m.Chapters)
+	}
+	if resp := doJSON(t, http.MethodGet, ts.URL+"/api/books/"+bookID+"/manifest?chapters=x", nil, nil); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad chapters list: status %d", resp.StatusCode)
+	}
+}
+
+func TestBookManifestReusesStoredTree(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	bookID := createTestBook(t, s, "", 0, "p1", "\"Hi,\" he said.")
+
+	manifestFrom := func(base string) bookManifestDTO {
+		t.Helper()
+		var m bookManifestDTO
+		if resp := doJSON(t, http.MethodGet, base+"/api/books/"+bookID+"/manifest", nil, &m); resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET manifest: status %d", resp.StatusCode)
+		}
+		return m
+	}
+	manifest := func() bookManifestDTO { t.Helper(); return manifestFrom(ts.URL) }
+	real := manifest().Chapters[0].Hash
+	if nodes, err := s.SyncTreeNodes(bookID, syncTreeVersion()); err != nil || nodes[0].Hash != real {
+		t.Fatalf("built node not stored: %v %+v", err, nodes)
+	}
+
+	// Poison the stored node under the current fingerprints: if a request
+	// serves it, nothing was rebuilt.
+	bookFP, chapterFPs, err := s.SyncFingerprints(bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poison := []store.SyncTreeNode{{ChapterIdx: 0, BookFP: bookFP, ChapterFP: chapterFPs[0], Hash: "poisoned"}}
+	if err := s.PutSyncTreeNodes(bookID, syncTreeVersion(), poison); err != nil {
+		t.Fatal(err)
+	}
+	if got := manifest().Chapters[0].Hash; got != "poisoned" {
+		t.Fatalf("unchanged chapter was rebuilt: got %s", got)
+	}
+
+	// Survives a restart: a fresh Server on the same database reuses it.
+	fresh := httptest.NewServer(NewRouter(&Server{Store: s, TTS: srv.TTS, Jobs: srv.Jobs, DataDir: srv.DataDir, Narration: srv.Narration}))
+	defer fresh.Close()
+	if got := manifestFrom(fresh.URL).Chapters[0].Hash; got != "poisoned" {
+		t.Fatalf("stored node not reused after restart: got %s", got)
+	}
+
+	// Nodes hashed by another build are never reused, and get pruned.
+	if err := s.PutSyncTreeNodes(bookID, "other-build", poison); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PruneSyncTree(syncTreeVersion()); err != nil {
+		t.Fatal(err)
+	}
+	if nodes, _ := s.SyncTreeNodes(bookID, "other-build"); len(nodes) != 0 {
+		t.Fatal("other build's nodes survived pruning")
+	}
+	if got := manifest().Chapters[0].Hash; got == "poisoned" {
+		t.Fatal("served a node from another build")
+	}
+	if err := s.PutSyncTreeNodes(bookID, syncTreeVersion(), poison); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reading-position writes keep serving the stored node.
+	doJSON(t, http.MethodPut, ts.URL+"/api/books/"+bookID+"/position", positionDTO{ChapterIdx: 0, ParagraphIdx: 1}, nil)
+	if got := manifest().Chapters[0].Hash; got != "poisoned" {
+		t.Fatalf("position write invalidated the stored node: got %s", got)
+	}
+
+	// A real change to the chapter's rows forces a rebuild.
+	ch, err := s.GetChapterByIdx(bookID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := s.GetParagraphIDByIdx(ch.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetParagraphSpeaker(pid, "Bob"); err != nil {
+		t.Fatal(err)
+	}
+	got := manifest().Chapters[0].Hash
+	if got == "poisoned" || got == real {
+		t.Fatalf("changed chapter not rebuilt: got %s", got)
+	}
+	var chapter chapterDetailDTO
+	doJSON(t, http.MethodGet, ts.URL+"/api/books/"+bookID+"/chapters/0", nil, &chapter)
+	if got != chapter.Hash {
+		t.Fatalf("rebuilt hash %s doesn't match the chapter's own %s", got, chapter.Hash)
+	}
+
+	// Deleting the book drops its nodes.
+	doJSON(t, http.MethodDelete, ts.URL+"/api/books/"+bookID, nil, nil)
+	if nodes, _ := s.SyncTreeNodes(bookID, syncTreeVersion()); len(nodes) != 0 {
+		t.Fatal("deleted book's tree was kept")
+	}
+}

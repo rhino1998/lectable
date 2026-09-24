@@ -58,6 +58,11 @@ type Server struct {
 	// to use, matching Server's own construction as a plain struct
 	// literal (see cmd/server/main.go) rather than through a constructor.
 	provisionLocks sync.Map
+
+	// syncTreePrune drops stored offline-sync tree nodes left by other
+	// builds, once per process, on the first manifest request - see
+	// syncTreeVersion.
+	syncTreePrune sync.Once
 }
 
 // cancelPipeline cancels bookID's in-progress preprocessing pipeline run,
@@ -130,6 +135,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("DELETE /api/books/{id}", s.handleDeleteBook)
 	mux.HandleFunc("DELETE /api/books/{id}/audio", s.handleDeleteBookAudio)
 	mux.HandleFunc("GET /api/books/{id}/cover", s.handleGetCover)
+	mux.HandleFunc("GET /api/books/{id}/manifest", s.handleBookManifest)
 
 	mux.HandleFunc("GET /api/books/{id}/voice", s.handleGetVoice)
 	mux.HandleFunc("PUT /api/books/{id}/voice", s.handleUpdateVoice)

@@ -216,6 +216,14 @@ type paragraphDTO struct {
 	// (a 0-based index into Words above) playback should start the sound
 	// effect at, once ready.
 	SFXTriggerWord int `json:"sfxTriggerWord,omitempty"`
+	// ContentHash/AudioHash are this paragraph's leaves in the offline-sync
+	// hash tree (see manifest.go): ContentHash covers what an offline copy
+	// stores about the paragraph's text and annotations, AudioHash what
+	// identifies its audio (resolved voice, status, backing clip, duration,
+	// pointer) - so a client can tell "refresh the metadata" apart from
+	// "re-download the .wav".
+	ContentHash string `json:"contentHash"`
+	AudioHash   string `json:"audioHash"`
 }
 
 // resolveAudioID returns which paragraph's own audio file actually backs a
@@ -266,6 +274,9 @@ type chapterDetailDTO struct {
 	Generating bool             `json:"generating"`
 	Paragraphs []paragraphDTO   `json:"paragraphs"`
 	Content    []contentItemDTO `json:"content"`
+	// Hash is this chapter's node in the offline-sync hash tree - see
+	// chapterHash.
+	Hash string `json:"hash"`
 }
 
 func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
@@ -428,6 +439,8 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 			pd.AudioURL = "/api/paragraphs/" + resolveAudioID(p, state, idByIdx) + "/audio"
 			pd.AudioPointerSeconds = state.PointerSeconds
 		}
+		pd.ContentHash = paragraphContentHash(pd)
+		pd.AudioHash = paragraphAudioHash(pd, voiceIDByParagraph[p.ID])
 		dto.Paragraphs = append(dto.Paragraphs, pd)
 	}
 
@@ -450,6 +463,7 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 	for i, it := range items {
 		dto.Content[i] = it.item
 	}
+	dto.Hash = chapterHash(dto)
 
 	return dto, nil
 }
