@@ -580,8 +580,10 @@ const (
 	// whole chapter the way KindMusicGeneration does - so live listening
 	// gets music while the rest of the chapter's narration is still
 	// generating. Same batch function (generateChapterMusicBatch, with a
-	// one-region batch), same poolSFX, TierLookahead rather than
-	// TierBackground since it's what the reader is about to hear. Keyed by
+	// one-region batch), same poolSFX, TierUrgent rather than
+	// TierBackground since it's what the reader is hearing right now (the
+	// reader's own playback is waiting on it, the same as a paragraph they
+	// just jumped to). Keyed by
 	// region; the moment one dispatches it queues the next region's task,
 	// which depends on it (resolveDependencies) so it's ready to go the
 	// instant this one finishes - see advanceLiveMusic. Both kinds can
@@ -3977,7 +3979,7 @@ type pendingMusicRegion struct {
 //   - Whole chapter (advanceWholeChapterMusic, KindMusicGeneration,
 //     TierBackground): once every paragraph in the chapter has ready
 //     narration, every eligible region goes out as one batch.
-//   - Live (advanceLiveMusic, KindMusicLiveGeneration, TierLookahead): when
+//   - Live (advanceLiveMusic, KindMusicLiveGeneration, TierUrgent): when
 //     the reader's position is in this chapter, regions go out one task
 //     each, chained forward from the one they're in, as soon as each
 //     region's own paragraphs are voiced, so music starts while the rest
@@ -4300,7 +4302,7 @@ func (m *Manager) advanceLiveMusic(bookID, chapterID string, chapterIdx int, reg
 	region := next.region
 	m.pushTask(&task{
 		kind:               KindMusicLiveGeneration,
-		tier:               TierLookahead,
+		tier:               TierUrgent,
 		bookID:             bookID,
 		chapterID:          chapterID,
 		chapterIdx:         chapterIdx,
