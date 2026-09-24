@@ -60,6 +60,9 @@ type queueTaskDTO struct {
 	// at a time" - both can look identical (the same row reappearing
 	// over and over) without it.
 	Attempt int `json:"attempt"`
+	// Emotion is jobs.QueueTask.Emotion verbatim - the emotion variant a
+	// clone task's line generates in, "" for neutral.
+	Emotion string `json:"emotion,omitempty"`
 }
 
 type jobsSnapshotDTO struct {
@@ -130,6 +133,7 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 			PresetID:     t.PresetID,
 			Instruct:     t.Instruct,
 			Attempt:      t.Attempt,
+			Emotion:      t.Emotion,
 		}
 	}
 

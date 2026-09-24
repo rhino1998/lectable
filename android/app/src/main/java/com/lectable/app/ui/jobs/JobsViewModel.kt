@@ -8,6 +8,7 @@ import com.lectable.app.data.remote.dto.JobsSnapshotDto
 import com.lectable.app.data.remote.dto.QueueTaskDto
 import com.lectable.app.data.repository.JobsRepository
 import com.lectable.app.data.remote.dto.VoicePresetsDto
+import com.lectable.app.ui.reader.formatEmotion
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -139,7 +140,10 @@ fun targetLabel(t: QueueTaskDto): String = t.label?.takeIf { it.isNotEmpty() } ?
 private const val INSTRUCT_PREVIEW_LENGTH = 40
 
 fun voiceName(t: QueueTaskDto, presetNames: Map<String, String>): String {
-    if (t.presetId.isNotEmpty()) return presetNames[t.presetId] ?: t.presetId
+    if (t.presetId.isNotEmpty()) {
+        val name = presetNames[t.presetId] ?: t.presetId
+        return if (t.emotion.isNotEmpty()) "$name (${formatEmotion(t.emotion)})" else name
+    }
     if (t.instruct.isEmpty()) return "—"
     return if (t.instruct.length > INSTRUCT_PREVIEW_LENGTH) t.instruct.take(INSTRUCT_PREVIEW_LENGTH) + "…" else t.instruct
 }

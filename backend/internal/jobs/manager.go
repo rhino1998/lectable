@@ -4863,6 +4863,28 @@ type QueueTask struct {
 	// chapter can tell that's normal batch-by-batch progress, not a stuck
 	// retry loop.
 	Attempt int
+	// Emotion is the emotion id whose voice variant this generation clones
+	// from ("" for neutral, or anything that isn't a single emotional line
+	// - see taskEmotion), so the dashboard can show "Fritz (Sad)".
+	Emotion string
+}
+
+// taskEmotion is the emotion t's line generates in, for display: the
+// paragraph's effective emotion as of enqueue, under the same conditions
+// variantClipDependency/emotionVariant apply one (a preset-backed voice,
+// not a scare-quote merge group). A manual override after enqueue
+// re-enqueues the line, so this rarely lags the store.
+func taskEmotion(t *task) string {
+	if t.kind != KindVoiceClone && t.kind != KindVoiceDesign {
+		return ""
+	}
+	if t.presetID == "" || len(t.mergeParagraphs) > 1 {
+		return ""
+	}
+	if e := t.paragraph.EffectiveEmotion(); e != emotions.Neutral {
+		return e
+	}
+	return ""
 }
 
 func toQueueTask(t *task, tier int) QueueTask {
@@ -4875,6 +4897,7 @@ func toQueueTask(t *task, tier int) QueueTask {
 		ID: t.dedupKey(), Kind: t.kind, Label: t.label, BookID: t.bookID, ChapterID: t.chapterID,
 		ChapterIdx: t.chapterIdx, ParagraphIdx: paragraphIdx, Tier: tier,
 		PresetID: t.presetID, Instruct: t.instruct, Attempt: t.attempt,
+		Emotion: taskEmotion(t),
 	}
 }
 

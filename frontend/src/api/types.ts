@@ -694,6 +694,9 @@ export interface QueueTask {
   // just slow, normal progress through a long chapter; one where it's
   // climbing is genuinely failing and retrying.
   attempt: number
+  // The emotion variant a clone task's line generates in (see
+  // frontend/src/utils/emotions.ts) - absent for neutral.
+  emotion?: string
 }
 
 export interface JobsSnapshot {

@@ -14,6 +14,7 @@ import {
 import { ApiError } from '../api/client'
 import { useClickOutside } from '../hooks/useClickOutside'
 import type { QueueTask } from '../api/types'
+import { emotionLabel } from '../utils/emotions'
 
 const QUEUED_DISPLAY_LIMIT = 200
 // A raw instruct string can be a full sentence or two - too long for a
@@ -396,7 +397,10 @@ export function JobsPage() {
   }, [builtinsQuery.data, customPresetsQuery.data])
 
   const voiceName = (t: QueueTask): string => {
-    if (t.presetId) return presetNames.get(t.presetId) ?? t.presetId
+    if (t.presetId) {
+      const name = presetNames.get(t.presetId) ?? t.presetId
+      return t.emotion ? `${name} (${emotionLabel(t.emotion)})` : name
+    }
     if (!t.instruct) return '—'
     return t.instruct.length > INSTRUCT_PREVIEW_LENGTH
       ? `${t.instruct.slice(0, INSTRUCT_PREVIEW_LENGTH)}…`

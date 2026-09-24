@@ -37,6 +37,8 @@ data class QueueTaskDto(
     // lists for a friendly name, falling back to instruct.
     val presetId: String,
     val instruct: String,
+    // The emotion variant a clone task's line generates in ("sad", "whisper") - "" for neutral.
+    val emotion: String = "",
 )
 
 @Serializable
