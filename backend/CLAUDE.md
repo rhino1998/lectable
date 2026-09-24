@@ -111,6 +111,47 @@ higgs_audio_tts/generator.h`, `src/models/higgs_audio_tts/generator.cpp`,
 higgs_audio_tts/session.cpp`; a fresh clone/reset of `/home/rhino/audio.cpp`
 loses this too, same as the `evict_cuda_graph_cache` patch above - both
 need reapplying together before trusting a rebuilt `libaudiocpp.so`.
+(Both were once found sitting only in `git stash` there, with a clean
+working tree - check `git diff --stat` in `/home/rhino/audio.cpp` before
+rebuilding; a full copy of every local patch is kept at
+`/home/rhino/audio.cpp/lectable-local-patches.diff`.)
+
+**Higgs throughput patches, same local checkout, same caveats.** Profiled
+2026-09-24 against 37-120 real paragraphs (book "Spire's Spite" ch. 41,
+Q8, RX 7900 XTX): single-stream RTF 0.34 -> 0.28, and 0.30 -> 0.108
+throughput RTF at batch 4 (0.094 at batch 8, the default). Each piece, all in
+`src/models/higgs_audio_tts/` plus their headers:
+- **Reference-prefix KV snapshots** (`higgs_audio_tts.reference_kv_slots`,
+  `generator.cpp`/`ar.cpp` `HiggsARKVPrefixSnapshot`): an LRU of
+  device-resident copies of each reference clip's prompt-prefix KV rows,
+  restored on-device (~0.7ms) instead of re-prefilling the whole reference
+  (~400ms for a 20s clip). Upstream only reused the *last* voice's prefix,
+  and dialogue switches voice on ~75% of paragraph transitions. A restored
+  prefix + text-only prefill is not bit-identical to one full prefill
+  (first-step logits differ ~0.1-0.2%, same as upstream's own prefix reuse),
+  so seeded output differs between the two paths.
+- **KV cache churn**: `HiggsARKVCache::reset()` is now logical (it used to
+  re-upload the whole cache as zeros from the host, ~120ms per call); the
+  buffer is zeroed on-device once at allocation instead, since masked rows
+  must never hold NaN. Buckets are powers of two, one resident cache +
+  decode graph per bucket (`kv_cache_slots_`), and a mid-decode grow copies
+  on-device into the next bucket's resident slot instead of a host round
+  trip + rebuild.
+- **Pinned logits read-back** in both decode graphs: 1.26 -> 1.06ms per
+  frame. The rest is per-sync latency (HIP under WSL), not the copy.
+- **Continuous batched decode** (`higgs_audio_tts.decode_batch_size`,
+  `HiggsARBatchedDecodeGraph` + `HiggsTTSSession::batch_loop`): with it >1,
+  `run()` may be called concurrently on one session; one scheduler thread
+  owns all GPU work (reference encode, single-sequence prefill, then a
+  per-slot KV copy into a `[batch, 2048, kv_heads, dim]` cache, batched
+  decode steps, codec decode as each chunk hits EOC). Decode is
+  bandwidth-bound, so a batch-4 step costs about the same as batch 1.
+  `generate()` itself was split into `begin_sequence`/`accept_logits`/
+  `finish_sequence` (bit-identical single-sequence output, verified). With
+  batching, k-quants lose their single-stream edge (Q5_K batch 8: 0.123 vs
+  Q8's 0.094), so Q8 stays the model.
+- **Frame-budget floor** (`kMinimumFrameBudget` = 250 frames) - see
+  `audioworker.higgsFrameBudgetMultiplier`.
 
 Rather than let that leak eventually OOM-kill the whole backend, TTS
 generation is isolated into its own disposable process (kept in place as

@@ -74,7 +74,13 @@ const MaxLookaheadParagraphCount = 1000
 // deterministic (concurrent dispatch across up to maxInFlight goroutines
 // still has its own inherent timing variance before any of them ever
 // reach the lock), just no longer worse than that inherent variance.
-const maxInFlight = 4
+//
+// Raised to 8 for Higgs continuous batching (audioworker.higgsDecodeBatch):
+// the one Higgs session decodes every in-flight paragraph in the same step,
+// so this is what keeps its 8 batch slots full (throughput RTF 0.094 at 8
+// vs 0.108 at 4, at ~1.6x the per-paragraph latency). Other clone families
+// still cap themselves via their own session pools.
+const maxInFlight = 8
 
 // maxAttributionInFlight bounds poolLLM - the separate, smaller slot pool
 // KindSpeakerAttribution/KindSpeakerCharacterization/KindSpeechDirection
@@ -1045,7 +1051,7 @@ func (t *task) Promote(newTier int) {
 // finer-grained ordering of its own at all, falling straight through to
 // taskqueue.Queue's own stable insertion-order tiebreak.
 var kindCompare = map[Kind]func(a, b *task) int{
-	KindVoiceClone:              comparePosition,
+	KindVoiceClone:              compareClone,
 	KindVoiceDesign:             comparePosition,
 	KindSpeakerAttribution:      comparePosition,
 	KindSpeakerCharacterization: comparePosition,
@@ -1106,6 +1112,36 @@ func comparePosition(a, b *task) int {
 		cmp.Compare(a.chapterIdx, b.chapterIdx),
 		cmp.Compare(a.paragraph.Idx, b.paragraph.Idx),
 	)
+}
+
+// compareClone is comparePosition, except that within one chapter a
+// TierBackground/TierNormal clone task orders by its reference clip
+// (refKey) before its paragraph index. The TTS worker keeps each recent
+// reference's prompt-prefix KV resident (audio.cpp's
+// higgs_audio_tts.reference_kv_slots), so running one voice's lines back
+// to back turns almost every call after that voice's first into a cheap
+// restore instead of a full reference prefill, however many voices and
+// emotion variants a chapter uses. TierLookahead/TierUrgent keep strict
+// reading order - a reader is waiting on those in sequence.
+func compareClone(a, b *task) int {
+	if a.tier < TierNormal || a.bookID != b.bookID || a.chapterIdx != b.chapterIdx {
+		return comparePosition(a, b)
+	}
+	return cmp.Or(
+		cmp.Compare(a.refKey(), b.refKey()),
+		cmp.Compare(a.paragraph.Idx, b.paragraph.Idx),
+	)
+}
+
+// refKey identifies the reference clip a clone task clones from: its
+// preset plus the emotion variant its line uses (each variant is a
+// separate clip - see variantClipDependency, which applies the same
+// merged-group exception).
+func (t *task) refKey() string {
+	if len(t.mergeParagraphs) > 1 {
+		return t.presetID
+	}
+	return t.presetID + ":" + t.paragraph.EffectiveEmotion()
 }
 
 type taskResult struct {

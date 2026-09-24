@@ -375,7 +375,9 @@ func (w *Worker) idleLoop() {
 			if lastNano == 0 {
 				continue
 			}
-			if time.Since(time.Unix(0, lastNano)) >= w.cfg.IdleUnloadAfter {
+			// Reset to 0 (unless a call just touched it) so one idle period
+			// unloads - and logs - once, not on every tick until the next call.
+			if time.Since(time.Unix(0, lastNano)) >= w.cfg.IdleUnloadAfter && w.lastUsed.CompareAndSwap(lastNano, 0) {
 				log.Printf("audioworker: unloading all clone models after %s idle", w.cfg.IdleUnloadAfter)
 				w.UnloadAll()
 			}
@@ -567,7 +569,7 @@ func (w *Worker) getCloneModel(cloneModel string) (lc *loadedClone, err error) {
 	// idle - or only ever sees one Generate call in flight at a time -
 	// should only ever hold the sessions it's actually using concurrently,
 	// not ClonePoolSize of them.
-	lc = &loadedClone{model: model, fam: fam, poolSize: poolSize, avail: make(chan *audiocpp.Session, poolSize)}
+	lc = &loadedClone{model: model, fam: fam, poolSize: poolSize, avail: make(chan *audiocpp.Session, poolSize*max(fam.sessionCallers, 1))}
 	lc.inFlight++
 	w.loaded[cloneModel] = lc
 	log.Printf("%s loaded (session pool created lazily, up to %d sessions).", fam.family, poolSize)
@@ -611,6 +613,12 @@ func (w *Worker) checkoutSession(lc *loadedClone) (*audiocpp.Session, error) {
 		}
 		lc.sessions = append(lc.sessions, session)
 		lc.created++
+		// A batching family's session takes several concurrent callers:
+		// hand this one out that many times (see cloneFamily.
+		// sessionCallers). close() still closes it once, via lc.sessions.
+		for range lc.fam.sessionCallers - 1 {
+			lc.avail <- session
+		}
 		w.cloneMu.Unlock()
 		return session, nil
 	}

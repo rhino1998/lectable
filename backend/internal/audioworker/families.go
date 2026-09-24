@@ -93,6 +93,12 @@ type cloneFamily struct {
 	// for once a clone/design/LLM model is also resident - see the
 	// "audiocpp-higgs" entry below and backend/CLAUDE.md.
 	poolSizeOverride int
+	// sessionCallers, if > 1, lets that many Generate calls share each
+	// pooled session concurrently instead of checking it out exclusively -
+	// for a family whose session batches concurrent runs itself (Higgs with
+	// higgs_audio_tts.decode_batch_size: its scheduler thread decodes every
+	// in-flight paragraph in one step). See Worker.checkoutSession.
+	sessionCallers int
 	// languageTag, if set, maps languageOption's own output ("Auto" or a
 	// lowercased display name like "english") plus the text being spoken
 	// onto the language tag this family actually expects - fireredtts3
@@ -290,8 +296,8 @@ var breezeClonePoolSize = envIntOr("LECTABLE_AUDIOCPP_BREEZE_CLONE_POOL_SIZE", 2
 // pocketClonePoolSize pins PocketTTS at 4 concurrent sessions explicitly
 // rather than inheriting Config.ClonePoolSize's process-wide default (also
 // 4 today) - a ~100M-parameter model whose sessions are cheap enough that
-// 4 at once is no VRAM concern, and 4 matches internal/jobs' maxInFlight,
-// so every generation slot the queue can dispatch gets its own session.
+// 4 at once is no VRAM concern. (internal/jobs' maxInFlight is now 8, for
+// Higgs batching; PocketTTS calls beyond 4 just wait for a free session.)
 var pocketClonePoolSize = envIntOr("LECTABLE_AUDIOCPP_POCKET_CLONE_POOL_SIZE", 4)
 
 // breezeCloneGuidanceScale is breeze_tts's own classifier-free guidance-
@@ -352,6 +358,44 @@ var designPoolSize = envIntOr("LECTABLE_AUDIOCPP_DESIGN_POOL_SIZE", 2)
 // bounded memory cost even at this size - not remotely comparable to
 // resident model VRAM.
 var cloneCacheSlots = envOr("LECTABLE_AUDIOCPP_CACHE_SLOTS", "32")
+
+// higgsReferenceKVSlots is higgs_audio_tts.reference_kv_slots: how many
+// reference clips' prompt-prefix KV rows the Higgs session keeps resident
+// on the GPU, so a call cloning from a recently used reference (preset or
+// emotion variant) restores its prefix on-device (~1ms) instead of
+// re-prefilling the whole reference (~400ms for a 20s clip). Each slot
+// costs ~147KB of VRAM per prefix step (~60MB for a median 12s reference,
+// ~90MB at the 20s voicerefs.maxRefClipSeconds cap). 16 covers a
+// chapter's narrator, its common emotion variants and main characters;
+// internal/jobs' compareClone groups background work by reference so
+// fewer slots still hit. Needs the local audio.cpp patch adding this
+// option (backend/CLAUDE.md) - an unpatched libaudiocpp.so rejects it.
+var higgsReferenceKVSlots = envOr("LECTABLE_AUDIOCPP_HIGGS_REFERENCE_KV_SLOTS", "16")
+
+// higgsDecodeBatch is higgs_audio_tts.decode_batch_size: how many paragraphs
+// the one Higgs session decodes together per step (continuous batching,
+// another local audio.cpp patch). Decode is memory-bandwidth bound - every
+// step streams all ~4GB of weights for one frame - so a step decoding 4
+// paragraphs' frames costs little more than one decoding 1. Matches
+// internal/jobs' maxInFlight (8), which is what actually keeps this many
+// paragraphs in flight at once; the session also gets this many concurrent
+// callers (cloneFamily.sessionCallers). 1 turns batching off. Each slot
+// reserves a 2048-step KV region (~300MB), so 8 slots is ~2.4GB of VRAM.
+// Measured on 120 paragraphs: throughput RTF 0.301 unbatched, 0.108 at 4,
+// 0.094 at 8.
+var higgsDecodeBatch = envIntOr("LECTABLE_AUDIOCPP_HIGGS_DECODE_BATCH", 8)
+
+// higgsFrameBudgetMultiplier is higgs_audio_tts.decode_frame_budget_
+// multiplier: a chunk stops (failing "...before EOC", which generateClone's
+// bisection then recovers from) once it has decoded this many times the
+// frames its reference voice's own pace predicts for the text, floored at
+// 250 frames (10s) inside audio.cpp. audio.cpp's own default (4.0) never
+// fired in practice - every one of ~570 logged runaways ran the full
+// max_tokens (1024 frames, ~10s of GPU) first, since 4x the pace of any
+// paragraph over ~150 characters is already past 1024. Measured against
+// 190 successful clips, no clip used more than 70% of a 2.5x/250-frame
+// budget (under 50% for anything over ~30 characters).
+var higgsFrameBudgetMultiplier = envOr("LECTABLE_AUDIOCPP_HIGGS_FRAME_BUDGET_MULTIPLIER", "2.5")
 
 // cloneModelFamilies maps a public clone_model id (what a voice preset
 // actually stores/sends) to the family key in cloneFamilies below.
@@ -563,10 +607,14 @@ var cloneFamilies = map[string]cloneFamily{
 			modelPath("Higgs-Audio-v3-TTS-4B-GGUF/higgs-audio-v3-tts-4b-q8_0.gguf"),
 		),
 		sessionOptions: map[string]string{
-			"higgs_audio_tts.reference_cache_slots": cloneCacheSlots,
+			"higgs_audio_tts.reference_cache_slots":          cloneCacheSlots,
+			"higgs_audio_tts.reference_kv_slots":             higgsReferenceKVSlots,
+			"higgs_audio_tts.decode_batch_size":              strconv.Itoa(higgsDecodeBatch),
+			"higgs_audio_tts.decode_frame_budget_multiplier": higgsFrameBudgetMultiplier,
 		},
 		defaultRequestOptions: map[string]string{"max_tokens": higgsMaxTokens},
 		poolSizeOverride:      higgsClonePoolSize,
+		sessionCallers:        higgsDecodeBatch,
 	},
 	// PocketTTS (Kyutai's 100M-parameter package, see audio.cpp's
 	// model_specs/pocket_tts.json) - by far the fastest family this worker

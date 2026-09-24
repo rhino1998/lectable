@@ -472,6 +472,57 @@ func TestLessAppliesSeriesOrderingToGenerationTasksToo(t *testing.T) {
 	}
 }
 
+// TestLessGroupsBackgroundClonesByReferenceWithinChapter covers
+// compareClone: background clone tasks in one chapter run grouped by
+// reference clip (preset + emotion variant) so the worker's resident
+// reference-prefix KV is reused back to back, while lookahead tasks - and
+// ordering across chapters - stay in reading order.
+func TestLessGroupsBackgroundClonesByReferenceWithinChapter(t *testing.T) {
+	clone := func(chapterIdx, idx, tier int, presetID, emotion string) *task {
+		tk := newGenTask("book", fmt.Sprintf("ch%d", chapterIdx), chapterIdx, idx, tier, "", 0)
+		tk.presetID = presetID
+		tk.paragraph.IsQuote = emotion != ""
+		tk.paragraph.Emotion = emotion
+		return tk
+	}
+	labels := func(tasks []*task) []string {
+		out := make([]string, len(tasks))
+		for i, tk := range tasks {
+			out[i] = fmt.Sprintf("%d/%d:%s", tk.chapterIdx, tk.paragraph.Idx, tk.refKey())
+		}
+		return out
+	}
+
+	background := []*task{
+		clone(0, 0, TierBackground, "narrator", ""),
+		clone(0, 1, TierBackground, "alice", ""),
+		clone(0, 2, TierBackground, "narrator", ""),
+		clone(0, 3, TierBackground, "alice", "angry"),
+		clone(0, 4, TierBackground, "alice", ""),
+		clone(1, 0, TierBackground, "alice", ""),
+	}
+	got := labels(sortedByLess(background))
+	want := []string{
+		"0/1:alice:", "0/4:alice:", "0/3:alice:angry",
+		"0/0:narrator:", "0/2:narrator:",
+		"1/0:alice:",
+	}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("background order = %v, want %v", got, want)
+	}
+
+	lookahead := []*task{
+		clone(0, 2, TierLookahead, "narrator", ""),
+		clone(0, 1, TierLookahead, "alice", ""),
+		clone(0, 0, TierLookahead, "narrator", ""),
+	}
+	got = labels(sortedByLess(lookahead))
+	want = []string{"0/0:narrator:", "0/1:alice:", "0/2:narrator:"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("lookahead order = %v, want %v", got, want)
+	}
+}
+
 func taskLabels(tasks []*task) []string {
 	out := make([]string, len(tasks))
 	for i, tk := range tasks {
