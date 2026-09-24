@@ -27,6 +27,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.VolumeDown
+import androidx.compose.material.icons.outlined.AcUnit
+import androidx.compose.material.icons.outlined.Bedtime
+import androidx.compose.material.icons.outlined.Campaign
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.LocalFireDepartment
+import androidx.compose.material.icons.outlined.Mood
+import androidx.compose.material.icons.outlined.SentimentDissatisfied
+import androidx.compose.material.icons.outlined.SentimentNeutral
+import androidx.compose.material.icons.outlined.SentimentVeryDissatisfied
+import androidx.compose.material.icons.outlined.SentimentVerySatisfied
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -117,6 +128,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -1187,6 +1204,10 @@ private fun ParagraphRow(
                 if (emotions.isNotEmpty()) {
                     DropdownMenuItem(
                         text = { Text("Emotion: ${emotions.joinToString(", ") { formatEmotion(it) }}") },
+                        leadingIcon = {
+                            // A lone emotion gets its own icon; several share the generic face.
+                            Icon(emotions.singleOrNull()?.let(::emotionIcon) ?: Icons.Outlined.Mood, contentDescription = null, tint = emotionColor(isDarkTheme))
+                        },
                         enabled = false,
                         onClick = {},
                     )
@@ -1273,7 +1294,8 @@ private fun ParagraphRow(
                 (listOf("") + EMOTION_IDS).forEach { id ->
                     DropdownMenuItem(
                         text = { Text(if (id.isEmpty()) "Neutral" else formatEmotion(id)) },
-                        leadingIcon = {
+                        leadingIcon = { Icon(emotionIcon(id), contentDescription = null) },
+                        trailingIcon = {
                             if (id == currentEmotion) Icon(Icons.Filled.Check, contentDescription = "Current emotion")
                         },
                         onClick = {
@@ -1354,10 +1376,19 @@ private fun ParagraphBodyText(
     onWordTap: (paragraphIdx: Int, seconds: Double) -> Unit,
     onLongPress: () -> Unit,
 ) {
-    val spans = remember(segments) {
+    // A dialogue segment's emotion, shown in annotations mode as a small inline icon right at
+    // the start of the segment it applies to - per segment, not per block, since a block with
+    // several dialogue segments can carry a different emotion on each (mirrors frontend
+    // ChapterSection's EmotionIcon). Each icon is one placeholder char in the joined text, so
+    // every span's textOffset below already accounts for it.
+    val segmentEmotions = remember(segments, annotationsMode) {
+        segments.map { seg -> seg.emotion?.takeIf { annotationsMode && it.isNotEmpty() } }
+    }
+    val spans = remember(segments, segmentEmotions) {
         val list = mutableListOf<SegmentSpan>()
         var offset = 0
-        for (seg in segments) {
+        segments.forEachIndexed { i, seg ->
+            if (segmentEmotions[i] != null) offset += 1 // the emotion icon's placeholder char
             val tokens = tokenizeWords(seg.text)
             val startTimes = wordStartTimes(tokens, seg.words, seg.text.length, seg.durationSeconds ?: 0.0, seg.audioPointerSeconds)
             list.add(SegmentSpan(seg.idx, offset, tokens, startTimes))
@@ -1365,7 +1396,16 @@ private fun ParagraphBodyText(
         }
         list
     }
-    val combinedText = remember(segments) { segments.joinToString(" ") { it.text } }
+    val baseText = remember(segments, segmentEmotions) {
+        buildAnnotatedString {
+            segments.forEachIndexed { i, seg ->
+                if (i > 0) append(" ")
+                segmentEmotions[i]?.let { appendInlineContent(emotionInlineId(it)) }
+                append(seg.text)
+            }
+        }
+    }
+    val combinedText = baseText.text
 
     val activeSpan = spans.getOrNull(activeSegmentIdx)
     val activeLocalIdx = if (activeSpan != null) {
@@ -1408,9 +1448,9 @@ private fun ParagraphBodyText(
         null
     }
 
-    val annotated = remember(combinedText, activeRange, highlightTextColor, dimColor, segments) {
+    val annotated = remember(baseText, activeRange, highlightTextColor, dimColor, segments) {
         buildAnnotatedString {
-            append(combinedText)
+            append(baseText)
             segments.forEachIndexed { i, segment ->
                 if (segment.audioStatus != AudioStatus.READY) {
                     val span = spans[i]
@@ -1428,8 +1468,28 @@ private fun ParagraphBodyText(
     // large reading size would end up visually cramped (theme's line height meant for the
     // theme's own, much smaller, default size).
     val lineHeightRatio = bodyStyle.lineHeight.value / bodyStyle.fontSize.value
+    val emotionIconColor = emotionColor(isDarkTheme)
+    val inlineContent = remember(segmentEmotions, emotionIconColor) {
+        segmentEmotions.filterNotNull().distinct().associate { emotion ->
+            emotionInlineId(emotion) to InlineTextContent(
+                // A touch wider than tall - the gap stands in for frontend's .emotion-icon
+                // margin-right, so the icon doesn't butt up against the opening quote.
+                Placeholder(width = 1.2.em, height = 0.9.em, placeholderVerticalAlign = PlaceholderVerticalAlign.TextCenter),
+            ) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+                    Icon(
+                        emotionIcon(emotion),
+                        contentDescription = "Emotion: ${formatEmotion(emotion)}",
+                        tint = emotionIconColor,
+                        modifier = Modifier.fillMaxHeight().aspectRatio(1f),
+                    )
+                }
+            }
+        }
+    }
     Text(
         text = annotated,
+        inlineContent = inlineContent,
         style = bodyStyle.copy(
             fontSize = fontSizeSp.sp,
             lineHeight = (fontSizeSp * lineHeightRatio).sp,
@@ -1911,6 +1971,33 @@ internal val EMOTION_IDS = listOf("warm", "excited", "sad", "angry", "afraid", "
 // An emotion id ("angry", "whisper") as a display label ("Angry") - mirrors frontend's
 // utils/emotions.ts emotionLabel, where every label is just the capitalized id.
 internal fun formatEmotion(id: String): String = id.replaceFirstChar { it.uppercase() }
+
+// An emotion id's icon - annotations mode's inline per-line marker (see ParagraphBodyText) and
+// the "Set emotion" menu. Closest Material counterparts of frontend's utils/emotions.ts icons
+// (there's no ghost for "afraid", hence the dismayed face); "" is Neutral, and an id this list
+// doesn't know (a newer backend) gets a generic face rather than being hidden - same fallback
+// as frontend's emotionIcon.
+internal fun emotionIcon(id: String): ImageVector = when (id) {
+    "" -> Icons.Outlined.SentimentNeutral
+    "warm" -> Icons.Outlined.FavoriteBorder
+    "excited" -> Icons.Outlined.SentimentVerySatisfied
+    "sad" -> Icons.Outlined.SentimentDissatisfied
+    "angry" -> Icons.Outlined.LocalFireDepartment
+    "afraid" -> Icons.Outlined.SentimentVeryDissatisfied
+    "cold" -> Icons.Outlined.AcUnit
+    "whisper" -> Icons.AutoMirrored.Outlined.VolumeDown
+    "shout" -> Icons.Outlined.Campaign
+    "weary" -> Icons.Outlined.Bedtime
+    else -> Icons.Outlined.Mood
+}
+
+// ParagraphBodyText's inlineContent key for one emotion's inline icon.
+private fun emotionInlineId(emotion: String): String = "emotion:$emotion"
+
+// Exact hex match to frontend's --direction-emotion, which its .emotion-icon uses - reuses
+// DirectionEmotionColor* since emotion is no longer a delivery-tag caret category.
+private fun emotionColor(isDarkTheme: Boolean): Color =
+    if (isDarkTheme) DirectionEmotionColorDark else DirectionEmotionColorLight
 
 // Turns a raw Higgs inline delivery tag (today only "<|prosody:pause|>") into a
 // short human-readable label ("Anger", "Whispering") - mirrors frontend's ReaderPage.tsx

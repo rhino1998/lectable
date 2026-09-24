@@ -355,11 +355,16 @@ compiled-in default in place if nothing answers in time.
 - **Emotions, pause tags and pronunciation fixes all display; emotions
   can also be set here.** `ParagraphDto.emotion` is a dialogue line's
   emotion (backend `internal/emotions` id, null for neutral), shown as an
-  "Emotion: ..." row in the long-press menu (`formatEmotion`); the audio
+  "Emotion: ..." row in the long-press menu (`formatEmotion`/`emotionIcon`)
+  and, in annotations mode, as a small per-segment icon inline at the start
+  of each emotional dialogue line (an `InlineTextContent` placeholder in
+  `ParagraphBodyText`, tinted `--direction-emotion` - mirrors frontend's
+  `ChapterSection.EmotionIcon`); the audio
   itself was already cloned from that emotion's reference-clip variant
   server-side. The same menu's "Set emotion" (blocks with real dialogue
   only - scare quotes excluded) opens a second menu of Neutral +
-  `EMOTION_IDS` (mirrors backend `emotions.All`) and calls
+  `EMOTION_IDS` (mirrors backend `emotions.All`), each with its icon and
+  a check on the current one, and calls
   `ReaderViewModel.setEmotion` -> `PUT .../paragraphs/{pidx}/emotion` for
   each dialogue segment; the backend regenerates each changed line.
   `ParagraphDto.directionMarks` mirrors backend's inline Higgs delivery
