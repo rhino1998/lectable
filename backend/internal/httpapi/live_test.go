@@ -22,18 +22,21 @@ import (
 
 // newLiveTestServer is newTestServer plus a running live.Hub wired to the
 // store's change hook, the same way cmd/server wires it.
-func newLiveTestServer(t *testing.T) (*store.Store, *httptest.Server) {
+func newLiveTestServer(t *testing.T) (*store.DuckStore, *httptest.Server) {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "library.duckdb"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	// Everything reads through the cache, as in cmd/server, so these tests
+	// also catch a write that fails to invalidate what it changed.
+	cached := store.NewCached(s)
 
 	fake := ttsworkertest.New(t)
 	dataDir := t.TempDir()
 	tts := fake.Manager()
-	mgr := jobs.NewManager(s, tts, dataDir)
+	mgr := jobs.NewManager(cached, tts, dataDir)
 
 	hub := live.New(live.Config{Debounce: 10 * time.Millisecond})
 	s.OnChange(func(tables []string) {
@@ -43,11 +46,11 @@ func newLiveTestServer(t *testing.T) (*store.Store, *httptest.Server) {
 	})
 
 	srv := &Server{
-		Store:     s,
+		Store:     cached,
 		TTS:       tts,
 		Jobs:      mgr,
 		DataDir:   dataDir,
-		Narration: narration.NewResolver(s),
+		Narration: narration.NewResolver(cached),
 		Live:      hub,
 	}
 	ts := httptest.NewServer(NewRouter(srv))

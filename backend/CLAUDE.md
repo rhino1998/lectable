@@ -326,7 +326,20 @@ building/running `ttsworker` does, since both now link into that binary.
   loads) would appear to hang behind it. Fixed by `CountReadyAudioForSpeaker`,
   which JOINs on `(book, speaker, voice)` instead of materializing an id
   list - general lesson: prefer a JOIN scoped by book/chapter over an
-  `IN (...)` sized by paragraph count. **No FK `ON DELETE CASCADE`** —
+  `IN (...)` sized by paragraph count. Data access goes through the
+  `store.Store` interface (`iface.go`, every method); `DuckStore` is the
+  DuckDB implementation and `store.Cached` (`cache.go`, what `cmd/server`
+  and the httpapi/jobs tests use) wraps any `Store` with a read cache for
+  the hot lookups (book, chapter, paragraph list, character, character
+  voices, voice presets). Each cached read declares the tables it reads;
+  invalidation hangs off the inner store's own `OnChange` write
+  notifications (synchronous, before the write returns, `AllTables`
+  clearing everything), with a per-table generation check so a read that
+  raced a write never caches its result. Values are cloned on the way in
+  and out. Writes need nothing extra as long as they go through
+  `s.db`; a new hot read gets cached by adding one `cachedRead` override
+  with the right tables (`GetBook` also depends on `books.position`).
+  Logs its hit rate every minute. **No FK `ON DELETE CASCADE`** —
   DuckDB's support for that isn't something to lean on; `DeleteBook`
   deletes paragraphs → chapters → book explicitly in a transaction. Column
   is `content` not `text` (avoids ambiguity with the SQL `TEXT` type
@@ -1114,7 +1127,13 @@ Env vars (all optional): `PORT` (8080), `DATA_DIR` (`./data`),
 `SPEAKER_LLM_GPU_LAYERS`/`SPEAKER_LLM_CTX`/`SPEAKER_LLM_MAX_CONCURRENT`/
 `SPEAKER_LLM_NO_THINK`/`MODEL_IDLE_UNLOAD_AFTER` (speaker attribution - see
 "ttsworker / audioworker / llmworker" and `internal/speakerattr` above;
-attribution is disabled, not fatal, if the model file doesn't exist).
+attribution is disabled, not fatal, if the model file doesn't exist). `DB_SLOW_LOG_MS` (100) logs every DB call at or above that
+many ms (`store: timing <method> <op> took ...`; `0` logs all, negative
+disables) - with the single connection, that time includes waiting for
+it, and `transaction held` lines show who held it. Every finished job
+task logs `jobs: timing <kind> <key> ... waited=<queue+deps> ran=<run>`,
+every lookahead request `jobs: timing lookahead ... took`, and every
+worker call `ttsworker: timing <method> <path> took`.
 Set these on whatever environment runs `./server` (or `go run ./cmd/
 server`), not `./ttsworker` directly - `cmd/server`'s own `ttsworker.
 Manager` spawns the worker with `os.Environ()` (its own environment) as
@@ -1136,7 +1155,7 @@ build does, since both now link into that one binary.
 - `GET /api/books/{id}/chapters/{idx}` — paragraphs with `audioStatus`/`audioUrl`/`speaker`/`inline`/`emotion`
 - `POST /api/books/{id}/generate` — enqueues background generation for every chapter in the book at once (library page's hover "Generate audio" button) - just loops `Jobs.EnqueueChapter` per chapter and returns `202` immediately; no background goroutine or dedup needed since `EnqueueChapter` is already fire-and-forget and idempotent per chapter
 - `POST /api/books/{id}/chapters/{idx}/generate` — enqueue background generation (idempotent per chapter while in flight)
-- `POST /api/books/{id}/lookahead` — `{"chapterIdx", "paragraphIdx", "paragraphCount"?}`; enqueues generation of up to `paragraphCount` paragraphs (default `jobs.LookaheadParagraphCount` = 25, capped at `jobs.MaxLookaheadParagraphCount` = 1000) starting at that paragraph for whatever isn't already `AudioReady` (pending/error) - readers scrolling/seeking ahead, not a regenerate
+- `POST /api/books/{id}/lookahead` — `{"chapterIdx", "paragraphIdx", "paragraphCount"?}`; enqueues generation of up to `paragraphCount` paragraphs (default `jobs.LookaheadParagraphCount` = 25, capped at `jobs.MaxLookaheadParagraphCount` = 1000) starting at that paragraph for whatever isn't already `AudioReady` (pending/error) - readers scrolling/seeking ahead, not a regenerate. Coalesced per book (`jobs.Manager.EnqueueLookahead`): one run at a time, a request arriving meanwhile replaces the single pending follow-up - readers post one every few seconds, and a goroutine per request used to pile up on the DB connection
 - `POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/regenerate` — unconditionally resets one already-`AudioReady` paragraph's audio to `pending` and re-enqueues it at urgent priority, even though `lookahead` above would skip it - the "the reader didn't like this line" action
 - `PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker` — `{"speaker": "..."}` (400 for a group like "Bert and Sid"; an alias resolves to its character); corrects one paragraph's speaker attribution directly, without touching its already-generated audio - a caller wanting the new voice actually narrated still needs a separate `regenerate` call above. `""`/`"Narrator"` both mean "no character"; any other name is registered as a real character if it wasn't one already. 400s if the target paragraph isn't quoted dialogue (`IsQuote`) - narration/description can't be attributed to a speaker
 - `POST /api/books/{id}/chapters/{idx}/attribute-speakers` — enqueues LLM speaker attribution for one chapter and returns `202 {"queued": true}` immediately, not the result (503 if the LLM model file is missing) - fire-and-forget; registers any newly-discovered character with no voice yet - characterization/voice assignment happens lazily later, the first time that character's voice is actually needed for generation

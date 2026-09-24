@@ -20,7 +20,7 @@ import (
 )
 
 type Server struct {
-	Store       *store.Store
+	Store       store.Store
 	TTS         *ttsworker.Manager
 	Jobs        *jobs.Manager
 	DataDir     string

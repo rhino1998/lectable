@@ -25,26 +25,29 @@ import (
 // deployment with SPEAKER_LLM_MODEL_PATH unset (see Server.Speaker's own
 // doc comment) - LLM-backed endpoints are expected to report 503 in this
 // configuration, exercised explicitly below rather than left untested.
-func newTestServer(t *testing.T) (*Server, *store.Store, *ttsworkertest.Server, *httptest.Server) {
+func newTestServer(t *testing.T) (*Server, *store.DuckStore, *ttsworkertest.Server, *httptest.Server) {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "library.duckdb"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
+	// Everything reads through the cache, as in cmd/server, so these tests
+	// also catch a write that fails to invalidate what it changed.
+	cached := store.NewCached(s)
 
 	fake := ttsworkertest.New(t)
 	dataDir := t.TempDir()
 	tts := fake.Manager()
-	mgr := jobs.NewManager(s, tts, dataDir)
+	mgr := jobs.NewManager(cached, tts, dataDir)
 
 	srv := &Server{
-		Store:       s,
+		Store:       cached,
 		TTS:         tts,
 		Jobs:        mgr,
 		DataDir:     dataDir,
 		AllowOrigin: "http://localhost:5173",
-		Narration:   narration.NewResolver(s),
+		Narration:   narration.NewResolver(cached),
 		InstanceID:  "test-instance",
 	}
 	router := NewRouter(srv)
@@ -58,7 +61,7 @@ func newTestServer(t *testing.T) (*Server, *store.Store, *ttsworkertest.Server, 
 	return srv, s, fake, ts
 }
 
-func createTestBook(t *testing.T, s *store.Store, seriesName string, seriesIndex float64, paragraphs ...string) string {
+func createTestBook(t *testing.T, s *store.DuckStore, seriesName string, seriesIndex float64, paragraphs ...string) string {
 	t.Helper()
 	blocks := make([]store.BlockInput, len(paragraphs))
 	for i, p := range paragraphs {

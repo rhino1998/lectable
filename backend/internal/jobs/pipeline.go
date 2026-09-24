@@ -686,7 +686,7 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 			return // ran off the end of the book
 		}
 
-		resolved, err := m.paragraphsNeedingGeneration(ctx, book, ch.ID)
+		resolved, all, err := m.paragraphsNeedingGeneration(ctx, book, ch.ID)
 		if err != nil {
 			log.Printf("jobs: list paragraphs for chapter %s: %v", ch.ID, err)
 			return
@@ -695,7 +695,7 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 			resolved = skipResolvedBeforeIdx(resolved, book.PosParagraphIdx)
 		}
 		for _, rp := range resolved {
-			m.pushResolvedTask(bookID, ch.ID, chapterIdx, TierBackground, rp)
+			m.pushResolvedTask(bookID, ch.ID, chapterIdx, TierBackground, rp, all)
 		}
 		pushed[ch.ID] = true
 		chapterIdx++

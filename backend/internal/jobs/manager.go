@@ -1420,7 +1420,7 @@ type Manager struct {
 	musicGenMu      sync.Mutex
 	musicGenerating map[string]bool
 
-	store        *store.Store
+	store        store.Store
 	tts          *ttsworker.Manager
 	dataDir      string
 	narration    *narration.Resolver
@@ -1445,7 +1445,14 @@ type Manager struct {
 
 	mu             sync.Mutex
 	chapterPending map[string]int // chapterID -> count of queued+in-flight tasks, for IsGenerating
-	wake           chan struct{}
+
+	// lookaheads coalesces EnqueueLookahead per book (guarded by
+	// lookaheadMu): at most one enqueueLookahead runs per book, and
+	// requests arriving meanwhile collapse into one pending follow-up
+	// holding the newest position - see EnqueueLookahead.
+	lookaheadMu sync.Mutex
+	lookaheads  map[string]*lookaheadRun
+	wake        chan struct{}
 	// paused, when true, stops worker's own fill loop from dispatching
 	// any *new* task at all (see Pause/Resume) - deliberately not a
 	// property of m.queue itself (internal/taskqueue has no pause
@@ -1496,13 +1503,14 @@ type Manager struct {
 	pipelineMu sync.Mutex
 }
 
-func NewManager(s *store.Store, tts *ttsworker.Manager, dataDir string) *Manager {
+func NewManager(s store.Store, tts *ttsworker.Manager, dataDir string) *Manager {
 	m := &Manager{
 		store:          s,
 		tts:            tts,
 		dataDir:        dataDir,
 		narration:      narration.NewResolver(s),
 		chapterPending: make(map[string]int),
+		lookaheads:     make(map[string]*lookaheadRun),
 		wake:           make(chan struct{}, 1),
 		changeSubs:     make(map[chan struct{}]struct{}),
 	}
@@ -1841,15 +1849,15 @@ type resolvedParagraph struct {
 // at once), so a long chapter meant O(paragraphs) serialized round trips on
 // this package's single shared DuckDB connection, visibly slowing down
 // every other concurrent request while it ran.
-func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.Book, chapterID string) ([]resolvedParagraph, error) {
-	all, err := m.store.ListParagraphsRaw(chapterID)
+func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.Book, chapterID string) (resolved []resolvedParagraph, all []store.Paragraph, err error) {
+	all, err = m.store.ListParagraphsRaw(chapterID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	bookVoice, err := m.narration.BookVoice(book)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	speakers := make([]string, len(all))
 	for i, p := range all {
@@ -1863,7 +1871,7 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 	if book.MultiVoice() {
 		characters, err := m.store.ListCharacters(store.SeriesScope(book))
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		charByName = make(map[string]store.Character, len(characters))
 		characterIDs := make([]string, len(characters))
@@ -1873,7 +1881,7 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 		}
 		presetIDByChar, err = m.store.CharacterVoicesForModel(characterIDs, cloneModel)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
@@ -1887,7 +1895,7 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 				if cached, ok := resolvedVoiceCache[c.ID]; ok {
 					v = cached
 				} else if resolved, err := m.narration.ResolveCharacterVoice(book, bookVoice, c, cloneModel, presetIDByChar[c.ID]); err != nil {
-					return nil, err
+					return nil, nil, err
 				} else {
 					resolvedVoiceCache[c.ID] = resolved
 					v = resolved
@@ -1903,7 +1911,7 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 	for vid, ids := range idsByVoice {
 		states, err := m.store.ParagraphAudioStatuses(ids, vid)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for id, st := range states {
 			audioStates[id] = st
@@ -1917,7 +1925,7 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 		}
 		out = append(out, resolvedParagraph{paragraph: p, voice: voiceByParagraph[i]})
 	}
-	return out, nil
+	return out, all, nil
 }
 
 // pushResolvedTask is every caller's own single entry point for dispatching
@@ -1932,8 +1940,20 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 // re-render just that one paragraph in isolation, fragmenting the group's
 // carefully-merged audio right back into the disjointed clips this feature
 // exists to avoid.
-func (m *Manager) pushResolvedTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph) {
-	if group := m.scareQuoteMergeGroup(chapterID, rp.paragraph); len(group) > 1 {
+//
+// chapterParagraphs is chapterID's full paragraph list when the caller
+// already loaded it (paragraphsNeedingGeneration returns it) - the merge
+// check then reuses it instead of re-reading the whole chapter for every
+// paragraph pushed, which with lookahead requests arriving every few
+// seconds kept the store's single DB connection saturated. nil loads it.
+func (m *Manager) pushResolvedTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph, chapterParagraphs []store.Paragraph) {
+	var group []store.Paragraph
+	if chapterParagraphs != nil {
+		group = scareQuoteRun(inlineParagraphSetIn(chapterParagraphs, rp.paragraph), rp.paragraph)
+	} else {
+		group = m.scareQuoteMergeGroup(chapterID, rp.paragraph)
+	}
+	if len(group) > 1 {
 		m.pushMergedTask(bookID, chapterID, chapterIdx, tier, rp.voice, group)
 		return
 	}
@@ -2024,17 +2044,21 @@ func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int,
 // otherwise-contiguous Idx run (see store.Store's own "Idx is dense per
 // chapter" invariant - should never happen).
 //
-// Deliberately reloads chapterID's whole paragraph list on every call
-// (ListParagraphsRaw) rather than threading an already-fetched slice down
-// from each caller - see scareQuoteMergeGroup's own doc comment for why
-// that's an acceptable cost.
+// Loads chapterID's whole paragraph list; inlineParagraphSetIn is the
+// same over a list the caller already has.
 func (m *Manager) InlineParagraphSet(chapterID string, paragraph store.Paragraph) []store.Paragraph {
-	alone := []store.Paragraph{paragraph}
 	all, err := m.store.ListParagraphsRaw(chapterID)
 	if err != nil {
 		log.Printf("jobs: inline paragraph set lookup for chapter %s: %v", chapterID, err)
-		return alone
+		return []store.Paragraph{paragraph}
 	}
+	return inlineParagraphSetIn(all, paragraph)
+}
+
+// inlineParagraphSetIn is InlineParagraphSet over all, the chapter's
+// already-loaded paragraphs.
+func inlineParagraphSetIn(all []store.Paragraph, paragraph store.Paragraph) []store.Paragraph {
+	alone := []store.Paragraph{paragraph}
 	byIdx := make(map[int]store.Paragraph, len(all))
 	for _, p := range all {
 		byIdx[p.Idx] = p
@@ -2144,8 +2168,13 @@ func segmentEndsSentence(p store.Paragraph) bool {
 // no scare-quoted paragraph in it, or every adjacent boundary reads as its
 // own separate sentence.
 func (m *Manager) scareQuoteMergeGroup(chapterID string, paragraph store.Paragraph) []store.Paragraph {
+	return scareQuoteRun(m.InlineParagraphSet(chapterID, paragraph), paragraph)
+}
+
+// scareQuoteRun is scareQuoteMergeGroup given paragraph's inline set
+// (InlineParagraphSet/inlineParagraphSetIn) directly.
+func scareQuoteRun(group []store.Paragraph, paragraph store.Paragraph) []store.Paragraph {
 	alone := []store.Paragraph{paragraph}
-	group := m.InlineParagraphSet(chapterID, paragraph)
 	if len(group) <= 1 {
 		return alone
 	}
@@ -2232,7 +2261,7 @@ func (m *Manager) enqueueChapter(ctx context.Context, bookID, chapterID string, 
 		return
 	}
 	m.maybeScoreChapterMusic(bookID, chapterID, chapterIdx, book)
-	resolved, err := m.paragraphsNeedingGeneration(ctx, book, chapterID)
+	resolved, all, err := m.paragraphsNeedingGeneration(ctx, book, chapterID)
 	if err != nil {
 		log.Printf("jobs: list paragraphs for chapter %s: %v", chapterID, err)
 		return
@@ -2241,7 +2270,7 @@ func (m *Manager) enqueueChapter(ctx context.Context, bookID, chapterID string, 
 		resolved = limitResolvedByWordCount(resolved, wordLimit)
 	}
 	for _, rp := range resolved {
-		m.pushResolvedTask(bookID, chapterID, chapterIdx, TierBackground, rp)
+		m.pushResolvedTask(bookID, chapterID, chapterIdx, TierBackground, rp, all)
 	}
 }
 
@@ -2310,7 +2339,7 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 		log.Printf("jobs: reset paragraph %s for regenerate: %v", paragraph.ID, err)
 		return
 	}
-	m.pushResolvedTask(bookID, chapterID, chapterIdx, TierUrgent, resolvedParagraph{paragraph: paragraph, voice: v})
+	m.pushResolvedTask(bookID, chapterID, chapterIdx, TierUrgent, resolvedParagraph{paragraph: paragraph, voice: v}, nil)
 }
 
 // EnqueueLookahead generates up to count upcoming paragraphs (count <= 0
@@ -2336,10 +2365,55 @@ func (m *Manager) EnqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 		count = LookaheadParagraphCount
 	}
 	count = min(count, MaxLookaheadParagraphCount)
-	go m.enqueueLookahead(bookID, fromChapterIdx, fromParagraphIdx, count)
+	req := lookaheadRequest{fromChapterIdx, fromParagraphIdx, count}
+
+	// Readers post a lookahead every few seconds and one run can take
+	// longer than that (it reads and resolves whole chapters), so starting
+	// a goroutine per request piled up concurrent runs all queued on the
+	// store's single DB connection, stalling everything else. Only the
+	// newest position matters, so a request arriving while this book's run
+	// is busy just replaces the pending one.
+	m.lookaheadMu.Lock()
+	if run, ok := m.lookaheads[bookID]; ok {
+		run.pending = &req
+		m.lookaheadMu.Unlock()
+		return
+	}
+	m.lookaheads[bookID] = &lookaheadRun{}
+	m.lookaheadMu.Unlock()
+
+	go func() {
+		for {
+			m.enqueueLookahead(bookID, req.fromChapterIdx, req.fromParagraphIdx, req.count)
+			m.lookaheadMu.Lock()
+			run := m.lookaheads[bookID]
+			if run.pending == nil {
+				delete(m.lookaheads, bookID)
+				m.lookaheadMu.Unlock()
+				return
+			}
+			req = *run.pending
+			run.pending = nil
+			m.lookaheadMu.Unlock()
+		}
+	}()
+}
+
+type lookaheadRequest struct {
+	fromChapterIdx, fromParagraphIdx, count int
+}
+
+// lookaheadRun is one book's in-progress EnqueueLookahead; pending is the
+// newest request that arrived while it ran, if any.
+type lookaheadRun struct {
+	pending *lookaheadRequest
 }
 
 func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphIdx, count int) {
+	start := time.Now()
+	defer func() {
+		log.Printf("jobs: timing lookahead book=%s from=%d/%d count=%d took %s", bookID, fromChapterIdx, fromParagraphIdx, count, time.Since(start).Round(time.Millisecond))
+	}()
 	book, err := m.store.GetBook(bookID)
 	if err != nil || book == nil {
 		log.Printf("jobs: book %s not found: %v", bookID, err)
@@ -2364,7 +2438,7 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 			return // ran off the end of the book
 		}
 
-		resolved, err := m.paragraphsNeedingGeneration(m.ctx, book, ch.ID)
+		resolved, all, err := m.paragraphsNeedingGeneration(m.ctx, book, ch.ID)
 		if err != nil {
 			log.Printf("jobs: list paragraphs for chapter %s: %v", ch.ID, err)
 			return
@@ -2380,7 +2454,7 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 			if chapterIdx == fromChapterIdx && rp.paragraph.Idx == fromParagraphIdx {
 				tier = TierUrgent
 			}
-			m.pushResolvedTask(bookID, ch.ID, chapterIdx, tier, rp)
+			m.pushResolvedTask(bookID, ch.ID, chapterIdx, tier, rp, all)
 		}
 		if chapterIdx == fromChapterIdx {
 			// Background music should be at least as responsive to reader

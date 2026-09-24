@@ -12,6 +12,7 @@ linters:
       # write after headers are already sent).
       exclude-functions:
         - (*database/sql.Tx).Rollback
+        - (*github.com/rhino1998/lectable/backend/internal/store.notifyTx).Rollback
         - (*github.com/coder/websocket.Conn).CloseNow
         - (net/http.ResponseWriter).Write
     staticcheck:

@@ -14,7 +14,7 @@ import (
 // sql.DB/sql.SetMaxOpenConns(1) makes a shared store across tests risky to
 // reason about), and t.Cleanup closes it so it never leaks a connection
 // past its own test.
-func openTestStore(t *testing.T) *Store {
+func openTestStore(t *testing.T) *DuckStore {
 	t.Helper()
 	s, err := Open(filepath.Join(t.TempDir(), "library.duckdb"))
 	if err != nil {
@@ -24,7 +24,7 @@ func openTestStore(t *testing.T) *Store {
 	return s
 }
 
-func oneChapterBook(t *testing.T, s *Store, seriesName string, seriesIndex float64, paragraphs ...string) (bookID string, chapterID string) {
+func oneChapterBook(t *testing.T, s *DuckStore, seriesName string, seriesIndex float64, paragraphs ...string) (bookID string, chapterID string) {
 	t.Helper()
 	blocks := make([]BlockInput, len(paragraphs))
 	for i, p := range paragraphs {

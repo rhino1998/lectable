@@ -75,11 +75,15 @@ func main() {
 		}
 	}
 
-	st, err := store.Open(filepath.Join(dataDir, "library.duckdb"))
+	duck, err := store.Open(filepath.Join(dataDir, "library.duckdb"))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-	defer st.Close()
+	defer duck.Close()
+	// Everything reads through the cache (invalidated by duck's own write
+	// notifications) - the single DuckDB connection is the bottleneck.
+	cached := store.NewCached(duck)
+	var st store.Store = cached
 
 	instanceID, err := instanceid.LoadOrCreate(dataDir)
 	if err != nil {
@@ -98,6 +102,8 @@ func main() {
 	if err := ttsMgr.Start(ctx); err != nil {
 		log.Fatalf("start ttsworker: %v", err)
 	}
+
+	go cached.LogStatsEvery(time.Minute, ctx.Done())
 
 	jobManager := jobs.NewManager(st, ttsMgr, dataDir)
 	jobManager.Start(ctx)

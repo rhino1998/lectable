@@ -8,7 +8,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
-func openTestStore(t *testing.T) *store.Store {
+func openTestStore(t *testing.T) *store.DuckStore {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "library.duckdb"))
 	if err != nil {
@@ -18,7 +18,7 @@ func openTestStore(t *testing.T) *store.Store {
 	return s
 }
 
-func createBook(t *testing.T, s *store.Store) *store.Book {
+func createBook(t *testing.T, s *store.DuckStore) *store.Book {
 	t.Helper()
 	id, _, err := s.CreateBook("Book", "Author", "en", "", "", 0, []store.ChapterInput{
 		{Title: "Ch1", Blocks: []store.BlockInput{{Kind: store.BlockText, Text: "hello"}}},
@@ -225,7 +225,7 @@ func TestForParagraphFallsBackWhenCharacterHasNoVoiceYet(t *testing.T) {
 // on and its own voice resolving through voices.InstructedCloneModel (the
 // only clone model that honors CloneInstruct) - the shared setup for both
 // tests below.
-func bookWithInstructedClone(t *testing.T, s *store.Store, book *store.Book) *store.Book {
+func bookWithInstructedClone(t *testing.T, s *store.DuckStore, book *store.Book) *store.Book {
 	t.Helper()
 	preset, err := s.CreateVoicePreset("Narrator", "speak warmly", "ref", 1, 1.0, voices.DefaultDesignModel)
 	if err != nil {

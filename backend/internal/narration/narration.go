@@ -67,10 +67,10 @@ func (v ResolvedVoice) VoiceID() string {
 // Resolver looks up preset/character configuration in the store to resolve
 // effective narration voices.
 type Resolver struct {
-	store *store.Store
+	store store.Store
 }
 
-func NewResolver(s *store.Store) *Resolver { return &Resolver{store: s} }
+func NewResolver(s store.Store) *Resolver { return &Resolver{store: s} }
 
 // BookVoice resolves book's own narrator voice - the fallback for any
 // paragraph not attributed to a character with its own assigned voice.

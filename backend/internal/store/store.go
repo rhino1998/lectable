@@ -418,11 +418,11 @@ CREATE INDEX IF NOT EXISTS idx_character_voices_character ON character_voices(ch
 CREATE INDEX IF NOT EXISTS idx_paragraphs_speaker ON paragraphs(speaker);
 `
 
-type Store struct {
+type DuckStore struct {
 	db *notifyDB
 }
 
-func Open(path string) (*Store, error) {
+func Open(path string) (*DuckStore, error) {
 	db, err := sql.Open("duckdb", path)
 	if err != nil {
 		return nil, err
@@ -487,7 +487,7 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("seed default_voice: %w", err)
 	}
-	return &Store{db: &notifyDB{DB: db}}, nil
+	return &DuckStore{db: &notifyDB{DB: db}}, nil
 }
 
 // migrateCharactersRefLine is a narrow, one-off exception to this
@@ -713,7 +713,7 @@ func migratePronunciationPass(db *sql.DB) error {
 	return nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *DuckStore) Close() error { return s.db.Close() }
 
 func NewID() string {
 	b := make([]byte, 16)
@@ -740,14 +740,14 @@ type DefaultVoice struct {
 	CloneModel string
 }
 
-func (s *Store) GetDefaultVoice() (DefaultVoice, error) {
+func (s *DuckStore) GetDefaultVoice() (DefaultVoice, error) {
 	var v DefaultVoice
 	err := s.db.QueryRow(`SELECT preset_id, instruct, language, seed, clone_model FROM default_voice WHERE id = 0`).
 		Scan(&v.PresetID, &v.Instruct, &v.Language, &v.Seed, &v.CloneModel)
 	return v, err
 }
 
-func (s *Store) SetDefaultVoice(presetID, instruct, language string, seed int, cloneModel string) error {
+func (s *DuckStore) SetDefaultVoice(presetID, instruct, language string, seed int, cloneModel string) error {
 	_, err := s.db.Exec(
 		`UPDATE default_voice SET preset_id = ?, instruct = ?, language = ?, seed = ?, clone_model = ? WHERE id = 0`,
 		presetID, instruct, language, seed, cloneModel,
@@ -808,7 +808,7 @@ type CreatedImage struct {
 // and image placeholders in a single transaction. Returned images are in
 // the same order as the image blocks appeared across the input, so callers
 // can zip them back up with the original image bytes.
-func (s *Store) CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error) {
+func (s *DuckStore) CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error) {
 	defaultVoice, err := s.GetDefaultVoice()
 	if err != nil {
 		return "", nil, fmt.Errorf("get default voice: %w", err)
@@ -927,7 +927,7 @@ func insertChapterBlocks(tx *notifyTx, chapterID string, blocks []BlockInput) (i
 //
 // Returns the old image IDs/exts (for the caller to delete from disk) and
 // the newly created ones (for the caller to write).
-func (s *Store) ReplaceChapterContent(chapterID, title string, blocks []BlockInput) (oldImages, newImages []CreatedImage, err error) {
+func (s *DuckStore) ReplaceChapterContent(chapterID, title string, blocks []BlockInput) (oldImages, newImages []CreatedImage, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, nil, err
@@ -1045,7 +1045,7 @@ func (s *Store) ReplaceChapterContent(chapterID, title string, blocks []BlockInp
 	return oldImages, newImages, nil
 }
 
-func (s *Store) ListBooks() ([]Book, error) {
+func (s *DuckStore) ListBooks() ([]Book, error) {
 	rows, err := s.db.Query(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
 		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled,
 		pos_chapter_idx, pos_paragraph_idx, pos_seconds, estimate_sec_per_char
@@ -1068,7 +1068,7 @@ func (s *Store) ListBooks() ([]Book, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) GetBook(id string) (*Book, error) {
+func (s *DuckStore) GetBook(id string) (*Book, error) {
 	var b Book
 	err := s.db.QueryRow(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
 		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled,
@@ -1086,7 +1086,7 @@ func (s *Store) GetBook(id string) (*Book, error) {
 	return &b, nil
 }
 
-func (s *Store) DeleteBook(id string) error {
+func (s *DuckStore) DeleteBook(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -1126,7 +1126,7 @@ func (s *Store) DeleteBook(id string) error {
 // characterVoiceMode sets store.Book.CharacterVoiceMode - see its own doc
 // comment for the four possible values - independent of presetID/instruct/
 // language/seed, which remain the fallback voice regardless of mode.
-func (s *Store) UpdateVoice(bookID, presetID, instruct, language string, seed int, cloneModel string, characterVoiceMode CharacterVoiceMode, speechDirection, musicEnabled bool) error {
+func (s *DuckStore) UpdateVoice(bookID, presetID, instruct, language string, seed int, cloneModel string, characterVoiceMode CharacterVoiceMode, speechDirection, musicEnabled bool) error {
 	_, err := s.db.Exec(
 		`UPDATE books SET voice_preset_id = ?, voice_instruct = ?, voice_language = ?, voice_seed = ?, clone_model = ?, character_voice_mode = ?, speech_direction = ?, music_enabled = ? WHERE id = ?`,
 		presetID, instruct, language, seed, cloneModel, characterVoiceMode, speechDirection, musicEnabled, bookID,
@@ -1136,12 +1136,12 @@ func (s *Store) UpdateVoice(bookID, presetID, instruct, language string, seed in
 
 // SetLengthEstimate stores bookID's own PocketTTS-calibrated seconds-per-
 // character measurement - see Book.EstimateSecPerChar's own doc comment.
-func (s *Store) SetLengthEstimate(bookID string, secPerChar float64) error {
+func (s *DuckStore) SetLengthEstimate(bookID string, secPerChar float64) error {
 	_, err := s.db.Exec(`UPDATE books SET estimate_sec_per_char = ? WHERE id = ?`, secPerChar, bookID)
 	return err
 }
 
-func (s *Store) ListVoicePresets() ([]VoicePreset, error) {
+func (s *DuckStore) ListVoicePresets() ([]VoicePreset, error) {
 	rows, err := s.db.Query(`SELECT id, name, instruct, ref_text, seed, speed_multiplier, created_at, design_model FROM voice_presets ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -1171,7 +1171,7 @@ func (s *Store) ListVoicePresets() ([]VoicePreset, error) {
 // voices". Scope strings are "series:<name>" or "book:<id>" (see
 // SeriesScope); substr offsets below skip past those literal prefixes
 // (DuckDB substr is 1-indexed).
-func (s *Store) VoicePresetGroups() (map[string]string, error) {
+func (s *DuckStore) VoicePresetGroups() (map[string]string, error) {
 	rows, err := s.db.Query(`
 		SELECT cv.voice_preset_id,
 			CASE WHEN c.scope LIKE 'series:%' THEN substr(c.scope, 8) ELSE b.title END AS label
@@ -1198,7 +1198,7 @@ func (s *Store) VoicePresetGroups() (map[string]string, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) GetVoicePreset(id string) (*VoicePreset, error) {
+func (s *DuckStore) GetVoicePreset(id string) (*VoicePreset, error) {
 	var p VoicePreset
 	err := s.db.QueryRow(`SELECT id, name, instruct, ref_text, seed, speed_multiplier, created_at, design_model FROM voice_presets WHERE id = ?`, id).
 		Scan(&p.ID, &p.Name, &p.Instruct, &p.RefText, &p.Seed, &p.SpeedMultiplier, &p.CreatedAt, &p.DesignModel)
@@ -1211,7 +1211,7 @@ func (s *Store) GetVoicePreset(id string) (*VoicePreset, error) {
 	return &p, nil
 }
 
-func (s *Store) CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error) {
+func (s *DuckStore) CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error) {
 	p := VoicePreset{
 		ID: NewID(), Name: name, Instruct: instruct, RefText: refText, Seed: seed,
 		SpeedMultiplier: speedMultiplier, CreatedAt: time.Now().Unix(), DesignModel: designModel,
@@ -1226,7 +1226,7 @@ func (s *Store) CreateVoicePreset(name, instruct, refText string, seed int, spee
 	return p, nil
 }
 
-func (s *Store) UpdateVoicePreset(id, name, instruct, refText string, seed int, speedMultiplier float64, designModel string) error {
+func (s *DuckStore) UpdateVoicePreset(id, name, instruct, refText string, seed int, speedMultiplier float64, designModel string) error {
 	_, err := s.db.Exec(
 		`UPDATE voice_presets SET name = ?, instruct = ?, ref_text = ?, seed = ?, speed_multiplier = ?, design_model = ? WHERE id = ?`,
 		name, instruct, refText, seed, speedMultiplier, designModel, id,
@@ -1241,19 +1241,19 @@ func (s *Store) UpdateVoicePreset(id, name, instruct, refText string, seed int, 
 // not a freshly-read copy of every other field, and shouldn't have to fetch
 // the row just to round-trip its own unchanged fields back through
 // UpdateVoicePreset.
-func (s *Store) UpdateVoicePresetSeed(id string, seed int) error {
+func (s *DuckStore) UpdateVoicePresetSeed(id string, seed int) error {
 	_, err := s.db.Exec(`UPDATE voice_presets SET seed = ? WHERE id = ?`, seed, id)
 	return err
 }
 
-func (s *Store) DeleteVoicePreset(id string) error {
+func (s *DuckStore) DeleteVoicePreset(id string) error {
 	_, err := s.db.Exec(`DELETE FROM voice_presets WHERE id = ?`, id)
 	return err
 }
 
 // UpdatePosition reports its write to OnChange as PositionTable rather than
 // "books" - see PositionTable.
-func (s *Store) UpdatePosition(bookID string, chapterIdx, paragraphIdx int, seconds float64) error {
+func (s *DuckStore) UpdatePosition(bookID string, chapterIdx, paragraphIdx int, seconds float64) error {
 	_, err := s.db.execAs(PositionTable,
 		`UPDATE books SET pos_chapter_idx = ?, pos_paragraph_idx = ?, pos_seconds = ? WHERE id = ?`,
 		chapterIdx, paragraphIdx, seconds, bookID,
@@ -1298,7 +1298,7 @@ func speakerVoiceValues(overrides []SpeakerVoice) (fragment string, args []any) 
 // instead - see SpeakerVoice) - a chapter fully generated under one voice
 // shows as not-yet-generated when a different voice is selected, since
 // that voice's audio doesn't exist yet.
-func (s *Store) ListChapterSummaries(bookID, voiceID string, overrides []SpeakerVoice) ([]ChapterSummary, error) {
+func (s *DuckStore) ListChapterSummaries(bookID, voiceID string, overrides []SpeakerVoice) ([]ChapterSummary, error) {
 	var rows *sql.Rows
 	var err error
 	if len(overrides) == 0 {
@@ -1402,7 +1402,7 @@ func bookSpeakerVoiceValues(overrides []BookSpeakerVoice) (fragment string, args
 // overrides is BookSpeakerVoice's flattened form (see SpeakerVoice's own
 // doc comment) - empty for a book with no multi-voice character
 // assignments, so most libraries pay nothing extra over the old query.
-func (s *Store) ListChapterSummariesForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string][]ChapterSummary, error) {
+func (s *DuckStore) ListChapterSummariesForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string][]ChapterSummary, error) {
 	out := make(map[string][]ChapterSummary, len(bookVoices))
 	if len(bookVoices) == 0 {
 		return out, nil
@@ -1460,7 +1460,7 @@ func (s *Store) ListChapterSummariesForBooks(bookVoices []BookVoice, overrides [
 // the batching itself). A book with no paragraphs is simply absent from
 // the returned map; callers should treat that the same as a zero-value
 // NarrationStats.
-func (s *Store) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string]NarrationStats, error) {
+func (s *DuckStore) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string]NarrationStats, error) {
 	out := make(map[string]NarrationStats, len(bookVoices))
 	if len(bookVoices) == 0 {
 		return out, nil
@@ -1514,7 +1514,7 @@ func (s *Store) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []B
 	return out, rows.Err()
 }
 
-func (s *Store) GetChapterByID(id string) (*Chapter, error) {
+func (s *DuckStore) GetChapterByID(id string) (*Chapter, error) {
 	var c Chapter
 	err := s.db.QueryRow(`SELECT id, book_id, idx, title, passes FROM chapters WHERE id = ?`, id).
 		Scan(&c.ID, &c.BookID, &c.Idx, &c.Title, &c.Passes)
@@ -1528,13 +1528,13 @@ func (s *Store) GetChapterByID(id string) (*Chapter, error) {
 }
 
 // CountChapters reports how many chapters bookID has.
-func (s *Store) CountChapters(bookID string) (int, error) {
+func (s *DuckStore) CountChapters(bookID string) (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT count(*) FROM chapters WHERE book_id = ?`, bookID).Scan(&n)
 	return n, err
 }
 
-func (s *Store) GetChapterByIdx(bookID string, idx int) (*Chapter, error) {
+func (s *DuckStore) GetChapterByIdx(bookID string, idx int) (*Chapter, error) {
 	var c Chapter
 	err := s.db.QueryRow(`SELECT id, book_id, idx, title, passes FROM chapters WHERE book_id = ? AND idx = ?`, bookID, idx).
 		Scan(&c.ID, &c.BookID, &c.Idx, &c.Title, &c.Passes)
@@ -1554,7 +1554,7 @@ func (s *Store) GetChapterByIdx(bookID string, idx int) (*Chapter, error) {
 // failure partway through. SetChapterAttributed/SetChapterDirected's own
 // json_merge_patch shape (see SetChapterAttributed's own doc comment for
 // why a single statement like this, not a Go-side read-modify-write).
-func (s *Store) SetChapterMusicScored(chapterID string) error {
+func (s *DuckStore) SetChapterMusicScored(chapterID string) error {
 	_, err := s.db.Exec(
 		`UPDATE chapters SET passes = json_merge_patch(passes, '{"music": true}') WHERE id = ?`,
 		chapterID,
@@ -1594,7 +1594,7 @@ func (s *Store) SetChapterMusicScored(chapterID string) error {
 // the caller can remove each region's own on-disk audio file - this
 // package never touches the filesystem itself, see DeleteChapterAudio's
 // own doc comment for that DB-delete/disk-delete split.
-func (s *Store) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
+func (s *DuckStore) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 	regions, err := s.ListMusicRegions(chapterID)
 	if err != nil {
 		return nil, err
@@ -1644,7 +1644,7 @@ func (s *Store) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 // batch gets appended too. If one does, that later call's own first step
 // fixes this batch's own last region back up to the real boundary, before
 // inserting anything new - see the UPDATE below.
-func (s *Store) AppendMusicRegions(chapterID string, regions []MusicRegionInput, lastParagraphIdx int) ([]MusicRegion, error) {
+func (s *DuckStore) AppendMusicRegions(chapterID string, regions []MusicRegionInput, lastParagraphIdx int) ([]MusicRegion, error) {
 	if len(regions) == 0 {
 		return nil, nil
 	}
@@ -1711,7 +1711,7 @@ type MusicRegionInput struct {
 }
 
 // ListMusicRegions returns chapterID's own music regions in idx order.
-func (s *Store) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
+func (s *DuckStore) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
 	rows, err := s.db.Query(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, status, error, duration_seconds FROM music_regions WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
@@ -1731,7 +1731,7 @@ func (s *Store) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
 
 // GetMusicRegion looks up one region by id - httpapi.handleGetMusicRegionAudio's
 // own single-row lookup, not a whole chapter's list.
-func (s *Store) GetMusicRegion(id string) (*MusicRegion, error) {
+func (s *DuckStore) GetMusicRegion(id string) (*MusicRegion, error) {
 	var r MusicRegion
 	err := s.db.QueryRow(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, status, error, duration_seconds FROM music_regions WHERE id = ?`, id).
 		Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Ambience, &r.Transition, &r.Status, &r.Error, &r.DurationSeconds)
@@ -1754,7 +1754,7 @@ type MusicRegionCount struct {
 // region counts, keyed by chapter id - a chapter with no regions (not
 // scored) is simply absent. One grouped query for the whole book, for the
 // Speakers page's chapter table.
-func (s *Store) MusicRegionCounts(bookID string) (map[string]MusicRegionCount, error) {
+func (s *DuckStore) MusicRegionCounts(bookID string) (map[string]MusicRegionCount, error) {
 	rows, err := s.db.Query(`
 		SELECT r.chapter_id, COUNT(*),
 			COALESCE(SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END), 0),
@@ -1783,17 +1783,17 @@ func (s *Store) MusicRegionCounts(bookID string) (map[string]MusicRegionCount, e
 // music_regions' own status-transition writes - SetParagraphGenerating/
 // SetParagraphReady/SetParagraphError's own counterparts (upsertSFXStatus
 // below), just against this table instead.
-func (s *Store) SetMusicRegionGenerating(id string) error {
+func (s *DuckStore) SetMusicRegionGenerating(id string) error {
 	_, err := s.db.Exec(`UPDATE music_regions SET status = ?, error = '' WHERE id = ?`, AudioGenerating, id)
 	return err
 }
 
-func (s *Store) SetMusicRegionReady(id string, durationSeconds float64) error {
+func (s *DuckStore) SetMusicRegionReady(id string, durationSeconds float64) error {
 	_, err := s.db.Exec(`UPDATE music_regions SET status = ?, error = '', duration_seconds = ? WHERE id = ?`, AudioReady, durationSeconds, id)
 	return err
 }
 
-func (s *Store) SetMusicRegionError(id, message string) error {
+func (s *DuckStore) SetMusicRegionError(id, message string) error {
 	_, err := s.db.Exec(`UPDATE music_regions SET status = ?, error = ? WHERE id = ?`, AudioError, message, id)
 	return err
 }
@@ -1806,7 +1806,7 @@ func (s *Store) SetMusicRegionError(id, message string) error {
 // region's own scored mood/prompt/transition - only its generation state,
 // so jobs.Manager.MaybeAdvanceChapterMusic picks it back up as the next
 // eligible region to generate.
-func (s *Store) ResetMusicRegionAudio(id string) error {
+func (s *DuckStore) ResetMusicRegionAudio(id string) error {
 	_, err := s.db.Exec(`UPDATE music_regions SET status = ?, error = '', duration_seconds = 0 WHERE id = ?`, AudioPending, id)
 	return err
 }
@@ -1823,7 +1823,7 @@ func (s *Store) ResetMusicRegionAudio(id string) error {
 // narration is ready again. Returns the regions as they stood before the
 // reset (same reasoning as ClearMusicRegions) so the caller can remove
 // each one's now-stale on-disk clip.
-func (s *Store) ResetChapterMusicAudio(chapterID string) ([]MusicRegion, error) {
+func (s *DuckStore) ResetChapterMusicAudio(chapterID string) ([]MusicRegion, error) {
 	regions, err := s.ListMusicRegions(chapterID)
 	if err != nil {
 		return nil, err
@@ -1848,7 +1848,7 @@ func (s *Store) ResetChapterMusicAudio(chapterID string) ([]MusicRegion, error) 
 // passes writers wants. The patch itself is always one of the two literal
 // strings below (no external/request-supplied text ever reaches this
 // query), so it's inlined directly rather than bound as a parameter.
-func (s *Store) SetChapterAttributed(chapterID string) error {
+func (s *DuckStore) SetChapterAttributed(chapterID string) error {
 	_, err := s.db.Exec(
 		`UPDATE chapters SET passes = json_merge_patch(passes, '{"attribution": true}') WHERE id = ?`,
 		chapterID,
@@ -1859,7 +1859,7 @@ func (s *Store) SetChapterAttributed(chapterID string) error {
 // SetChapterScareQuoted marks chapterID's own passes.scareQuote true - set
 // by httpapi.scareQuoteChapterForJob once a scare-quote tagging run
 // completes over the whole chapter. SetChapterAttributed's shape.
-func (s *Store) SetChapterScareQuoted(chapterID string) error {
+func (s *DuckStore) SetChapterScareQuoted(chapterID string) error {
 	_, err := s.db.Exec(
 		`UPDATE chapters SET passes = json_merge_patch(passes, '{"scareQuote": true}') WHERE id = ?`,
 		chapterID,
@@ -1870,7 +1870,7 @@ func (s *Store) SetChapterScareQuoted(chapterID string) error {
 // SetChapterDescribed marks chapterID's own passes.description true - set
 // by httpapi.describeChapterForJob once a description tagging run
 // completes over the whole chapter. SetChapterAttributed's shape.
-func (s *Store) SetChapterDescribed(chapterID string) error {
+func (s *DuckStore) SetChapterDescribed(chapterID string) error {
 	_, err := s.db.Exec(
 		`UPDATE chapters SET passes = json_merge_patch(passes, '{"description": true}') WHERE id = ?`,
 		chapterID,
@@ -1884,7 +1884,7 @@ func (s *Store) SetChapterDescribed(chapterID string) error {
 // whole chapter in one uninterrupted pass. See SetChapterAttributed's own
 // doc comment for why this is a single json_merge_patch statement rather
 // than a Go-side read-modify-write.
-func (s *Store) SetChapterDirected(chapterID string) error {
+func (s *DuckStore) SetChapterDirected(chapterID string) error {
 	_, err := s.db.Exec(
 		`UPDATE chapters SET passes = json_merge_patch(passes, '{"direction": true}') WHERE id = ?`,
 		chapterID,
@@ -1895,7 +1895,7 @@ func (s *Store) SetChapterDirected(chapterID string) error {
 // SetChapterPronounced marks chapterID's own passes.pronunciation true -
 // set by httpapi.pronounceChapter once a pronunciation resolution run
 // finishes covering the whole chapter. SetChapterDirected's shape.
-func (s *Store) SetChapterPronounced(chapterID string) error {
+func (s *DuckStore) SetChapterPronounced(chapterID string) error {
 	_, err := s.db.Exec(
 		`UPDATE chapters SET passes = json_merge_patch(passes, '{"pronunciation": true}') WHERE id = ?`,
 		chapterID,
@@ -1911,7 +1911,7 @@ func (s *Store) SetChapterPronounced(chapterID string) error {
 // voice_id a JOIN here could filter on. Callers resolve each paragraph's
 // applicable voice_id themselves and batch-fetch status via
 // ParagraphAudioStatuses.
-func (s *Store) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
+func (s *DuckStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
@@ -1934,7 +1934,7 @@ func (s *Store) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 // whole-book counterpart to ListParagraphsRaw, used for book-wide
 // aggregation (httpapi's character summary table) rather than one chapter
 // at a time.
-func (s *Store) ListParagraphsRawForBook(bookID string) ([]Paragraph, error) {
+func (s *DuckStore) ListParagraphsRawForBook(bookID string) ([]Paragraph, error) {
 	rows, err := s.db.Query(`
 		SELECT p.id, p.chapter_id, p.idx, p.position, p.content, p.speaker, p.inline, p.is_quote, p.scare_quote, p.emotion
 		FROM paragraphs p
@@ -1984,7 +1984,7 @@ type AudioState struct {
 // the returned map has never been touched by voiceID (equivalent to the
 // old COALESCE(..., 'pending') default) - callers should treat that as
 // AudioPending.
-func (s *Store) ParagraphAudioStatuses(paragraphIDs []string, voiceID string) (map[string]AudioState, error) {
+func (s *DuckStore) ParagraphAudioStatuses(paragraphIDs []string, voiceID string) (map[string]AudioState, error) {
 	out := make(map[string]AudioState, len(paragraphIDs))
 	if len(paragraphIDs) == 0 {
 		return out, nil
@@ -2022,7 +2022,7 @@ func (s *Store) ParagraphAudioStatuses(paragraphIDs []string, voiceID string) (m
 // n chapters of bookID right before chapterIdx - who's likely still on
 // stage (see httpapi.prominentSpeakers). "", "Narrator" and "Unknown" are
 // left out.
-func (s *Store) RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]string, error) {
+func (s *DuckStore) RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]string, error) {
 	rows, err := s.db.Query(`SELECT DISTINCT p.speaker FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id
 		WHERE c.book_id = ? AND c.idx >= ? AND c.idx < ? AND p.is_quote AND p.speaker NOT IN ('', 'Narrator', 'Unknown') ORDER BY p.speaker`, bookID, chapterIdx-n, chapterIdx)
 	if err != nil {
@@ -2043,7 +2043,7 @@ func (s *Store) RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]strin
 // SpeakerLineCounts returns how many of bookID's dialogue lines each
 // speaker has - one GROUP BY, for picking a book's main cast (see
 // httpapi.prominentSpeakers). "", "Narrator" and "Unknown" are left out.
-func (s *Store) SpeakerLineCounts(bookID string) (map[string]int, error) {
+func (s *DuckStore) SpeakerLineCounts(bookID string) (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT p.speaker, count(*) FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id
 		WHERE c.book_id = ? AND p.is_quote AND p.speaker NOT IN ('', 'Narrator', 'Unknown') GROUP BY p.speaker`, bookID)
 	if err != nil {
@@ -2073,7 +2073,7 @@ func (s *Store) SpeakerLineCounts(bookID string) (map[string]int, error) {
 // whole query, stalling every other concurrent request app-wide until it
 // returns - for a speaker with many thousands of paragraphs (the
 // Narrator, on a long book).
-func (s *Store) CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int, error) {
+func (s *DuckStore) CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int, error) {
 	query := `
 		SELECT COUNT(*)
 		FROM paragraph_audio pa
@@ -2100,7 +2100,7 @@ func (s *Store) CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int,
 // text/speaker only) - used where the caller needs to know which chapter
 // (and, via Speaker, which voice - see internal/narration.Resolver) a
 // paragraph belongs to before it can even determine which voice applies.
-func (s *Store) GetParagraph(id string) (*Paragraph, error) {
+func (s *DuckStore) GetParagraph(id string) (*Paragraph, error) {
 	var p Paragraph
 	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE id = ?`, id).
 		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis)
@@ -2116,7 +2116,7 @@ func (s *Store) GetParagraph(id string) (*Paragraph, error) {
 // ListCharacters returns scope's (see SeriesScope) known characters in
 // discovery order. Identity/summary only - see CharacterVoicesForModel for
 // their (per-clone-model) voice assignments.
-func (s *Store) ListCharacters(scope string) ([]Character, error) {
+func (s *DuckStore) ListCharacters(scope string) ([]Character, error) {
 	rows, err := s.db.Query(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, created_at FROM characters WHERE scope = ? ORDER BY created_at ASC`, scope)
 	if err != nil {
 		return nil, err
@@ -2136,7 +2136,7 @@ func (s *Store) ListCharacters(scope string) ([]Character, error) {
 
 // GetCharacter is a by-id lookup (e.g. httpapi's .../characters/{id}/...
 // routes, which address a character directly rather than by scope+name).
-func (s *Store) GetCharacter(id string) (*Character, error) {
+func (s *DuckStore) GetCharacter(id string) (*Character, error) {
 	var c Character
 	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, created_at FROM characters WHERE id = ?`, id).
 		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.CreatedAt)
@@ -2149,7 +2149,7 @@ func (s *Store) GetCharacter(id string) (*Character, error) {
 	return &c, nil
 }
 
-func (s *Store) GetCharacterByName(scope, name string) (*Character, error) {
+func (s *DuckStore) GetCharacterByName(scope, name string) (*Character, error) {
 	var c Character
 	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, created_at FROM characters WHERE scope = ? AND name = ?`, scope, name).
 		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.CreatedAt)
@@ -2181,7 +2181,7 @@ func (s *Store) GetCharacterByName(scope, name string) (*Character, error) {
 // misjudging one as the other (in either direction) shouldn't silently
 // reclassify an identity every other chapter/book has already been
 // building dialogue/voice history against.
-func (s *Store) UpsertCharacter(scope, name string, isRole bool) (character Character, created bool, err error) {
+func (s *DuckStore) UpsertCharacter(scope, name string, isRole bool) (character Character, created bool, err error) {
 	existing, err := s.GetCharacterByName(scope, name)
 	if err != nil {
 		return Character{}, false, err
@@ -2208,7 +2208,7 @@ func (s *Store) UpsertCharacter(scope, name string, isRole bool) (character Char
 // store.Character's doc comment) - callers resolving a single paragraph's
 // voice pass the *book's own* resolved clone model
 // (internal/narration.Resolver.ForParagraph).
-func (s *Store) CharacterVoiceForModel(characterID, cloneModel string) (string, error) {
+func (s *DuckStore) CharacterVoiceForModel(characterID, cloneModel string) (string, error) {
 	var presetID string
 	err := s.db.QueryRow(`SELECT voice_preset_id FROM character_voices WHERE character_id = ? AND clone_model = ?`, characterID, cloneModel).Scan(&presetID)
 	if err == sql.ErrNoRows {
@@ -2223,7 +2223,7 @@ func (s *Store) CharacterVoiceForModel(characterID, cloneModel string) (string, 
 // worth of characters at once (httpapi's handleGetChapter/
 // handleListSpeakers) rather than one at a time. A character id absent
 // from the returned map has no voice assigned for cloneModel.
-func (s *Store) CharacterVoicesForModel(characterIDs []string, cloneModel string) (map[string]string, error) {
+func (s *DuckStore) CharacterVoicesForModel(characterIDs []string, cloneModel string) (map[string]string, error) {
 	out := make(map[string]string, len(characterIDs))
 	if len(characterIDs) == 0 {
 		return out, nil
@@ -2265,7 +2265,7 @@ func (s *Store) CharacterVoicesForModel(characterIDs []string, cloneModel string
 // that book's own resolved clone model), invalidation has to reach every
 // clone model this character has ever been assigned a voice under, not
 // just whichever one happens to be in use right now.
-func (s *Store) VoicePresetIDsForCharacter(characterID string) ([]string, error) {
+func (s *DuckStore) VoicePresetIDsForCharacter(characterID string) ([]string, error) {
 	rows, err := s.db.Query(`SELECT voice_preset_id FROM character_voices WHERE character_id = ?`, characterID)
 	if err != nil {
 		return nil, err
@@ -2288,7 +2288,7 @@ func (s *Store) VoicePresetIDsForCharacter(characterID string) ([]string, error)
 // how this then overrides the book's own voice for paragraphs attributed
 // to this character, when the book currently in use narrates through that
 // same clone model.
-func (s *Store) SetCharacterVoice(characterID, cloneModel, voicePresetID string) error {
+func (s *DuckStore) SetCharacterVoice(characterID, cloneModel, voicePresetID string) error {
 	if voicePresetID == "" {
 		_, err := s.db.Exec(`DELETE FROM character_voices WHERE character_id = ? AND clone_model = ?`, characterID, cloneModel)
 		return err
@@ -2308,7 +2308,7 @@ func (s *Store) SetCharacterVoice(characterID, cloneModel, voicePresetID string)
 // both from the same generation. Independent of SetCharacterVoice since a
 // manual voice reassignment (handleSetCharacterVoice) shouldn't touch
 // either.
-func (s *Store) SetCharacterSummary(id, summary, refLine string) error {
+func (s *DuckStore) SetCharacterSummary(id, summary, refLine string) error {
 	_, err := s.db.Exec(`UPDATE characters SET summary = ?, ref_line = ? WHERE id = ?`, summary, refLine, id)
 	return err
 }
@@ -2316,7 +2316,7 @@ func (s *Store) SetCharacterSummary(id, summary, refLine string) error {
 // SetCharacterInvalid marks (or, with false, unmarks) id as invalid - see
 // store.Character.Invalid. Identity/summary/voice assignments are left
 // alone either way, so unmarking restores the character exactly as it was.
-func (s *Store) SetCharacterInvalid(id string, invalid bool) error {
+func (s *DuckStore) SetCharacterInvalid(id string, invalid bool) error {
 	_, err := s.db.Exec(`UPDATE characters SET invalid = ? WHERE id = ?`, invalid, id)
 	return err
 }
@@ -2329,7 +2329,7 @@ func (s *Store) SetCharacterInvalid(id string, invalid bool) error {
 // book's own voice, the default voice, another character sharing it) -
 // callers that also want those gone delete them explicitly themselves
 // (see httpapi.handleDeleteBookSpeakerData).
-func (s *Store) DeleteCharacter(id string) error {
+func (s *DuckStore) DeleteCharacter(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -2349,7 +2349,7 @@ func (s *Store) DeleteCharacter(id string) error {
 // character's own name dropped. Validation against the rest of the roster
 // (an alias that's another character's name) is the caller's job - see
 // httpapi.handleSetCharacterAliases.
-func (s *Store) SetCharacterAliases(characterID string, aliases []string) error {
+func (s *DuckStore) SetCharacterAliases(characterID string, aliases []string) error {
 	c, err := s.GetCharacter(characterID)
 	if err != nil {
 		return err
@@ -2378,7 +2378,7 @@ func (s *Store) SetCharacterAliases(characterID string, aliases []string) error 
 
 // AddCharacterAliases adds aliases to characterID's existing ones - see
 // SetCharacterAliases.
-func (s *Store) AddCharacterAliases(characterID string, aliases ...string) error {
+func (s *DuckStore) AddCharacterAliases(characterID string, aliases ...string) error {
 	c, err := s.GetCharacter(characterID)
 	if err != nil {
 		return err
@@ -2393,7 +2393,7 @@ func (s *Store) AddCharacterAliases(characterID string, aliases ...string) error
 // series order - used to gather a recurring character's dialogue across a
 // whole series (see QuotesForBooks) and to keep attribution/voice casting
 // consistent throughout it.
-func (s *Store) ListSeriesBooks(seriesName string) ([]Book, error) {
+func (s *DuckStore) ListSeriesBooks(seriesName string) ([]Book, error) {
 	rows, err := s.db.Query(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
 		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction,
 		pos_chapter_idx, pos_paragraph_idx, pos_seconds, estimate_sec_per_char
@@ -2462,7 +2462,7 @@ type QuoteContext struct {
 // time a given character's own job executes - fetching fresh, per
 // character, at that point is what stays correct, just no longer paying
 // an extra query per book to do it.
-func (s *Store) QuotesForBooks(bookIDs []string, characterName string, limit int) ([]QuoteContext, error) {
+func (s *DuckStore) QuotesForBooks(bookIDs []string, characterName string, limit int) ([]QuoteContext, error) {
 	if len(bookIDs) == 0 {
 		return nil, nil
 	}
@@ -2538,7 +2538,7 @@ func likeEscape(s string) string {
 // paragraph_audio.word_timings already uses - the quoting keeps a match from
 // crossing a name boundary (e.g. "Jo" cannot match inside "John") the way an
 // unquoted substring search could.
-func (s *Store) DescriptionsForBooks(bookIDs []string, characterName string, limit int) ([]DescriptionContext, error) {
+func (s *DuckStore) DescriptionsForBooks(bookIDs []string, characterName string, limit int) ([]DescriptionContext, error) {
 	if len(bookIDs) == 0 {
 		return nil, nil
 	}
@@ -2603,7 +2603,7 @@ type SpeakerAppearance struct {
 // narration-voice-resolution path in this app treats the two as
 // equivalent (see internal/narration.Resolver). Backed by
 // idx_paragraphs_speaker.
-func (s *Store) ParagraphsForSpeaker(bookIDs []string, name string) ([]SpeakerAppearance, error) {
+func (s *DuckStore) ParagraphsForSpeaker(bookIDs []string, name string) ([]SpeakerAppearance, error) {
 	var out []SpeakerAppearance
 	for _, bookID := range bookIDs {
 		query := `
@@ -2661,7 +2661,7 @@ func (s *Store) ParagraphsForSpeaker(bookIDs []string, name string) ([]SpeakerAp
 // there's no separate "Narrator" special case to handle here. Matching
 // uses the same JSON-quoted LIKE technique as DescriptionsForBooks, for
 // the same reason (a match can't cross a name boundary).
-func (s *Store) ParagraphsDescribing(bookIDs []string, name string) ([]SpeakerAppearance, error) {
+func (s *DuckStore) ParagraphsDescribing(bookIDs []string, name string) ([]SpeakerAppearance, error) {
 	needle := `%"` + likeEscape(name) + `"%`
 	var out []SpeakerAppearance
 	for _, bookID := range bookIDs {
@@ -2699,7 +2699,7 @@ func (s *Store) ParagraphsDescribing(bookIDs []string, name string) ([]SpeakerAp
 // input/output both use) rather than id - the caller works from the same
 // ListParagraphsRaw slice speakerattr was fed and never needs paragraph
 // ids in between.
-func (s *Store) SetParagraphSpeakers(chapterID string, bySpeakerIdx map[int]string) error {
+func (s *DuckStore) SetParagraphSpeakers(chapterID string, bySpeakerIdx map[int]string) error {
 	if len(bySpeakerIdx) == 0 {
 		return nil
 	}
@@ -2726,7 +2726,7 @@ func (s *Store) SetParagraphSpeakers(chapterID string, bySpeakerIdx map[int]stri
 // legitimately still describes no one, and rewriting it to '[]' would
 // needlessly discard a description an earlier run (or manual edit) already
 // recorded for it.
-func (s *Store) SetParagraphDescriptions(chapterID string, byDescribesIdx map[int][]string) error {
+func (s *DuckStore) SetParagraphDescriptions(chapterID string, byDescribesIdx map[int][]string) error {
 	if len(byDescribesIdx) == 0 {
 		return nil
 	}
@@ -2772,7 +2772,7 @@ func (s *Store) SetParagraphDescriptions(chapterID string, byDescribesIdx map[in
 // the next attribution run picks the now-real dialogue line up again,
 // since "Narrator" is never valid for dialogue. Any other speaker is left
 // alone on clear.
-func (s *Store) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) error {
+func (s *DuckStore) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) error {
 	if len(byIdx) == 0 {
 		return nil
 	}
@@ -2797,7 +2797,7 @@ func (s *Store) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) er
 // audio was generated with those tags baked in, so the caller
 // (httpapi.directChapter) invalidates it. Clearing makes that a one-time
 // migration per chapter rather than something every re-run repeats.
-func (s *Store) ClearLegacyTags(chapterID string) ([]int, error) {
+func (s *DuckStore) ClearLegacyTags(chapterID string) ([]int, error) {
 	rows, err := s.db.Query(`SELECT idx FROM paragraphs WHERE chapter_id = ? AND tts_tags::VARCHAR NOT IN ('{}', 'null', '')`, chapterID)
 	if err != nil {
 		return nil, err
@@ -2830,7 +2830,7 @@ func (s *Store) ClearLegacyTags(chapterID string) ([]int, error) {
 // neutral) - the emotion pass's own counterpart of
 // SetParagraphPronunciation. A paragraph absent from byIdx is left
 // untouched.
-func (s *Store) SetParagraphEmotions(chapterID string, byIdx map[int]string) error {
+func (s *DuckStore) SetParagraphEmotions(chapterID string, byIdx map[int]string) error {
 	if len(byIdx) == 0 {
 		return nil
 	}
@@ -2859,7 +2859,7 @@ func (s *Store) SetParagraphEmotions(chapterID string, byIdx map[int]string) err
 // ResolvePronunciation's own idempotent full-chapter-refresh semantics -
 // the same "safe to redo" contract attribution/direction-tagging already
 // have.
-func (s *Store) SetParagraphPronunciation(chapterID string, byIdx map[int][]pronounce.Substitution) error {
+func (s *DuckStore) SetParagraphPronunciation(chapterID string, byIdx map[int][]pronounce.Substitution) error {
 	if len(byIdx) == 0 {
 		return nil
 	}
@@ -2893,7 +2893,7 @@ func (s *Store) SetParagraphPronunciation(chapterID string, byIdx map[int][]pron
 // correcting one individual misattributed line from the Speakers page's
 // per-character "appearances" list without touching any other paragraph
 // that happens to share the same (wrong) speaker.
-func (s *Store) SetParagraphSpeaker(paragraphID, speaker string) error {
+func (s *DuckStore) SetParagraphSpeaker(paragraphID, speaker string) error {
 	_, err := s.db.Exec(`UPDATE paragraphs SET speaker = ? WHERE id = ?`, speaker, paragraphID)
 	return err
 }
@@ -2914,7 +2914,7 @@ func (s *Store) SetParagraphSpeaker(paragraphID, speaker string) error {
 // voice presets it leaves untouched are shared series-wide (see
 // store.SeriesScope) and may still be needed by other books in the same
 // series.
-func (s *Store) ClearBookSpeakers(bookID string) error {
+func (s *DuckStore) ClearBookSpeakers(bookID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -2963,7 +2963,7 @@ func (s *Store) ClearBookSpeakers(bookID string) error {
 // separately, via DeleteCharacter), but no other book's paragraphs are
 // touched here - a reader cleaning up a bad attribution on one book
 // shouldn't silently re-attribute a sibling book they haven't looked at.
-func (s *Store) ReassignCharacterSpeaker(bookID, fromName, toName string) error {
+func (s *DuckStore) ReassignCharacterSpeaker(bookID, fromName, toName string) error {
 	_, err := s.db.Exec(
 		`UPDATE paragraphs SET speaker = ? WHERE speaker = ? AND chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`,
 		toName, fromName, bookID,
@@ -2975,7 +2975,7 @@ func (s *Store) ReassignCharacterSpeaker(bookID, fromName, toName string) error 
 // idx) position - the public API addresses paragraphs this way (same as
 // search results), so bookmark handlers need this to get to the id the
 // bookmarks table actually keys on. Empty string, nil error if not found.
-func (s *Store) GetParagraphIDByIdx(chapterID string, idx int) (string, error) {
+func (s *DuckStore) GetParagraphIDByIdx(chapterID string, idx int) (string, error) {
 	var id string
 	err := s.db.QueryRow(`SELECT id FROM paragraphs WHERE chapter_id = ? AND idx = ?`, chapterID, idx).Scan(&id)
 	if err == sql.ErrNoRows {
@@ -3004,7 +3004,7 @@ func escapeLike(s string) string {
 // SearchParagraphs finds paragraphs in bookID whose text contains query
 // (case-insensitive substring match), in book order, capped at limit
 // matches.
-func (s *Store) SearchParagraphs(bookID, query string, limit int) ([]SearchResult, error) {
+func (s *DuckStore) SearchParagraphs(bookID, query string, limit int) ([]SearchResult, error) {
 	rows, err := s.db.Query(`
 		SELECT c.idx, c.title, p.idx, p.content
 		FROM paragraphs p
@@ -3045,7 +3045,7 @@ type Bookmark struct {
 // already is - bookmarking is a single toggleable action, so "bookmark
 // this paragraph, optionally with a note" never needs a separate
 // create-then-edit step. Returns the bookmark's id either way.
-func (s *Store) UpsertBookmark(paragraphID, note string) (string, error) {
+func (s *DuckStore) UpsertBookmark(paragraphID, note string) (string, error) {
 	var id string
 	err := s.db.QueryRow(`SELECT id FROM bookmarks WHERE paragraph_id = ?`, paragraphID).Scan(&id)
 	if err == nil {
@@ -3066,12 +3066,12 @@ func (s *Store) UpsertBookmark(paragraphID, note string) (string, error) {
 // UpdateBookmarkNote edits an existing bookmark's note by its own id -
 // UpsertBookmark's job is initial creation/toggling (addressed by
 // paragraph_id); once a bookmark exists, further edits go by id instead.
-func (s *Store) UpdateBookmarkNote(id, note string) error {
+func (s *DuckStore) UpdateBookmarkNote(id, note string) error {
 	_, err := s.db.Exec(`UPDATE bookmarks SET note = ? WHERE id = ?`, note, id)
 	return err
 }
 
-func (s *Store) DeleteBookmark(id string) error {
+func (s *DuckStore) DeleteBookmark(id string) error {
 	_, err := s.db.Exec(`DELETE FROM bookmarks WHERE id = ?`, id)
 	return err
 }
@@ -3080,7 +3080,7 @@ func (s *Store) DeleteBookmark(id string) error {
 // order), matching how search results are ordered - a bookmarks list reads
 // most naturally as "these are the flagged spots as you'd encounter them",
 // not as a most-recent-first log.
-func (s *Store) ListBookmarks(bookID string) ([]Bookmark, error) {
+func (s *DuckStore) ListBookmarks(bookID string) ([]Bookmark, error) {
 	rows, err := s.db.Query(`
 		SELECT bm.id, c.idx, c.title, p.idx, p.content, bm.note, bm.created_at
 		FROM bookmarks bm
@@ -3106,7 +3106,7 @@ func (s *Store) ListBookmarks(bookID string) ([]Bookmark, error) {
 
 // GetParagraphAudioStatus reports one paragraph's audio status for one
 // voice specifically ("pending" if that voice has never touched it).
-func (s *Store) GetParagraphAudioStatus(paragraphID, voiceID string) (string, error) {
+func (s *DuckStore) GetParagraphAudioStatus(paragraphID, voiceID string) (string, error) {
 	var status string
 	err := s.db.QueryRow(`SELECT status FROM paragraph_audio WHERE paragraph_id = ? AND voice_id = ?`, paragraphID, voiceID).
 		Scan(&status)
@@ -3118,7 +3118,7 @@ func (s *Store) GetParagraphAudioStatus(paragraphID, voiceID string) (string, er
 
 // ListImages returns a chapter's inline images ordered by their position
 // among the chapter's content blocks.
-func (s *Store) ListImages(chapterID string) ([]Image, error) {
+func (s *DuckStore) ListImages(chapterID string) ([]Image, error) {
 	rows, err := s.db.Query(`SELECT id, chapter_id, position, ext FROM images WHERE chapter_id = ? ORDER BY position ASC`, chapterID)
 	if err != nil {
 		return nil, err
@@ -3139,7 +3139,7 @@ func (s *Store) ListImages(chapterID string) ([]Image, error) {
 // ListBreaks returns a chapter's scene breaks ordered by their position
 // among the chapter's content blocks - ListImages' own doc comment,
 // mirrored exactly.
-func (s *Store) ListBreaks(chapterID string) ([]Break, error) {
+func (s *DuckStore) ListBreaks(chapterID string) ([]Break, error) {
 	rows, err := s.db.Query(`SELECT id, chapter_id, position FROM breaks WHERE chapter_id = ? ORDER BY position ASC`, chapterID)
 	if err != nil {
 		return nil, err
@@ -3157,7 +3157,7 @@ func (s *Store) ListBreaks(chapterID string) ([]Break, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) GetImage(id string) (*Image, error) {
+func (s *DuckStore) GetImage(id string) (*Image, error) {
 	var img Image
 	err := s.db.QueryRow(`SELECT id, chapter_id, position, ext FROM images WHERE id = ?`, id).
 		Scan(&img.ID, &img.ChapterID, &img.Position, &img.Ext)
@@ -3183,7 +3183,7 @@ func (s *Store) GetImage(id string) (*Image, error) {
 // after previously being a pointer (jobs.Manager.generateIndependently's
 // own fallback) must never leave a stale pointer behind once it has real
 // audio of its own again.
-func (s *Store) upsertParagraphAudio(paragraphID, voiceID, status, errMsg string, durationSeconds float64) error {
+func (s *DuckStore) upsertParagraphAudio(paragraphID, voiceID, status, errMsg string, durationSeconds float64) error {
 	res, err := s.db.Exec(
 		`UPDATE paragraph_audio SET status = ?, error = ?, duration_seconds = ?, pointer_offset = 0, pointer_seconds = 0 WHERE paragraph_id = ? AND voice_id = ?`,
 		status, errMsg, durationSeconds, paragraphID, voiceID,
@@ -3203,11 +3203,11 @@ func (s *Store) upsertParagraphAudio(paragraphID, voiceID, status, errMsg string
 	return err
 }
 
-func (s *Store) SetParagraphGenerating(id, voiceID string) error {
+func (s *DuckStore) SetParagraphGenerating(id, voiceID string) error {
 	return s.upsertParagraphAudio(id, voiceID, AudioGenerating, "", 0)
 }
 
-func (s *Store) SetParagraphReady(id, voiceID string, durationSeconds float64) error {
+func (s *DuckStore) SetParagraphReady(id, voiceID string, durationSeconds float64) error {
 	return s.upsertParagraphAudio(id, voiceID, AudioReady, "", durationSeconds)
 }
 
@@ -3228,7 +3228,7 @@ func (s *Store) SetParagraphReady(id, voiceID string, durationSeconds float64) e
 // against it (see usePlayback.ts, which plays straight through the whole
 // shared clip and only uses these values to track which paragraph is
 // "current" for highlighting/position-reporting).
-func (s *Store) SetParagraphReadyPointer(id, voiceID string, pointerOffset int, pointerSeconds, durationSeconds float64) error {
+func (s *DuckStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset int, pointerSeconds, durationSeconds float64) error {
 	res, err := s.db.Exec(
 		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = ?, pointer_offset = ?, pointer_seconds = ? WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioReady, durationSeconds, pointerOffset, pointerSeconds, id, voiceID,
@@ -3255,7 +3255,7 @@ func (s *Store) SetParagraphReadyPointer(id, voiceID string, pointerOffset int, 
 // A no-op if the (paragraph, voice) row doesn't exist yet, which shouldn't
 // happen in practice (SetParagraphReady always runs first) but isn't worth
 // erroring over if it somehow did.
-func (s *Store) SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error {
+func (s *DuckStore) SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error {
 	_, err := s.db.Exec(
 		`UPDATE paragraph_audio SET word_timings = ? WHERE paragraph_id = ? AND voice_id = ?`,
 		wordTimingsJSON, id, voiceID,
@@ -3263,7 +3263,7 @@ func (s *Store) SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) err
 	return err
 }
 
-func (s *Store) SetParagraphError(id, voiceID, message string) error {
+func (s *DuckStore) SetParagraphError(id, voiceID, message string) error {
 	return s.upsertParagraphAudio(id, voiceID, AudioError, message, 0)
 }
 
@@ -3277,7 +3277,7 @@ func (s *Store) SetParagraphError(id, voiceID, message string) error {
 // real file or a pointer again is re-decided fresh by whatever regenerates
 // it - see AudioState.PointerOffset's own doc comment - so a stale pointer
 // value must never survive past this reset).
-func (s *Store) ResetParagraphAudio(id, voiceID string) error {
+func (s *DuckStore) ResetParagraphAudio(id, voiceID string) error {
 	res, err := s.db.Exec(
 		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = 0, word_timings = '[]', pointer_offset = 0, pointer_seconds = 0 WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioPending, id, voiceID,
@@ -3315,7 +3315,7 @@ type SFXState struct {
 // absent from the returned map has no sfx row at all (the overwhelmingly
 // common case - most paragraphs never get one), equivalent to the zero
 // SFXState{} (Status "").
-func (s *Store) ParagraphSFXStates(paragraphIDs []string) (map[string]SFXState, error) {
+func (s *DuckStore) ParagraphSFXStates(paragraphIDs []string) (map[string]SFXState, error) {
 	out := make(map[string]SFXState, len(paragraphIDs))
 	if len(paragraphIDs) == 0 {
 		return out, nil
@@ -3351,7 +3351,7 @@ func (s *Store) ParagraphSFXStates(paragraphIDs []string) (map[string]SFXState, 
 // ever need one row at a time. Returns the zero SFXState{}, not an error,
 // for a paragraph with no sfx row yet - same "absent means never touched"
 // convention ParagraphSFXStates' own map follows.
-func (s *Store) GetParagraphSFXState(paragraphID string) (SFXState, error) {
+func (s *DuckStore) GetParagraphSFXState(paragraphID string) (SFXState, error) {
 	var st SFXState
 	err := s.db.QueryRow(
 		`SELECT prompt, status, error, duration_seconds, trigger_word FROM sfx WHERE paragraph_id = ?`, paragraphID,
@@ -3371,7 +3371,7 @@ func (s *Store) GetParagraphSFXState(paragraphID string) (SFXState, error) {
 // upsertParagraphAudio uses (see its own doc comment) - sfx rows are
 // sparse, so a paragraph's very first prompt always needs to insert, not
 // update.
-func (s *Store) SetParagraphSFXPrompt(id, prompt string) error {
+func (s *DuckStore) SetParagraphSFXPrompt(id, prompt string) error {
 	res, err := s.db.Exec(`UPDATE sfx SET prompt = ? WHERE paragraph_id = ?`, prompt, id)
 	if err != nil {
 		return err
@@ -3389,7 +3389,7 @@ func (s *Store) SetParagraphSFXPrompt(id, prompt string) error {
 // paragraph's own forced-alignment word_timings) playback should start the
 // sound effect at - see SFXState.TriggerWord. Same insert-if-missing
 // shape as SetParagraphSFXPrompt.
-func (s *Store) SetParagraphSFXTriggerWord(id string, wordIdx int) error {
+func (s *DuckStore) SetParagraphSFXTriggerWord(id string, wordIdx int) error {
 	res, err := s.db.Exec(`UPDATE sfx SET trigger_word = ? WHERE paragraph_id = ?`, wordIdx, id)
 	if err != nil {
 		return err
@@ -3408,7 +3408,7 @@ func (s *Store) SetParagraphSFXTriggerWord(id string, wordIdx int) error {
 // upsertParagraphAudio's own exact pattern, reused here for the same
 // "sfx rows are sparse" reason SetParagraphSFXPrompt's own doc comment
 // gives.
-func (s *Store) upsertSFXStatus(paragraphID, status, errMsg string, durationSeconds float64) error {
+func (s *DuckStore) upsertSFXStatus(paragraphID, status, errMsg string, durationSeconds float64) error {
 	res, err := s.db.Exec(
 		`UPDATE sfx SET status = ?, error = ?, duration_seconds = ? WHERE paragraph_id = ?`,
 		status, errMsg, durationSeconds, paragraphID,
@@ -3428,15 +3428,15 @@ func (s *Store) upsertSFXStatus(paragraphID, status, errMsg string, durationSeco
 	return err
 }
 
-func (s *Store) SetParagraphSFXGenerating(id string) error {
+func (s *DuckStore) SetParagraphSFXGenerating(id string) error {
 	return s.upsertSFXStatus(id, AudioGenerating, "", 0)
 }
 
-func (s *Store) SetParagraphSFXReady(id string, durationSeconds float64) error {
+func (s *DuckStore) SetParagraphSFXReady(id string, durationSeconds float64) error {
 	return s.upsertSFXStatus(id, AudioReady, "", durationSeconds)
 }
 
-func (s *Store) SetParagraphSFXError(id, message string) error {
+func (s *DuckStore) SetParagraphSFXError(id, message string) error {
 	return s.upsertSFXStatus(id, AudioError, message, 0)
 }
 
@@ -3503,7 +3503,7 @@ var PassResets = map[string]PassReset{
 // paragraphs PassReset.Affected matched beforehand, as chapterID -> idxs,
 // for the caller to invalidate their audio (DeleteParagraphAudioForIdxs) -
 // this package never touches the filesystem itself.
-func (s *Store) ResetBookPass(bookID, pass string, fromIdx int) (map[string][]int, error) {
+func (s *DuckStore) ResetBookPass(bookID, pass string, fromIdx int) (map[string][]int, error) {
 	pr, ok := PassResets[pass]
 	if !ok {
 		return nil, fmt.Errorf("unknown pass %q", pass)
@@ -3548,7 +3548,7 @@ func (s *Store) ResetBookPass(bookID, pass string, fromIdx int) (map[string][]in
 // ClearBookMusicRegions is ClearMusicRegions for every chapter of bookID at
 // once: deletes every music region and unsets each chapter's passes.music.
 // The caller removes the regions' audio files (audiopath.MusicDir).
-func (s *Store) ClearBookMusicRegions(bookID string) error {
+func (s *DuckStore) ClearBookMusicRegions(bookID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -3572,7 +3572,7 @@ func (s *Store) ClearBookMusicRegions(bookID string) error {
 // book's own audio directory on disk (the actual .wav files) - this alone
 // only clears the DB's own bookkeeping about them, the same split
 // DeleteBook's own paragraph/file cleanup already follows.
-func (s *Store) DeleteBookAudio(bookID string) error {
+func (s *DuckStore) DeleteBookAudio(bookID string) error {
 	_, err := s.db.Exec(
 		`DELETE FROM paragraph_audio WHERE paragraph_id IN (
 			SELECT id FROM paragraphs WHERE chapter_id IN (
@@ -3590,7 +3590,7 @@ func (s *Store) DeleteBookAudio(bookID string) error {
 // under) without touching the rest of the book. httpapi.handleDeleteChapterAudio
 // pairs this with removing that chapter's own audio directory on disk,
 // same split as the book-level version.
-func (s *Store) DeleteChapterAudio(chapterID string) error {
+func (s *DuckStore) DeleteChapterAudio(chapterID string) error {
 	_, err := s.db.Exec(
 		`DELETE FROM paragraph_audio WHERE paragraph_id IN (
 			SELECT id FROM paragraphs WHERE chapter_id = ?
@@ -3609,7 +3609,7 @@ func (s *Store) DeleteChapterAudio(chapterID string) error {
 // the same way SFXDir/VoiceDir do), so there's no per-region file to
 // return/remove here the way ClearMusicRegions/ResetChapterMusicAudio
 // have to for their own single-chapter scope.
-func (s *Store) ResetAllChapterMusicAudioForBook(bookID string) error {
+func (s *DuckStore) ResetAllChapterMusicAudioForBook(bookID string) error {
 	_, err := s.db.Exec(
 		`UPDATE music_regions SET status = ?, error = '', duration_seconds = 0 WHERE chapter_id IN (
 			SELECT id FROM chapters WHERE book_id = ?
@@ -3653,7 +3653,7 @@ type SpeakerAudioRef struct {
 // "Narrator"/"" folding - this is only ever called with a real character's
 // name (Narrator isn't a Character row and is never recharacterized), so
 // that special case doesn't apply here.
-func (s *Store) DeleteParagraphAudioForSpeaker(bookIDs []string, name string) ([]SpeakerAudioRef, error) {
+func (s *DuckStore) DeleteParagraphAudioForSpeaker(bookIDs []string, name string) ([]SpeakerAudioRef, error) {
 	var out []SpeakerAudioRef
 	for _, bookID := range bookIDs {
 		rows, err := s.db.Query(`
@@ -3704,7 +3704,7 @@ func (s *Store) DeleteParagraphAudioForSpeaker(bookIDs []string, name string) ([
 // the audio whose generation text actually changed. Returns every deleted
 // row so the caller can remove the matching files (a pointer row has no
 // file of its own - removing its path is a harmless no-op).
-func (s *Store) DeleteParagraphAudioForIdxs(bookID, chapterID string, idxs []int) ([]SpeakerAudioRef, error) {
+func (s *DuckStore) DeleteParagraphAudioForIdxs(bookID, chapterID string, idxs []int) ([]SpeakerAudioRef, error) {
 	if len(idxs) == 0 {
 		return nil, nil
 	}
@@ -3783,7 +3783,7 @@ func (s *Store) DeleteParagraphAudioForIdxs(bookID, chapterID string, idxs []int
 // under this exact voice - book-level or character-level, whichever
 // speaker it's attributed to - necessarily has this same voice_id, and
 // nothing generated under a different voice can collide with it.
-func (s *Store) DeleteParagraphAudioByVoiceID(bookID, voiceID string) ([]SpeakerAudioRef, error) {
+func (s *DuckStore) DeleteParagraphAudioByVoiceID(bookID, voiceID string) ([]SpeakerAudioRef, error) {
 	rows, err := s.db.Query(`
 		SELECT c.book_id, p.chapter_id, pa.voice_id, p.idx
 		FROM paragraph_audio pa
@@ -3835,7 +3835,7 @@ type NarrationStats struct {
 // mixing another voice's generated seconds in would miscalibrate the
 // estimate for the one currently selected. overrides is ListChapterSummaries'
 // own SpeakerVoice mechanism, for the same per-character-voice reason.
-func (s *Store) BookNarrationStats(bookID, voiceID string, overrides []SpeakerVoice) (NarrationStats, error) {
+func (s *DuckStore) BookNarrationStats(bookID, voiceID string, overrides []SpeakerVoice) (NarrationStats, error) {
 	var stats NarrationStats
 	var err error
 	if len(overrides) == 0 {
@@ -3889,7 +3889,7 @@ func (s *Store) BookNarrationStats(bookID, voiceID string, overrides []SpeakerVo
 // Alignment's word_timings is the one exclusion - large, hashed nowhere,
 // and written right after every generation. Each part is coalesced rather
 // than left NULL so concat_ws keeps its position (it skips NULLs).
-func (s *Store) SyncFingerprints(bookID string) (book string, chapters map[int]string, err error) {
+func (s *DuckStore) SyncFingerprints(bookID string) (book string, chapters map[int]string, err error) {
 	err = s.db.QueryRow(`
 		SELECT concat_ws('|',
 			coalesce((SELECT hash(b) FROM (SELECT * EXCLUDE (pos_chapter_idx, pos_paragraph_idx, pos_seconds, estimate_sec_per_char) FROM books WHERE id = ?) b)::VARCHAR, ''),
@@ -3944,7 +3944,7 @@ type SyncTreeNode struct {
 // SyncTreeNodes returns bookID's stored nodes hashed by code build
 // version, by chapter index. Whether each is still valid (its fingerprints
 // match the current ones) is the caller's call.
-func (s *Store) SyncTreeNodes(bookID, version string) (map[int]SyncTreeNode, error) {
+func (s *DuckStore) SyncTreeNodes(bookID, version string) (map[int]SyncTreeNode, error) {
 	rows, err := s.db.Query(`SELECT chapter_idx, book_fp, chapter_fp, hash FROM sync_tree_nodes WHERE book_id = ? AND version = ?`, bookID, version)
 	if err != nil {
 		return nil, err
@@ -3965,7 +3965,7 @@ func (s *Store) SyncTreeNodes(bookID, version string) (map[int]SyncTreeNode, err
 // whatever each chapter had. One transaction, so the update-then-insert
 // per node can't race another writer into a duplicate row (the store's
 // single connection is held for its duration).
-func (s *Store) PutSyncTreeNodes(bookID, version string, nodes []SyncTreeNode) error {
+func (s *DuckStore) PutSyncTreeNodes(bookID, version string, nodes []SyncTreeNode) error {
 	if len(nodes) == 0 {
 		return nil
 	}
@@ -3999,7 +3999,7 @@ func (s *Store) PutSyncTreeNodes(bookID, version string, nodes []SyncTreeNode) e
 
 // PruneSyncTree deletes every stored node not hashed by version - left by
 // an older build of the code, and never valid again.
-func (s *Store) PruneSyncTree(version string) error {
+func (s *DuckStore) PruneSyncTree(version string) error {
 	_, err := s.db.Exec(`DELETE FROM sync_tree_nodes WHERE version <> ?`, version)
 	return err
 }
