@@ -40,7 +40,8 @@ type queueTaskDTO struct {
 	ChapterTitle string `json:"chapterTitle"`
 	// ParagraphIdx is meaningless (0) for the two LLM kinds
 	// ("speaker_attribution"/"speaker_characterization"), which aren't
-	// paragraph-scoped - the frontend should key its display on Kind
+	// paragraph-scoped; for "music_live_generation" it's the first
+	// paragraph of the task's one music region - the frontend should key its display on Kind
 	// rather than assuming every task has a paragraph.
 	ParagraphIdx int    `json:"paragraphIdx"`
 	Tier         string `json:"tier"` // "urgent" | "lookahead" | "normal" | "background"
