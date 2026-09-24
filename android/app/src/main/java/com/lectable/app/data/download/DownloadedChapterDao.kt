@@ -27,10 +27,6 @@ interface DownloadedChapterDao {
     @Query("SELECT * FROM downloaded_chapters WHERE libraryId = :libraryId AND bookId = :bookId AND chapterIdx = :chapterIdx")
     suspend fun get(libraryId: String, bookId: String, chapterIdx: Int): DownloadedChapter?
 
-    /** Eviction candidates, oldest-accessed first - see DownloadRepository.evictIfUnpinned. */
-    @Query("SELECT * FROM downloaded_chapters WHERE pinned = 0 ORDER BY lastAccessedAt ASC")
-    suspend fun unpinnedOrderedByLastAccessed(): List<DownloadedChapter>
-
     @Upsert
     suspend fun upsert(entity: DownloadedChapter)
 

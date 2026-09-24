@@ -20,9 +20,10 @@ object DownloadStatus {
  * instruct, language) tuple the backend hashes into its `voiceId` (see
  * backend/internal/store/store.go's VoiceID), just compared as a raw string here rather than
  * reproducing the SHA256 client-side, since all we need is staleness detection, not
- * byte-identical keys. [pinned] chapters (an explicit "download this book" action) are never
- * auto-evicted; unpinned ones (the ahead-of-playback prefetch buffer) are evicted by
- * [com.lectable.app.data.repository.DownloadRepository] as soon as playback moves past them.
+ * byte-identical keys. [pinned] is vestigial: it distinguished manual downloads from the
+ * since-removed automatic next-chapter prefetch (which evicted unpinned rows once playback moved
+ * past them). Every download is manual now, so nothing reads it - kept only to avoid a Room
+ * schema migration.
  */
 @Entity(tableName = "downloaded_chapters", primaryKeys = ["libraryId", "bookId", "chapterIdx"])
 data class DownloadedChapter(

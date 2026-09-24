@@ -11,10 +11,9 @@ import dagger.assisted.AssistedInject
 import kotlinx.coroutines.CancellationException
 
 /**
- * Runs one chapter's [DownloadRepository.downloadChapter] as background work - used both for a
- * manual "download this book" action (one enqueued request per chapter, [KEY_PINNED] = true)
- * and for the automatic ahead-of-playback prefetch (a single unpinned request for the next
- * chapter) - see ReaderViewModel.
+ * Runs one chapter's [DownloadRepository.downloadChapter] as background work - one enqueued
+ * request per chapter of a manual "download this book"/"download chapter" action - see
+ * ReaderViewModel/LibraryViewModel.
  */
 @HiltWorker
 class ChapterDownloadWorker @AssistedInject constructor(
@@ -61,11 +60,6 @@ class ChapterDownloadWorker @AssistedInject constructor(
         /** Unique work name for a manual whole-book download - one chapter's worker per name
          *  suffix, chained so WorkManager can report/cancel the set together. */
         fun bookDownloadWorkName(bookId: String, chapterIdx: Int): String = "download-$bookId-$chapterIdx"
-
-        /** Unique work name for the automatic ahead-of-playback prefetch - one slot per book, so
-         *  enqueuing a new chapter's prefetch naturally replaces (via ExistingWorkPolicy.REPLACE)
-         *  whatever was previously prefetching for that book. */
-        fun prefetchWorkName(bookId: String): String = "prefetch-$bookId"
 
         /** Common tag across a manual whole-book download's per-chapter work requests, so
          *  ReaderViewModel can observe aggregate progress via WorkManager.getWorkInfosByTagFlow

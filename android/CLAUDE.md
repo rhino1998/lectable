@@ -265,7 +265,10 @@ compiled-in default in place if nothing answers in time.
   position sync (`POSITION_SAVE_MIN_INTERVAL_MS`) and injects the
   app-scoped `ParagraphPlayer`.
 - `ui/settings/` - `SettingsScreen` for backend URL, theme, reader font
-  size/family, an offline-storage summary + "Delete all downloads"
+  size/family, generation lookahead (paragraphs ahead of playback sent as
+  the `lookahead` request's `paragraphCount`, persisted in
+  `PlaybackSettingsRepository`; there's no client-side chapter prefetch -
+  offline audio only comes from explicit downloads), an offline-storage summary + "Delete all downloads"
   (`DownloadRepository`, walked off the filesystem rather than summed from
   `DownloadedChapter.totalBytes` alone, since that column only ever
   tracked audio, not the cover images `downloadChapter` also saves), and

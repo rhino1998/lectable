@@ -204,7 +204,7 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /** Long-press menu's "Download book" - every chapter, pinned (never auto-evicted), same
+    /** Long-press menu's "Download book" - every chapter, same
      *  semantics as ReaderViewModel.downloadBook's own whole-book action, just reachable directly
      *  from the library without opening the book first. KEEP (not REPLACE): re-tapping this must
      *  not re-queue, or discard the progress of, whatever's already downloading/queued for a

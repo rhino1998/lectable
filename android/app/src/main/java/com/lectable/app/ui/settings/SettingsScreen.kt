@@ -42,6 +42,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.lectable.app.data.settings.LOOKAHEAD_PARAGRAPHS_STEP
+import com.lectable.app.data.settings.MAX_LOOKAHEAD_PARAGRAPHS
+import com.lectable.app.data.settings.MIN_LOOKAHEAD_PARAGRAPHS
 import com.lectable.app.data.settings.ReaderFontFamily
 import com.lectable.app.data.settings.MAX_FONT_SIZE_SP
 import com.lectable.app.data.settings.MIN_FONT_SIZE_SP
@@ -63,6 +66,7 @@ fun SettingsScreen(
     val theme by viewModel.themePreference.collectAsState()
     val fontSize by viewModel.fontSize.collectAsState()
     val fontFamily by viewModel.fontFamily.collectAsState()
+    val lookaheadParagraphs by viewModel.lookaheadParagraphs.collectAsState()
     val discoveredServers by viewModel.discoveredServers.collectAsState()
 
     DisposableEffect(Unit) {
@@ -177,6 +181,22 @@ fun SettingsScreen(
                     }
                 }
             }
+
+            Text("Generation lookahead ($lookaheadParagraphs paragraphs)", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "How far ahead of playback the server generates audio. Higher means fewer waits, " +
+                    "but more queued work to throw away when you jump around.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            CleanSlider(
+                value = lookaheadParagraphs.toFloat(),
+                onValueChange = { viewModel.setLookaheadParagraphs(it.roundToInt()) },
+                valueRange = MIN_LOOKAHEAD_PARAGRAPHS.toFloat()..MAX_LOOKAHEAD_PARAGRAPHS.toFloat(),
+                steps = (MAX_LOOKAHEAD_PARAGRAPHS - MIN_LOOKAHEAD_PARAGRAPHS) / LOOKAHEAD_PARAGRAPHS_STEP - 1,
+                startLabel = "$MIN_LOOKAHEAD_PARAGRAPHS",
+                endLabel = "$MAX_LOOKAHEAD_PARAGRAPHS",
+                modifier = Modifier.fillMaxWidth(),
+            )
 
             Text("Voices", style = MaterialTheme.typography.titleMedium)
             Button(onClick = onOpenVoices) {

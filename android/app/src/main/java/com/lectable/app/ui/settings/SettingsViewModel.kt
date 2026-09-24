@@ -6,6 +6,8 @@ import com.lectable.app.data.discovery.DiscoveredServer
 import com.lectable.app.data.discovery.NsdDiscoveryRepository
 import com.lectable.app.data.repository.DownloadRepository
 import com.lectable.app.data.settings.DEFAULT_FONT_SIZE_SP
+import com.lectable.app.data.settings.DEFAULT_LOOKAHEAD_PARAGRAPHS
+import com.lectable.app.data.settings.PlaybackSettingsRepository
 import com.lectable.app.data.settings.ReaderFontFamily
 import com.lectable.app.data.settings.ReadingSettingsRepository
 import com.lectable.app.data.settings.ServerSettingsRepository
@@ -35,6 +37,7 @@ class SettingsViewModel @Inject constructor(
     private val serverSettingsRepository: ServerSettingsRepository,
     private val themeSettingsRepository: ThemeSettingsRepository,
     private val readingSettingsRepository: ReadingSettingsRepository,
+    private val playbackSettingsRepository: PlaybackSettingsRepository,
     private val discoveryRepository: NsdDiscoveryRepository,
     private val downloadRepository: DownloadRepository,
 ) : ViewModel() {
@@ -74,6 +77,9 @@ class SettingsViewModel @Inject constructor(
     val fontFamily: StateFlow<ReaderFontFamily> = readingSettingsRepository.fontFamily
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ReaderFontFamily.DEFAULT)
 
+    val lookaheadParagraphs: StateFlow<Int> = playbackSettingsRepository.lookaheadParagraphs
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DEFAULT_LOOKAHEAD_PARAGRAPHS)
+
     fun setTheme(theme: ThemePreference) {
         viewModelScope.launch { themeSettingsRepository.setTheme(theme) }
     }
@@ -84,6 +90,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setFontFamily(family: ReaderFontFamily) {
         viewModelScope.launch { readingSettingsRepository.setFontFamily(family) }
+    }
+
+    fun setLookaheadParagraphs(count: Int) {
+        viewModelScope.launch { playbackSettingsRepository.setLookaheadParagraphs(count) }
     }
 
     fun onUrlChanged(url: String) {

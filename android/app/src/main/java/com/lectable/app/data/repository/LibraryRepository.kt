@@ -97,8 +97,8 @@ class LibraryRepository @Inject constructor(
     /** [LectableApi.resolvePronunciation] - see its own doc comment. */
     suspend fun resolvePronunciation(bookId: String, idx: Int): Boolean = api.resolvePronunciation(bookId, idx).queued
 
-    suspend fun lookahead(bookId: String, chapterIdx: Int, paragraphIdx: Int): Boolean =
-        api.lookahead(bookId, LookaheadRequestDto(chapterIdx, paragraphIdx)).queued
+    suspend fun lookahead(bookId: String, chapterIdx: Int, paragraphIdx: Int, paragraphCount: Int? = null): Boolean =
+        api.lookahead(bookId, LookaheadRequestDto(chapterIdx, paragraphIdx, paragraphCount)).queued
 
     /** Forces one already-generated paragraph to be reset and re-rendered - see
      *  [com.lectable.app.data.remote.LectableApi.regenerateParagraph]. */

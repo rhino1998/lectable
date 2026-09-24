@@ -152,4 +152,9 @@ data class ChapterDetailDto(
 data class QueuedResponseDto(val queued: Boolean)
 
 @Serializable
-data class LookaheadRequestDto(val chapterIdx: Int, val paragraphIdx: Int)
+data class LookaheadRequestDto(
+    val chapterIdx: Int,
+    val paragraphIdx: Int,
+    // null -> backend default (jobs.LookaheadParagraphCount).
+    val paragraphCount: Int? = null,
+)

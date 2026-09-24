@@ -53,10 +53,8 @@ fun voiceKeyOf(presetId: String, instruct: String, language: String): String =
 
 data class DownloadKey(val libraryId: String, val bookId: String, val chapterIdx: Int, val voiceKey: String)
 
-/** One chapter's download state as the UI needs it - see [DownloadRepository.observeChapterStatuses].
- *  [pinned] lets the caller tell a manual/whole-book download apart from the unpinned
- *  ahead-of-playback prefetch, which matters for cancelling the right WorkManager unique work. */
-data class ChapterDownloadState(val status: String, val readyParagraphs: Int, val totalParagraphs: Int, val pinned: Boolean)
+/** One chapter's download state as the UI needs it - see [DownloadRepository.observeChapterStatuses]. */
+data class ChapterDownloadState(val status: String, val readyParagraphs: Int, val totalParagraphs: Int)
 
 /**
  * Downloads a chapter's generated audio to the device for offline playback, one paragraph's
@@ -85,7 +83,7 @@ class DownloadRepository @Inject constructor(
     // Mirrors Room's own state via its Flow-returning query - no manual cache invalidation
     // needed, and this keeps ParagraphPlayer's per-paragraph lookup synchronous even though
     // Room's own DAO calls are all suspend. Spans every libraryId (see DownloadedChapterDao
-    // .observeComplete's doc) - localAudioFile/isDownloaded key their lookup by the *current*
+    // .observeComplete's doc) - localAudioFile keys its lookup by the *current*
     // libraryId themselves, so a stale entry from a previously-configured backend just never
     // matches rather than needing its own reactive re-query on every backend switch.
     private val completeByKey: StateFlow<Map<DownloadKey, DownloadedChapter>> =
@@ -123,11 +121,6 @@ class DownloadRepository @Inject constructor(
         return decoded
     }
 
-    fun isDownloaded(bookId: String, chapterIdx: Int, voiceKey: String): Boolean {
-        val libraryId = backendIdentity.libraryId.value ?: return false
-        return completeByKey.value.containsKey(DownloadKey(libraryId, bookId, chapterIdx, voiceKey))
-    }
-
     /** Every downloaded-or-downloading chapter index for [bookId] (any voice) on the current
      *  library, mapped to its status and paragraph progress - drives ReaderScreen's per-chapter
      *  download icon (determinate progress ring while downloading, checkmark once complete,
@@ -138,7 +131,7 @@ class DownloadRepository @Inject constructor(
     fun observeChapterStatuses(bookId: String): Flow<Map<Int, ChapterDownloadState>> =
         backendIdentity.libraryId.filterNotNull().flatMapLatest { libraryId ->
             dao.observeForBook(libraryId, bookId).map { rows ->
-                rows.associate { it.chapterIdx to ChapterDownloadState(it.status, it.readyParagraphs, it.totalParagraphs, it.pinned) }
+                rows.associate { it.chapterIdx to ChapterDownloadState(it.status, it.readyParagraphs, it.totalParagraphs) }
             }
         }
 
@@ -478,25 +471,12 @@ class DownloadRepository @Inject constructor(
         dao.upsert(existing.copy(status = DownloadStatus.ERROR))
     }
 
-    /** Deletes a chapter's download unconditionally (unlike [evictIfUnpinned]) - an explicit
-     *  user action (long-press to cancel an in-flight download or remove a completed one)
-     *  overrides pinning. Callers cancelling an in-flight download are responsible for stopping
+    /** Deletes a chapter's download - an explicit user action (long-press to cancel an
+     *  in-flight download or remove a completed one). Callers cancelling an in-flight download are responsible for stopping
      *  the underlying WorkManager work first (see ReaderViewModel.cancelOrDeleteDownload). */
     suspend fun deleteDownload(bookId: String, chapterIdx: Int) = withContext(Dispatchers.IO) {
         val libraryId = backendIdentity.currentLibraryId()
         val entry = dao.get(libraryId, bookId, chapterIdx) ?: return@withContext
-        File(entry.localDir).deleteRecursively()
-        dao.delete(libraryId, bookId, chapterIdx)
-    }
-
-    /** Deletes an unpinned (auto-prefetched) chapter's local files once playback moves past it -
-     *  a no-op if it's pinned (a manual "download this book" action, kept until the user
-     *  explicitly removes it) or was never downloaded. See ReaderViewModel's
-     *  chapter-advance collector. */
-    suspend fun evictIfUnpinned(bookId: String, chapterIdx: Int) = withContext(Dispatchers.IO) {
-        val libraryId = backendIdentity.currentLibraryId()
-        val entry = dao.get(libraryId, bookId, chapterIdx) ?: return@withContext
-        if (entry.pinned) return@withContext
         File(entry.localDir).deleteRecursively()
         dao.delete(libraryId, bookId, chapterIdx)
     }

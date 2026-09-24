@@ -5,9 +5,7 @@ import android.os.SystemClock
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.lectable.app.data.live.LiveStore
@@ -34,6 +32,7 @@ import com.lectable.app.data.repository.VoiceRepository
 import com.lectable.app.data.repository.voiceKeyOf
 import com.lectable.app.data.settings.ReaderFontFamily
 import com.lectable.app.data.settings.DEFAULT_FONT_SIZE_SP
+import com.lectable.app.data.settings.PlaybackSettingsRepository
 import com.lectable.app.data.settings.ReadingSettingsRepository
 import com.lectable.app.playback.BackgroundMusicPlayer
 import com.lectable.app.playback.ChapterDownloadWorker
@@ -107,7 +106,7 @@ data class ReaderUiState(
     // retry itself), not just on dismissError.
     val failedChapterIdx: Int? = null,
     // Offline downloads (see DownloadRepository) - voiceKey mirrors the book's current voice
-    // settings, downloadStates is per-chapter download status/progress/pinned (any voice;
+    // settings, downloadStates is per-chapter download status/progress (any voice;
     // ParagraphPlayer itself only uses a local file that matches voiceKey), and
     // bookDownloadProgress is (chaptersComplete, chaptersTotal) for a manual "download book"
     // action in flight, null when none is running.
@@ -123,6 +122,7 @@ class ReaderViewModel @Inject constructor(
     private val jobsRepository: JobsRepository,
     private val voiceRepository: VoiceRepository,
     private val readingSettingsRepository: ReadingSettingsRepository,
+    private val playbackSettingsRepository: PlaybackSettingsRepository,
     val player: ParagraphPlayer,
     private val backgroundMusicPlayer: BackgroundMusicPlayer,
     private val liveStore: LiveStore,
@@ -137,10 +137,6 @@ class ReaderViewModel @Inject constructor(
     val uiState: StateFlow<ReaderUiState> = _uiState
 
     private var lastPositionSaveAtMs = 0L
-
-    // Tracks the previously-current chapter across player.state updates, purely so the
-    // auto-prefetch collector below knows which chapter playback just moved past (see init).
-    private var previousChapterIdx: Int? = null
 
     // Guards expandUp/expandDown against firing multiple overlapping loads for the same edge
     // chapter while scroll-position updates keep arriving before the first one lands.
@@ -198,15 +194,18 @@ class ReaderViewModel @Inject constructor(
         }
 
         // Keeps some runway of generated audio ahead of wherever playback currently is
-        // (backend caps this at jobs.LookaheadParagraphCount = 25 paragraphs, spanning into
-        // later chapters as needed - see jobs.Manager.EnqueueLookahead) - mirrors
+        // (Settings' lookahead paragraph count, default jobs.LookaheadParagraphCount = 25,
+        // spanning into later chapters as needed - see jobs.Manager.EnqueueLookahead) - mirrors
         // ReaderPage.tsx's useEffect on [playback.chapterIdx, playback.paragraphIdx].
         viewModelScope.launch {
             player.state.map { it.chapterIdx to it.paragraphIdx }
                 .distinctUntilChanged()
                 .collect { (chapterIdx, paragraphIdx) ->
                     if (chapterIdx >= 0) {
-                        runCatching { libraryRepository.lookahead(bookId, chapterIdx, paragraphIdx) }
+                        runCatching {
+                            val count = playbackSettingsRepository.lookaheadParagraphs.first()
+                            libraryRepository.lookahead(bookId, chapterIdx, paragraphIdx, count)
+                        }
                     }
                 }
         }
@@ -234,42 +233,10 @@ class ReaderViewModel @Inject constructor(
             }
         }
 
-        // Ahead-of-playback prefetch + eviction: mirrors the backend's own lookahead concept
-        // (jobs.Manager.EnqueueLookahead), but at whole-chapter/download granularity. Keeps at
-        // most "current + next 1" auto-downloaded chapters materially cached - see
-        // DownloadRepository.evictIfUnpinned's doc for why a global size/LRU cap is deliberately
-        // out of scope for v1.
-        viewModelScope.launch {
-            player.state.map { it.chapterIdx }.distinctUntilChanged().collect { chapterIdx ->
-                if (chapterIdx < 0) return@collect
-                val prev = previousChapterIdx
-                previousChapterIdx = chapterIdx
-                if (prev != null && prev != chapterIdx) {
-                    launch { downloadRepository.evictIfUnpinned(bookId, prev) }
-                }
-                val book = _uiState.value.book ?: return@collect
-                val voiceKey = _uiState.value.voiceKey ?: return@collect
-                val nextIdx = chapterIdx + 1
-                if (nextIdx < book.chapterCount && !downloadRepository.isDownloaded(bookId, nextIdx, voiceKey)) {
-                    enqueuePrefetch(nextIdx, voiceKey)
-                }
-            }
-        }
-
         loadBook()
     }
 
-    private fun enqueuePrefetch(chapterIdx: Int, voiceKey: String) {
-        val request = OneTimeWorkRequestBuilder<ChapterDownloadWorker>()
-            .setInputData(ChapterDownloadWorker.inputData(bookId, chapterIdx, voiceKey, pinned = false))
-            // Wi-Fi only - an automatic prefetch the user never asked for shouldn't silently
-            // burn cellular data, unlike an explicit "download this book" action.
-            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.UNMETERED).build())
-            .build()
-        workManager.enqueueUniqueWork(ChapterDownloadWorker.prefetchWorkName(bookId), ExistingWorkPolicy.REPLACE, request)
-    }
-
-    /** Manual "download this book" action - pinned (never auto-evicted) downloads for every
+    /** Manual "download this book" action - downloads for every
      *  not-yet-downloaded chapter, one WorkManager request each, tagged together so [uiState]'s
      *  bookDownloadProgress can report aggregate completion. Earlier-first generation order is
      *  the backend job queue's own responsibility now (see jobs.Manager's taskHeap.Less, which
@@ -306,7 +273,7 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    /** Manual single-chapter download - same pinned/never-auto-evicted semantics as
+    /** Manual single-chapter download - same semantics as
      *  [downloadBook], just for one chapter (e.g. from a per-chapter action in the "jump to
      *  chapter" sheet) rather than the whole book. Reuses the same underlying
      *  [ChapterDownloadWorker]/[DownloadRepository.downloadChapter] path - a whole-book download
@@ -331,17 +298,11 @@ class ReaderViewModel @Inject constructor(
         workManager.enqueueUniqueWork(ChapterDownloadWorker.bookDownloadWorkName(bookId, chapterIdx), policy, request)
     }
 
-    /** Long-press action on a chapter's download icon: cancels it if still in flight (whichever
-     *  of the manual/whole-book or auto-prefetch unique work applies - see [ChapterDownloadState
-     *  .pinned]), or just removes it if already complete - either way finishing with the local
-     *  files and Room row gone, overriding pinning since this is an explicit user request. */
+    /** Long-press action on a chapter's download icon: cancels it if still in flight, or just
+     *  removes it if already complete - either way finishing with the local files and Room row
+     *  gone. */
     fun cancelOrDeleteDownload(chapterIdx: Int) {
-        val pinned = _uiState.value.downloadStates[chapterIdx]?.pinned ?: true
-        if (pinned) {
-            workManager.cancelUniqueWork(ChapterDownloadWorker.bookDownloadWorkName(bookId, chapterIdx))
-        } else {
-            workManager.cancelUniqueWork(ChapterDownloadWorker.prefetchWorkName(bookId))
-        }
+        workManager.cancelUniqueWork(ChapterDownloadWorker.bookDownloadWorkName(bookId, chapterIdx))
         viewModelScope.launch { downloadRepository.deleteDownload(bookId, chapterIdx) }
     }
 
@@ -439,7 +400,7 @@ class ReaderViewModel @Inject constructor(
      *  anyone else's. A voice change resets this book's cached audio server-side, which the
      *  loaded chapters' own live topics then reflect paragraph by paragraph; offline downloads
      *  made under the old voice just stop matching the new voiceKey (see
-     *  ParagraphPlayer.playParagraph) and are cleaned up lazily by eviction. */
+     *  ParagraphPlayer.playParagraph) until the user deletes them. */
     private fun applyVoice(voice: VoiceSettingsDto) {
         val previous = currentVoice
         currentVoice = voice
