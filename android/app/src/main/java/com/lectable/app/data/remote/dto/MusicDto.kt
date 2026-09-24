@@ -18,6 +18,9 @@ data class MusicRegionDto(
     // label for compact display); shown directly under it in the reader's annotations-mode
     // boundary marker - see backend musicRegionDTO.Prompt's own doc comment.
     val prompt: String,
+    // The ambient-soundscape prompt mixed under the music (ocean, tavern, city...) - null when the
+    // region is music only. Shown under [prompt] in the same boundary marker.
+    val ambience: String? = null,
     // "cut" or "continuation" - see backend store.MusicTransition. A "continuation" region was
     // generated with its first chunk seeded from the immediately preceding region's own tail. Only
     // affects generation - [BackgroundMusicPlayer] crossfades every region switch the same way.

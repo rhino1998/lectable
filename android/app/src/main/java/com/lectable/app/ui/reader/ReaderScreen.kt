@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.VolumeDown
 import androidx.compose.material.icons.outlined.AcUnit
+import androidx.compose.material.icons.outlined.Air
 import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.outlined.Campaign
 import androidx.compose.material.icons.outlined.FavoriteBorder
@@ -1046,6 +1047,26 @@ private fun MusicRegionBoundaryRow(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
+            }
+            // The ambient soundscape layered under this region's music, on its own line so it
+            // doesn't read as a continuation of the music prompt.
+            region.ambience?.takeIf { it.isNotBlank() }?.let { ambience ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                    Icon(
+                        Icons.Outlined.Air,
+                        contentDescription = "Ambience",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        ambience,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
             }
         }
         if (region.status == AudioStatus.READY && region.audioUrl != null) {
