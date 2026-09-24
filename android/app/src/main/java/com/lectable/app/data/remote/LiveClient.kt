@@ -10,6 +10,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.emitAll
@@ -97,6 +98,15 @@ class LiveClient @Inject constructor(
     private val entries = mutableMapOf<String, Entry>()
     private var socket: WebSocket? = null
     private var open = false
+        set(value) {
+            field = value
+            _connected.value = value
+        }
+    private val _connected = MutableStateFlow(false)
+
+    /** Whether the socket is currently open - i.e. the backend is reachable right now. Its
+     *  false -> true edges are what OfflineReconciler keys "the phone just came back" on. */
+    val connected: StateFlow<Boolean> = _connected
     private var reconnectJob: Job? = null
     private var reconnectDelayMs = RECONNECT_DELAY_MS
 

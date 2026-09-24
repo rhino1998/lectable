@@ -72,4 +72,14 @@ class BackendIdentityRepository @Inject constructor(
      *  suspended until connectivity returns and [refresh] (re-triggered by the next baseUrl
      *  change, or a fresh app start) succeeds. */
     suspend fun currentLibraryId(): String = libraryId.filterNotNull().first()
+
+    /** The current library id, fetching it now if it isn't known yet - unlike
+     *  [currentLibraryId], never waits for someone else to resolve it: an app started offline
+     *  never re-runs [refresh] on its own, so background work that runs once the backend is back
+     *  (OfflineReconciler) resolves it itself. Null if the backend still can't be reached. */
+    suspend fun resolveLibraryId(): String? {
+        libraryId.value?.let { return it }
+        refresh()
+        return libraryId.value
+    }
 }

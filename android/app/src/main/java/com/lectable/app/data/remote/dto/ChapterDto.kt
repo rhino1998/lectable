@@ -119,6 +119,12 @@ data class ParagraphDto(
     // (a same-audioUrl transition, see ParagraphPlayer's loadedAudioUrl) - the underlying
     // recording is one continuous, never-cut file, so there's nothing to actually transition.
     val audioPointerSeconds: Double = 0.0,
+    // This paragraph's leaves in the backend's offline-sync hash tree (backend
+    // httpapi/manifest.go): [contentHash] covers the text/annotations an offline copy stores
+    // (see OfflineParagraph), [audioHash] the audio clip itself - a change there means the
+    // downloaded .wav is stale. "" from a backend that predates them.
+    val contentHash: String = "",
+    val audioHash: String = "",
 )
 
 /**
@@ -146,6 +152,33 @@ data class ChapterDetailDto(
     val generating: Boolean,
     val paragraphs: List<ParagraphDto>,
     val content: List<ContentItemDto>,
+    // This chapter's node in the offline-sync hash tree - over its title, content order and
+    // every paragraph's two hashes. See BookManifestDto.
+    val hash: String = "",
+)
+
+/** One chapter's node in [BookManifestDto]. */
+@Serializable
+data class ChapterHashDto(val idx: Int, val hash: String)
+
+/**
+ * Mirrors backend httpapi/manifest.go's bookManifestDTO: the root of a book's offline-sync hash
+ * tree ([hash], over its metadata and the requested [chapters]' hashes) plus each chapter's own
+ * hash, so a downloaded copy can tell what changed server-side without fetching every chapter -
+ * see OfflineReconciler. The reading position rides along but is outside the tree.
+ */
+@Serializable
+data class BookManifestDto(
+    val id: String,
+    val title: String,
+    val author: String,
+    val coverUrl: String? = null,
+    val chapterCount: Int,
+    val hash: String,
+    val chapters: List<ChapterHashDto>,
+    val posChapterIdx: Int,
+    val posParagraphIdx: Int,
+    val posSeconds: Double,
 )
 
 @Serializable

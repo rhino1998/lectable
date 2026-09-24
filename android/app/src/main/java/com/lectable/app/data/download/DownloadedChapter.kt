@@ -53,6 +53,11 @@ data class DownloadedChapter(
     @ColumnInfo(defaultValue = "0") val totalParagraphs: Int = 0,
     @ColumnInfo(defaultValue = "0") val totalBytes: Long = 0,
     @ColumnInfo(defaultValue = "0") val lastAccessedAt: Long = 0,
+    // The backend's hash for this chapter (ChapterDetailDto.hash) as of the content/audio this
+    // row actually holds - compared against BookManifestDto's per-chapter hashes by
+    // OfflineReconciler to find what changed server-side. "" (never matches) for a row
+    // downloaded before hashes existed.
+    @ColumnInfo(defaultValue = "") val hash: String = "",
     // Directory holding this chapter's %05d.wav files - always
     // context.filesDir/downloads/<libraryId-hash>/<bookId>/<chapterIdx>/<voiceKey-hash>/ in
     // practice (see DownloadRepository.chapterDir), stored explicitly rather than recomputed so

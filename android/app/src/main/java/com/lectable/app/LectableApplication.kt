@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.work.Configuration
 import androidx.hilt.work.HiltWorkerFactory
 import com.lectable.app.data.settings.ServerSettingsRepository
+import com.lectable.app.data.sync.OfflineReconciler
 import androidx.glance.appwidget.updateAll
 import com.lectable.app.playback.ParagraphPlayer
 import com.lectable.app.widget.PlaybackWidget
@@ -37,6 +38,9 @@ class LectableApplication : Application(), Configuration.Provider {
     // earlier than strictly necessary is cheap next to that.
     @Inject lateinit var paragraphPlayer: ParagraphPlayer
 
+    // Keeps offline downloads reconciled with the backend - see OfflineReconciler.
+    @Inject lateinit var offlineReconciler: OfflineReconciler
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
@@ -44,6 +48,8 @@ class LectableApplication : Application(), Configuration.Provider {
         // Must finish before the first network call - DynamicBaseUrlInterceptor
         // reads currentBaseUrl() synchronously and this is the only load().
         runBlocking { serverSettingsRepository.load() }
+
+        offlineReconciler.startAutoSync()
 
         combine(paragraphPlayer.state, paragraphPlayer.bookTitle) { state, title -> state to title }
             .onEach { PlaybackWidget().updateAll(this) }

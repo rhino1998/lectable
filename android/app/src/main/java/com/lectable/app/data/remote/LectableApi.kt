@@ -1,6 +1,7 @@
 package com.lectable.app.data.remote
 
 import com.lectable.app.data.remote.dto.BookDetailDto
+import com.lectable.app.data.remote.dto.BookManifestDto
 import com.lectable.app.data.remote.dto.BookSummaryDto
 import com.lectable.app.data.remote.dto.BookmarkDto
 import com.lectable.app.data.remote.dto.CancelAllJobsResponseDto
@@ -64,6 +65,11 @@ interface LectableApi {
 
     @GET("api/books/{id}")
     suspend fun getBook(@Path("id") id: String): BookDetailDto
+
+    /** A book's offline-sync hash tree root plus per-chapter hashes - see BookManifestDto.
+     *  [chapters] ("0,3,7") limits it to those chapters; null means every chapter. */
+    @GET("api/books/{id}/manifest")
+    suspend fun getBookManifest(@Path("id") id: String, @Query("chapters") chapters: String?): BookManifestDto
 
     @Multipart
     @POST("api/books")

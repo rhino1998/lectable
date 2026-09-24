@@ -7,6 +7,7 @@ import com.lectable.app.data.download.DownloadedBookDao
 import com.lectable.app.data.download.DownloadedChapter
 import com.lectable.app.data.download.DownloadedChapterDao
 import com.lectable.app.data.download.OfflineParagraph
+import com.lectable.app.data.download.hasAudioOf
 import com.lectable.app.data.download.PendingPosition
 import com.lectable.app.data.download.PendingPositionDao
 import com.lectable.app.data.remote.BackendIdentityRepository
@@ -96,21 +97,21 @@ class DownloadRepository @Inject constructor(
     private val storedParagraphs = ConcurrentHashMap<DownloadKey, Pair<String, Map<Int, OfflineParagraph>>>()
 
     /** The downloaded .wav for [paragraph], or null if there isn't one or it's stale. A live
-     *  [paragraph] (non-null audioUrl) is only matched to its local file while its current
-     *  duration/pointer are still what was downloaded: the file is keyed by the book's voice only,
-     *  but a paragraph's audio also depends on its speaker (and scare-quote merge group), so a
-     *  re-attribution after download regenerates it server-side while the local copy keeps the
-     *  old speaker. A cached (offline) chapter has no audioUrl and nothing newer to compare to. */
+     *  [paragraph] (non-null audioUrl) is only matched to its local file while its audio is still
+     *  what was downloaded (see [hasAudioOf] - by audioHash): the file is keyed by the book's
+     *  voice only, but a paragraph's audio also depends on its speaker (and scare-quote merge
+     *  group), so a re-attribution after download regenerates it server-side while the local copy
+     *  keeps the old speaker until OfflineReconciler refreshes it. A cached (offline) chapter has
+     *  no audioUrl and nothing newer to compare to. */
     fun localAudioFile(bookId: String, chapterIdx: Int, voiceKey: String, paragraph: ParagraphDto): File? {
         val libraryId = backendIdentity.libraryId.value ?: return null
         val key = DownloadKey(libraryId, bookId, chapterIdx, voiceKey)
         val entry = completeByKey.value[key] ?: return null
         if (paragraph.audioUrl != null) {
             val stored = storedParagraphs(key, entry)[paragraph.idx] ?: return null
-            if (stored.durationSeconds != paragraph.durationSeconds || stored.audioPointerSeconds != paragraph.audioPointerSeconds) return null
+            if (!stored.hasAudioOf(paragraph)) return null
         }
-        val file = File(entry.localDir, "%05d.wav".format(paragraph.idx))
-        return file.takeIf { it.exists() }
+        return audioFile(File(entry.localDir), paragraph.idx).takeIf { it.exists() }
     }
 
     private fun storedParagraphs(key: DownloadKey, entry: DownloadedChapter): Map<Int, OfflineParagraph> {
@@ -146,8 +147,8 @@ class DownloadRepository @Inject constructor(
     /** Reconstructs a BookDetailDto from cached metadata, for opening a downloaded book with no
      *  network at all (see ReaderViewModel.loadBook's offline fallback) - `chapters` only
      *  includes chapters that are actually fully downloaded (status == COMPLETE), same as a live
-     *  fetch would only ever show what's real; position fields are left at the start since there
-     *  is no cached reading-position source offline. */
+     *  fetch would only ever show what's real; the position is the backend's as last seen online
+     *  (see DownloadedBook.posChapterIdx). */
     suspend fun cachedBook(bookId: String): BookDetailDto? = withContext(Dispatchers.IO) {
         val libraryId = backendIdentity.currentLibraryId()
         val book = bookDao.get(libraryId, bookId) ?: return@withContext null
@@ -161,9 +162,9 @@ class DownloadRepository @Inject constructor(
             author = book.author,
             coverUrl = book.coverUrl,
             chapterCount = book.chapterCount,
-            posChapterIdx = 0,
-            posParagraphIdx = 0,
-            posSeconds = 0.0,
+            posChapterIdx = book.posChapterIdx,
+            posParagraphIdx = book.posParagraphIdx,
+            posSeconds = book.posSeconds,
             progressPercent = 0.0,
             finished = false,
             estimatedTotalSeconds = 0.0,
@@ -262,7 +263,7 @@ class DownloadRepository @Inject constructor(
 
     /** Fetches and caches a book's title/author/cover so it can be browsed/opened offline (see
      *  [cachedBook]) - called opportunistically from [downloadChapter] the first time any of a
-     *  book's chapters is downloaded, not on every chapter (no need to re-fetch book-level
+     *  book's chapters is downloaded (and by OfflineReconciler when the book changed), not on every chapter (no need to re-fetch book-level
      *  metadata 100 times over one whole-book download). Best-effort: a failure here doesn't
      *  fail the chapter download itself, it just means offline library browsing won't have this
      *  book's details until a later attempt succeeds. */
@@ -279,15 +280,28 @@ class DownloadRepository @Inject constructor(
                 localCoverPath = file.path
             }
         }
+        // Keeps an existing row's sync state (hash) - OfflineReconciler re-runs this to pick up
+        // a changed cover, and records the new hash itself once everything else matches too.
+        val base = bookDao.get(libraryId, bookId) ?: DownloadedBook(
+            libraryId = libraryId,
+            bookId = bookId,
+            title = book.title,
+            author = book.author,
+            coverUrl = book.coverUrl,
+            localCoverPath = null,
+            chapterCount = book.chapterCount,
+        )
         bookDao.upsert(
-            DownloadedBook(
-                libraryId = libraryId,
-                bookId = bookId,
+            base.copy(
                 title = book.title,
                 author = book.author,
                 coverUrl = book.coverUrl,
-                localCoverPath = localCoverPath,
+                // A failed cover fetch keeps whatever was there; a cover gone server-side goes.
+                localCoverPath = if (coverUrl == null) null else localCoverPath ?: base.localCoverPath,
                 chapterCount = book.chapterCount,
+                posChapterIdx = book.posChapterIdx,
+                posParagraphIdx = book.posParagraphIdx,
+                posSeconds = book.posSeconds,
             ),
         )
     }
@@ -302,6 +316,14 @@ class DownloadRepository @Inject constructor(
      * [cachedChapter]) and, the first time this book is touched, its book-level metadata (see
      * [cacheBookMetadata]) - the point of downloading is being able to read/browse offline, not
      * just play audio blindly.
+     *
+     * Doubles as the refresh path for a chapter that's already COMPLETE (OfflineReconciler found
+     * its hash changed server-side, or the user downloaded it again): under the same voice, every
+     * paragraph whose local .wav still matches the backend's audioHash is kept rather than
+     * re-fetched; under a new voice everything is fetched into a fresh directory. Either way the
+     * existing copy stays untouched, and playable offline, until the new one is complete - new
+     * clips are staged as `.part` files and only swapped in (and the row replaced) at the end,
+     * and a failed refresh just discards them.
      */
     suspend fun downloadChapter(
         bookId: String,
@@ -311,21 +333,26 @@ class DownloadRepository @Inject constructor(
         onProgress: (ready: Int, total: Int) -> Unit = { _, _ -> },
     ) = withContext(Dispatchers.IO) {
         val libraryId = backendIdentity.currentLibraryId()
-        val dir = chapterDir(libraryId, bookId, chapterIdx, voiceKey)
-        dir.deleteRecursively()
+        val existing = dao.get(libraryId, bookId, chapterIdx)?.takeIf { it.status == DownloadStatus.COMPLETE }
+        val reusable = existing?.takeIf { it.voiceKey == voiceKey }
+        val dir = reusable?.let { File(it.localDir) } ?: chapterDir(libraryId, bookId, chapterIdx, voiceKey)
+        if (reusable == null) dir.deleteRecursively()
         dir.mkdirs()
+        discardStaged(dir)
 
-        dao.upsert(
-            DownloadedChapter(
-                libraryId = libraryId,
-                bookId = bookId,
-                chapterIdx = chapterIdx,
-                voiceKey = voiceKey,
-                pinned = pinned,
-                status = DownloadStatus.DOWNLOADING,
-                localDir = dir.path,
-            ),
-        )
+        if (existing == null) {
+            dao.upsert(
+                DownloadedChapter(
+                    libraryId = libraryId,
+                    bookId = bookId,
+                    chapterIdx = chapterIdx,
+                    voiceKey = voiceKey,
+                    pinned = pinned,
+                    status = DownloadStatus.DOWNLOADING,
+                    localDir = dir.path,
+                ),
+            )
+        }
 
         if (bookDao.get(libraryId, bookId) == null) {
             runCatching { cacheBookMetadata(bookId) }
@@ -336,15 +363,20 @@ class DownloadRepository @Inject constructor(
         runCatching { api.generateChapter(bookId, chapterIdx) }
 
         try {
-            // The live paragraph each local file was fetched from - its duration/pointer are what
-            // the stored OfflineParagraph records (see localAudioFile), and a paragraph whose
-            // audio changes again mid-download (re-attributed, re-merged) gets fetched again.
-            val fetched = mutableMapOf<Int, ParagraphDto>()
+            // The audio each local file (committed or staged) holds, per paragraph - seeded from
+            // the existing copy's stored paragraphs on a same-voice refresh, then from the live
+            // paragraph each fetch came from. A paragraph whose audio changes again mid-download
+            // (re-attributed, re-merged) gets fetched again.
+            val fetched = mutableMapOf<Int, OfflineParagraph>()
+            if (reusable != null) {
+                runCatching { json.decodeFromString<List<OfflineParagraph>>(reusable.paragraphsJson) }.getOrDefault(emptyList())
+                    .filter { audioFile(dir, it.idx).exists() }
+                    .associateByTo(fetched) { it.idx }
+            }
             // Paragraphs a regenerate has already been requested for, this attempt - guards
             // against asking again on every live update while it's re-generating.
             val regeneratedIdx = mutableSetOf<Int>()
-            var totalBytes = 0L
-            var total = 0
+            var fetchedBytes = 0L
             var lastChapter: ChapterDetailDto? = null
             // The chapter's live topic (see LiveStore) delivers a fresh value every time one of
             // its paragraphs changes; each is scanned for newly-ready audio until everything's
@@ -354,11 +386,11 @@ class DownloadRepository @Inject constructor(
                 result.error?.let { e -> if (result.data == null) throw IOException(e.message) }
                 val chapter = result.data ?: return@first false
                 lastChapter = chapter
-                total = chapter.paragraphs.size
+                val total = chapter.paragraphs.size
                 for (p in chapter.paragraphs) {
                     val f = fetched[p.idx]
                     if (f != null) {
-                        if (p.audioStatus == AudioStatus.READY && f.durationSeconds == p.durationSeconds && f.audioPointerSeconds == p.audioPointerSeconds) continue
+                        if (f.hasAudioOf(p)) continue
                         fetched.remove(p.idx)
                     }
                     if (p.audioStatus == AudioStatus.ERROR) {
@@ -373,33 +405,45 @@ class DownloadRepository @Inject constructor(
                     }
                     val url = p.audioUrl ?: continue
                     if (p.audioStatus != AudioStatus.READY) continue
-                    totalBytes += api.downloadFile(url).use { body ->
-                        File(dir, "%05d.wav".format(p.idx)).outputStream().use { out -> body.byteStream().copyTo(out) }
+                    fetchedBytes += api.downloadFile(url).use { body ->
+                        stagedFile(dir, p.idx).outputStream().use { out -> body.byteStream().copyTo(out) }
                     }
-                    fetched[p.idx] = p
-                    onProgress(fetched.size, total)
-                    dao.upsert(
-                        DownloadedChapter(
-                            libraryId = libraryId,
-                            bookId = bookId,
-                            chapterIdx = chapterIdx,
-                            voiceKey = voiceKey,
-                            pinned = pinned,
-                            status = DownloadStatus.DOWNLOADING,
-                            readyParagraphs = fetched.size,
-                            totalParagraphs = total,
-                            totalBytes = totalBytes,
-                            localDir = dir.path,
-                        ),
+                    fetched[p.idx] = OfflineParagraph(
+                        idx = p.idx,
+                        text = p.text,
+                        durationSeconds = p.durationSeconds ?: 0.0,
+                        audioPointerSeconds = p.audioPointerSeconds,
+                        audioHash = p.audioHash,
                     )
+                    val ready = chapter.paragraphs.count { fetched[it.idx]?.hasAudioOf(it) == true }
+                    onProgress(ready, total)
+                    // A refresh leaves the COMPLETE row alone until the swap below - it's what
+                    // keeps the old copy playable offline meanwhile.
+                    if (existing == null) {
+                        dao.upsert(
+                            DownloadedChapter(
+                                libraryId = libraryId,
+                                bookId = bookId,
+                                chapterIdx = chapterIdx,
+                                voiceKey = voiceKey,
+                                pinned = pinned,
+                                status = DownloadStatus.DOWNLOADING,
+                                readyParagraphs = ready,
+                                totalParagraphs = total,
+                                totalBytes = fetchedBytes,
+                                localDir = dir.path,
+                            ),
+                        )
+                    }
                 }
                 // No timeout here, deliberately: a background-tier chapter can sit behind a lot
                 // of other generation work on a single-GPU backend and legitimately take a long
                 // time - the ring should just keep reflecting real progress for as long as that
                 // takes, not flip back to "not downloaded" because it was slow. WorkManager
                 // itself is what actually stops this running if the app process is killed.
-                total > 0 && fetched.size >= total
+                total > 0 && chapter.paragraphs.all { fetched[it.idx]?.hasAudioOf(it) == true }
             }
+            val chapter = lastChapter ?: throw IOException("chapter $chapterIdx never loaded")
 
             // Images don't depend on voice/generation the way paragraph audio does - they're
             // already fully available the moment the chapter's own content is - so this only
@@ -408,9 +452,8 @@ class DownloadRepository @Inject constructor(
             // this chapterDir, since the same image would otherwise be duplicated once per
             // downloaded voice for no benefit. Best-effort per image: one failing (network drop
             // mid-download) shouldn't fail the whole chapter download over an illustration.
-            val content = lastChapter?.content ?: emptyList()
             val imgDir = imagesDir(libraryId, bookId).apply { mkdirs() }
-            for (item in content) {
+            for (item in chapter.content) {
                 if (item.kind != "image") continue
                 val url = item.imageUrl ?: continue
                 val id = url.substringAfterLast('/').takeIf { it.isNotBlank() } ?: continue
@@ -421,12 +464,21 @@ class DownloadRepository @Inject constructor(
                 }
             }
 
-            val offlineParagraphs = (lastChapter?.paragraphs ?: emptyList()).map { p ->
-                val f = fetched[p.idx] ?: p
+            // The swap: staged clips replace their committed counterparts (rename(2) - atomic,
+            // and an ExoPlayer mid-way through the old file keeps its own open handle), and
+            // files for paragraphs the chapter no longer has are dropped.
+            dir.listFiles { f -> f.name.endsWith(STAGED_SUFFIX) }?.forEach { part ->
+                part.renameTo(File(dir, part.name.removeSuffix(STAGED_SUFFIX)))
+            }
+            val liveNames = chapter.paragraphs.mapTo(mutableSetOf()) { audioFile(dir, it.idx).name }
+            dir.listFiles { f -> f.name.endsWith(".wav") && f.name !in liveNames }?.forEach { it.delete() }
+
+            val offlineParagraphs = chapter.paragraphs.map { p ->
+                val f = fetched.getValue(p.idx)
                 OfflineParagraph(
                     idx = p.idx,
                     text = p.text,
-                    durationSeconds = f.durationSeconds ?: 0.0,
+                    durationSeconds = f.durationSeconds,
                     inline = p.inline,
                     speaker = p.speaker,
                     directionMarks = p.directionMarks,
@@ -435,8 +487,11 @@ class DownloadRepository @Inject constructor(
                     describesCharacters = p.describesCharacters,
                     scareQuote = p.scareQuote,
                     audioPointerSeconds = f.audioPointerSeconds,
+                    contentHash = p.contentHash,
+                    audioHash = p.audioHash,
                 )
             }
+            val total = chapter.paragraphs.size
             dao.upsert(
                 DownloadedChapter(
                     libraryId = libraryId,
@@ -445,25 +500,44 @@ class DownloadRepository @Inject constructor(
                     voiceKey = voiceKey,
                     pinned = pinned,
                     status = DownloadStatus.COMPLETE,
-                    title = lastChapter?.title ?: "",
+                    title = chapter.title,
                     paragraphsJson = json.encodeToString(offlineParagraphs),
-                    contentJson = json.encodeToString(content),
+                    contentJson = json.encodeToString(chapter.content),
                     readyParagraphs = total,
                     totalParagraphs = total,
-                    totalBytes = totalBytes,
+                    totalBytes = dir.listFiles { f -> f.name.endsWith(".wav") }?.sumOf { it.length() } ?: 0L,
                     lastAccessedAt = System.currentTimeMillis(),
+                    hash = chapter.hash,
                     localDir = dir.path,
                 ),
             )
+            // A voice change downloaded into a fresh directory - the old voice's copy is only
+            // dropped now that the new one has replaced it.
+            if (existing != null && existing.localDir != dir.path) File(existing.localDir).deleteRecursively()
         } catch (e: Exception) {
             // A genuine failure (network drop, disk write error, cancellation) rather than a
             // recoverable per-paragraph generation error (handled above without throwing) - mark
-            // it rather than leaving the row stuck at DOWNLOADING forever, then rethrow so
+            // a first download as failed rather than leaving the row stuck at DOWNLOADING
+            // forever; a refresh instead just drops what it staged, leaving the existing copy
+            // exactly as it was (the next reconcile tries again). Then rethrow so
             // ChapterDownloadWorker's own catch still sees and logs/reports it (also correct for
             // CancellationException, which must always propagate, not be swallowed).
-            markError(libraryId, bookId, chapterIdx)
+            discardStaged(dir)
+            if (existing == null) {
+                markError(libraryId, bookId, chapterIdx)
+            } else if (existing.localDir != dir.path) {
+                dir.deleteRecursively()
+            }
             throw e
         }
+    }
+
+    private fun audioFile(dir: File, idx: Int): File = File(dir, "%05d.wav".format(idx))
+
+    private fun stagedFile(dir: File, idx: Int): File = File(dir, "%05d.wav$STAGED_SUFFIX".format(idx))
+
+    private fun discardStaged(dir: File) {
+        dir.listFiles { f -> f.name.endsWith(STAGED_SUFFIX) }?.forEach { it.delete() }
     }
 
     private suspend fun markError(libraryId: String, bookId: String, chapterIdx: Int) {
@@ -534,5 +608,11 @@ class DownloadRepository @Inject constructor(
     private fun hash(value: String): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
         return digest.joinToString("") { "%02x".format(it) }.take(16)
+    }
+
+    private companion object {
+        // Suffix of a clip fetched by an in-progress download/refresh but not yet swapped in -
+        // see downloadChapter.
+        const val STAGED_SUFFIX = ".part"
     }
 }

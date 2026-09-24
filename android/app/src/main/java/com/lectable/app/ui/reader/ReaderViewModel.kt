@@ -382,11 +382,13 @@ class ReaderViewModel @Inject constructor(
             return
         }
         // Resume from a queued-but-not-yet-synced position (see savePendingPosition/
-        // syncPendingPosition) if there is one *and* it points at a chapter actually
-        // downloaded - otherwise cachedBook.chapters wouldn't have anything to show for it.
-        val pending = downloadRepository.pendingPosition(bookId)
-            ?.takeIf { p -> cachedBook.chapters.any { it.idx == p.chapterIdx } }
-        val startChapterIdx = pending?.chapterIdx ?: (cachedBook.chapters.firstOrNull()?.idx ?: 0)
+        // syncPendingPosition) if there is one, else from the backend's own position as of the
+        // last reconcile (see OfflineReconciler) - either only if it points at a chapter
+        // actually downloaded, otherwise cachedBook.chapters wouldn't have anything to show for it.
+        val downloadedIdx = cachedBook.chapters.mapTo(mutableSetOf()) { it.idx }
+        val pending = downloadRepository.pendingPosition(bookId)?.takeIf { it.chapterIdx in downloadedIdx }
+        val serverPos = cachedBook.takeIf { pending == null && it.posChapterIdx in downloadedIdx }
+        val startChapterIdx = pending?.chapterIdx ?: serverPos?.posChapterIdx ?: (cachedBook.chapters.firstOrNull()?.idx ?: 0)
         _uiState.update { it.copy(loading = false, book = cachedBook, range = startChapterIdx..startChapterIdx, error = null) }
         player.setBookInfo(bookId, cachedBook.title, cachedBook.author, cachedBook.coverUrl)
         awaitChapter(startChapterIdx)
@@ -395,7 +397,11 @@ class ReaderViewModel @Inject constructor(
             player.setVoiceKey(voiceKey)
             _uiState.update { it.copy(voiceKey = voiceKey) }
         }
-        player.playFrom(startChapterIdx, pending?.paragraphIdx ?: 0, pending?.seconds ?: 0.0)
+        player.playFrom(
+            startChapterIdx,
+            pending?.paragraphIdx ?: serverPos?.posParagraphIdx ?: 0,
+            pending?.seconds ?: serverPos?.posSeconds ?: 0.0,
+        )
         player.pause()
     }
 

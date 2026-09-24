@@ -6,6 +6,7 @@ import androidx.work.WorkManager
 import com.lectable.app.data.download.DownloadDatabase
 import com.lectable.app.data.download.DownloadedBookDao
 import com.lectable.app.data.download.DownloadedChapterDao
+import com.lectable.app.data.download.MIGRATION_5_6
 import com.lectable.app.data.download.PendingPositionDao
 import dagger.Module
 import dagger.Provides
@@ -25,6 +26,8 @@ object DownloadModule {
             // This table is a local cache the app can always rebuild by re-downloading, not a
             // source of truth worth writing real migrations for at this stage (app isn't
             // shipped yet - see android/CLAUDE.md) - a schema change just drops and recreates it.
+            // Except where a real migration is cheap and a wipe would orphan downloaded files.
+            .addMigrations(MIGRATION_5_6)
             .fallbackToDestructiveMigration()
             .build()
 

@@ -152,6 +152,36 @@ compiled-in default in place if nothing answers in time.
   re-generated. Only updates existing rows; what gets downloaded is still
   `DownloadRepository`'s call. Uses the DAOs directly (not
   `DownloadRepository`, which depends on `LiveStore` - a cycle).
+  Only sees what passes through `LiveStore` while connected - everything
+  else is `OfflineReconciler`'s job (below); both apply chapter metadata
+  through the same `DownloadedChapter.mergedWith`.
+- `data/sync/OfflineReconciler.kt` + `OfflineSyncWorker.kt` - brings
+  downloads back in line with the backend after the phone was away; the
+  backend always wins, nothing local is merged back. Walks the backend's
+  offline-sync hash tree (`GET /api/books/{id}/manifest`, see
+  `../backend/CLAUDE.md`) top-down: a downloaded book missing from
+  `GET /api/books` is deleted; a book whose root hash still matches
+  `DownloadedBook.hash` costs one request (only its position is taken);
+  otherwise each downloaded chapter's hash is compared with
+  `DownloadedChapter.hash`, a changed one is fetched and its text applied
+  right away, and only if some paragraph's `audioHash` moved (regenerated,
+  re-attributed, voice/clone model changed) is a `ChapterDownloadWorker`
+  refresh queued (unique name shared with manual downloads, `KEEP`). The
+  root is only recorded once every chapter matches. Runs on every
+  `LiveClient.connected` false->true edge (one-shot, `REPLACE`) and every
+  6h in the background, both network-constrained, retrying with backoff
+  while the backend is unreachable. Also caches the backend's reading
+  position into `DownloadedBook`, the offline resume point when there's no
+  newer local `PendingPosition`. `DownloadDatabase` v6 added these columns
+  via a real migration (`MIGRATION_5_6`) rather than the destructive
+  fallback, which would orphan every downloaded file.
+- `DownloadRepository.downloadChapter` doubles as the refresh path for an
+  already-COMPLETE chapter: same voice reuses every local clip whose stored
+  `audioHash` still matches (`OfflineParagraph.hasAudioOf`, falling back to
+  duration/pointer for rows stored before hashes), a new voice fetches into
+  a fresh dir. New clips are staged as `.part` files and swapped in (with
+  the row) only once the whole chapter matches, so the old copy stays
+  playable offline throughout and a failed refresh leaves it untouched.
 - `playback/ParagraphPlayer.kt` - the Android analogue of
   `../frontend/src/hooks/usePlayback.ts`: one ExoPlayer instance advancing
   through a book's paragraphs one `.wav` at a time. **App-scoped
