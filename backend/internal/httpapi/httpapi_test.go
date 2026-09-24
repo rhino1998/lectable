@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -975,5 +976,49 @@ func TestBookManifestReusesStoredTree(t *testing.T) {
 	doJSON(t, http.MethodDelete, ts.URL+"/api/books/"+bookID, nil, nil)
 	if nodes, _ := s.SyncTreeNodes(bookID, syncTreeVersion()); len(nodes) != 0 {
 		t.Fatal("deleted book's tree was kept")
+	}
+}
+
+// TestSetParagraphEmotion covers the manual emotion override: dialogue
+// accepts a known emotion (and "" to clear it) and reports it on the
+// chapter; narration and unknown emotions are rejected.
+func TestSetParagraphEmotion(t *testing.T) {
+	_, s, _, ts := newTestServer(t)
+	bookID, _, err := s.CreateBook("Test Book", "Test Author", "en", "", "", 0, []store.ChapterInput{{
+		Title: "Chapter One",
+		Blocks: []store.BlockInput{
+			{Kind: store.BlockText, Text: "“Get out!”", IsQuote: true},
+			{Kind: store.BlockText, Text: "she shouted.", Inline: true},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("CreateBook: %v", err)
+	}
+	url := func(pidx int) string {
+		return ts.URL + "/api/books/" + bookID + "/chapters/0/paragraphs/" + strconv.Itoa(pidx) + "/emotion"
+	}
+	emotionOf := func(pidx int) string {
+		var ch chapterDetailDTO
+		doJSON(t, http.MethodGet, ts.URL+"/api/books/"+bookID+"/chapters/0", nil, &ch)
+		return ch.Paragraphs[pidx].Emotion
+	}
+
+	if resp := doJSON(t, http.MethodPut, url(0), map[string]string{"emotion": "shout"}, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("set dialogue emotion: status %d", resp.StatusCode)
+	}
+	if got := emotionOf(0); got != "shout" {
+		t.Fatalf("emotion after set = %q, want shout", got)
+	}
+	if resp := doJSON(t, http.MethodPut, url(0), map[string]string{"emotion": "elated"}, nil); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown emotion: status %d, want 400", resp.StatusCode)
+	}
+	if resp := doJSON(t, http.MethodPut, url(1), map[string]string{"emotion": "angry"}, nil); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("narration emotion: status %d, want 400", resp.StatusCode)
+	}
+	if resp := doJSON(t, http.MethodPut, url(0), map[string]string{"emotion": ""}, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("clear emotion: status %d", resp.StatusCode)
+	}
+	if got := emotionOf(0); got != "" {
+		t.Fatalf("emotion after clear = %q, want neutral", got)
 	}
 }

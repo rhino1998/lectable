@@ -279,7 +279,7 @@ func (c *Client) scoreMusicBoundaries(ctx context.Context, bookTitle, chapterTit
 			// "continuation" judgment for its own first region. Force every
 			// later batch's own first region to "cut" regardless of what the
 			// model guessed, the same "don't just ask nicely, enforce it"
-			// pattern restrictNonQuoteTags already follows: a false "cut" at
+			// pattern used throughout this package: a false "cut" at
 			// a batch seam just costs one short frontend crossfade, while a
 			// false "continuation" there would seed generation from audio
 			// the model never actually compared against.
@@ -437,8 +437,8 @@ const musicDescribeMaxTokens = 1024
 // spanning several regions at once, the way the old single-pass prompt
 // worked), write that region's own mood label and music generation prompt.
 // Splitting this out from the boundary judgment is the same lesson
-// DescribeChapter/TagSfx were already split from AttributeChapter/
-// DirectChapter over (backend/CLAUDE.md) - asking one call to both place a
+// DescribeChapter was already split from AttributeChapter over
+// (backend/CLAUDE.md) - asking one call to both place a
 // boundary and justify a full composer brief for it in the same breath
 // left the single-pass version measurably worse on real chapters (ad hoc
 // comparison against two real book chapters: the combined pass produced

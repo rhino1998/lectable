@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
@@ -82,6 +83,52 @@ type speakerRowDTO struct {
 	// Invalid mirrors store.Character.Invalid - this name has been ruled
 	// out as a real speaker, and attribution will no longer assign it.
 	Invalid bool `json:"invalid,omitempty"`
+	// Emotions is every emotion this speaker's dialogue in this book
+	// actually uses (store.Paragraph.EffectiveEmotion), in internal/emotions
+	// order, each with its line count and the state of the emotion-variant
+	// reference clip those lines clone from - the voice they generate under
+	// right now (their own preset, or the book's). Omitted when they have
+	// no emotional lines, or their voice has no preset to vary.
+	Emotions []speakerEmotionDTO `json:"emotions,omitempty"`
+}
+
+// speakerEmotionDTO is one emotion a speaker uses - see
+// speakerRowDTO.Emotions.
+type speakerEmotionDTO struct {
+	Emotion string `json:"emotion"`
+	Label   string `json:"label"`
+	Count   int    `json:"count"`
+	// Status is "ready" (variant rendered - AudioURL plays it),
+	// "pending" (not rendered yet: it renders lazily the first time one of
+	// these lines generates), or "failed" (couldn't be rendered; these
+	// lines clone from the base clip instead).
+	Status   string `json:"status"`
+	AudioURL string `json:"audioUrl,omitempty"`
+}
+
+// speakerEmotions builds a speakerRowDTO.Emotions list from counts
+// (emotion id -> line count) for lines generating under presetID.
+func (s *Server) speakerEmotions(presetID string, counts map[string]int) []speakerEmotionDTO {
+	if presetID == "" || len(counts) == 0 {
+		return nil
+	}
+	var out []speakerEmotionDTO
+	for _, e := range emotions.All {
+		n := counts[e.ID]
+		if n == 0 {
+			continue
+		}
+		dto := speakerEmotionDTO{Emotion: e.ID, Label: e.Label, Count: n, Status: "pending"}
+		switch {
+		case voicerefs.VariantExists(s.DataDir, presetID, e.ID):
+			dto.Status = "ready"
+			dto.AudioURL = "/api/voices/variants/" + presetID + "/" + e.ID + "/audio"
+		case voicerefs.VariantFailed(s.DataDir, presetID, e.ID):
+			dto.Status = "failed"
+		}
+		out = append(out, dto)
+	}
+	return out
 }
 
 // presetAudioURL returns presetID's own reference-clip endpoint - the
@@ -147,12 +194,19 @@ func (s *Server) buildSpeakers(bookID string) (any, error) {
 	}
 
 	idsBySpeaker := map[string][]string{}
+	emotionsBySpeaker := map[string]map[string]int{}
 	for _, p := range paragraphs {
 		name := p.Speaker
 		if name == "" {
 			name = "Narrator"
 		}
 		idsBySpeaker[name] = append(idsBySpeaker[name], p.ID)
+		if e := p.EffectiveEmotion(); e != emotions.Neutral {
+			if emotionsBySpeaker[name] == nil {
+				emotionsBySpeaker[name] = map[string]int{}
+			}
+			emotionsBySpeaker[name][e]++
+		}
 	}
 
 	resolvedVoiceCache := map[string]narration.ResolvedVoice{}
@@ -234,6 +288,9 @@ func (s *Server) buildSpeakers(bookID string) (any, error) {
 		} else if row.VoicePresetID != "" {
 			row.RefAudioURL = presetAudioURL(row.VoicePresetID)
 		}
+		// Unlike RefAudioURL, emotion variants follow `resolved`: they're
+		// cloned from whichever preset these lines actually generate under.
+		row.Emotions = s.speakerEmotions(resolved.PresetID, emotionsBySpeaker[name])
 		rows = append(rows, row)
 	}
 	return rows, nil
@@ -1505,107 +1562,37 @@ func (s *Server) invalidateParagraphAudio(book *store.Book, paragraphs []store.P
 	}
 }
 
-// directChapter runs both of speakerattr's delivery-tagging passes
-// (Client.DirectChapter for sentence-level emotion/style/prosody,
-// Client.TagSfx for positional sfx/pause tags) over chapter's paragraphs
-// and persists each one's own independent annotation
-// (Store.SetParagraphSentenceTags/SetParagraphInlineTags), keyed to the
-// book's clone model. Pronunciation resolution used to be a third
-// sub-pass here and is now its own (pronounceChapter). Unlike describeChapter, this is never chained automatically
-// after attributeChapter - it's independently triggered
-// (handleTagDirections) since it's genuinely optional/stylistic, with no
-// other feature depending on its output the way Characterize depends on
-// Describe, and hasn't yet been benchmarked for prompt quality against
-// real chapters the way attribution/description were.
+// directChapter runs the emotion pass (speakerattr.Client.EmotionChapter)
+// over chapter's paragraphs and persists each dialogue line's label
+// (Store.SetParagraphEmotions) - "direction" in every name here (the
+// KindSpeechDirection task, Passes.Direction, handleTagDirections) is
+// kept from the Higgs delivery-tag passes this replaced. Runs under any
+// clone model: an emotion reaches TTS as an emotion-variant reference
+// clip (internal/voicerefs.EnsureVariantFile, cloned from at generation
+// time by jobs.Manager.generate), not as model-specific markup. Never
+// chained automatically after attributeChapter - it's independently
+// triggered (handleTagDirections, the preprocess direction phase, or
+// jobs.Manager.speechDirectionDependency when the book's SpeechDirection
+// is on), and needs nothing from attribution.
 //
-// Only runs for Higgs's own clone model (voices.HiggsCloneModel,
-// "audiocpp-higgs-4b" today): the delivery-tag vocabulary itself
-// (speakerattr.validSentenceTags/validInlineTags) is specific to
-// higgs_audio_tts's own tokenizer - tagging under any other clone model
-// would just have audio.cpp's tokenizer encode the tag text as literal
-// characters, which the model would then try to pronounce, not silently
-// ignore. Returns (0, nil, nil) as a no-op for any other clone model -
-// without setting Passes.Direction - rather than
-// an error - handleTagDirections itself checks this
-// synchronously before enqueueing so a reader gets an immediate, clear
-// rejection instead of a task that silently does nothing; this check is a
-// second, defensive layer in case the book's voice changes between
-// enqueue and dispatch.
+// Every processed paragraph's stored label is rewritten - a line the model
+// now calls neutral has an old label cleared - but only paragraphs whose
+// *effective* emotion (store.Paragraph.EffectiveEmotion) actually changed,
+// or that still carry legacy Higgs tags from before this pass existed
+// (Store.ClearLegacyTags), get their audio invalidated.
 //
 // onlyIdx restricts the paragraphs actually sent to the model to those
-// whose Idx is in the set, instead of every paragraph in the chapter - nil
-// for every reader-triggered call (handleTagDirections: an explicit
-// "Tag directions"/"Tag all"/"Tag undirected" click always means "run over
-// the whole chapter," the same idempotent refresh it's always been), non-
-// nil only when this call is itself the automatic continuation of an
-// earlier one that paused partway through (see the requeue closure built
-// below). Unlike attributeChapter's own onlyUnattributed (a plain bool,
-// re-derived from paragraphs.speaker on every call), this can't be
-// re-derived from stored state the same way: a paragraph legitimately
-// getting no tag at all is indistinguishable from one never checked, the
-// same ambiguity Chapter.Directed's own doc comment describes at the
-// chapter level - so the continuation instead carries forward exactly
-// which paragraphs speakerattr itself reported as not yet reached.
+// whose Idx is in the set - nil for every reader-triggered call (a whole-
+// chapter run), non-nil only for the automatic continuation of an earlier
+// run that stopped partway (see the requeue closure below). It can't be
+// re-derived from stored state: a neutral line is indistinguishable from
+// one never checked.
 //
-// Every LLM pass below is passed nil, not s.Jobs.HasHigherPriorityWork,
-// for its own shouldPause parameter - pausing used to let a long
-// TierBackground run (SpeakersPage's "Tag all"/"Tag undirected" buttons,
-// runDirectionAll/runDirectionUndirected, can queue a whole book's worth
-// of chapters at once) yield to a just-arrived, more urgent task instead
-// of making it wait out however many chapters/batches were left. Disabled
-// now for a real, observed problem it caused instead: a whole-book
-// preprocess phase (httpapi.preprocessDirectionPhase, the music-scoring
-// pipeline's own identical Phase 5 shape) dispatches each chapter's own
-// pass exactly once, with no automatic retry loop of its own - under real
-// contention (many chapters' worth of these same passes all competing for
-// poolLLM's single shared slot at once), most chapters would pause after
-// just their first batch and never get automatically retried, so the
-// queue could drain to empty while the vast majority of the book was
-// still nowhere near actually tagged. Every dispatched batch now runs
-// straight through to completion instead.
-// clearStaleDirectionTags returns tagged with an explicit "" entry added
-// for every paragraph in paragraphs that this run actually processed
-// (i.e. not left in remaining for a later continuation via onlyIdx) but
-// didn't itself decide to tag, and which still carries a non-empty stored
-// value from some *earlier* run for the exact field current reads (either
-// ParagraphDirection.SentenceText or .InlineText, whichever field this
-// call is about) - see directChapter's own call site for the full
-// "re-tagging should replace, not just add" reasoning. Paragraphs that
-// already have no stored value, or that weren't processed this run at all
-// (still in remaining), are left out entirely - the same "absent means
-// untouched" contract Store.setParagraphDirectionField already relies on,
-// so a genuinely no-op re-tag (nothing to clear, nothing new to tag)
-// stays a no-op: no spurious write, no spurious chapter-audio
-// invalidation via directChapter's own touched tracking below.
-func clearStaleDirectionTags(tagged map[int]string, paragraphs []store.Paragraph, remaining []speakerattr.ParagraphInput, current func(store.Paragraph) string) map[int]string {
-	remainingSet := make(map[int]bool, len(remaining))
-	for _, p := range remaining {
-		remainingSet[p.Idx] = true
-	}
-	for _, p := range paragraphs {
-		if remainingSet[p.Idx] {
-			continue
-		}
-		if _, ok := tagged[p.Idx]; ok {
-			continue
-		}
-		if current(p) != "" {
-			tagged[p.Idx] = ""
-		}
-	}
-	return tagged
-}
-
-func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.Chapter, onlyIdx map[int]bool) (tagged int, requeue func(), err error) {
-	bookVoice, err := s.Narration.BookVoice(book)
-	if err != nil {
-		return 0, nil, err
-	}
-	cloneModel := narration.EffectiveCloneModel(bookVoice)
-	if cloneModel != voices.HiggsCloneModel {
-		return 0, nil, nil
-	}
-
+// shouldPause is nil, not s.Jobs.HasHigherPriorityWork: a whole-book
+// preprocess phase dispatches each chapter's pass exactly once with no
+// retry loop of its own, and under contention most chapters would pause
+// after their first batch and never be picked up again.
+func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.Chapter, onlyIdx map[int]bool) (labeled int, requeue func(), err error) {
 	all, err := s.Store.ListParagraphsRaw(ch.ID)
 	if err != nil {
 		return 0, nil, err
@@ -1627,119 +1614,72 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 	for i, p := range paragraphs {
 		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
 	}
+	labels, remaining, labelErr := s.Speaker.EmotionChapter(ctx, book.Title, ch.Title, inputs, nil)
 
-	// Two independent LLM passes - sentence-level (emotion/style/prosody
-	// speed|pitch|expressive) and positional (sfx/prosody pause|long_pause)
-	// - see speakerattr.Client.DirectChapter/TagSfx's own doc comments for
-	// why these stay separate calls rather than one. Both share the same
-	// "unconditional, an error in one doesn't skip the other" treatment:
-	// each annotates its own independent storage
-	// (Store.SetParagraphSentenceTags/SetParagraphInlineTags), so there's
-	// nothing for one pass's failure to corrupt in the other's output. Each
-	// also independently reports its own remaining paragraphs if it stops
-	// partway on a genuine error (shouldPause is nil for both now - see
-	// this function's own doc comment above) - the passes can stop at
-	// different points, so the requeue built below carries forward the
-	// union of both rather than assuming they align.
-	sentenceTags, sentenceRemaining, sentenceErr := s.Speaker.DirectChapter(ctx, book.Title, ch.Title, inputs, nil)
-	inlineTags, inlineRemaining, inlineErr := s.Speaker.TagSfx(ctx, book.Title, ch.Title, inputs, nil)
-
-	// A paragraph absent from sentenceTags/inlineTags means "this pass
-	// decided it needs no tag this run" (the overwhelmingly common case -
-	// see DirectChapter/TagSfx's own doc comments) - but setParagraphDirectionField
-	// treats an absent paragraph as simply untouched, not explicitly
-	// cleared. Without this, re-tagging a chapter could only ever add or
-	// change tags, never remove one a *previous* run set that the current
-	// model logic no longer agrees with (confirmed in production: an
-	// emotion tag DirectChapter had placed on a narration paragraph before
-	// stripEmotionFromNonQuotes existed stayed there forever afterward,
-	// since a fresh run simply never mentions that paragraph again rather
-	// than actively clearing it). clearStaleDirectionTags adds an explicit
-	// "" entry for exactly the paragraphs that need one - processed this
-	// run (not left for a later continuation) but not retagged, and only
-	// when they actually still carry a stale value from before - so a
-	// genuinely no-op re-tag (nothing to clear, nothing to add) stays a
-	// no-op rather than rewriting and invalidating audio for a chapter
-	// that didn't actually change.
-	sentenceTags = clearStaleDirectionTags(sentenceTags, paragraphs, sentenceRemaining, func(p store.Paragraph) string {
-		return p.Tags[cloneModel].SentenceText
-	})
-	inlineTags = clearStaleDirectionTags(inlineTags, paragraphs, inlineRemaining, func(p store.Paragraph) string {
-		return p.Tags[cloneModel].InlineText
-	})
-
-	// Persisted regardless of any error - a batch failing partway through
-	// a chapter shouldn't discard whatever earlier batches in this same
-	// call actually tagged, same "persist what succeeded" treatment
-	// attributeChapter/describeChapter give their own partial errors.
-	if serr := s.Store.SetParagraphSentenceTags(ch.ID, cloneModel, sentenceTags); serr != nil {
+	// Persisted regardless of labelErr - a batch failing partway shouldn't
+	// discard what earlier batches in this same call labeled.
+	notReached := make(map[int]bool, len(remaining))
+	for _, p := range remaining {
+		notReached[p.Idx] = true
+	}
+	updates := make(map[int]string)
+	var changed []store.Paragraph
+	for _, p := range paragraphs {
+		if notReached[p.Idx] {
+			continue
+		}
+		label := labels[p.Idx]
+		if label == p.Emotion {
+			continue
+		}
+		updates[p.Idx] = label
+		before := p.EffectiveEmotion()
+		p.Emotion = label
+		if p.EffectiveEmotion() != before {
+			changed = append(changed, p)
+		}
+	}
+	if serr := s.Store.SetParagraphEmotions(ch.ID, updates); serr != nil {
 		return 0, nil, serr
 	}
-	if serr := s.Store.SetParagraphInlineTags(ch.ID, cloneModel, inlineTags); serr != nil {
-		return 0, nil, serr
+	// Audio generated under the Higgs tag passes this replaced still has
+	// their emotion/sfx/pause tags baked in, even where the emotion label
+	// itself didn't change - invalidate those lines too (once: the legacy
+	// tags are cleared as they're found).
+	if legacy, lerr := s.Store.ClearLegacyTags(ch.ID); lerr != nil {
+		log.Printf("directChapter: clear legacy tags for chapter %s: %v", ch.ID, lerr)
+	} else if len(legacy) > 0 {
+		inChanged := make(map[int]bool, len(changed))
+		for _, p := range changed {
+			inChanged[p.Idx] = true
+		}
+		byIdx := make(map[int]store.Paragraph, len(all))
+		for _, p := range all {
+			byIdx[p.Idx] = p
+		}
+		for _, idx := range legacy {
+			if p, ok := byIdx[idx]; ok && !inChanged[idx] {
+				if e, ok := updates[idx]; ok {
+					p.Emotion = e
+				}
+				changed = append(changed, p)
+			}
+		}
+	}
+	if len(changed) > 0 {
+		// Expanded to scare-quote merge groups: a member's text changing
+		// makes the group's shared clip stale.
+		s.invalidateParagraphAudio(book, s.expandToInlineSets(ch.ID, changed))
 	}
 
-	// touched is the union of both passes' own touched paragraphs (a line
-	// can get an entry from each), counted once each for the "tagged"
-	// count this returns and for deciding whether anything actually
-	// changed below.
-	touched := make(map[int]bool, len(sentenceTags)+len(inlineTags))
-	for idx := range sentenceTags {
-		touched[idx] = true
+	if labelErr != nil {
+		// A genuine failure, not a pause - don't mark the chapter directed
+		// yet, so a later re-run doesn't skip it.
+		return len(labels), nil, labelErr
 	}
-	for idx := range inlineTags {
-		touched[idx] = true
-	}
-
-	if len(touched) > 0 {
-		// A newly (or differently) tagged paragraph's already-generated
-		// audio no longer reflects what it should actually say, so it's
-		// stale - wipe the whole chapter's generated audio, the same
-		// DB-delete/disk-delete pairing handleDeleteChapterAudio's own
-		// "Clear generation" button uses, so every paragraph regenerates
-		// (picking up its own tags, if any) next time this chapter is
-		// read/generated. Blunt (the whole chapter, not just the
-		// paragraphs that actually got a tag this run) rather than
-		// surgical - simpler and more predictable than tracking which
-		// paragraphs' tags actually changed value from a previous run.
-		// Skipped entirely when nothing was tagged: nothing changed, so
-		// nothing is actually stale, and invalidating a whole chapter's
-		// audio for no reason would just force pointless regeneration.
-		if serr := s.Store.DeleteChapterAudio(ch.ID); serr != nil {
-			log.Printf("directChapter: invalidate audio for chapter %s: %v", ch.ID, serr)
-		} else {
-			_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s/%s", s.DataDir, book.ID, ch.ID))
-		}
-	}
-	if sentenceErr != nil || inlineErr != nil {
-		// A genuine failure partway through one or both passes, not a
-		// pause - don't mark cloneModel directed for this chapter yet (same
-		// "only mark on a full, uninterrupted run" rule attributeChapter's
-		// own SetChapterAttributed follows), so a later re-run doesn't skip
-		// it. Reports whichever error occurred first, preferring sentence
-		// over inline if both failed.
-		if sentenceErr != nil {
-			return len(touched), nil, sentenceErr
-		}
-		return len(touched), nil, inlineErr
-	}
-	if len(sentenceRemaining) > 0 || len(inlineRemaining) > 0 {
-		// At least one pass paused for higher-priority poolLLM work before
-		// reaching every paragraph it was given - build the union of both
-		// passes' own remaining paragraphs and requeue exactly that set as
-		// a follow-up task under this same chapter's dedup key (see
-		// jobs.Manager.EnqueueDirection/pushTask). If only one pass paused,
-		// the other (already fully finished this run) still gets re-invoked
-		// on the continuation, over this narrower onlyIdx set - a few
-		// wasted-but-harmless calls re-covering paragraphs already handled
-		// (SetParagraphSentenceTags/InlineTags both overwrite idempotently
-		// per-idx), traded for not having to track each pass's own
-		// completion separately across a chain of continuations.
-		remainingIdx := make(map[int]bool, len(sentenceRemaining)+len(inlineRemaining))
-		for _, p := range sentenceRemaining {
-			remainingIdx[p.Idx] = true
-		}
-		for _, p := range inlineRemaining {
+	if len(remaining) > 0 {
+		remainingIdx := make(map[int]bool, len(remaining))
+		for _, p := range remaining {
 			remainingIdx[p.Idx] = true
 		}
 		requeue = func() {
@@ -1747,22 +1687,15 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 				return s.directChapter(ctx, book, ch, remainingIdx)
 			})
 		}
-		return len(touched), requeue, nil
+		return len(labels), requeue, nil
 	}
-	// A full, uninterrupted run of both passes over the whole chapter
-	// just finished for cloneModel (possibly across several paused/resumed
-	// continuations - see onlyIdx's own doc comment) - advance its
-	// pipeline progress persistently (store.Passes), the same "stored
-	// fact, not derived from paragraph state" reasoning applies. No longer
-	// keyed by cloneModel (see store.Passes' own doc comment for the
-	// deliberate chapter-wide simplification that replaced the old
-	// per-clone-model chapters.directed map). Best-effort: a failure here
-	// shouldn't undo the tagging work already committed above, just log
-	// rather than fail the call outright.
+	// A full, uninterrupted run over the whole chapter (possibly across
+	// several continuations) - best-effort, since the labels themselves are
+	// already committed.
 	if serr := s.Store.SetChapterDirected(ch.ID); serr != nil {
 		log.Printf("directChapter: could not advance chapter %s passes: %v", ch.ID, serr)
 	}
-	return len(touched), nil, nil
+	return len(labels), nil, nil
 }
 
 // pronounceChapter runs speakerattr.Client.ResolvePronunciation
@@ -2616,19 +2549,6 @@ func (s *Server) handleTagDirections(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
-	// Checked synchronously, before enqueueing, so a reader gets an
-	// immediate, clear rejection instead of a 202 for a task that silently
-	// tags nothing - see directChapter's own doc comment for why this
-	// feature only applies to Higgs's own clone model.
-	bookVoice, err := s.Narration.BookVoice(book)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if narration.EffectiveCloneModel(bookVoice) != voices.HiggsCloneModel {
-		writeError(w, http.StatusBadRequest, "speech direction tags are only supported for the "+voices.HiggsCloneModel+" clone model")
-		return
-	}
 	ch, err := s.Store.GetChapterByIdx(bookID, idx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -2996,4 +2916,100 @@ func (s *Server) handleCharacterizeSpeakers(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"queued": queued})
+}
+
+// handleVariantAudio serves one emotion variant of a voice preset's
+// reference clip (see voicerefs.EnsureVariantFile) - the Speakers page's
+// per-emotion preview. 404 until it's been rendered.
+func (s *Server) handleVariantAudio(w http.ResponseWriter, r *http.Request) {
+	presetID, emotion := r.PathValue("presetId"), r.PathValue("emotion")
+	if !emotions.Valid(emotion) || strings.ContainsAny(presetID, "/\\.") {
+		writeError(w, http.StatusNotFound, "variant not found")
+		return
+	}
+	path := audiopath.VoicePresetVariantFile(s.DataDir, presetID, emotion)
+	if _, err := os.Stat(path); err != nil {
+		writeError(w, http.StatusNotFound, "variant not found")
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	http.ServeFile(w, r, path)
+}
+
+type regenerateVariantRequest struct {
+	Speaker string `json:"speaker"`
+	Emotion string `json:"emotion"`
+}
+
+// handleRegenerateVariant re-renders the emotion variant speaker's lines in
+// bookID clone from (whichever preset they currently generate under - see
+// narration.Resolver.ForParagraph): deletes the old take (and any failure
+// marker), resets this book's audio for that speaker's lines in that
+// emotion to pending, and queues the new render right away so it can be
+// previewed. Another book sharing the same preset keeps its already-
+// generated audio until regenerated there. 202 on success.
+func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request) {
+	bookID := r.PathValue("id")
+	var req regenerateVariantRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if !emotions.Valid(req.Emotion) {
+		writeError(w, http.StatusBadRequest, "unknown emotion "+strconv.Quote(req.Emotion))
+		return
+	}
+	book, err := s.Store.GetBook(bookID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if book == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	speaker := req.Speaker
+	if speaker == "" {
+		speaker = "Narrator"
+	}
+	voice, err := s.Narration.ForParagraph(book, speaker)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if voice.PresetID == "" {
+		writeError(w, http.StatusBadRequest, "this speaker's voice has no reference clip to vary")
+		return
+	}
+	if err := voicerefs.DeleteVariant(s.DataDir, voice.PresetID, req.Emotion); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	paragraphs, err := s.Store.ListParagraphsRawForBook(bookID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var stale []store.Paragraph
+	for _, p := range paragraphs {
+		name := p.Speaker
+		if name == "" {
+			name = "Narrator"
+		}
+		if name == speaker && p.EffectiveEmotion() == req.Emotion {
+			stale = append(stale, p)
+		}
+	}
+	s.invalidateParagraphAudio(book, stale)
+
+	s.Jobs.EnqueueEmotionVariant(bookID, speaker, voicerefs.BaseClip{
+		PresetID:        voice.PresetID,
+		Instruct:        voice.Instruct,
+		Seed:            voice.Seed,
+		RefText:         voice.RefText,
+		SpeedMultiplier: voice.SpeedMultiplier,
+		DesignModel:     voice.DesignModel,
+	}, req.Emotion)
+	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
 }

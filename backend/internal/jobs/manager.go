@@ -21,6 +21,7 @@ import (
 	"unicode"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/musicgen"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -2549,6 +2550,9 @@ func (m *Manager) resolveDependencies(lq *taskqueue.LockedQueue, tk taskqueue.Ta
 		if d := m.referenceClipDependency(lq, t); d != nil {
 			deps = append(deps, d)
 		}
+		if d := m.variantClipDependency(lq, t); d != nil {
+			deps = append(deps, d)
+		}
 	}
 	if t.kind == KindSpeakerAttribution || t.kind == KindDescription {
 		if d := m.scareQuoteDependency(lq, t); d != nil {
@@ -2743,17 +2747,15 @@ func (m *Manager) characterizationDependency(lq *taskqueue.LockedQueue, t *task)
 
 // speechDirectionDependency is characterizationDependency's own sibling,
 // one level up: t's own chapter's currently queued or in-flight
-// KindSpeechDirection task, if any, or a lazily-created one via m.direct
-// (a no-op, returning no dependency at all, if that was never configured -
-// see ChapterDirector's own doc comment) the first time it discovers the
-// chapter isn't tagged yet (ch.State != store.ChapterStateTagged).
-// Direction-tagging invalidates its own chapter's already-generated audio
-// the moment it finds even one paragraph to tag (see
-// httpapi.directChapter's own SetParagraphTags/DeleteChapterAudio call), so
-// a clone dispatched moments before that finishes would just get deleted
-// again immediately, wasting the render - the exact same wasted-render
-// shape characterizationDependency prevents for a recharacterization
-// changing what a voice sounds like mid-flight.
+// KindSpeechDirection (emotion labeling) task, if any, or a lazily-created
+// one via m.direct (a no-op, returning no dependency at all, if that was
+// never configured - see ChapterDirector's own doc comment) the first time
+// it discovers the chapter isn't labeled yet (!Passes.Direction). Any
+// clone model: an emotion picks which reference clip a line clones from
+// (see variantClipDependency), so a line generated before its chapter is
+// labeled would just be invalidated and re-rendered once it is - the
+// exact same wasted-render shape characterizationDependency prevents for
+// a recharacterization changing what a voice sounds like mid-flight.
 func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
 	chapterID := t.chapterID
 	// Every KindSpeechDirection task is keyed by its own chapterID (see
@@ -2776,15 +2778,6 @@ func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) 
 	// (httpapi.handleUpdateVoice, which also invalidates any audio already
 	// generated without that guarantee).
 	if !book.SpeechDirection {
-		return nil
-	}
-	// Direction tags only mean anything to Higgs's own tokenizer, and
-	// directChapter (m.direct's own real implementation) no-ops for any
-	// other clone model without ever setting Passes.Direction - so without
-	// this gate a non-Higgs book's clone task would recreate a no-op
-	// direction task forever. Pronunciation resolution, which does apply
-	// to every model, is its own dependency (pronunciationDependency).
-	if narration.BookCloneModel(book) != voices.HiggsCloneModel {
 		return nil
 	}
 	ch, err := m.memoChapterByID(lq, chapterID)
@@ -2974,6 +2967,94 @@ func (m *Manager) referenceClipDependency(lq *taskqueue.LockedQueue, t *task) ta
 		},
 	}
 	return m.pushDependency(lq, nt)
+}
+
+// variantClipDependency is referenceClipDependency's own counterpart for
+// an emotional line: when t's paragraph has an effective emotion
+// (store.Paragraph.EffectiveEmotion - real dialogue only) and its preset's
+// variant clip for that emotion hasn't been rendered yet, it returns the
+// KindVoiceProvision task rendering it (voicerefs.EnsureVariantFile - a
+// BreezeTTS instructed clone of the base clip), creating one keyed by
+// (preset, emotion) if nobody's rendering it yet. Variants are provisioned
+// lazily this way, one per emotion a voice's lines actually use, rather
+// than every emotion for every voice up front.
+//
+// A render that fails on its final attempt marks the variant failed
+// (voicerefs.MarkVariantFailed), which clears this dependency: lines in
+// that emotion then clone from the base clip (see generate) instead of
+// blocking forever. Skipped for a scare-quote merge group (one call
+// renders narration and quote together, so no single emotion applies).
+func (m *Manager) variantClipDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+	if t.presetID == "" || len(t.mergeParagraphs) > 1 {
+		return nil
+	}
+	emotion := t.paragraph.EffectiveEmotion()
+	if emotion == emotions.Neutral {
+		return nil
+	}
+	settled := lq.Memo("variantclip:"+t.presetID+":"+emotion, func() any {
+		return voicerefs.VariantExists(m.dataDir, t.presetID, emotion) || voicerefs.VariantFailed(m.dataDir, t.presetID, emotion)
+	}).(bool)
+	if settled {
+		return nil
+	}
+	if found, ok := lq.Get("voice_provision:" + variantKey(t.presetID, emotion)); ok {
+		return found
+	}
+	label := t.paragraph.Speaker
+	if label == "" {
+		label = "Narrator"
+	}
+	base := voicerefs.BaseClip{
+		PresetID:        t.presetID,
+		Instruct:        t.instruct,
+		Seed:            t.seed,
+		RefText:         t.refText,
+		SpeedMultiplier: t.speedMultiplier,
+		DesignModel:     t.designModel,
+	}
+	return m.pushDependency(lq, m.newVariantTask(t.tier, t.bookID, label, base, emotion))
+}
+
+// variantKey is an emotion variant render's llmKey - one per (preset,
+// emotion), so the lazy dependency path and an explicit regenerate
+// (EnqueueEmotionVariant) join rather than rendering twice.
+func variantKey(presetID, emotion string) string {
+	return "variant:" + presetID + ":" + emotion
+}
+
+// newVariantTask builds the KindVoiceProvision task rendering base's
+// emotion variant (voicerefs.EnsureVariantFile). A render that fails on
+// its final attempt marks the variant failed so its lines fall back to the
+// base clip - see variantClipDependency.
+func (m *Manager) newVariantTask(tier int, bookID, speaker string, base voicerefs.BaseClip, emotion string) *task {
+	return &task{
+		kind:   KindVoiceProvision,
+		tier:   tier,
+		bookID: bookID,
+		llmKey: variantKey(base.PresetID, emotion),
+		label:  speaker + " (" + emotion + ")",
+		runProvision: func(ctx context.Context, attempt int) (string, error) {
+			path, err := voicerefs.EnsureVariantFile(ctx, m.tts, m.dataDir, base, emotion)
+			if err != nil && !errors.Is(err, context.Canceled) && attempt+1 >= maxTaskAttempts {
+				log.Printf("jobs: %s variant for preset %s failed for good, falling back to the base clip: %v", emotion, base.PresetID, err)
+				if merr := voicerefs.MarkVariantFailed(m.dataDir, base.PresetID, emotion); merr != nil {
+					log.Printf("jobs: mark variant failed: %v", merr)
+				}
+			}
+			return path, err
+		},
+	}
+}
+
+// EnqueueEmotionVariant renders base's emotion variant now rather than
+// waiting for the next line in that emotion to need it - the Speakers
+// page's explicit "regenerate variant" action (after
+// voicerefs.DeleteVariant), so the reader can hear the new take right
+// away. Fire-and-forget at TierUrgent; joins a render already queued for
+// the same (preset, emotion).
+func (m *Manager) EnqueueEmotionVariant(bookID, speaker string, base voicerefs.BaseClip, emotion string) {
+	m.pushTask(m.newVariantTask(TierUrgent, bookID, speaker, base, emotion))
 }
 
 // attributionOrderDependency makes chapter t.chapterIdx-1 of the same
@@ -5284,15 +5365,18 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ensure reference clip: %w", err)
 	}
+	refText := t.refText
+	if path, line, ok := m.emotionVariant(t); ok {
+		refPath, refText = path, line
+	}
 	refAudio, err := os.ReadFile(refPath)
 	if err != nil {
 		return nil, fmt.Errorf("read reference clip: %w", err)
 	}
-	// t.paragraph.ResolveGenerationText merges cloneModel's own delivery
-	// annotations (SentenceText/InlineText - see store.ParagraphDirection)
-	// back into t.paragraph.Text, or returns it unchanged if this paragraph
-	// has none for cloneModel (the common case) - only the text actually
-	// sent for cloning. Deliberately NOT applied to t.paragraph.Text itself:
+	// t.paragraph.ResolveGenerationText applies pronunciation/emphasis
+	// substitutions (and, for Higgs, pause tags) to t.paragraph.Text, or
+	// returns it unchanged if there are none (the common case) - only the
+	// text actually sent for cloning. Deliberately NOT applied to t.paragraph.Text itself:
 	// alignParagraph (see its own call site) uses that field directly for
 	// forced alignment/word-timing, which must stay the plain spoken words -
 	// an inserted tag token there would show up as a spurious "word" with no
@@ -5306,7 +5390,30 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, error) {
 	if len(t.mergeParagraphs) > 1 {
 		text = mergedGenerationText(t.mergeParagraphs, cloneModel)
 	}
-	return m.generateClone(ctx, cloneModel, refAudio, t.refText, t.language, text, t.cloneInstruct)
+	return m.generateClone(ctx, cloneModel, refAudio, refText, t.language, text, t.cloneInstruct)
+}
+
+// emotionVariant returns the emotion-variant reference clip (and the line
+// it speaks, its transcript) t should clone from instead of its preset's
+// base clip, if t's paragraph currently has an effective emotion whose
+// variant has been rendered (see variantClipDependency) - re-read from the
+// store rather than trusted from t.paragraph, since a manual override can
+// land between enqueue and dispatch. ok is false for a neutral line, a
+// scare-quote merge group, or a variant that failed to render (the base
+// clip is used then).
+func (m *Manager) emotionVariant(t *task) (path, refLine string, ok bool) {
+	if t.presetID == "" || len(t.mergeParagraphs) > 1 {
+		return "", "", false
+	}
+	p, err := m.store.GetParagraph(t.paragraph.ID)
+	if err != nil || p == nil {
+		return "", "", false
+	}
+	e, known := emotions.Get(p.EffectiveEmotion())
+	if !known || !voicerefs.VariantExists(m.dataDir, t.presetID, e.ID) {
+		return "", "", false
+	}
+	return audiopath.VoicePresetVariantFile(m.dataDir, t.presetID, e.ID), e.RefLine, true
 }
 
 func (m *Manager) handleResult(t *task, result taskResult) {

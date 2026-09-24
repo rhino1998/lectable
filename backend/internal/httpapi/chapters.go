@@ -14,9 +14,11 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/deliverytags"
+	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
+	"github.com/rhino1998/lectable/backend/internal/voices"
 	"github.com/rhino1998/lectable/backend/internal/wav"
 )
 
@@ -35,52 +37,22 @@ type directionMarkDTO struct {
 	Tag    string `json:"tag"`
 }
 
-// directionMarksFor extracts every delivery tag active on p for
-// cloneModel, from both its sentence-level and positional annotations
-// (see store.ParagraphDirection), each pinned to its own byte offset
-// converted to a rune offset (see directionMarkDTO.Offset) - in the order
-// they'd actually be spoken, mirroring the same offset-sort
-// deliverytags.Merge itself uses to build the real generation text
-// (sentence-level insertions ordered first at a shared offset). A stored
-// annotation that fails to re-extract against p.Text (should never happen
-// for anything this app itself wrote) is silently skipped, the same
-// graceful-degradation treatment Paragraph.ResolveGenerationText gives it.
+// directionMarksFor returns every delivery tag cloneModel's generation
+// text for p will carry - today just the Higgs-only pause pass
+// (deliverytags.PauseInsertions, applied by
+// store.Paragraph.ResolveGenerationText) - each pinned to its byte offset
+// converted to a rune offset (see directionMarkDTO.Offset).
 func directionMarksFor(p store.Paragraph, cloneModel string) []directionMarkDTO {
-	d, ok := p.Tags[cloneModel]
-	if !ok {
+	if cloneModel != voices.HiggsCloneModel {
 		return nil
 	}
-	type ranked struct {
-		deliverytags.Insertion
-		setIdx int
-	}
-	var all []ranked
-	if d.SentenceText != "" {
-		if ins, err := deliverytags.ExtractInsertions(p.Text, d.SentenceText); err == nil {
-			for _, i := range ins {
-				all = append(all, ranked{i, 0})
-			}
-		}
-	}
-	if d.InlineText != "" {
-		if ins, err := deliverytags.ExtractInsertions(p.Text, d.InlineText); err == nil {
-			for _, i := range ins {
-				all = append(all, ranked{i, 1})
-			}
-		}
-	}
-	if len(all) == 0 {
+	ins := deliverytags.PauseInsertions(p.Text)
+	if len(ins) == 0 {
 		return nil
 	}
-	sort.SliceStable(all, func(i, j int) bool {
-		if all[i].Offset != all[j].Offset {
-			return all[i].Offset < all[j].Offset
-		}
-		return all[i].setIdx < all[j].setIdx
-	})
-	out := make([]directionMarkDTO, len(all))
-	for i, r := range all {
-		out[i] = directionMarkDTO{Offset: utf8.RuneCountInString(p.Text[:r.Offset]), Tag: r.Tag}
+	out := make([]directionMarkDTO, len(ins))
+	for i, in := range ins {
+		out[i] = directionMarkDTO{Offset: utf8.RuneCountInString(p.Text[:in.Offset]), Tag: in.Tag}
 	}
 	return out
 }
@@ -178,16 +150,16 @@ type paragraphDTO struct {
 	// narration describes - see store.Paragraph.DescribesCharacters.
 	// Always empty when IsQuote is true.
 	DescribesCharacters []string `json:"describesCharacters,omitempty"`
-	// DirectionMarks is every inline delivery tag (e.g. "<|emotion:anger|>",
-	// "<|sfx:laughter|>") currently active on this paragraph for whichever
-	// clone model it's resolved to narrate through, each pinned to where
-	// it was actually inserted in Text (see directionMarkDTO.Offset) so
-	// the frontend can render an inline caret there - both from the
-	// sentence-level pass and the positional one (see
-	// store.ParagraphDirection), in the order they'd actually be spoken.
-	// Empty for the common case (no annotation, or a clone model that
-	// doesn't understand this vocabulary at all - see
-	// internal/speakerattr.validSentenceTags/validInlineTags).
+	// Emotion is this paragraph's effective delivery emotion (an
+	// internal/emotions id - see store.Paragraph.EffectiveEmotion), omitted
+	// for neutral. Only ever set on real dialogue.
+	Emotion string `json:"emotion,omitempty"`
+	// DirectionMarks is every inline delivery tag (today only Higgs's
+	// "<|prosody:pause|>") the generation text for this paragraph carries
+	// under whichever clone model it's resolved to narrate through, each
+	// pinned to where it's inserted in Text (see directionMarkDTO.Offset)
+	// so the frontend can render an inline caret there. Empty for the
+	// common case.
 	DirectionMarks []directionMarkDTO `json:"directionMarks,omitempty"`
 	// PronunciationMarks is every resolved pronunciation substitution
 	// active on this paragraph (e.g. "Dr." -> "Doctor"), each pinned to
@@ -411,6 +383,7 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 			IsQuote:             p.IsQuote,
 			ScareQuote:          p.ScareQuote,
 			DescribesCharacters: p.DescribesCharacters,
+			Emotion:             p.EffectiveEmotion(),
 			DirectionMarks:      directionMarksFor(p, cloneModelByParagraph[p.ID]),
 			PronunciationMarks:  pronunciationMarksFor(p),
 			AudioStatus:         state.Status,
@@ -978,6 +951,98 @@ func (s *Server) handleSetParagraphDescription(w http.ResponseWriter, r *http.Re
 
 type setParagraphScareQuoteRequest struct {
 	ScareQuote bool `json:"scareQuote"`
+}
+
+type setParagraphEmotionRequest struct {
+	Emotion string `json:"emotion"`
+}
+
+// handleSetParagraphEmotion is a reader's manual override of one dialogue
+// line's emotion (an internal/emotions id, or "" for neutral) - the
+// annotations view's right-click menu. Like handleSetParagraphScareQuote,
+// it invalidates and immediately re-enqueues the line's audio when its
+// effective emotion actually changes, since that picks a different
+// reference clip (lazily rendering the variant first - see
+// jobs.Manager.variantClipDependency). 400 for narration or an unknown
+// emotion.
+func (s *Server) handleSetParagraphEmotion(w http.ResponseWriter, r *http.Request) {
+	bookID := r.PathValue("id")
+	chapterIdx, err := strconv.Atoi(r.PathValue("idx"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid chapter index")
+		return
+	}
+	paragraphIdx, err := strconv.Atoi(r.PathValue("pidx"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid paragraph index")
+		return
+	}
+	var req setParagraphEmotionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Emotion != emotions.Neutral && !emotions.Valid(req.Emotion) {
+		writeError(w, http.StatusBadRequest, "unknown emotion "+strconv.Quote(req.Emotion))
+		return
+	}
+
+	book, err := s.Store.GetBook(bookID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if book == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	ch, err := s.Store.GetChapterByIdx(bookID, chapterIdx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if ch == nil {
+		writeError(w, http.StatusNotFound, "chapter not found")
+		return
+	}
+	paragraphID, err := s.Store.GetParagraphIDByIdx(ch.ID, paragraphIdx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if paragraphID == "" {
+		writeError(w, http.StatusNotFound, "paragraph not found")
+		return
+	}
+	p, err := s.Store.GetParagraph(paragraphID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if p == nil {
+		writeError(w, http.StatusNotFound, "paragraph not found")
+		return
+	}
+	if !p.IsQuote {
+		writeError(w, http.StatusBadRequest, "only quoted dialogue can have an emotion")
+		return
+	}
+	if req.Emotion == p.Emotion {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+
+	if err := s.Store.SetParagraphEmotions(ch.ID, map[int]string{paragraphIdx: req.Emotion}); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	before := p.EffectiveEmotion()
+	p.Emotion = req.Emotion
+	if p.EffectiveEmotion() != before {
+		s.invalidateParagraphAudio(book, []store.Paragraph{*p})
+		s.Jobs.EnqueueParagraphRegenerate(bookID, ch.ID, ch.Idx, *p)
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // handleSetParagraphScareQuote lets a reader directly mark (or unmark) one

@@ -661,8 +661,7 @@ func parsePronunciationChoices(content string, terms []pronunciationTerm) map[in
 // found there), persisted via Store.SetParagraphPronunciation and applied
 // only at generation time (store.Paragraph.ResolveGenerationText, via
 // pronounce.Apply) - never to the reader's own on-screen text or forced
-// alignment's own reference text, exactly like the two delivery-tag
-// passes (DirectChapter/TagSfx).
+// alignment's own reference text.
 //
 // shouldPause/remaining/err follow AttributeChapter's own contract
 // exactly (see its doc comment): nil-safe shouldPause, checked between

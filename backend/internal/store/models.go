@@ -6,8 +6,9 @@ import (
 	"fmt"
 
 	"github.com/rhino1998/lectable/backend/internal/deliverytags"
+	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
-	"github.com/rhino1998/lectable/backend/internal/speakerattr"
+	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
 const (
@@ -203,10 +204,10 @@ type Passes struct {
 	// attribution and description tagging wait on this
 	// (jobs.Manager.scareQuoteDependency).
 	ScareQuote bool `json:"scareQuote"`
-	// Direction is set once speech-direction tagging
-	// (internal/speakerattr.Client.DirectChapter/TagSfx, via
-	// httpapi.directChapter - Higgs-only) has completed over the whole chapter at
-	// least once, the same "full pass, not a pause/failure" contract as
+	// Direction is set once emotion labeling
+	// (internal/speakerattr.Client.EmotionChapter, via
+	// httpapi.directChapter - any clone model) has completed over the whole
+	// chapter at least once, the same "full pass, not a pause/failure" contract as
 	// Attribution. Fully independent of Attribution/Description - a
 	// reader can trigger "Tag directions" directly on a chapter that was
 	// never attributed via the per-chapter button, bypassing
@@ -218,9 +219,7 @@ type Passes struct {
 	// (internal/speakerattr.Client.ResolvePronunciation, a
 	// jobs.KindPronunciation task via httpapi.pronounceChapter) has
 	// completed a full pass over the chapter - Direction's own contract,
-	// but its own pass: a plain word substitution ("Dr." -> "Doctor")
-	// reads correctly under every clone model, so unlike Direction it
-	// isn't gated on Higgs.
+	// but its own pass.
 	Pronunciation bool `json:"pronunciation"`
 	// Music is set once internal/speakerattr.Client.ScoreMusic has
 	// completed a full, uninterrupted pass over this chapter (never on a
@@ -392,14 +391,6 @@ type DescribesCharacterList []string
 func (d *DescribesCharacterList) Scan(v any) error            { return scanJSON(v, d) }
 func (d DescribesCharacterList) Value() (driver.Value, error) { return jsonValue(d) }
 
-// ParagraphTagMap implements sql.Scanner/driver.Valuer over
-// paragraphs.tts_tags - see DescribesCharacterList's own doc comment for
-// why a named type at all.
-type ParagraphTagMap map[string]ParagraphDirection
-
-func (t *ParagraphTagMap) Scan(v any) error            { return scanJSON(v, t) }
-func (t ParagraphTagMap) Value() (driver.Value, error) { return jsonValue(t) }
-
 // PronunciationList implements sql.Scanner/driver.Valuer over
 // paragraphs.pronunciation - see DescribesCharacterList's own doc comment.
 type PronunciationList []pronounce.Substitution
@@ -473,20 +464,17 @@ type Paragraph struct {
 	// ever tagged as a description, never a quoted line. nil until a
 	// Describe run has tagged this paragraph.
 	DescribesCharacters DescribesCharacterList
-	// Tags is this paragraph's own inline Higgs-style delivery annotations,
-	// per clone_model - decoded from the paragraphs.tts_tags column (see
-	// Store.SetParagraphSentenceTags/SetParagraphInlineTags and
-	// ResolveGenerationText). A missing entry for a given clone_model
-	// means no annotation at all (the common case). Applied only at
-	// generation time (jobs.Manager.generate, via ResolveGenerationText),
-	// never during forced alignment - see the tts_tags column's own
-	// comment in store.go.
-	Tags ParagraphTagMap
+	// Emotion is this paragraph's delivery emotion (an internal/emotions
+	// id), or emotions.Neutral ("") - set by the emotion pass
+	// (internal/speakerattr.Client.EmotionChapter, via
+	// httpapi.directChapter) or a reader's manual override. Only ever
+	// honored for real dialogue - see EffectiveEmotion.
+	Emotion string
 	// Pronunciation is this paragraph's own resolved pronunciation
 	// substitutions (internal/speakerattr.Client.ResolvePronunciation),
 	// decoded from the paragraphs.pronunciation column (see
-	// Store.SetParagraphPronunciation and ResolveGenerationText). Unlike
-	// Tags, not clone_model-keyed - a pronunciation fix is plain word
+	// Store.SetParagraphPronunciation and ResolveGenerationText). Not
+	// clone_model-keyed - a pronunciation fix is plain word
 	// substitution, independent of which TTS model narrates it. nil/empty
 	// (the common case) means no ambiguous abbreviation was found in this
 	// paragraph at all.
@@ -506,94 +494,32 @@ type Paragraph struct {
 	Emphasis PronunciationList
 }
 
-// ParagraphDirection is one clone_model's own delivery annotations for a
-// paragraph, from two independent LLM passes (internal/speakerattr) that
-// each produce their own fully-annotated variant of the paragraph's plain
-// Text - never a bare tag string, since either pass may insert more than
-// one tag at more than one position (a long quote whose tone shifts
-// partway through, or a line with both a sound effect and a dramatic
-// pause). Each field, when non-empty, must be Text itself with zero or
-// more <|category:value|> tags inserted and nothing else changed -
-// enforced by deliverytags.ExtractInsertions before either pass is ever
-// allowed to persist a batch's output (see
-// Store.SetParagraphSentenceTags/SetParagraphInlineTags).
-type ParagraphDirection struct {
-	// SentenceText holds emotion/style/prosody speed|pitch|expressive tags
-	// (internal/speakerattr.validSentenceTags) - "sentence-level" per
-	// Higgs's own PROMPTING.md: each one colors the whole sentence/clause
-	// it's inserted immediately before. Set by Client.DirectChapter.
-	SentenceText string `json:"sentenceText,omitempty"`
-	// InlineText holds sfx and prosody pause|long_pause tags
-	// (internal/speakerattr.validInlineTags) - "inline" per PROMPTING.md:
-	// each one marks an exact point within the line (an sfx tag
-	// immediately before an onomatopoeia word already there, a pause
-	// between two existing words/phrases) rather than coloring a whole
-	// span. Set by Client.TagSfx.
-	InlineText string `json:"inlineText,omitempty"`
+// EffectiveEmotion is the emotion this paragraph actually generates with:
+// Emotion for real spoken dialogue (IsQuote and not a ScareQuote) when it
+// names a known emotion, emotions.Neutral otherwise. Narration always
+// stays neutral - the narrator keeps one consistent delivery - and so does
+// a stale id no longer in emotions.All.
+func (p Paragraph) EffectiveEmotion() string {
+	if !p.IsQuote || p.ScareQuote || !emotions.Valid(p.Emotion) {
+		return emotions.Neutral
+	}
+	return p.Emotion
 }
 
-// ResolveGenerationText returns text's own actual generation-time text for
-// cloneModel: p.Text itself, unchanged, if this paragraph has neither
-// delivery annotations for that model nor any resolved pronunciation/
-// emphasis substitution at all (the common case), or p.Text with every
-// tag insertion from whichever of SentenceText/InlineText are actually
-// set, plus every entry in Pronunciation and Emphasis, composed back in
-// together in one pass (pronounce.Apply - see its own doc comment for why
-// a single combined pass, not deliverytags.Merge followed by a separate
-// substitution step, is what correctly keeps every offset meaningful).
-//
-// Every extracted insertion is filtered through speakerattr.ValidDeliveryTag
-// before that composition - not just at write time (DirectChapter/TagSfx
-// already only ever persist a tag valid when that run happened), but again
-// here, at read time, since SentenceText/InlineText can be arbitrarily old:
-// this app's own set of tags it still trusts can shrink later (a tag found
-// unreliable in practice gets dropped from validSentenceTags/
-// validInlineTags - see validSentenceTags' own doc comment for several
-// already dropped this way), and a paragraph tagged before that never gets
-// touched again unless something explicitly re-tags it. Without this
-// filter, a since-dropped tag sitting in already-persisted SentenceText/
-// InlineText would keep reaching TTS indefinitely. A dropped insertion is
-// simply omitted, the same "no tag" outcome a paragraph never tagged with
-// it at all would produce - never an error, and never blocks the rest of
-// that paragraph's own still-valid insertions or substitutions.
-// Pronunciation and Emphasis substitutions are independently computed
-// against non-overlapping spans in every real case (a pronunciation-
-// worthy abbreviation and a structurally emphasized span essentially
-// never coincide), so concatenating them is safe - see pronounce.Apply's
-// own doc comment for what happens on a genuine overlap regardless (one
-// is silently skipped, not corrupted). Sentence-level insertions are
-// appended before positional ones so ties at a shared offset land in that
-// order, matching deliverytags.Merge's own former tie-break (Higgs's
-// documented tag-stacking convention) - see pronounce.Apply's own doc
-// comment on how it preserves that. A stored value that fails to
-// re-extract cleanly against p.Text (should never happen for anything
-// this package itself ever wrote - see SetParagraphSentenceTags/
-// SetParagraphInlineTags's own validation before persisting) is treated
-// the same as that pass never having run, rather than failing generation
-// outright - a stale/corrupt annotation is far less harmful than blocking
-// narration entirely over it.
+// ResolveGenerationText returns p's actual generation-time text for
+// cloneModel: p.Text with every Pronunciation and Emphasis substitution
+// applied, plus - for Higgs only - a <|prosody:pause|> before each
+// ellipsis/em dash (deliverytags.PauseInsertions), composed in one pass
+// (pronounce.Apply - see its own doc comment for why a single combined
+// pass keeps every offset meaningful). p.Text itself, unchanged, in the
+// common case of nothing to apply. Pauses are computed here rather than
+// stored: they're a pure function of the text, so there's nothing to
+// persist or invalidate. Never used for forced alignment/word timing,
+// which always uses p.Text untouched.
 func (p Paragraph) ResolveGenerationText(cloneModel string) string {
 	var insertions []deliverytags.Insertion
-	if d, ok := p.Tags[cloneModel]; ok {
-		if d.SentenceText != "" {
-			if ins, err := deliverytags.ExtractInsertions(p.Text, d.SentenceText); err == nil {
-				insertions = append(insertions, ins...)
-			}
-		}
-		if d.InlineText != "" {
-			if ins, err := deliverytags.ExtractInsertions(p.Text, d.InlineText); err == nil {
-				insertions = append(insertions, ins...)
-			}
-		}
-	}
-	if len(insertions) > 0 {
-		kept := insertions[:0]
-		for _, ins := range insertions {
-			if speakerattr.ValidDeliveryTag(ins.Tag) {
-				kept = append(kept, ins)
-			}
-		}
-		insertions = kept
+	if cloneModel == voices.HiggsCloneModel {
+		insertions = deliverytags.PauseInsertions(p.Text)
 	}
 	if len(insertions) == 0 && len(p.Pronunciation) == 0 && len(p.Emphasis) == 0 {
 		return p.Text

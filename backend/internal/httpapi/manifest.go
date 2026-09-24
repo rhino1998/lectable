@@ -80,9 +80,10 @@ func paragraphContentHash(p paragraphDTO) string {
 		IsQuote             bool
 		ScareQuote          bool
 		DescribesCharacters []string
+		Emotion             string
 		DirectionMarks      []directionMarkDTO
 		PronunciationMarks  []pronunciationMarkDTO
-	}{p.Text, p.Speaker, p.Inline, p.IsQuote, p.ScareQuote, p.DescribesCharacters, p.DirectionMarks, p.PronunciationMarks})
+	}{p.Text, p.Speaker, p.Inline, p.IsQuote, p.ScareQuote, p.DescribesCharacters, p.Emotion, p.DirectionMarks, p.PronunciationMarks})
 }
 
 // paragraphAudioHash identifies the audio a client would download for p:
@@ -90,17 +91,20 @@ func paragraphContentHash(p paragraphDTO) string {
 // speaker re-attribution all change it), its status (a not-yet-ready
 // paragraph never matches a downloaded one), which clip backs it
 // (AudioURL - differs for a scare-quote merge group member) and that
-// clip's duration/pointer. A regeneration under the same voice that
-// happened to produce a clip of exactly the same duration isn't detected -
-// the same heuristic the Android client already used before this existed.
+// clip's duration/pointer, plus its emotion (which picks the reference
+// clip it was cloned from, without changing the voice id). A regeneration
+// under the same voice and emotion that happened to produce a clip of
+// exactly the same duration isn't detected - the same heuristic the
+// Android client already used before this existed.
 func paragraphAudioHash(p paragraphDTO, voiceID string) string {
 	return hashJSON(struct {
 		VoiceID         string
+		Emotion         string
 		Status          string
 		AudioURL        string
 		DurationSeconds float64
 		PointerSeconds  float64
-	}{voiceID, p.AudioStatus, p.AudioURL, p.DurationSeconds, p.AudioPointerSeconds})
+	}{voiceID, p.Emotion, p.AudioStatus, p.AudioURL, p.DurationSeconds, p.AudioPointerSeconds})
 }
 
 // chapterHash is a chapter's node: its own title and content order plus

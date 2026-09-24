@@ -232,7 +232,9 @@ building/running `ttsworker` does, since both now link into that binary.
   brand-new preset could each find no cached clip and race to render/write
   the same file. `Regenerate` (the explicit "always re-render" path for a
   preset edit) stays unlocked - a deliberate one-off action never called
-  concurrently with itself.
+  concurrently with itself. `variants.go` renders/caches each preset's
+  emotion variants (`EnsureVariantFile`, its own per-(preset, emotion)
+  lock) - see "Emotions" under `internal/speakerattr/` below.
 - `internal/wsola/` — a from-scratch Go port of Chromium's WSOLA
   (Waveform Similarity Overlap-Add) time-domain pitch-preserving
   time-stretcher. Verified against a numpy reference port across the full
@@ -451,7 +453,7 @@ building/running `ttsworker` does, since both now link into that binary.
   the first time it's needed, or explicitly via the Speakers page's
   "Regenerate" button. Every distinct system prompt this package generates
   against (`speakerattr.SystemPrompts` - attribution's, characterization's,
-  and the direction/sfx/pronunciation/describe ones below, all fixed
+  and the emotion/pronunciation/describe ones below, all fixed
   constants, byte-identical across every call) is decoded once, at
   model-load time, into its own permanently-resident sequence in
   `llmworker.Worker`'s shared `Context` (see above) - priming every known
@@ -460,7 +462,7 @@ building/running `ttsworker` does, since both now link into that binary.
   into their own slot without racing to prime it first.
 
   **Malformed-response retry**: every batch call in this package
-  (`attributeBatch`, `describeBatch`, `directionBatch`, `sfxBatch`,
+  (`attributeBatch`, `describeBatch`, `emotionBatch`,
   `CharacterizeVoice`) goes through `generateAndParse`/`retryParse`
   instead of calling `Client.generate` directly - a malformed response (an
   unparseable JSON array, or `CharacterizeVoice`'s own
@@ -498,180 +500,98 @@ building/running `ttsworker` does, since both now link into that binary.
   cached reference clip for that character so each picks up the new
   characterization on next use.
 
-  **Speech-direction tagging**: two independent, sibling LLM passes
-  (`Client.DirectChapter`/`direction.go` and `Client.TagSfx`/`sfx.go`)
-  annotate a chapter's paragraphs with Higgs Audio v3 TTS's own native
-  inline control-token vocabulary (`<|emotion:anger|>`, `<|sfx:laughter|>`,
-  etc.), confirmed directly against `Higgs-Audio-v3-TTS-4B-GGUF`'s own
-  embedded `tokenizer.json`: each is a dedicated `"special": true`
-  `added_tokens` entry, so audio.cpp's plain tokenizer encodes it as one
-  atomic conditioning token - no audio.cpp/audiocpp-go changes needed,
-  only a Go-side prompt/storage/wiring addition. Split along the same
-  "sentence-level" vs "inline" line the model's own embedded
-  `PROMPTING.md` draws:
-    - `Client.DirectChapter`/`validSentenceTags` (19: 12 `emotion` (of the
-      model's own 21 - `<|emotion:longing|>`, `<|emotion:arousal|>`,
-      `<|emotion:affection|>`, `<|emotion:fear|>`, `<|emotion:contentment|>`,
-      `<|emotion:confusion|>`, `<|emotion:sadness|>`, `<|emotion:enthusiasm|>`,
-      and `<|emotion:elation|>` are deliberately excluded from this app's
-      own valid set, found unreliable enough in practice to do more harm
-      than good) + 1 `style` (of the model's own 3 - `<|style:whispering|>`
-      and `<|style:singing|>` are deliberately excluded too, same
-      reasoning) + 6 `prosody` speed/expressive (of the model's own 8
-      sentence-level ones - `<|prosody:pitch_low|>`/`<|prosody:pitch_high|>`
-      deliberately excluded too, same reasoning)) - each colors a whole
-      sentence/clause from wherever it's inserted; more than one can land
-      in a single paragraph if the tone genuinely shifts partway through.
-      `<|prosody:expressive_low|>` also has a second, non-emotional
-      trigger: non-narrative front/back-matter a chapter can contain (a
-      copyright notice, dedication, TOC/index entry, epigraph attribution)
-      gets it too, for a flatter delivery - folded into this same pass
-      rather than a separate classify-and-skip feature.
+  **Emotions** (`internal/emotions`, `Client.EmotionChapter`/`emotion.go`):
+  every real dialogue line (`IsQuote && !ScareQuote`) can carry one
+  delivery emotion or speaking mode from a small fixed set - `warm`,
+  `excited`, `sad`, `angry`, `afraid`, `cold`, `whisper`, `shout`,
+  `weary` - or stay neutral (`""`, the overwhelming default). Narration
+  always stays neutral so the narrator keeps one consistent delivery
+  (`store.Paragraph.EffectiveEmotion` enforces this at read time, so a
+  stale label or a later scare-quote flag can never leak through).
 
-      A narration (non-quote) paragraph is far more tag-restricted than a
-      quoted one - only `<|sfx:humming/sigh/laughter/cough/sniff|>`,
-      `<|prosody:pause/long_pause|>`, or
-      `<|prosody:expressive_low/high|>` - never `<|emotion:*|>`,
-      `<|style:*|>`, `<|prosody:speed_*|>`, or
-      `<|sfx:crying/screaming/burping/sneeze|>`, since those alter the
-      narrator's own consistent voice too much. `store.Paragraph.IsQuote`
-      is what distinguishes the two, enforced in Go, not just asked for in
-      either prompt: `restrictNonQuoteTags` (shared by both passes) strips
-      any disallowed insertion from a non-quote paragraph after each
-      pass's own heuristic backstop has already run. A paragraph left with
-      no insertions after stripping is dropped from the batch result
-      entirely.
-    - `Client.TagSfx`/`validInlineTags` (11: 9 `sfx` + `prosody`
-      `pause`/`long_pause`) - each marks an exact point within a line: an
-      `sfx` tag immediately before an onomatopoeia word the line already
-      spells out (no space - `<|sfx:laughter|>Haha`, per `PROMPTING.md`),
-      never an invented word; a pause between existing words/phrases,
-      triggered either by content (the narration describes a real beat of
-      silence) or by a sentence's own length/structure (a "breath pause" -
-      one `<|prosody:pause|>` at the clearest clause boundary in a
-      genuinely long, unbroken sentence with no comma/semicolon/dash
-      already giving a natural break). Both triggers stay one call/tag
-      family - the same judgment ("does a narrator's voice need a beat of
-      silence here"), just two different reasons to reach for it.
-  Kept as two separate LLM calls rather than one combined judgment, the
-  same lesson `DescribeChapter` was split from `AttributeChapter` over - a
-  sentence-level judgment and a positional one are different enough in
-  kind that one call doing both risks the same precision loss.
+  An emotion never reaches a TTS model as markup. Instead each voice
+  preset gets one extra **reference-clip variant** per emotion its lines
+  actually use (`voicerefs.EnsureVariantFile`, stored at
+  `voice-refs/variants/<presetID>/<emotion>.wav`): BreezeTTS instructed
+  cloning (`voices.InstructedCloneModel`) of the preset's own base clip,
+  speaking that emotion's `RefLine` under its `Instruction`, capped at
+  `maxRefClipSeconds` and loudness-matched to the base clip. An emotional
+  line then clones from the variant (with its `RefLine` as the reference
+  transcript) instead of the base clip - `jobs.Manager.generate`, via
+  `emotionVariant`, which re-reads the paragraph's emotion from the store
+  at dispatch so a manual override between enqueue and dispatch wins.
+  Zero-shot cloners copy a reference's delivery almost as strongly as its
+  timbre, so this works through every clone model, not just one with its
+  own emotion vocabulary. Replaced Higgs's own inline `<|emotion:*|>`/
+  `<|style:*|>`/`<|sfx:*|>` tag passes after a listening test
+  (task-backlog.md item 13): most of those tags pulled the voice away from
+  its reference entirely, while Higgs cloned from a Breeze variant stayed
+  on-voice (IndexTTS2's emotion vectors were the other candidate - about
+  1.75x slower than Higgs).
 
-  **Regex heuristics layered on top of both passes** (`sfxheuristics.go`/
-  `directionheuristics.go`): a handful of tags have such a small, closed
-  set of real-world spellings (or an unambiguous typographic trigger) that
-  a plain regex recognizes them deterministically and for free - a
-  prompt-thinning move, not just a backstop. `addHeuristicSfxTags`/
-  `addHeuristicSentenceTags` run after each LLM call returns for a batch,
-  over every paragraph regardless of whether the LLM tagged it, merging in
-  any new match by offset (skipping one that would collide with an
-  LLM-placed tag at the same point):
-    - `sfxheuristics.go`: `<|sfx:laughter|>` (ha/he/ho syllables, careful
-      to exclude bare "he"/"ho"), `<|sfx:humming|>` (h's + optional r +
-      m's), `<|sfx:sneeze|>` ("Achoo"/"Atchoo"), `<|sfx:cough|>` ("Ahem"),
-      `<|sfx:sigh|>` ("Sigh", excluding "sight"/"sighed"/"sighing"), and a
-      trailing-off `<|prosody:pause|>` before any run of 3+ periods or a
-      real `…` glyph - `sfxSystemPrompt` correspondingly only lists
-      `<|sfx:crying/screaming/burping|>` as valid (no fixed spelling to
-      regex-match) and drops "an ellipsis" from its content-pause examples.
-    - `directionheuristics.go`: `<|style:shouting|>` for doubled-or-more
-      `!!`, `<|emotion:surprise|>` for a `?!`/`!?` combo - both inserted at
-      the line's own start, stacking correctly with anything the LLM
-      already placed there.
+  Variants are provisioned **lazily**: `jobs.Manager.variantClipDependency`
+  (a sibling of `referenceClipDependency`) makes an emotional clone task
+  depend on a `KindVoiceProvision` task keyed `variant:<presetID>:<emotion>`
+  whenever that variant isn't on disk yet, so only emotions a voice's
+  lines actually use ever get rendered. A render that fails on its final
+  attempt writes a `.failed` marker (`voicerefs.MarkVariantFailed`), which
+  clears the dependency - those lines clone from the base clip instead of
+  blocking forever. Every base-clip write or delete (`voicerefs.save`/
+  `NormalizeVolume`/`Delete`) wipes that preset's variants, since each was
+  cloned from the old clip. Skipped for a scare-quote merge group (one
+  call renders narration and quote together).
 
-  A tag inserted at `len(orig)` - the very end of a line, with nothing
-  left to color - is dropped rather than kept, for both passes regardless
-  of source: a trailing delivery tag renders as an audible stray artifact
-  since delivery tags condition the speech that *follows* them. Enforced
-  once, centrally, in `parseTaggedText` (shared by both LLM passes).
+  **The emotion pass** (`httpapi.directChapter` - the `KindSpeechDirection`
+  task, `Passes.Direction`, `POST .../tag-directions` and the preprocess
+  direction phase all keep their old "direction" names) sends a chapter
+  in batches of `emotionBatchParagraphs` (30), narration included as
+  context with dialogue lines marked `(dialogue)`, and asks for plain
+  `idx: label` lines only for clearly emotional dialogue.
+  `parseEmotionLines` drops anything that isn't a dialogue idx from the
+  batch with a known label, line by line - never failing the batch.
+  `emotionSystemPrompt` is built from `emotions.All`, so the offered labels
+  can't drift from what the app renders. Runs under any clone model.
+  Rewrites every processed line's stored label (clearing stale ones) but
+  only invalidates audio for paragraphs whose *effective* emotion changed
+  (`Server.invalidateParagraphAudio`). A paused/failed run requeues just
+  the unreached paragraphs via `onlyIdx`, the same shape as before; with
+  `Book.SpeechDirection` on, `speechDirectionDependency` makes a chapter's
+  generation wait for it under any clone model.
 
-  `directionSystemPrompt` documents that a single position may carry more
-  than one tag of different kinds at once (e.g.
-  `<|emotion:awe|><|style:shouting|>`) - never two from the same
-  category. `deliverytags.Merge`'s stable sort keeps insertions at the
-  same offset in whatever order they were appended, so callers append in
-  Emotion-then-Style-then-Pacing order to get that convention right;
-  `addHeuristicSentenceTags` is a known, low-stakes exception to that
-  ordering guarantee.
+  Stored in `paragraphs.emotion` (`Store.SetParagraphEmotions`). A reader
+  overrides one line via `PUT .../paragraphs/{pidx}/emotion`
+  (`handleSetParagraphEmotion` - invalidates and re-enqueues that line
+  when its effective emotion changes). The Speakers page lists each
+  speaker's emotions with line counts and variant status
+  (`speakerRowDTO.Emotions` - keyed by whichever preset their lines
+  actually generate under, so the book's own when they have none; the
+  `speakers` live topic also depends on `DepJobs` so a finished render
+  shows up without a DB write), previews a variant via
+  `GET /api/voices/variants/{presetId}/{emotion}/audio`, and re-renders
+  one via `POST .../speakers/variants/regenerate`, which resets that
+  speaker's lines in that emotion (this book only) and queues the render
+  right away (`jobs.Manager.EnqueueEmotionVariant`).
 
-  Both passes share one hard safety invariant, enforced by
-  `internal/deliverytags` (a small, dependency-free leaf package used by
-  both `speakerattr`, to validate an LLM's own output, and `store`, to
-  resolve a paragraph's final generation text): whatever text a pass
-  returns must be the paragraph's real text with **only** tag markup
-  inserted - `deliverytags.ExtractInsertions` diffs the returned text
-  against the original and rejects (silently drops) anything that adds,
-  removes, reorders, or rewords even one real word. This is what makes
-  multi-position insertion safe to trust from an LLM at all: forced
-  alignment and the reader's own on-screen text both stay keyed to the
-  paragraph's real, untouched content regardless of what either pass
-  returns.
-
-  Deliberately its own separate, explicitly-triggered action (`POST
-  .../tag-directions`, running *both* passes) rather than chained after
-  attribution the way Describe is: it's optional/stylistic, nothing else
-  depends on its output, and neither prompt has been benchmarked against
-  real chapters yet the way attribution/description were. Only runs for
-  Higgs's own clone model (`voices.HiggsCloneModel`, `"audiocpp-higgs-4b"`)
-  - checked synchronously (400 for any other clone model) since the
-  tag vocabulary means nothing to another family's tokenizer.
-
-  `directChapter` threads `jobs.Manager.HasHigherPriorityLLMWork` through
-  as both passes' own `shouldPause`, the same pause/resume shape
-  `attributeChapter` uses - SpeakersPage's own bulk "Tag all"/"Tag
-  undirected" buttons can queue a whole book's chapters at
-  `TierBackground` at once, and without pausing that could make a
-  just-arrived, more urgent `poolLLM` task wait out however many
-  chapters/batches are left. `directChapter` takes an `onlyIdx map[int]bool`
-  restricting which paragraphs it sends to the model; when either pass
-  pauses, it requeues a follow-up `KindSpeechDirection` task scoped to the
-  union of both passes' own remaining paragraphs - unlike
-  `attributeChapter`'s `onlyUnattributed`, this can't be re-derived from
-  stored state later (a paragraph getting no tag is indistinguishable from
-  one never checked), so the continuation carries the index set forward
-  explicitly. If only one pass paused, the other still re-runs on the
-  continuation over the narrower `onlyIdx` set - a few wasted-but-harmless
-  calls, traded for not tracking each pass's own completion separately
-  across a chain of continuations. Only marks `Chapter.Directed` once
-  neither pass has anything left, possibly after several continuations.
-
-  Each pass's output is stored independently per paragraph, per clone
-  model - `paragraphs.tts_tags`, a JSON object keyed by `clone_model` id
-  (the same per-`(x, clone_model)` shape `character_voices` uses, since a
-  paragraph's resolved clone model can differ across books/characters and
-  a tag vocabulary for one model means nothing to another's), each value a
-  `store.ParagraphDirection{SentenceText, InlineText}` - two
-  independently-annotated full copies of the paragraph's text, one per
-  pass (`Store.SetParagraphSentenceTags`/`SetParagraphInlineTags`, a
-  shared read-modify-write helper so setting one field never clobbers the
-  other's value). Composed back into one final generation string only at
-  generation time - `store.Paragraph.ResolveGenerationText` re-extracts
-  each field's own insertions against the paragraph's real text and
-  `deliverytags.Merge`s them (sentence-level insertions ordered first at a
-  shared offset, matching `PROMPTING.md`'s own tag-stacking example) -
-  `jobs.Manager.generate` calls this for the text sent to `generateClone`,
-  **never** for forced alignment/word-timing, which always uses
-  `paragraph.Text` untouched: a tag token has no corresponding audio, so
-  including it there would surface as a spurious "word" with no real
-  timing. Most paragraphs get no annotation at all by design (both system
-  prompts ask for a short, sparse list), and a missing/empty field in
-  `Tags` is a no-op at generation time, not an error.
-
-  Whenever a run tags at least one paragraph (from either pass),
-  `directChapter` invalidates that whole chapter's already-generated audio
-  (`Store.DeleteChapterAudio` + removing its on-disk directory) so every
-  paragraph regenerates and picks up its annotations - blunt (the whole
-  chapter, not just the paragraphs actually tagged this run) rather than
-  tracking which paragraphs' annotations actually changed. Skipped when a
-  run tags nothing.
+  **Pauses** are the one Higgs inline tag kept: `deliverytags.
+  PauseInsertions` places `<|prosody:pause|>` before each ellipsis/em dash
+  that still has something speakable after it - a deterministic,
+  character-based pass applied by `Paragraph.ResolveGenerationText` only
+  when the clone model is `voices.HiggsCloneModel` (any other tokenizer
+  would read the tag as literal text), and reported to clients as
+  `directionMarks`. Computed, not stored - nothing to persist or
+  invalidate. The legacy `paragraphs.tts_tags` column from the old LLM tag
+  passes is never applied any more: re-labeling a chapter clears it
+  (`Store.ClearLegacyTags`) and invalidates those lines' audio (plus their
+  scare-quote merge groups), since it was generated with the old tags
+  baked in - a one-time migration per chapter, on top of the ordinary
+  "effective emotion changed" invalidation.
 
   **Pronunciation resolution** (`Client.ResolvePronunciation`/
   `pronunciation.go`) is its own chapter pass - `httpapi.pronounceChapter`,
   a `jobs.KindPronunciation` task, `store.Passes.Pronunciation`, `POST
   .../resolve-pronunciation`, and its own preprocess phase - with the same
   per-chapter call/requeue-on-pause/invalidate-audio shape as
-  `directChapter` (which it used to run inside of, as a third sub-pass).
+  `directChapter` (which it used to run inside of, as a sub-pass).
   It solves a genuinely different problem: fixing a mispronounced abbreviation ("St." read as neither
   "Street" nor "Saint" correctly) means actually changing what word gets
   spoken, not inserting a control token - a narrow, deliberate exception
@@ -759,9 +679,8 @@ building/running `ttsworker` does, since both now link into that binary.
   The result is stored as `internal/pronounce.Substitution` (`{Offset,
   Length, Replacement}`, byte-indexed into the paragraph's own real
   `Text`, the same coordinate space `deliverytags.Insertion.Offset` uses)
-  in `paragraphs.pronunciation` - deliberately *not* `clone_model`-keyed
-  like `tts_tags`: a pronunciation fix is plain word substitution, correct
-  under any TTS model, unlike a delivery tag's model-specific vocabulary.
+  in `paragraphs.pronunciation` - not `clone_model`-keyed: a pronunciation
+  fix is plain word substitution, correct under any TTS model.
   `pronounce.Apply` (used by `Paragraph.ResolveGenerationText`) supersedes
   calling `deliverytags.Merge` directly for a paragraph with both kinds of
   edit: both are offset-anchored into the same original `Text`, so
@@ -771,10 +690,9 @@ building/running `ttsworker` does, since both now link into that binary.
   Forced alignment and the reader's own on-screen text always use `Text`
   untouched here too.
 
-  Unlike direction tagging, it isn't gated on Higgs - it runs for every
-  clone model. With `store.Book.SpeechDirection` on, a chapter's
-  generation waits on both (`jobs.Manager.pronunciationDependency` for any
-  model, `speechDirectionDependency` only for a Higgs book); chapters
+  It runs for every clone model. With `store.Book.SpeechDirection` on, a
+  chapter's generation waits on both it and emotion labeling
+  (`jobs.Manager.pronunciationDependency`/`speechDirectionDependency`); chapters
   directed before the split were backfilled with `passes.pronunciation`
   (`store.migratePronunciationPass`), since direction tagging used to
   resolve it too.
@@ -887,9 +805,9 @@ building/running `ttsworker` does, since both now link into that binary.
   Both mechanisms are independent of, and don't affect,
   `taskBlockedBySpeechDirection`/`popTask`'s own separate *per-chapter*
   hard block (a clone/design task for the exact chapter currently being
-  direction-tagged is skipped entirely until that tagging finishes, and
+  emotion-labeled is skipped entirely until that labeling finishes, and
   the blocking task's own tier is boosted to match whatever it's
-  blocking) - a chapter actively being read still gets its direction tags
+  blocking) - a chapter actively being read still gets its emotions
   applied before its audio generates, regardless of either mechanism above.
     - `KindVoiceClone`/`KindVoiceDesign` (`poolGeneration`) walk a
       chapter's not-yet-ready paragraphs and generate each one (via
@@ -951,15 +869,18 @@ building/running `ttsworker` does, since both now link into that binary.
       deletes the cached reference clip, does *not* eagerly re-render)
       that book's resolved clone model's assigned voice preset for the
       character, so it's lazily rebuilt next time it's actually needed.
-- `internal/deliverytags/` — dependency-free leaf package behind speech-
-  direction tagging's core safety invariant: `ExtractInsertions` diffs an
-  LLM-annotated variant of a paragraph's text against the original and
-  returns exactly which `<|category:value|>` tags it inserted (and at what
-  offset), rejecting anything that changes a real word; `Merge` composes
-  insertions from more than one independently-annotated variant of the
-  same text into one final string. Used by `internal/speakerattr` and
-  `internal/pronounce` - standalone specifically so it can sit underneath
-  both without either importing the other.
+- `internal/deliverytags/` — dependency-free leaf package for Higgs inline
+  `<|category:value|>` tags: `Insertion` (a tag at a byte offset, the type
+  `internal/pronounce.Apply` composes with substitutions), the Go pause
+  pass (`PauseInsertions` - see "Emotions" above), and
+  `ExtractInsertions`/`Merge` (diffing an annotated copy of a text against
+  the original, rejecting any changed word - used by one-off cmd tools
+  over the legacy `tts_tags` column).
+- `internal/emotions/` — leaf package holding the fixed emotion set
+  (`All`: id, label, LLM description, BreezeTTS instruction, variant
+  reference line) shared by `speakerattr`, `store`, `voicerefs`, `jobs`
+  and `httpapi` - see "Emotions" above. `frontend/src/utils/emotions.ts`
+  mirrors its ids/labels.
 - `internal/pronounce/` — the narrower, complementary mechanism behind
   pronunciation resolution: `Substitution` replaces a real span of text
   rather than only inserting alongside it, a genuine exception to
@@ -1092,7 +1013,7 @@ build does, since both now link into that one binary.
 - `GET /api/books/{id}/manifest?chapters=0,3` — the root of the book's offline-sync hash tree (`httpapi/manifest.go`), for clients reconciling an offline copy (Android downloads) against the backend, which always wins: `hash` covers the book's title/author/cover (file size+mtime)/chapter count plus each listed chapter's `hash` (all chapters if `chapters` is omitted), returned in `chapters`. Built chapter hashes are stored in `sync_tree_nodes` (`Store.PutSyncTreeNodes`/`SyncTreeNodes`) tagged with a fingerprint of the rows they came from (`Store.SyncFingerprints`: one aggregate query per book over whole-row DuckDB hashes of the book row minus position/estimate, its chapters/paragraphs/paragraph_audio minus `word_timings`/images/breaks, plus the whole character/voice tables) and with `syncTreeVersion` - a sha256 of the running `server` executable, since fingerprints can't see code (hash fields, DTO shapes, compiled-in voice presets) and Go builds are reproducible; nodes from other builds are pruned on the first manifest request. Only chapters whose rows moved get rebuilt. Validated by value on each request rather than invalidated by writes, since `OnChange` only knows tables, not rows: over-covering inputs can only cause a needless rebuild, never a stale hash. No PRIMARY KEY/index on the table (update-then-insert in one transaction instead) - see this DB's index-corruption history. Measured on the real library: a 244-chapter book's manifest goes from ~11.5s on first build to ~40ms afterwards, including after a restart; a new build of `server` rebuilds each book once. Every chapter value (REST and the live `chapter` topic) carries its own `hash` plus per-paragraph `contentHash` (text/annotations an offline copy stores) and `audioHash` (resolved voice id, status, backing clip, duration, pointer) - so a client can tell "refresh metadata" from "re-download this .wav". Reading position is returned alongside but kept outside the tree
 - `GET|PUT /api/books/{id}/voice` — `cloneModel` is the book's own clone model (every voice in it clones through it; voice presets carry none - `""` on PUT leaves it unchanged, and changing it deletes the book's generated audio); changing voice resets that book's paragraph audio to `pending`; `multiVoice` toggles whether character voice assignments (see below) override this book's own voice at all (default off)
 - `GET|PUT /api/books/{id}/position`
-- `GET /api/books/{id}/chapters/{idx}` — paragraphs with `audioStatus`/`audioUrl`/`speaker`/`inline`
+- `GET /api/books/{id}/chapters/{idx}` — paragraphs with `audioStatus`/`audioUrl`/`speaker`/`inline`/`emotion`
 - `POST /api/books/{id}/generate` — enqueues background generation for every chapter in the book at once (library page's hover "Generate audio" button) - just loops `Jobs.EnqueueChapter` per chapter and returns `202` immediately; no background goroutine or dedup needed since `EnqueueChapter` is already fire-and-forget and idempotent per chapter
 - `POST /api/books/{id}/chapters/{idx}/generate` — enqueue background generation (idempotent per chapter while in flight)
 - `POST /api/books/{id}/lookahead` — `{"chapterIdx", "paragraphIdx", "paragraphCount"?}`; enqueues generation of up to `paragraphCount` paragraphs (default `jobs.LookaheadParagraphCount` = 25, capped at `jobs.MaxLookaheadParagraphCount` = 1000) starting at that paragraph for whatever isn't already `AudioReady` (pending/error) - readers scrolling/seeking ahead, not a regenerate
@@ -1101,10 +1022,13 @@ build does, since both now link into that one binary.
 - `POST /api/books/{id}/chapters/{idx}/attribute-speakers` — enqueues LLM speaker attribution for one chapter and returns `202 {"queued": true}` immediately, not the result (503 if the LLM model file is missing) - fire-and-forget; registers any newly-discovered character with no voice yet - characterization/voice assignment happens lazily later, the first time that character's voice is actually needed for generation
 - `POST /api/books/{id}/chapters/{idx}/retag-scare-quotes` / `.../retag-descriptions` — enqueue a `KindScareQuote` / `KindDescription` task for one chapter, `202 {"queued": true}` (always re-runs, even if already tagged); description tagging waits on the chapter's scare-quote tagging
 - `POST /api/books/{id}/chapters/{idx}/resolve-pronunciation` — enqueues pronunciation resolution (ambiguous abbreviations like "Dr.", homographs, numbers) for one chapter, any clone model, `202 {"queued": true}` (503 if the LLM model file is missing) - fire-and-forget
-- `POST /api/books/{id}/chapters/{idx}/tag-directions` — enqueues speech-direction tagging (Higgs's own inline delivery tags) for one chapter, `202 {"queued": true}` immediately (503 if the LLM model file is missing, 400 if the book's resolved clone model isn't `audiocpp-higgs-4b`) - fire-and-forget
+- `POST /api/books/{id}/chapters/{idx}/tag-directions` — enqueues emotion labeling of one chapter's dialogue (any clone model), `202 {"queued": true}` immediately (503 if the LLM model file is missing) - fire-and-forget
+- `PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion` — `{"emotion": "angry"}` (`""` = neutral); manually overrides one dialogue line's emotion, invalidating and re-enqueueing its audio when its effective emotion changes. 400 for narration or an unknown emotion
+- `POST /api/books/{id}/speakers/variants/regenerate` — `{"speaker", "emotion"}`; deletes and re-renders the emotion variant that speaker's lines clone from, resetting this book's audio for their lines in that emotion. `202 {"queued": true}`
+- `GET /api/voices/variants/{presetId}/{emotion}/audio` — one rendered emotion variant of a preset's reference clip (404 until rendered)
 - `POST /api/books/{id}/chapters/{idx}/generate-music` — queues the whole-chapter background-music run now (`jobs.Manager.GenerateChapterMusic`, `TierNormal`), regardless of the book's `musicEnabled` toggle; resets failed regions to pending first so they're retried. `202 {"queued": n}` (regions queued, 0 if all already have music), `409` if the chapter isn't scored or its narration isn't fully generated. Separately, `KindMusicLiveGeneration` tasks (one per region, keyed `music_live:<regionID>`) chain forward from the reader's region as soon as each region's own paragraphs are voiced: a live task queues the next region's task the moment it dispatches, and that task depends on it (its seed clip) so it starts as soon as the first finishes - at most one live task per chapter is queued ahead, and a queued one the reader has moved past is canceled. The chain crosses chapter boundaries: past a chapter's last region it continues into the next chapter's first (waiting on the previous chapter's last live task for ordering, but not seeded from it), and an unscored next chapter gets its `music_score` task promoted to `TierLookahead` so the chain can cross once it's scored; reader-position lookahead only drives/promotes this live path (and scoring), never the whole-chapter batch, which stays `TierBackground` unless run explicitly; a region's "generating" state is tracked in memory (`Manager.MusicRegionGenerating`), never stored
 - `POST /api/books/{id}/preprocess` — the "run everything" meta-task: scare-quote tagging, attribution, description tagging, characterization, voice provisioning, direction-tagging, and music scoring for every chapter/character in the book. Phase dependencies are declared in `jobs.pipelinePhaseDeps`: scare-quote tagging before attribution and description tagging, both of those before characterization, characterization before voice provisioning; direction-tagging and music scoring depend on none of them (`directChapter` only needs the book's own already-resolved voice and each paragraph's own `IsQuote`/`Text`, none of which the other three touch), so it dispatches immediately alongside attribution rather than waiting on the other three to clear first - see `jobs.pipelineResolver`'s own doc comment. `202 {"queued": true}` immediately (503 if the LLM model file is missing, `409` if a run is already in progress for this book) - the four phases are real, dependency-ordered tasks (`jobs.Manager.EnqueuePipeline`, one `pipelineTask` per phase, `httpapi`'s `preprocess*Phase` closures supplying each phase's actual work), each phase task blocking on its own chapter's/character's real per-item task (`RunAttribution`/`RunCharacterization` via `ensureCharacterized`/`RunVoiceProvision`/`RunDirection`) exactly the way a single-item button dispatch already does - so no nested-queue-call deadlock risk (a phase task never occupies the `poolLLM`/`poolGeneration`/`poolDesign` slot it's waiting on). The four phase tasks themselves dispatch through `poolPipeline`, on a second, independent `taskqueue.Queue` (`jobs.Manager.pipelineQueue`) separate from the one `poolGeneration`/`poolDesign`/`poolLLM` share - see `internal/jobs/pipeline.go`'s own doc comment: this is what lets book preprocessing actually run concurrently with ordinary generation/attribution instead of being subject to those three pools' own "one pool active at a time" mutual exclusion, since a phase task does no GPU/LLM work itself. Progress observable exactly like the individual buttons' own. Best-effort and idempotent per item, so rerunning it (or an individual button) after a partial failure only redoes what didn't finish
-- `GET /api/books/{id}/speakers` — per-book speaker table: Narrator + every attributed character (shared across the whole series), each with its `summary` characterization, paragraph/ready-audio counts, and a sample clip URL
+- `GET /api/books/{id}/speakers` — per-book speaker table: Narrator + every attributed character (shared across the whole series), each with its `summary` characterization, paragraph/ready-audio counts, a sample clip URL, and `emotions` (each emotion their lines use, with count and variant status/audio URL)
 - `DELETE /api/books/{id}/speakers` — clear this book's own paragraph attribution and delete the whole series scope's character roster (identity, voice assignments, auto-created voice presets + cached clips) - the Speakers page's own "Delete speaker data" button, for starting over from scratch
 - `DELETE /api/books/{id}/characters/{characterId}` — remove one character: this book's own paragraphs attributed to them revert to Unknown (still real dialogue, just unattributed - "Narrator" is reserved for actual narration, never dialogue), their identity/voice assignments/auto-created voice presets are deleted for their whole series scope - a scalpel next to the above, for cleaning up a single bad attribution without resetting the whole roster
 - `POST /api/books/{id}/characters/{characterId}/merge` — `{"targetName": "..."}`; folds one character into another (or into `"Narrator"`, same effect as the DELETE above): this book's own paragraphs attributed to them are reattributed to targetName instead of blanked, and their own identity/voice/presets are deleted for their whole series scope

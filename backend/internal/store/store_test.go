@@ -564,8 +564,8 @@ func TestParagraphSpeakerTagsAndDescriptions(t *testing.T) {
 	if err := s.SetParagraphDescriptions(chapterID, map[int][]string{1: {"Bob"}}); err != nil {
 		t.Fatalf("SetParagraphDescriptions: %v", err)
 	}
-	if err := s.SetParagraphSentenceTags(chapterID, "audiocpp-higgs-4b", map[int]string{0: `<|emotion:elation|>"Hi," Alice said.`}); err != nil {
-		t.Fatalf("SetParagraphSentenceTags: %v", err)
+	if err := s.SetParagraphEmotions(chapterID, map[int]string{0: "angry"}); err != nil {
+		t.Fatalf("SetParagraphEmotions: %v", err)
 	}
 
 	p0, err := s.GetParagraph(paragraphs[0].ID)
@@ -575,21 +575,18 @@ func TestParagraphSpeakerTagsAndDescriptions(t *testing.T) {
 	if p0.Speaker != "Alice" {
 		t.Fatalf("expected speaker Alice, got %q", p0.Speaker)
 	}
-	if p0.Tags["audiocpp-higgs-4b"].SentenceText != `<|emotion:elation|>"Hi," Alice said.` {
-		t.Fatalf("expected sentence tag to be set, got %v", p0.Tags)
+	if p0.Emotion != "angry" {
+		t.Fatalf("expected emotion angry, got %q", p0.Emotion)
 	}
-	if p0.Tags["audiocpp-higgs-4b"].InlineText != "" {
-		t.Fatalf("expected no inline tag yet, got %v", p0.Tags)
-	}
-	if err := s.SetParagraphInlineTags(chapterID, "audiocpp-higgs-4b", map[int]string{0: `"Hi," Alice said.`}); err != nil {
-		t.Fatalf("SetParagraphInlineTags: %v", err)
+	if err := s.SetParagraphEmotions(chapterID, map[int]string{0: ""}); err != nil {
+		t.Fatalf("SetParagraphEmotions(clear): %v", err)
 	}
 	p0, err = s.GetParagraph(paragraphs[0].ID)
 	if err != nil {
-		t.Fatalf("GetParagraph(0) after inline set: %v", err)
+		t.Fatalf("GetParagraph(0) after clear: %v", err)
 	}
-	if p0.Tags["audiocpp-higgs-4b"].SentenceText != `<|emotion:elation|>"Hi," Alice said.` {
-		t.Fatalf("expected sentence tag to survive an independent inline update, got %v", p0.Tags)
+	if p0.Emotion != "" {
+		t.Fatalf("expected emotion cleared, got %q", p0.Emotion)
 	}
 
 	p1, err := s.GetParagraph(paragraphs[1].ID)
@@ -1276,44 +1273,38 @@ func TestParagraphEmphasisRoundTripsAndAppliesAtGenerationTime(t *testing.T) {
 	}
 }
 
-// TestResolveGenerationTextFiltersStaleDeliveryTags confirms
-// ResolveGenerationText drops a persisted tag insertion that's no longer in
-// speakerattr's own current valid set (see its own doc comment) - a real
-// scenario for any paragraph tagged before a tag was dropped from
-// validSentenceTags/validInlineTags (e.g. <|emotion:sadness|>, dropped
-// after live use found it unreliable), whose SentenceText/InlineText was
-// never re-generated afterward. A still-valid tag on the same paragraph
-// must survive untouched.
-func TestResolveGenerationTextFiltersStaleDeliveryTags(t *testing.T) {
-	const text = "She walked in and sat down."
-	p := Paragraph{
-		Text: text,
-		Tags: ParagraphTagMap{
-			"audiocpp-higgs-4b": ParagraphDirection{
-				// <|emotion:sadness|> was dropped from validSentenceTags -
-				// simulates a paragraph tagged before that; <|style:shouting|>
-				// is still valid and must survive.
-				SentenceText: "<|emotion:sadness|>She walked in and sat down.",
-			},
-		},
+// TestResolveGenerationTextPausesHiggsOnly confirms the pause pass
+// (deliverytags.PauseInsertions) only reaches Higgs's generation text -
+// any other clone model's tokenizer would read the tag as literal text.
+func TestResolveGenerationTextPausesHiggsOnly(t *testing.T) {
+	p := Paragraph{Text: "Well... I suppose so."}
+	if got, want := p.ResolveGenerationText("audiocpp-higgs-4b"), "Well<|prosody:pause|>... I suppose so."; got != want {
+		t.Fatalf("Higgs: ResolveGenerationText = %q, want %q", got, want)
 	}
-	got := p.ResolveGenerationText("audiocpp-higgs-4b")
-	if got != text {
-		t.Fatalf("ResolveGenerationText = %q, want the stale tag stripped entirely: %q", got, text)
+	if got := p.ResolveGenerationText("audiocpp-pocket-100m"); got != p.Text {
+		t.Fatalf("Pocket: ResolveGenerationText = %q, want the text unchanged", got)
 	}
+}
 
-	p2 := Paragraph{
-		Text: text,
-		Tags: ParagraphTagMap{
-			"audiocpp-higgs-4b": ParagraphDirection{
-				SentenceText: "<|emotion:sadness|><|style:shouting|>She walked in and sat down.",
-			},
-		},
+// TestEffectiveEmotion confirms only real dialogue carries an emotion:
+// narration and scare quotes stay neutral, and so does a stale label no
+// longer in internal/emotions.
+func TestEffectiveEmotion(t *testing.T) {
+	cases := []struct {
+		name string
+		p    Paragraph
+		want string
+	}{
+		{"dialogue", Paragraph{IsQuote: true, Emotion: "angry"}, "angry"},
+		{"narration", Paragraph{Emotion: "angry"}, ""},
+		{"scare quote", Paragraph{IsQuote: true, ScareQuote: true, Emotion: "angry"}, ""},
+		{"unknown label", Paragraph{IsQuote: true, Emotion: "elated"}, ""},
+		{"neutral", Paragraph{IsQuote: true}, ""},
 	}
-	got2 := p2.ResolveGenerationText("audiocpp-higgs-4b")
-	want2 := "<|style:shouting|>She walked in and sat down."
-	if got2 != want2 {
-		t.Fatalf("ResolveGenerationText = %q, want the stale tag dropped but the valid one kept: %q", got2, want2)
+	for _, tc := range cases {
+		if got := tc.p.EffectiveEmotion(); got != tc.want {
+			t.Errorf("%s: EffectiveEmotion = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -1491,5 +1482,27 @@ func TestSyncFingerprints(t *testing.T) {
 	}
 	if _, ch4 := fingerprints(); ch4[0] == ch2[0] || ch4[1] != ch0[1] {
 		t.Fatal("speaker write didn't move exactly its own chapter")
+	}
+}
+
+// TestClearLegacyTags confirms ClearLegacyTags reports exactly the
+// paragraphs still carrying old Higgs tag-pass output and empties them, so
+// a second call finds nothing.
+func TestClearLegacyTags(t *testing.T) {
+	s := openTestStore(t)
+	_, chapterID := oneChapterBook(t, s, "", 0, `"Hi," Alice said.`, "Plain narration.")
+	if _, err := s.db.Exec(`UPDATE paragraphs SET tts_tags = '{"audiocpp-higgs-4b":{"sentenceText":"<|emotion:anger|>\"Hi,\" Alice said."}}' WHERE chapter_id = ? AND idx = 0`, chapterID); err != nil {
+		t.Fatalf("seed legacy tags: %v", err)
+	}
+	idxs, err := s.ClearLegacyTags(chapterID)
+	if err != nil {
+		t.Fatalf("ClearLegacyTags: %v", err)
+	}
+	if len(idxs) != 1 || idxs[0] != 0 {
+		t.Fatalf("ClearLegacyTags = %v, want [0]", idxs)
+	}
+	idxs, err = s.ClearLegacyTags(chapterID)
+	if err != nil || len(idxs) != 0 {
+		t.Fatalf("second ClearLegacyTags = %v, %v; want nothing left", idxs, err)
 	}
 }

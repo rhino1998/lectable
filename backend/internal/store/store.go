@@ -53,12 +53,10 @@ CREATE TABLE IF NOT EXISTS books (
 	character_voice_mode TEXT NOT NULL DEFAULT 'narrator',
 	-- Gates jobs.Manager's speechDirectionDependency: while true, a
 	-- paragraph clone task for this book waits on its chapter reaching
-	-- store.ChapterStateTagged (direction-tagging) before generating -
-	-- see that function's own doc comment. Defaults false (generate
-	-- immediately, don't wait) rather than true, since waiting only ever
-	-- matters for the Higgs clone model to begin with and most books never
-	-- touch direction tagging at all - a reader opts in per book instead
-	-- of every book paying an LLM-pass delay before its first audio.
+	-- passes.direction (emotion labeling) before generating - see that
+	-- function's own doc comment. Defaults false (generate immediately,
+	-- don't wait) - a reader opts in per book instead of every book
+	-- paying an LLM-pass delay before its first audio.
 	-- Flipping this false -> true invalidates the book's already-generated
 	-- audio (see httpapi.handleUpdateVoice) since that audio was produced
 	-- with no guarantee its chapter was ever actually tagged first.
@@ -102,14 +100,14 @@ CREATE TABLE IF NOT EXISTS chapters (
 	-- enum couldn't represent "tagged but never attributed" at all, which
 	-- a manual "Tag directions" click can produce). Each field is a
 	-- persisted fact, not derived from paragraph state (paragraphs.speaker
-	-- counts, paragraphs.tts_tags presence) - a chapter with no dialogue at
+	-- counts, paragraphs.emotion presence) - a chapter with no dialogue at
 	-- all can legitimately finish attribution with some/all of its
 	-- narration paragraphs still carrying "" (a model that drops a
 	-- paragraph's own JSON entry, or a blank-text paragraph
 	-- indistinguishable from the "Lines:" blank-line paragraph-break marker
 	-- itself - see speakerattr.attributeBatch), and most paragraphs
-	-- legitimately get no delivery tag at all (see directionSystemPrompt's
-	-- own "expect this short" instruction) - re-deriving "was this chapter
+	-- legitimately get no emotion at all (neutral is the emotion pass's
+	-- own default) - re-deriving "was this chapter
 	-- actually processed" from either would misreport a chapter that
 	-- genuinely finished a pass but happened to change nothing as "never
 	-- run". Set by httpapi.attributeChapter/directChapter (Store.
@@ -161,23 +159,10 @@ CREATE TABLE IF NOT EXISTS paragraphs (
 	-- httpapi.attributeChapter enforces that deterministically, the same
 	-- way it already does for speaker.
 	describes_characters JSON NOT NULL DEFAULT '[]', -- native JSON, not TEXT - see chapters.passes' own doc comment for why
-	-- Raw JSON object mapping a clone_model id (e.g. "audiocpp-higgs-4b")
-	-- to that model's own ParagraphDirection (see models.go) - two
-	-- independently-produced, fully-annotated variants of this paragraph's
-	-- own content column, one per internal/speakerattr LLM pass
-	-- (Client.DirectChapter for sentence-level emotion/style/prosody tags,
-	-- Client.TagSfx for inline sfx/pause tags - see ParagraphDirection's
-	-- own doc comment). Keyed by clone_model, not stored flat, because the
-	-- tag vocabulary is specific to one model family (Higgs's own
-	-- tokenizer vocabulary means nothing to Qwen3's) and a paragraph's
-	-- resolved clone model can differ across books/characters (see
-	-- character_voices below) - tagging under one model never clobbers
-	-- another model's own previously-tagged value. '{}' (no annotation for
-	-- any model) until a tagging run sets one. Applied only when
-	-- generating this paragraph's audio (jobs.Manager.generate, via
-	-- Paragraph.ResolveGenerationText) - never during forced alignment/
-	-- word-timing, which always uses this row's own plain content
-	-- untouched.
+	-- Legacy: per-clone-model Higgs delivery tags from the LLM tagging
+	-- passes the emotion pass replaced. Never applied any more; only
+	-- cleared (Store.ClearLegacyTags) as each chapter is re-labeled, so
+	-- audio generated with them gets invalidated once.
 	tts_tags JSON NOT NULL DEFAULT '{}', -- native JSON, not TEXT - see chapters.passes' own doc comment for why
 	-- Raw JSON array of pronounce.Substitution (this paragraph's own
 	-- resolved pronunciation fixes - see Store.SetParagraphPronunciation
@@ -199,6 +184,9 @@ CREATE TABLE IF NOT EXISTS paragraphs (
 	-- background pass - see Paragraph.Emphasis/ResolveGenerationText.
 	-- '[]' (no emphasis markup found in this paragraph, the common case).
 	emphasis JSON NOT NULL DEFAULT '[]', -- native JSON, not TEXT - see chapters.passes' own doc comment for why
+	-- This paragraph's delivery emotion (an internal/emotions id), or ''
+	-- for neutral - see Paragraph.Emotion/EffectiveEmotion.
+	emotion TEXT NOT NULL DEFAULT '',
 	UNIQUE(chapter_id, idx)
 );
 
@@ -466,6 +454,10 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateParagraphsEmotion(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := migrateParagraphAudioPointer(db); err != nil {
 		db.Close()
 		return nil, err
@@ -563,6 +555,16 @@ func migrateParagraphsEmphasis(db *sql.DB) error {
 func migrateParagraphsScareQuote(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE paragraphs ADD COLUMN IF NOT EXISTS scare_quote BOOLEAN DEFAULT false`); err != nil {
 		return fmt.Errorf("migrate paragraphs.scare_quote: %w", err)
+	}
+	return nil
+}
+
+// migrateParagraphsEmotion is migrateCharactersRefLine's own shape again,
+// applied to emotion: an already-existing paragraph backfills to ""
+// (neutral) until the emotion pass labels it.
+func migrateParagraphsEmotion(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE paragraphs ADD COLUMN IF NOT EXISTS emotion TEXT DEFAULT ''`); err != nil {
+		return fmt.Errorf("migrate paragraphs.emotion: %w", err)
 	}
 	return nil
 }
@@ -1716,7 +1718,7 @@ func (s *Store) SetChapterPronounced(chapterID string) error {
 // applicable voice_id themselves and batch-fetch status via
 // ParagraphAudioStatuses.
 func (s *Store) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
-	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, inline, is_quote, scare_quote, describes_characters, tts_tags, pronunciation, emphasis FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
+	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
 	}
@@ -1725,7 +1727,7 @@ func (s *Store) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 	var out []Paragraph
 	for rows.Next() {
 		var p Paragraph
-		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Tags, &p.Pronunciation, &p.Emphasis); err != nil {
+		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -1740,7 +1742,7 @@ func (s *Store) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 // at a time.
 func (s *Store) ListParagraphsRawForBook(bookID string) ([]Paragraph, error) {
 	rows, err := s.db.Query(`
-		SELECT p.id, p.chapter_id, p.idx, p.position, p.content, p.speaker, p.inline, p.is_quote
+		SELECT p.id, p.chapter_id, p.idx, p.position, p.content, p.speaker, p.inline, p.is_quote, p.scare_quote, p.emotion
 		FROM paragraphs p
 		JOIN chapters c ON c.id = p.chapter_id
 		WHERE c.book_id = ?
@@ -1753,7 +1755,7 @@ func (s *Store) ListParagraphsRawForBook(bookID string) ([]Paragraph, error) {
 	var out []Paragraph
 	for rows.Next() {
 		var p Paragraph
-		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote); err != nil {
+		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.Emotion); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -1862,8 +1864,8 @@ func (s *Store) CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int,
 // paragraph belongs to before it can even determine which voice applies.
 func (s *Store) GetParagraph(id string) (*Paragraph, error) {
 	var p Paragraph
-	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, inline, is_quote, scare_quote, describes_characters, tts_tags, pronunciation, emphasis FROM paragraphs WHERE id = ?`, id).
-		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Tags, &p.Pronunciation, &p.Emphasis)
+	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE id = ?`, id).
+		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -2506,42 +2508,46 @@ func (s *Store) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) er
 	return tx.Commit()
 }
 
-// SetParagraphSentenceTags records, for a chapter's paragraphs,
-// cloneModel's own sentence-level delivery annotation (see
-// internal/speakerattr.Client.DirectChapter/validSentenceTags) - the
-// speech-direction-tagging counterpart of SetParagraphSpeakers/
-// SetParagraphDescriptions, keyed the same way (by paragraph Idx). Only
-// ever touches each paragraph's own ParagraphDirection.SentenceText,
-// leaving InlineText (set independently by SetParagraphInlineTags)
-// untouched - see setParagraphDirectionField, the shared read-modify-write
-// helper both of these are thin wrappers around.
-func (s *Store) SetParagraphSentenceTags(chapterID, cloneModel string, byIdx map[int]string) error {
-	return s.setParagraphDirectionField(chapterID, cloneModel, byIdx, func(d *ParagraphDirection, v string) { d.SentenceText = v })
+// ClearLegacyTags empties chapterID's legacy paragraphs.tts_tags (Higgs
+// delivery tags from the LLM tag passes the emotion pass replaced) and
+// returns the Idx of every paragraph that still had any - their existing
+// audio was generated with those tags baked in, so the caller
+// (httpapi.directChapter) invalidates it. Clearing makes that a one-time
+// migration per chapter rather than something every re-run repeats.
+func (s *Store) ClearLegacyTags(chapterID string) ([]int, error) {
+	rows, err := s.db.Query(`SELECT idx FROM paragraphs WHERE chapter_id = ? AND tts_tags::VARCHAR NOT IN ('{}', 'null', '')`, chapterID)
+	if err != nil {
+		return nil, err
+	}
+	var idxs []int
+	for rows.Next() {
+		var idx int
+		if err := rows.Scan(&idx); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		idxs = append(idxs, idx)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if len(idxs) == 0 {
+		return nil, nil
+	}
+	if _, err := s.db.Exec(`UPDATE paragraphs SET tts_tags = '{}' WHERE chapter_id = ? AND tts_tags::VARCHAR NOT IN ('{}', 'null', '')`, chapterID); err != nil {
+		return nil, err
+	}
+	return idxs, nil
 }
 
-// SetParagraphInlineTags is SetParagraphSentenceTags' own counterpart for
-// cloneModel's positional annotation (internal/speakerattr.Client.TagSfx/
-// validInlineTags) - only ever touches ParagraphDirection.InlineText,
-// leaving SentenceText untouched.
-func (s *Store) SetParagraphInlineTags(chapterID, cloneModel string, byIdx map[int]string) error {
-	return s.setParagraphDirectionField(chapterID, cloneModel, byIdx, func(d *ParagraphDirection, v string) { d.InlineText = v })
-}
-
-// setParagraphDirectionField is the shared read-modify-write behind
-// SetParagraphSentenceTags/SetParagraphInlineTags: for each paragraph in
-// byIdx, decodes its current paragraphs.tts_tags, applies set to just
-// cloneModel's own ParagraphDirection entry (leaving every other
-// clone_model's, and whichever of SentenceText/InlineText set doesn't
-// touch, exactly as they were), and writes the whole map back - so tagging
-// under one clone model, or from one of the two LLM passes, never clobbers
-// anything a different model or the other pass already recorded for this
-// same paragraph. A paragraph absent from byIdx is left untouched
-// entirely, same reasoning as SetParagraphDescriptions. An empty string
-// value for a paragraph explicitly clears that field (rather than leaving
-// a stale annotation from an earlier run) - if that empties cloneModel's
-// whole ParagraphDirection (both fields now ""), the cloneModel key itself
-// is dropped rather than kept as a pair of empty strings.
-func (s *Store) setParagraphDirectionField(chapterID, cloneModel string, byIdx map[int]string, set func(d *ParagraphDirection, v string)) error {
+// SetParagraphEmotions records, for a chapter's paragraphs keyed by Idx,
+// each one's emotion (an internal/emotions id, or "" to clear it back to
+// neutral) - the emotion pass's own counterpart of
+// SetParagraphPronunciation. A paragraph absent from byIdx is left
+// untouched.
+func (s *Store) SetParagraphEmotions(chapterID string, byIdx map[int]string) error {
 	if len(byIdx) == 0 {
 		return nil
 	}
@@ -2550,33 +2556,9 @@ func (s *Store) setParagraphDirectionField(chapterID, cloneModel string, byIdx m
 		return err
 	}
 	defer tx.Rollback()
-	for idx, v := range byIdx {
-		var tags ParagraphTagMap
-		err := tx.QueryRow(`SELECT tts_tags FROM paragraphs WHERE chapter_id = ? AND idx = ?`, chapterID, idx).Scan(&tags)
-		if err == sql.ErrNoRows {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("read tts_tags for paragraph idx %d: %w", idx, err)
-		}
-		if tags == nil {
-			tags = ParagraphTagMap{}
-		}
-		d := tags[cloneModel]
-		set(&d, v)
-		if d.SentenceText == "" && d.InlineText == "" {
-			delete(tags, cloneModel)
-		} else {
-			tags[cloneModel] = d
-		}
-		// .Value() explicitly - see SetParagraphDescriptions' own doc
-		// comment for why a bare ParagraphTagMap can't be passed directly.
-		encoded, err := tags.Value()
-		if err != nil {
-			return fmt.Errorf("encode tts_tags for paragraph idx %d: %w", idx, err)
-		}
-		if _, err := tx.Exec(`UPDATE paragraphs SET tts_tags = ? WHERE chapter_id = ? AND idx = ?`, encoded, chapterID, idx); err != nil {
-			return fmt.Errorf("set tts_tags for paragraph idx %d: %w", idx, err)
+	for idx, emotion := range byIdx {
+		if _, err := tx.Exec(`UPDATE paragraphs SET emotion = ? WHERE chapter_id = ? AND idx = ?`, emotion, chapterID, idx); err != nil {
+			return fmt.Errorf("set emotion for paragraph idx %d: %w", idx, err)
 		}
 	}
 	return tx.Commit()
@@ -2585,9 +2567,8 @@ func (s *Store) setParagraphDirectionField(chapterID, cloneModel string, byIdx m
 // SetParagraphPronunciation records, for a chapter's paragraphs, the
 // pronunciation substitutions resolved by
 // internal/speakerattr.Client.ResolvePronunciation (see the
-// paragraphs.pronunciation column's own doc comment in Open). Unlike
-// SetParagraphSentenceTags/SetParagraphInlineTags, this isn't clone-model-
-// keyed - a pronunciation fix is plain word substitution, independent of
+// paragraphs.pronunciation column's own doc comment in Open). This isn't
+// clone-model-keyed - a pronunciation fix is plain word substitution, independent of
 // which TTS model narrates it (see Paragraph.ResolveGenerationText) - so
 // each call is a plain overwrite rather than a read-modify-write into a
 // per-model map: a paragraph absent from byIdx is left untouched, and one

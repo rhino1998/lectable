@@ -92,6 +92,26 @@ func EnsureVoiceRefDir(dataDir string) error {
 	return os.MkdirAll(filepath.Join(dataDir, "voice-refs"), 0o755)
 }
 
+// VoicePresetVariantDir holds every emotion variant of presetID's reference
+// clip (see voicerefs.EnsureVariantFile) - one directory per preset so a
+// base-clip change can drop them all at once.
+func VoicePresetVariantDir(dataDir, presetID string) string {
+	return filepath.Join(dataDir, "voice-refs", "variants", presetID)
+}
+
+// VoicePresetVariantFile is presetID's emotion variant for emotion (an
+// internal/emotions id).
+func VoicePresetVariantFile(dataDir, presetID, emotion string) string {
+	return filepath.Join(VoicePresetVariantDir(dataDir, presetID), emotion+".wav")
+}
+
+// VoicePresetVariantFailedFile marks a variant whose render failed on its
+// final attempt, so generation stops waiting on it and falls back to the
+// base clip - see voicerefs.MarkVariantFailed.
+func VoicePresetVariantFailedFile(dataDir, presetID, emotion string) string {
+	return filepath.Join(VoicePresetVariantDir(dataDir, presetID), emotion+".failed")
+}
+
 // VoiceDesignCacheFile is a config-addressed cache slot for a raw,
 // natural-pace VoiceDesign render, keyed by a hash of the exact
 // (instruct, seed, text, language) recipe that produced it - see

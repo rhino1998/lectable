@@ -78,7 +78,10 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("chapter", chapterTopic("chapter", withDeps(narrationDeps, DBDep("images"), DBDep("breaks"), DBDep("sfx"), DepJobs), 0, s.buildChapter))
 	h.Register("chapterMusic", chapterTopic("chapterMusic", withDeps(dbDeps("books", "chapters", "music_regions"), DepJobs), 0, s.buildChapterMusic))
 	h.Register("voice", bookTopic("voice", dbDeps("books"), 0, s.buildVoice))
-	h.Register("speakers", bookTopic("speakers", narrationDeps, 2*time.Second, s.buildSpeakers))
+	// DepJobs too: an emotion variant finishing rendering (a
+	// KindVoiceProvision task) changes a row's Emotions status without any
+	// DB write of its own.
+	h.Register("speakers", bookTopic("speakers", withDeps(narrationDeps, DepJobs), 2*time.Second, s.buildSpeakers))
 	h.Register("characterAppearances", characterTopic("characterAppearances", narrationDeps, 2*time.Second, s.buildCharacterAppearances))
 	h.Register("characterDescriptions", characterTopic("characterDescriptions", narrationDeps, 2*time.Second, s.buildCharacterDescriptions))
 	h.Register("bookmarks", bookTopic("bookmarks", dbDeps("bookmarks", "books", "chapters", "paragraphs"), 0, s.buildBookmarks))

@@ -17,6 +17,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker/ttsworkertest"
+	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 	"github.com/rhino1998/lectable/backend/internal/wav"
 )
 
@@ -960,80 +961,24 @@ func TestSpeechDirectionDependencyBlocksThenClearsOnceTagged(t *testing.T) {
 	}
 }
 
-// TestSpeechDirectionDependencyNeverAppliesToNonHiggsCloneModel locks in
-// the fix for a real, confirmed-live bug: directChapter (m.direct's real
-// implementation) is a silent no-op for any clone model but Higgs's own.
-// Without also checking that same gate here before ever creating a task,
-// a non-Higgs book's chapter would never observably reach
-// ChapterStateTagged no matter how many times its direction task actually
-// ran, so this dependency would recreate a fresh no-op KindSpeechDirection
-// task every single time - an endless stream of instantly-finishing
-// direction tasks, never settling. m.direct must never even be called for
-// such a book, across several repeated checks.
-func TestSpeechDirectionDependencyNeverAppliesToNonHiggsCloneModel(t *testing.T) {
-	s := openTestStore(t)
-	book, chapterID := createBookAndChapter(t, s, "", 0, "Some narration.")
-
-	preset, err := s.CreateVoicePreset("Custom", "a custom instruct", "a reference line", 1, 1.0, "")
-	if err != nil {
-		t.Fatalf("CreateVoicePreset: %v", err)
-	}
-	// SpeechDirection on, so the only thing keeping the dependency away is
-	// the clone-model gate itself.
-	if err := s.UpdateVoice(book.ID, preset.ID, "", "en", 0, "some-other-clone-model", store.CharacterVoiceModeNarrator, true, false); err != nil {
-		t.Fatalf("UpdateVoice: %v", err)
-	}
-	book, err = s.GetBook(book.ID)
-	if err != nil || book == nil {
-		t.Fatalf("GetBook: %v", err)
-	}
-
-	directCalls := 0
-	mgr := newTestManagerWithStore(s)
-	mgr.narration = narration.NewResolver(s)
-	mgr.direct = func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
-		directCalls++
-		return 0, nil, nil // mirrors directChapter's own real no-op for a non-Higgs model
-	}
-
-	cloneTask := &task{kind: KindVoiceClone, bookID: book.ID, chapterID: chapterID, tier: TierBackground, paragraph: store.Paragraph{ID: "p-1"}}
-	mgr.pushTask(cloneTask)
-
-	for i := 0; i < 3; i++ {
-		got, ok := mgr.queue.Pop()
-		if !ok || got.(*task) != cloneTask {
-			t.Fatalf("iteration %d: expected the clone to dispatch directly (no direction dependency), got %v ok=%v", i, got, ok)
-		}
-		mgr.queue.Finish(cloneTask.dedupKey())
-		if !mgr.queue.Push(cloneTask) {
-			t.Fatalf("iteration %d: re-push should succeed once finished", i)
-		}
-	}
-	if directCalls != 0 {
-		t.Fatalf("expected m.direct never to be called for a non-Higgs clone model, got %d call(s)", directCalls)
-	}
-}
-
-// TestPronunciationDependencyBlocksThenClearsForAnyCloneModel is
-// TestSpeechDirectionDependencyBlocksThenClearsOnceTagged's counterpart for
-// pronunciation resolution, on a non-Higgs book: unlike direction tagging,
-// pronunciation applies to every clone model, so with SpeechDirection on
-// the clone waits on a lazily-created KindPronunciation task, and once
-// Passes.Pronunciation is persisted it dispatches with nothing left to
-// wait on.
-func TestPronunciationDependencyBlocksThenClearsForAnyCloneModel(t *testing.T) {
+// TestSpeechDirectionDependencyAppliesToAnyCloneModel confirms emotion
+// labeling (KindSpeechDirection) gates generation for a non-Higgs book
+// too - emotion reaches TTS as a reference-clip variant, so it matters
+// under every clone model - and that once the chapter is directed the
+// dependency settles instead of recreating a task on every check.
+func TestSpeechDirectionDependencyAppliesToAnyCloneModel(t *testing.T) {
 	s := openTestStore(t)
 	book, chapterID := createBookAndChapter(t, s, "", 0, "Some narration.")
 	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, "audiocpp-pocket-100m", book.CharacterVoiceMode, true, false); err != nil {
 		t.Fatalf("UpdateVoice(SpeechDirection=true): %v", err)
 	}
 
-	pronounceCalls := 0
+	directCalls, pronounceCalls := 0, 0
 	mgr := newTestManagerWithStore(s)
 	mgr.narration = narration.NewResolver(s)
 	mgr.direct = func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
-		t.Fatalf("direction tagging must not run for a non-Higgs book")
-		return 0, nil, nil
+		directCalls++
+		return 0, nil, s.SetChapterDirected(ch.ID)
 	}
 	mgr.pronounce = func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
 		pronounceCalls++
@@ -1043,28 +988,36 @@ func TestPronunciationDependencyBlocksThenClearsForAnyCloneModel(t *testing.T) {
 	cloneTask := &task{kind: KindVoiceClone, bookID: book.ID, chapterID: chapterID, tier: TierBackground, paragraph: store.Paragraph{ID: "p-1"}}
 	mgr.pushTask(cloneTask)
 
-	got, ok := mgr.queue.Pop()
-	if !ok {
-		t.Fatalf("expected the lazily-created pronunciation task to dispatch")
+	// Both chapter passes block the clone; run each as it dispatches.
+	seen := map[Kind]bool{}
+	for range 2 {
+		got, ok := mgr.queue.Pop()
+		if !ok {
+			t.Fatalf("expected a blocking chapter pass to dispatch")
+		}
+		blocker := got.(*task)
+		if blocker == cloneTask {
+			t.Fatalf("clone dispatched before its chapter was labeled and pronounced (seen %v)", seen)
+		}
+		if blocker.chapterID != chapterID {
+			t.Fatalf("blocker for the wrong chapter: %q", blocker.chapterID)
+		}
+		seen[blocker.kind] = true
+		if _, _, err := blocker.runLLM(t.Context()); err != nil {
+			t.Fatalf("runLLM: %v", err)
+		}
+		mgr.queue.Finish(blocker.dedupKey())
 	}
-	blocker := got.(*task)
-	if blocker.kind != KindPronunciation || blocker.chapterID != chapterID {
-		t.Fatalf("expected a KindPronunciation task for chapter %q, got kind=%v chapterID=%q", chapterID, blocker.kind, blocker.chapterID)
+	if !seen[KindSpeechDirection] || !seen[KindPronunciation] {
+		t.Fatalf("expected both a direction and a pronunciation task, got %v", seen)
 	}
-	if _, ok := mgr.queue.Pop(); ok {
-		t.Fatalf("expected the clone to stay blocked while pronunciation resolution is in flight")
-	}
-	if _, _, err := blocker.runLLM(t.Context()); err != nil {
-		t.Fatalf("runLLM: %v", err)
-	}
-	mgr.queue.Finish(blocker.dedupKey())
 
-	got2, ok := mgr.queue.Pop()
-	if !ok || got2.(*task) != cloneTask {
-		t.Fatalf("expected the clone to dispatch once its chapter's pronunciation is resolved, got %v ok=%v", got2, ok)
+	got, ok := mgr.queue.Pop()
+	if !ok || got.(*task) != cloneTask {
+		t.Fatalf("expected the clone to dispatch once its chapter is labeled, got %v ok=%v", got, ok)
 	}
-	if pronounceCalls != 1 {
-		t.Fatalf("expected exactly one pronunciation run, got %d", pronounceCalls)
+	if directCalls != 1 || pronounceCalls != 1 {
+		t.Fatalf("expected exactly one run of each pass, got direct=%d pronounce=%d", directCalls, pronounceCalls)
 	}
 }
 
@@ -2200,4 +2153,57 @@ func wavDurationSeconds(data []byte) (float64, error) {
 		return 0, err
 	}
 	return d.Seconds(), nil
+}
+
+// TestVariantClipDependencyRendersThenFallsBack confirms an emotional
+// dialogue line waits on its preset's emotion-variant render (one
+// KindVoiceProvision task per preset+emotion), and that a variant marked
+// failed stops blocking - the line then clones from the base clip.
+func TestVariantClipDependencyRendersThenFallsBack(t *testing.T) {
+	mgr := newTestManager()
+	mgr.dataDir = t.TempDir()
+	// Base clip already rendered, so only the variant is missing.
+	if err := audiopath.EnsureVoiceRefDir(mgr.dataDir); err != nil {
+		t.Fatalf("EnsureVoiceRefDir: %v", err)
+	}
+	if err := os.WriteFile(audiopath.VoicePresetRefFile(mgr.dataDir, "preset-a"), []byte("wav"), 0o644); err != nil {
+		t.Fatalf("write base clip: %v", err)
+	}
+
+	clone := &task{
+		kind: KindVoiceClone, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", presetID: "preset-a",
+		paragraph: store.Paragraph{ID: "p-1", Speaker: "Alice", IsQuote: true, Emotion: "angry"},
+	}
+	mgr.pushTask(clone)
+
+	got, ok := mgr.queue.Pop()
+	if !ok {
+		t.Fatalf("expected the variant render to dispatch")
+	}
+	render := got.(*task)
+	if render.kind != KindVoiceProvision || render.dedupKey() != "voice_provision:variant:preset-a:angry" {
+		t.Fatalf("expected the angry variant render, got kind=%v key=%q", render.kind, render.dedupKey())
+	}
+	if _, ok := mgr.queue.Pop(); ok {
+		t.Fatalf("expected the clone to stay blocked while its variant renders")
+	}
+
+	if err := voicerefs.MarkVariantFailed(mgr.dataDir, "preset-a", "angry"); err != nil {
+		t.Fatalf("MarkVariantFailed: %v", err)
+	}
+	mgr.queue.Finish(render.dedupKey())
+	got, ok = mgr.queue.Pop()
+	if !ok || got.(*task) != clone {
+		t.Fatalf("expected the clone to dispatch once its variant settled, got %v ok=%v", got, ok)
+	}
+
+	// A neutral or narration line never waits on a variant at all.
+	neutral := &task{
+		kind: KindVoiceClone, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", presetID: "preset-a",
+		paragraph: store.Paragraph{ID: "p-2", Emotion: "sad"},
+	}
+	mgr.pushTask(neutral)
+	if got, ok := mgr.queue.Pop(); !ok || got.(*task) != neutral {
+		t.Fatalf("expected a narration line to dispatch with no variant dependency, got %v ok=%v", got, ok)
+	}
 }

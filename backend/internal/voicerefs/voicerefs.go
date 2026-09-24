@@ -273,7 +273,11 @@ func NormalizeVolume(dataDir, presetID, referencePresetID string) error {
 	if err != nil {
 		return fmt.Errorf("encode wav: %w", err)
 	}
-	return os.WriteFile(path, out, 0o644)
+	if err := os.WriteFile(path, out, 0o644); err != nil {
+		return err
+	}
+	// Variants were loudness-matched to the old level.
+	return DeleteVariants(dataDir, presetID)
 }
 
 // applyGain scales every sample by factor in place. wav.Encode clips
@@ -301,6 +305,10 @@ func save(dataDir, presetID string, data []byte) (string, error) {
 	}
 	path := audiopath.VoicePresetRefFile(dataDir, presetID)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return "", err
+	}
+	// Every emotion variant was cloned from the clip just replaced.
+	if err := DeleteVariants(dataDir, presetID); err != nil {
 		return "", err
 	}
 	return path, nil
@@ -344,9 +352,13 @@ func LookupCachedDesign(dataDir, hash string) ([]byte, bool) {
 	return data, true
 }
 
-// Delete removes presetID's cached reference clip, if any. Best-effort -
-// safe to call on one that was never created.
+// Delete removes presetID's cached reference clip and every emotion
+// variant of it, if any. Best-effort - safe to call on one that was never
+// created.
 func Delete(dataDir, presetID string) error {
+	if err := DeleteVariants(dataDir, presetID); err != nil {
+		return err
+	}
 	err := os.Remove(audiopath.VoicePresetRefFile(dataDir, presetID))
 	if os.IsNotExist(err) {
 		return nil

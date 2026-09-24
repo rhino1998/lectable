@@ -67,15 +67,16 @@ type Config struct {
 	NoThink bool
 }
 
-// DefaultNCtx comfortably covers one attribution/direction/sfx batch (up
-// to maxBatchParagraphs/directionBatchParagraphs/sfxBatchParagraphs
+// DefaultNCtx comfortably covers one attribution/emotion batch (up
+// to maxBatchParagraphs/emotionBatchParagraphs
 // paragraphs of prose plus that pass's own maxTokens of generated JSON)
 // or one characterization call (up to maxCharacterizeQuotes quotes plus
 // characterizeMaxTokens of generated instruction) - exported so cmd/
 // ttsworker/main.go, which now owns SPEAKER_LLM_CTX's own default (see
 // llmworker.Config.NCtx), doesn't need to duplicate this number. Doubled
-// from an original 12288 alongside attributeMaxTokens/directionMaxTokens/
-// sfxMaxTokens/characterizeMaxTokens all roughly doubling too - this is
+// from an original 12288 alongside attributeMaxTokens/
+// characterizeMaxTokens (and the since-removed direction/sfx passes' own
+// budgets) all roughly doubling too - this is
 // llmworker.Config.NCtx's own *per-slot* context size (see its doc
 // comment), so doubling it doubles this model's total KV-cache footprint
 // (already multiplied by SPEAKER_LLM_MAX_CONCURRENT slots, independent of
@@ -92,8 +93,7 @@ type Config struct {
 const DefaultNCtx = 49152
 
 // MaxOutputTokens is the largest maxTokens value any batch call in this
-// package will ever pass to LLMGenerate (today, directionMaxTokens/
-// sfxMaxTokens, both 32768) - llmworker.Config sizes its shared KV-cache
+// package will ever pass to LLMGenerate - llmworker.Config sizes its shared KV-cache
 // pool off this per concurrent generation slot (see its own NCtx doc
 // comment), since that's the real per-slot worst case: a batch's own
 // input prompt is always far smaller than its own maxTokens ceiling (see
@@ -105,8 +105,7 @@ func MaxOutputTokens() int {
 	max := attributeMaxTokens
 	for _, t := range []int{
 		characterizeMaxTokens,
-		directionMaxTokens,
-		sfxMaxTokens,
+		emotionMaxTokens,
 		pronunciationMaxTokens,
 		musicMaxTokens,
 		musicDescribeMaxTokens,
@@ -154,7 +153,7 @@ type llmBackend interface {
 // Client is a thin caller-side wrapper around an llmBackend: batching,
 // prompt-building, JSON-parsing, and malformed-response retry all live
 // here (see AttributeChapter/DescribeChapter/CharacterizeVoice/
-// DirectChapter/TagSfx/ResolvePronunciation and generateAndParse below) -
+// EmotionChapter/ResolvePronunciation and generateAndParse below) -
 // the model itself is neither loaded nor run by this package any more (see
 // the package doc comment).
 type Client struct {
@@ -287,13 +286,9 @@ const maxGenerateRetries = 2
 // on a different, well-formed token sequence instead of repeating the same
 // near-miss twice.
 //
-// That original case was a speech-direction batch specifically - see
-// parseTaggedLines' own doc comment for why direction/sfx tagging no
-// longer parses JSON at all (the exact quote-substitution variant of this
-// same failure family is what finally motivated the rewrite) and so no
-// longer produces a parse error for retryParse to retry against in the
-// first place; this escalation still applies to whichever batches remain
-// JSON-parsed (attribution, description, characterization).
+// That original case was a (since-removed) speech-direction batch; this
+// escalation applies to whichever batches are still JSON-parsed
+// (attribution, description, characterization).
 const retryTempBump = 0.2
 
 // generateAndParse calls c.generate, then parse on its own output - a thin
@@ -301,8 +296,8 @@ const retryTempBump = 0.2
 // retry loop in a form that doesn't need a real *Client to exercise in a
 // test. Only the first attempt (attempt 0) uses temp as given; see
 // retryTempBump for what each retry attempt after it escalates to instead.
-// A low-but-nonzero temp (below retryTempBump - see directionTemp) still
-// escalates the same way, never dropping below its own starting value.
+// A low-but-nonzero temp (below retryTempBump) still escalates the same
+// way, never dropping below its own starting value.
 func generateAndParse[T any](ctx context.Context, c *Client, systemPrompt, userPrompt string, temp float32, maxTokens int, parse func(content string) (T, error)) (T, error) {
 	return retryParse(func(attempt int) (string, error) {
 		callTemp := temp
@@ -360,10 +355,8 @@ type ParagraphInput struct {
 	Inline bool
 	// IsQuote mirrors store.Paragraph.IsQuote - true when this paragraph
 	// is an actual quoted-dialogue span rather than narration/description.
-	// Used by both DirectChapter and TagSfx to keep the fuller delivery-tag
-	// vocabulary scoped to dialogue, restricting narration to a much
-	// smaller allowed set - see restrictNonQuoteTags/allowedNonQuoteTags
-	// (direction.go).
+	// EmotionChapter only ever labels a line with this set - narration is
+	// shown to the model as context but always stays neutral.
 	IsQuote bool
 }
 
@@ -1183,7 +1176,7 @@ func truncate(s string, n int) string {
 // Client will ever call generate with - the fixed, package-level constants
 // backing AttributeChapter (systemPrompt), DescribeChapter
 // (describeSystemPrompt), CharacterizeVoice (characterizeSystemPrompt),
-// DirectChapter (directionSystemPrompt), TagSfx (sfxSystemPrompt),
+// EmotionChapter (emotionSystemPrompt),
 // ResolvePronunciation (pronunciationSystemPrompt), and ScoreMusic's own
 // two passes (musicSystemPrompt, musicDescribeSystemPrompt) - the latter
 // especially worth priming since ScoreMusic now issues one
@@ -1201,8 +1194,7 @@ func SystemPrompts() []string {
 		systemPrompt,
 		describeSystemPrompt,
 		characterizeSystemPrompt,
-		directionSystemPrompt,
-		sfxSystemPrompt,
+		emotionSystemPrompt,
 		pronunciationSystemPrompt,
 		scareQuoteSystemPrompt,
 		musicSystemPrompt,

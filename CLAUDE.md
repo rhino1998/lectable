@@ -92,6 +92,17 @@ also a per-book setting, never a property of a voice: a voice preset is
 just a reference-clip recipe. New books start with the default clone model
 set on the Voices page.
 
+Dialogue lines can also carry an **emotion** (a small fixed set -
+`backend/internal/emotions`: warm, excited, sad, angry, afraid, cold,
+whisper, shout, weary), labeled by an LLM pass or overridden per line in
+the reader. An emotion isn't a TTS control token: each voice lazily gets
+one reference-clip *variant* per emotion its lines actually use (rendered
+by BreezeTTS instructed cloning of the base clip), and an emotional line
+clones from that variant instead - so it works under every clone model.
+The only Higgs inline tag still used is `<|prosody:pause|>`, inserted by a
+plain Go pass before ellipses/em dashes. See `backend/CLAUDE.md`'s
+"Emotions" section.
+
 ## Running everything locally
 
 1. `backend`: from `backend/`, build both binaries once
@@ -129,6 +140,7 @@ client, not a browser.)
 - No auth, no multi-user support — this is a single-user local app.
 - All persistent state lives under the backend's `DATA_DIR` (default
   `./data`): `library.duckdb`, `audio/<bookID>/<chapterID>/<idx>.wav`,
-  `covers/<bookID>.<ext>`, `voice-refs/<presetID>.wav`. Nothing is stored
+  `covers/<bookID>.<ext>`, `voice-refs/<presetID>.wav`,
+  `voice-refs/variants/<presetID>/<emotion>.wav`. Nothing is stored
   in `ttsworker` or `frontend` - the worker is intentionally stateless
   aside from which model checkpoints happen to be loaded in VRAM.
