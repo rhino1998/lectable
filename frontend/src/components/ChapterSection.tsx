@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useRef, useState } from 'react'
+import { Fragment, createElement, memo, useEffect, useRef, useState } from 'react'
 import {
   RiBookmarkFill,
   RiBookmarkLine,
@@ -17,10 +17,11 @@ import {
   RiUser3Line,
   RiVoiceprintLine,
   RiVolumeUpLine,
+  RiWindyLine,
 } from 'react-icons/ri'
 import type { ChapterDetail, ContentItem, MusicRegion, Paragraph } from '../api/types'
 import { hasActiveTextSelection } from '../utils/selection'
-import { emotionLabel } from '../utils/emotions'
+import { emotionIcon, emotionLabel } from '../utils/emotions'
 import { annotationKind, annotationTitle, matchesSelectedSpeaker } from '../utils/annotations'
 import { resolveGenerationText } from '../utils/resolveGenerationText'
 import { ParagraphText } from './ParagraphText'
@@ -89,6 +90,32 @@ interface ParagraphGroupProps {
   // caller that passes one).
   onSetSFXPrompt: (chapterIdx: number, paragraphIdx: number, prompt: string, triggerWord?: number) => void
   onGenerateSFX: (chapterIdx: number, paragraphIdx: number, prompt: string) => Promise<void>
+}
+
+// A dialogue segment's emotion, as a small inline icon at the start of
+// the line it applies to (annotations view only) - per segment, since a
+// paragraph with several dialogue segments can carry a different emotion
+// on each. Its own hover shows just the emotion name through the reader's
+// shared AnnotationTooltip; stopPropagation keeps the enclosing segment's
+// onMouseMove from immediately replacing that with the segment's full
+// annotationTitle.
+function EmotionIcon({
+  emotion,
+  onShowTooltip,
+}: {
+  emotion: string
+  onShowTooltip: (e: React.MouseEvent<HTMLElement>, text: string) => void
+}) {
+  const label = `Emotion: ${emotionLabel(emotion)}`
+  const show = (e: React.MouseEvent<HTMLElement>) => {
+    e.stopPropagation()
+    onShowTooltip(e, label)
+  }
+  return (
+    <span className="emotion-icon" aria-label={label} onMouseEnter={show} onMouseMove={show}>
+      {createElement(emotionIcon(emotion))}
+    </span>
+  )
 }
 
 // One visual paragraph (image, or one-or-more joined text segments) -
@@ -204,6 +231,13 @@ const ParagraphGroup = memo(function ParagraphGroup({
                   between them - otherwise "fire." and the next segment's
                   opening quote run together with no gap. */}
               {segIdx > 0 && ' '}
+              {/* Per-segment, unlike the trailing emotion badge below: a
+                  paragraph with several dialogue segments can carry a
+                  different emotion on each, and the chip sits right on the
+                  line it applies to. */}
+              {annotationsView && p.emotion && (
+                <EmotionIcon emotion={p.emotion} onShowTooltip={onShowTooltip} />
+              )}
               <ParagraphText
                 text={p.text}
                 active={isActive}
@@ -226,9 +260,11 @@ const ParagraphGroup = memo(function ParagraphGroup({
             <RiUser3Line /> {speakers.join(', ')}
           </span>
         )}
-        {emotionLabels.length > 0 && (
+        {/* Hover-only summary outside annotations view - annotations view
+            shows each segment's own EmotionIcon instead. */}
+        {!annotationsView && emotionLabels.length > 0 && (
           <span
-            className={'paragraph-direction-hint' + (annotationsView ? ' paragraph-direction-hint-visible' : '')}
+            className="paragraph-direction-hint"
             title={`Emotion: ${emotionLabels.join(', ')}`}
           >
             <RiEmotionLine /> {emotionLabels.join(', ')}
@@ -407,8 +443,10 @@ function MusicRegionBoundary({
   // shown inline - the inline chip stays short (mood + transition/status),
   // so duration goes wherever a reader is already looking to read the rest
   // of this region's own "score" anyway.
-  const promptText = region.ambience ? `${region.prompt}\nAmbience: ${region.ambience}` : region.prompt
-  const tooltipText = durationLabel ? `${promptText} (${durationLabel})` : promptText
+  // The ambience prompt goes on its own line (the tooltip is pre-line) so
+  // it doesn't read as a continuation of the music prompt itself.
+  const musicText = durationLabel ? `${region.prompt} (${durationLabel})` : region.prompt
+  const tooltipText = region.ambience ? `${musicText}\nAmbience: ${region.ambience}` : musicText
   const busy = region.status === 'generating'
   return (
     <div
@@ -430,6 +468,15 @@ function MusicRegionBoundary({
         {status && ` · ${status}`}
         {durationLabel && ` · ${durationLabel}`}
       </span>
+      {/* The ambient soundscape layered under this region's music - just
+          the start of its prompt inline (truncated like the mood label),
+          the full text in the hover tooltip above. */}
+      {region.ambience && (
+        <span className="chapter-music-boundary-ambience">
+          <RiWindyLine />
+          <span className="chapter-music-boundary-ambience-text">{region.ambience}</span>
+        </span>
+      )}
       {region.status === 'ready' && region.audioUrl && <MusicRegionPreviewButton audioUrl={region.audioUrl} />}
       <button
         className="chapter-music-boundary-regenerate"

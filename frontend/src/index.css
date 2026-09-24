@@ -1383,6 +1383,24 @@ label {
   font-weight: 500;
   opacity: 0.85;
 }
+/* The region's ambient-soundscape prompt, if any - meta's own muted
+   coloring, truncated to a short excerpt (the full prompt is in the
+   tooltip). min-width: 0 lets it shrink before the mood label does. */
+.chapter-music-boundary-ambience {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  max-width: 16rem;
+  color: color-mix(in srgb, var(--music-region) 70%, var(--text));
+  font-weight: 500;
+  opacity: 0.85;
+}
+.chapter-music-boundary-ambience-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* Previews this region's own generated clip in isolation (see
    MusicRegionPreviewButton) - .icon-action-button's own sizing/centering,
@@ -1698,11 +1716,10 @@ label {
   opacity: 1;
 }
 
-/* This paragraph's own inline delivery tag(s) (e.g. "Anger", "Whispering" -
-   see ReaderPage's formatDirectionTag) - same invisible-until-hover/
-   annotations-view treatment as paragraph-speaker-hint just above, with its
-   own accent color so the two badges stay visually distinct when a
-   paragraph shows both at once. */
+/* This paragraph's emotion(s), summarized - hover-only, and not rendered
+   at all in annotations view (each segment's own .emotion-icon replaces
+   it there). Own accent color so it stays visually distinct from
+   paragraph-speaker-hint just above when a paragraph shows both. */
 .paragraph-direction-hint {
   display: inline-flex;
   align-items: center;
@@ -1715,8 +1732,7 @@ label {
   opacity: 0;
   user-select: none;
 }
-.paragraph:hover .paragraph-direction-hint,
-.paragraph-direction-hint-visible {
+.paragraph:hover .paragraph-direction-hint {
   opacity: 1;
 }
 
@@ -1738,6 +1754,26 @@ label {
 .annotation-description {
   background: color-mix(in srgb, var(--annotation-description) 18%, transparent);
   border-bottom: 2px solid var(--annotation-description);
+}
+
+/* A dialogue segment's emotion (ChapterSection.EmotionIcon, annotations
+   view only) - a bare icon at the start of the segment it applies to, in
+   --direction-emotion (free since emotion stopped being a delivery-tag
+   caret category - see utils/directionTags). The name itself is on
+   hover. Not narrated text, so it's excluded from selection like
+   the trailing paragraph badges. */
+.emotion-icon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 0.2em;
+  font-size: 0.9em;
+  vertical-align: -0.05em;
+  color: var(--direction-emotion);
+  cursor: help;
+  user-select: none;
+}
+.emotion-icon svg {
+  flex-shrink: 0;
 }
 
 /* Inline delivery-tag caret (ParagraphText.DirectionCaret) - a small
@@ -1893,7 +1929,9 @@ label {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
   font-size: 0.75rem;
   font-weight: 600;
-  white-space: normal;
+  /* pre-line so a caller's own "\n" separators (MusicRegionBoundary's
+     music prompt vs. ambience prompt) actually break lines. */
+  white-space: pre-line;
 }
 .annotation-tooltip::after {
   content: '';
@@ -2241,6 +2279,9 @@ label {
   padding: 0 0.6rem 0.3rem;
 }
 .speaker-context-menu-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
   background: none;
   border: 1px solid var(--border);
   border-radius: 999px;

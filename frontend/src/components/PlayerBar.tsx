@@ -4,6 +4,7 @@ import {
   RiBook2Line,
   RiBookOpenLine,
   RiBookmarkLine,
+  RiEmotionLine,
   RiFileTextLine,
   RiFontSize,
   RiGitMergeLine,
@@ -473,6 +474,12 @@ export function PlayerBar({
               {DIRECTION_TAG_CATEGORY_LABELS[category]}
             </span>
           ))}
+          <span className="annotation-legend-item">
+            <span className="emotion-icon" aria-hidden="true">
+              <RiEmotionLine />
+            </span>
+            Emotion
+          </span>
           <span className="annotation-legend-item">
             <span className="pronunciation-legend-swatch" aria-hidden="true" />
             Pronunciation

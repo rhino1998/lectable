@@ -47,6 +47,7 @@ import { ChapterSection } from '../components/ChapterSection'
 import { AnnotationTooltip } from '../components/AnnotationTooltip'
 import type { AnnotationTooltipHandle } from '../components/AnnotationTooltip'
 import type { ChapterDetail, MusicRegion, Paragraph } from '../api/types'
+import { RiEmotionNormalLine } from 'react-icons/ri'
 import { EMOTIONS } from '../utils/emotions'
 import { matchesSelectedSpeaker } from '../utils/annotations'
 
@@ -1210,7 +1211,7 @@ export function ReaderPage() {
                 <>
                   <div className="speaker-context-menu-section">Emotion</div>
                   <div className="speaker-context-menu-chips">
-                    {[{ id: '', label: 'Neutral' }, ...EMOTIONS].map((e) => (
+                    {[{ id: '', label: 'Neutral', icon: RiEmotionNormalLine }, ...EMOTIONS].map((e) => (
                       <button
                         key={e.id}
                         className={
@@ -1220,7 +1221,7 @@ export function ReaderPage() {
                         disabled={e.id === contextMenu.emotion}
                         onClick={() => setEmotion(e.id)}
                       >
-                        {e.label}
+                        <e.icon /> {e.label}
                       </button>
                     ))}
                   </div>
