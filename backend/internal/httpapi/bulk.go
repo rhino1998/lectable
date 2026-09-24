@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
@@ -314,6 +315,9 @@ func (s *Server) voicesBulkRun(book *store.Book, scope string, group *jobs.BulkG
 //   - "music_generation": every music region's clip, back to pending
 //   - "generate": every narration clip - handleDeleteBookAudio's action
 //
+// The paragraph passes accept ?fromChapter=<idx> to reset only chapters at
+// or after that index instead of the whole book; the other passes reject it.
+//
 // Doesn't cancel an in-flight run of the same pass, which would set its
 // flag again as it finishes - the Speakers page disables a reset while its
 // pass is running. 200 {"invalidated": n}, n = paragraphs whose audio was
@@ -339,6 +343,18 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 			_ = os.RemoveAll(audiopath.MusicDir(s.DataDir, book.ID, cs.Chapter.ID))
 		}
 		return nil
+	}
+
+	fromIdx := 0
+	if v := r.URL.Query().Get("fromChapter"); v != "" {
+		if _, ok := store.PassResets[pass]; !ok {
+			writeError(w, http.StatusBadRequest, "fromChapter is only supported for paragraph passes")
+			return
+		}
+		if fromIdx, err = strconv.Atoi(v); err != nil || fromIdx < 0 {
+			writeError(w, http.StatusBadRequest, "invalid fromChapter")
+			return
+		}
 	}
 
 	invalidated := 0
@@ -367,7 +383,7 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var affected map[string][]int
-		affected, err = s.Store.ResetBookPass(book.ID, pass)
+		affected, err = s.Store.ResetBookPass(book.ID, pass, fromIdx)
 		for chapterID, idxs := range affected {
 			refs, derr := s.Store.DeleteParagraphAudioForIdxs(book.ID, chapterID, idxs)
 			if derr != nil {

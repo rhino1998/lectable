@@ -1548,7 +1548,16 @@ func TestResetBookPass(t *testing.T) {
 		return p
 	}
 
-	affected, err := s.ResetBookPass(bookID, "attribution")
+	// A fromIdx past the book's only chapter leaves it untouched.
+	affected, err := s.ResetBookPass(bookID, "attribution", 1)
+	if err != nil {
+		t.Fatalf("ResetBookPass(attribution, from 1): %v", err)
+	}
+	if len(affected) != 0 || para(0).Speaker != "Alice" || !passes().Attribution {
+		t.Fatalf("attribution reset from chapter 1 touched chapter 0: affected %v speaker %q passes %+v", affected, para(0).Speaker, passes())
+	}
+
+	affected, err = s.ResetBookPass(bookID, "attribution", 0)
 	if err != nil {
 		t.Fatalf("ResetBookPass(attribution): %v", err)
 	}
@@ -1565,7 +1574,7 @@ func TestResetBookPass(t *testing.T) {
 		t.Fatalf("passes after attribution reset: %+v, want %+v", passes(), want)
 	}
 
-	affected, err = s.ResetBookPass(bookID, "scare_quote")
+	affected, err = s.ResetBookPass(bookID, "scare_quote", 0)
 	if err != nil {
 		t.Fatalf("ResetBookPass(scare_quote): %v", err)
 	}
@@ -1576,7 +1585,7 @@ func TestResetBookPass(t *testing.T) {
 		t.Fatalf("after scare-quote reset: scareQuote %v speaker %q, want false \"\"", p.ScareQuote, p.Speaker)
 	}
 
-	affected, err = s.ResetBookPass(bookID, "description")
+	affected, err = s.ResetBookPass(bookID, "description", 0)
 	if err != nil {
 		t.Fatalf("ResetBookPass(description): %v", err)
 	}
@@ -1590,7 +1599,7 @@ func TestResetBookPass(t *testing.T) {
 		t.Fatalf("passes after resets: %+v, want %+v", passes(), want)
 	}
 
-	if _, err := s.ResetBookPass(bookID, "bogus"); err == nil {
+	if _, err := s.ResetBookPass(bookID, "bogus", 0); err == nil {
 		t.Fatalf("expected an error for an unknown pass")
 	}
 }

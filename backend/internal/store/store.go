@@ -3497,12 +3497,13 @@ var PassResets = map[string]PassReset{
 }
 
 // ResetBookPass clears pass (a PassResets key) across every chapter of
-// bookID in one transaction: its paragraph columns back to defaults and its
+// bookID with idx >= fromIdx (0 = the whole book) in one transaction: its
+// paragraph columns back to defaults and its
 // chapters.passes flag unset, as though it had never run. Returns the
 // paragraphs PassReset.Affected matched beforehand, as chapterID -> idxs,
 // for the caller to invalidate their audio (DeleteParagraphAudioForIdxs) -
 // this package never touches the filesystem itself.
-func (s *Store) ResetBookPass(bookID, pass string) (map[string][]int, error) {
+func (s *Store) ResetBookPass(bookID, pass string, fromIdx int) (map[string][]int, error) {
 	pr, ok := PassResets[pass]
 	if !ok {
 		return nil, fmt.Errorf("unknown pass %q", pass)
@@ -3515,7 +3516,7 @@ func (s *Store) ResetBookPass(bookID, pass string) (map[string][]int, error) {
 	affected := map[string][]int{}
 	if pr.Affected != "" {
 		rows, err := tx.Query(`SELECT chapter_id, idx FROM paragraphs
-			WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?) AND (`+pr.Affected+`)`, bookID)
+			WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ? AND idx >= ?) AND (`+pr.Affected+`)`, bookID, fromIdx)
 		if err != nil {
 			return nil, err
 		}
@@ -3535,10 +3536,10 @@ func (s *Store) ResetBookPass(bookID, pass string) (map[string][]int, error) {
 		rows.Close()
 	}
 	if _, err := tx.Exec(`UPDATE paragraphs SET `+pr.Set+`
-		WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?) AND (`+pr.Where+`)`, bookID); err != nil {
+		WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ? AND idx >= ?) AND (`+pr.Where+`)`, bookID, fromIdx); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, json_object(?, NULL)) WHERE book_id = ?`, pr.Flag, bookID); err != nil {
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, json_object(?, NULL)) WHERE book_id = ? AND idx >= ?`, pr.Flag, bookID, fromIdx); err != nil {
 		return nil, err
 	}
 	return affected, tx.Commit()
