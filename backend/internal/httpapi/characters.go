@@ -84,6 +84,9 @@ type speakerRowDTO struct {
 	// Invalid mirrors store.Character.Invalid - this name has been ruled
 	// out as a real speaker, and attribution will no longer assign it.
 	Invalid bool `json:"invalid,omitempty"`
+	// Aliases mirrors store.Character.Aliases - other names this speaker
+	// goes by.
+	Aliases []string `json:"aliases,omitempty"`
 	// Emotions is every emotion this speaker's dialogue in this book
 	// actually uses (store.Paragraph.EffectiveEmotion), in internal/emotions
 	// order, each with its line count and the state of the emotion-variant
@@ -258,6 +261,7 @@ func (s *Server) buildSpeakers(bookID string) (any, error) {
 			row.Summary = c.Summary
 			row.RefLine = c.RefLine
 			row.Invalid = c.Invalid
+			row.Aliases = c.Aliases
 		}
 		// The voice this speaker's dialogue actually generates/plays under
 		// right now - their own assigned preset if they have one for this
@@ -495,14 +499,30 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "cannot merge a character into themselves")
 		return
 	}
+	if speakerattr.IsGroupSpeaker(targetName) {
+		writeError(w, http.StatusBadRequest, "cannot merge into a group - pick one character")
+		return
+	}
 
 	storeTargetName := targetName
 	if targetName == "Narrator" {
 		storeTargetName = ""
 	} else if targetName != "Unknown" {
-		if _, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), targetName, false); err != nil {
+		target, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), targetName, false)
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		// The merged-away name (and anything it was already called) is
+		// another name for the target from now on - so attribution folds
+		// it back in, reads "Albert said" as the target, and the same
+		// split doesn't come back. Not for a junk name ("Fritz and
+		// Bert", "No one"), which was never anyone's name.
+		if clean, _ := speakerattr.SanitizeSpeaker(char.Name); clean == char.Name {
+			if err := s.Store.AddCharacterAliases(target.ID, append([]string{char.Name}, char.Aliases...)...); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 	}
 
@@ -684,6 +704,72 @@ func (s *Server) handleReattributeSpeaker(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(targets)})
+}
+
+type setCharacterAliasesRequest struct {
+	Aliases []string `json:"aliases"`
+}
+
+// handleSetCharacterAliases replaces one character's aliases (store.
+// Character.Aliases) - other names they go by, which attribution folds
+// back into their name and reads in speech tags ("Albert said"). 400 for
+// an alias that names no single person (a group like "Bert and Sid", a
+// non-answer like "No one"); 409 for one that's already another valid
+// character's name or alias in this series (merge them instead).
+func (s *Server) handleSetCharacterAliases(w http.ResponseWriter, r *http.Request) {
+	var req setCharacterAliasesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	char, err := s.Store.GetCharacter(r.PathValue("characterId"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if char == nil {
+		writeError(w, http.StatusNotFound, "character not found")
+		return
+	}
+	roster, err := s.Store.ListCharacters(char.Scope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	taken := map[string]string{} // lower-cased name/alias -> owning character's name
+	for _, c := range roster {
+		if c.ID == char.ID || c.Invalid {
+			continue
+		}
+		taken[strings.ToLower(c.Name)] = c.Name
+		for _, a := range c.Aliases {
+			taken[strings.ToLower(a)] = c.Name
+		}
+	}
+	for _, a := range req.Aliases {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if clean, _ := speakerattr.SanitizeSpeaker(a); clean != a {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("%q isn't one person's name", a))
+			return
+		}
+		if owner, ok := taken[strings.ToLower(a)]; ok {
+			writeError(w, http.StatusConflict, fmt.Sprintf("%q already belongs to %s - merge the two characters instead", a, owner))
+			return
+		}
+	}
+	if err := s.Store.SetCharacterAliases(char.ID, req.Aliases); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	updated, err := s.Store.GetCharacter(char.ID)
+	if err != nil || updated == nil {
+		writeError(w, http.StatusInternalServerError, "aliases saved but could not be reloaded")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"aliases": updated.Aliases})
 }
 
 type setCharacterInvalidRequest struct {
@@ -1099,10 +1185,14 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	existing, invalid := splitInvalidCharacters(roster)
 	known := make([]string, len(existing))
 	knownRoles := make(map[string]bool, len(existing))
+	knownAliases := make(map[string][]string, len(existing))
 	for i, c := range existing {
 		known[i] = c.Name
 		if c.IsRole {
 			knownRoles[c.Name] = true
+		}
+		if len(c.Aliases) > 0 {
+			knownAliases[c.Name] = c.Aliases
 		}
 	}
 	knownDescriptions, err := s.knownCharacterDescriptions(book, existing)
@@ -1131,7 +1221,7 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		if inline && (i == 0 || paragraphs[i-1].Idx != p.Idx-1) {
 			inline = false
 		}
-		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: inline}
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: inline, IsQuote: p.IsQuote && !p.ScareQuote}
 	}
 
 	// nil, not s.Jobs.HasHigherPriorityWork: every LLM pass (attribution,
@@ -1144,7 +1234,8 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	// under real contention could leave most of a bulk run's chapters
 	// silently stuck half-done with nothing left in the queue to ever
 	// pick them back up).
-	speakers, roleNames, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, known, knownDescriptions, knownRoles, inputs, nil)
+	attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+	speakers, roleNames, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, attrRoster, inputs, nil)
 
 	paragraphByIdx := make(map[int]store.Paragraph, len(all))
 	for _, p := range all {
@@ -1172,7 +1263,7 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		// A name marked invalid is never (re)assigned or (re)created -
 		// the line is still real dialogue, just not theirs, so it lands
 		// on Unknown the same way handleDeleteCharacter's does.
-		if invalid.has(name) {
+		if invalid.has(name) || speakerattr.IsGroupSpeaker(name) {
 			name = "Unknown"
 		}
 		bySpeakerIdx[idx] = name
@@ -1220,42 +1311,35 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	return len(bySpeakerIdx), nil, nil
 }
 
-// reattributeChapterSpeaker re-runs speaker attribution over every
-// paragraph in ch - the same full-chapter context attributeChapter itself
-// sends the model (dialogue turn-taking and narration tags either side of a
-// line are often what actually identifies its speaker - a batch containing
-// only excludeName's own isolated lines, with no narration around them,
-// would lose exactly that context) - but persists a paragraph's fresh
-// judgment only when its idx is in targetIdx: the paragraphs currently
-// credited to excludeName, the speaker "Auto Split" is trying to eliminate
-// (see handleReattributeSpeaker). Every other paragraph in ch is re-judged
-// by the model too (spending the same LLM call attributeChapter would
-// anyway) but its result is simply discarded - already correctly
-// attributed, it has no business changing just because this run happened
-// to touch its chapter.
+// reattributeChapterSpeaker re-judges targetIdx - the paragraphs in ch
+// currently credited to excludeName, the speaker "Auto Split" is trying
+// to eliminate (see handleReattributeSpeaker) - and persists only those.
+// No other paragraph in ch is touched, or even asked about:
 //
-// excludeName itself is withheld from "Known characters" (existing, minus
-// excludeName), so the model has no established identity to reuse for it -
-// its own former paragraphs have to land on a genuinely different real
-// character, Narrator, or Unknown. Also enforced defensively in Go, not
-// just by omission from the prompt: if the model still emits excludeName
-// verbatim for one of targetIdx's own paragraphs (e.g. because the name
-// still appears elsewhere in the chapter's own text, as a vocative or a
-// mention), that result is forced to "Unknown" instead - never persisted
-// as a no-op reattribution back onto the exact name being eliminated.
+//  1. A target that isn't real dialogue (narration, a scare quote) is
+//     simply Narrator.
+//  2. A target with an explicit speech tag naming someone else ("…,”
+//     Bert said") takes that name - speakerattr.RefineWithSpeechTags, no
+//     model call.
+//  3. Every other target goes to the model in a window of surrounding
+//     paragraphs centred on it, with only the targets marked to answer,
+//     widening each round (speakerattr.Client.AttributeWithWideningContext)
+//     until the answer isn't a rejected name. Targets close together
+//     share a window.
 //
-// Before that fallback, though, every such line is retried with a window
-// of surrounding paragraphs centred on it that widens each round (see
-// speakerattr.Client.AttributeWithWideningContext) - the fixed batch
-// AttributeChapter happened to put it in may have cut off exactly the
-// narration that identifies its speaker. Only lines still rejected after
-// the widest window land on Unknown.
+// This used to re-run attribution over the whole chapter (every batch,
+// every line, results discarded for everything but targetIdx) and only
+// then widen around the leftovers - for a speaker with a handful of lines
+// in a long chapter, most of that work was thrown away.
+//
+// excludeName is withheld from "Known characters", so the model has no
+// established identity to reuse for it, and never accepted back for a
+// target (nor any invalid or group name): a target still rejected at the
+// widest window lands on "Unknown".
 //
 // Satisfies jobs.ReattributionFunc's shape directly (see
-// jobs.Manager.EnqueueReattribution): requeue is non-nil exactly when
-// speakerattr paused before reaching every paragraph in ch, and calling it
-// enqueues exactly this same continuation, narrowed to whichever of
-// targetIdx's own paragraphs speakerattr never actually reached.
+// jobs.Manager.EnqueueReattribution); it never pauses, so requeue is
+// always nil.
 func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book, ch *store.Chapter, speakerKey, excludeName string, targetIdx map[int]bool) (reattributed int, requeue func(), err error) {
 	if len(targetIdx) == 0 {
 		return 0, nil, nil
@@ -1273,6 +1357,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	existing, invalid := splitInvalidCharacters(roster)
 	known := make([]string, 0, len(existing))
 	knownRoles := make(map[string]bool, len(existing))
+	knownAliases := make(map[string][]string, len(existing))
 	for _, c := range existing {
 		if c.Name == excludeName {
 			continue
@@ -1280,6 +1365,9 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 		known = append(known, c.Name)
 		if c.IsRole {
 			knownRoles[c.Name] = true
+		}
+		if len(c.Aliases) > 0 {
+			knownAliases[c.Name] = c.Aliases
 		}
 	}
 	knownDescriptions, err := s.knownCharacterDescriptions(book, existing)
@@ -1289,60 +1377,90 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	delete(knownDescriptions, excludeName)
 
 	inputs := make([]speakerattr.ParagraphInput, len(all))
+	paragraphByIdx := make(map[int]store.Paragraph, len(all))
 	for i, p := range all {
 		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
-	}
-
-	// nil, not s.Jobs.HasHigherPriorityWork - see the first AttributeChapter
-	// call site's own doc comment above.
-	speakers, roleNames, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, known, knownDescriptions, knownRoles, inputs, nil)
-
-	paragraphByIdx := make(map[int]store.Paragraph, len(all))
-	for _, p := range all {
 		paragraphByIdx[p.Idx] = p
 	}
-
-	// A target the model handed straight back to excludeName (or to any
-	// other invalid name) gets retried with progressively more context
-	// centred on it - see speakerattr.Client.AttributeWithWideningContext -
-	// before falling back to Unknown below. Only a real dialogue line is
-	// worth retrying: anything else is forced to Narrator regardless.
-	rejected := func(name string) bool { return name == excludeName || invalid.has(name) }
-	var retry []int
-	for idx := range targetIdx {
-		name, ok := speakers[idx]
-		if !ok || !rejected(name) {
-			continue
+	isDialogue := func(idx int) bool {
+		p, ok := paragraphByIdx[idx]
+		return ok && p.IsQuote && !p.ScareQuote
+	}
+	rejected := func(name string) bool {
+		return name == "" || name == excludeName || invalid.has(name) || speakerattr.IsGroupSpeaker(name)
+	}
+	resolver := speakerattr.NewSpeakerNameResolver(known, knownAliases)
+	// tagFix runs the speech-tag rules over every dialogue line's current
+	// speaker (targets as given, the rest as stored - context for the
+	// continuation rule) and returns what it says about the targets.
+	tagFix := func(targetSpeakers map[int]string) map[int]string {
+		current := make(map[int]string, len(all))
+		for _, p := range all {
+			if isDialogue(p.Idx) {
+				current[p.Idx] = p.Speaker
+			}
 		}
-		if p, ok := paragraphByIdx[idx]; ok && p.IsQuote && !p.ScareQuote {
-			retry = append(retry, idx)
+		for idx, name := range targetSpeakers {
+			current[idx] = name
+		}
+		refined, _ := speakerattr.RefineWithSpeechTags(inputs, current, resolver)
+		out := make(map[int]string, len(targetSpeakers))
+		for idx := range targetSpeakers {
+			out[idx] = refined[idx]
+		}
+		return out
+	}
+
+	speakers := make(map[int]string, len(targetIdx))
+	roleNames := map[string]bool{}
+	pending := make(map[int]string)
+	for idx := range targetIdx {
+		if isDialogue(idx) {
+			pending[idx] = excludeName
+		} else {
+			speakers[idx] = "Narrator"
 		}
 	}
-	if len(retry) > 0 {
-		widened, widenedRoles, werr := s.Speaker.AttributeWithWideningContext(ctx, book.Title, ch.Title, known, knownDescriptions, knownRoles, inputs, retry, rejected)
-		if werr != nil {
-			log.Printf("httpapi: auto split %q in book %s: chapter %d: widening context: %v", excludeName, book.ID, ch.Idx, werr)
-		}
-		for idx, name := range widened {
+	var retry []int
+	for idx, name := range tagFix(pending) {
+		if rejected(name) {
+			retry = append(retry, idx)
+		} else {
 			speakers[idx] = name
+		}
+	}
+	sort.Ints(retry)
+	var attrErr error
+	if len(retry) > 0 {
+		attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+		widened, widenedRoles, werr := s.Speaker.AttributeWithWideningContext(ctx, book.Title, ch.Title, attrRoster, inputs, retry, rejected)
+		if werr != nil {
+			attrErr = fmt.Errorf("auto split %q: chapter %d: %w", excludeName, ch.Idx, werr)
 		}
 		for name := range widenedRoles {
 			roleNames[name] = true
 		}
-	}
-
-	bySpeakerIdx := make(map[int]string, len(targetIdx))
-	for idx := range targetIdx {
-		name, ok := speakers[idx]
-		if !ok {
-			continue
-		}
-		if name != "Narrator" {
-			if p, ok := paragraphByIdx[idx]; ok && (!p.IsQuote || p.ScareQuote) {
-				name = "Narrator"
+		// Whatever the widening pass settled, run the tag rules once more
+		// over it (a newly settled line can now anchor a continuation).
+		settled := make(map[int]string, len(retry))
+		for _, idx := range retry {
+			if name, ok := widened[idx]; ok {
+				settled[idx] = name
+			} else if werr == nil {
+				settled[idx] = "Unknown" // rejected even at the widest window
 			}
 		}
-		if name == excludeName || invalid.has(name) {
+		for idx, name := range tagFix(settled) {
+			speakers[idx] = name
+		}
+	}
+
+	bySpeakerIdx := make(map[int]string, len(speakers))
+	for idx, name := range speakers {
+		if name != "Narrator" && !isDialogue(idx) {
+			name = "Narrator"
+		}
+		if name != "Narrator" && rejected(name) {
 			name = "Unknown"
 		}
 		bySpeakerIdx[idx] = name
@@ -1353,32 +1471,13 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 			return 0, nil, uerr
 		}
 	}
-	// Persisted regardless of attrErr below - same "keep whatever actually
-	// succeeded" treatment attributeChapter gives its own partial-failure
-	// case.
+	// Persisted regardless of attrErr - keep whatever actually succeeded;
+	// a target the failed widening never reached keeps excludeName, so a
+	// retry of this same Auto Split picks it up again.
 	if serr := s.Store.SetParagraphSpeakers(ch.ID, bySpeakerIdx); serr != nil {
 		return 0, nil, serr
 	}
-
-	if attrErr != nil {
-		return len(bySpeakerIdx), nil, attrErr
-	}
-	if len(remaining) > 0 {
-		stillTarget := make(map[int]bool, len(remaining))
-		for _, p := range remaining {
-			if targetIdx[p.Idx] {
-				stillTarget[p.Idx] = true
-			}
-		}
-		if len(stillTarget) > 0 {
-			requeue = func() {
-				s.Jobs.EnqueueReattribution(book.ID, ch.ID, ch.Idx, speakerKey, excludeName, func(ctx context.Context) (int, func(), error) {
-					return s.reattributeChapterSpeaker(ctx, book, ch, speakerKey, excludeName, stillTarget)
-				})
-			}
-		}
-	}
-	return len(bySpeakerIdx), requeue, nil
+	return len(bySpeakerIdx), nil, attrErr
 }
 
 // describeChapter runs speakerattr.Client.DescribeChapter over every
@@ -3019,4 +3118,72 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 		DesignModel:     voice.DesignModel,
 	}, req.Emotion)
 	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+}
+
+// rosterResolver builds a speakerattr.SpeakerNameResolver over roster's
+// valid characters and their aliases.
+func rosterResolver(roster []store.Character) *speakerattr.SpeakerNameResolver {
+	existing, _ := splitInvalidCharacters(roster)
+	names := make([]string, len(existing))
+	aliases := make(map[string][]string, len(existing))
+	for i, c := range existing {
+		names[i] = c.Name
+		if len(c.Aliases) > 0 {
+			aliases[c.Name] = c.Aliases
+		}
+	}
+	return speakerattr.NewSpeakerNameResolver(names, aliases)
+}
+
+// prominentSpeakersCount is how many of a book's most frequent speakers
+// every attribution prompt lists regardless of whether the batch's own
+// text names them - see speakerattr.Roster.Prominent.
+const prominentSpeakersCount = 12
+
+// recentChapters is how many chapters before the one being attributed
+// prominentSpeakers draws its "still on stage" speakers from.
+const recentChapters = 2
+
+// prominentSpeakers returns the known names every attribution prompt for
+// chapterIdx lists regardless of its own text: up to
+// prominentSpeakersCount with the most dialogue lines in bookID so far
+// (most first), plus everyone who spoke in the recentChapters chapters
+// right before it - a character on stage from the last scene is often
+// referred to only by epithet ("the glowing figure intoned") and would
+// otherwise be missing from a prompt whose lines never name them. Empty
+// on a book with nothing attributed yet - every batch then just lists
+// whoever its own lines mention. Best-effort: a query failure only costs
+// prompt context, so it's logged, not returned.
+func (s *Server) prominentSpeakers(bookID string, chapterIdx int, known []string) []string {
+	names := s.topSpeakers(bookID, known)
+	recent, err := s.Store.RecentChapterSpeakers(bookID, chapterIdx, recentChapters)
+	if err != nil {
+		log.Printf("httpapi: recent speakers for book %s: %v", bookID, err)
+		return names
+	}
+	for _, n := range recent {
+		if slices.Contains(known, n) && !slices.Contains(names, n) {
+			names = append(names, n)
+		}
+	}
+	return names
+}
+
+func (s *Server) topSpeakers(bookID string, known []string) []string {
+	counts, err := s.Store.SpeakerLineCounts(bookID)
+	if err != nil {
+		log.Printf("httpapi: speaker line counts for book %s: %v", bookID, err)
+		return nil
+	}
+	var names []string
+	for _, n := range known {
+		if counts[n] > 0 {
+			names = append(names, n)
+		}
+	}
+	sort.SliceStable(names, func(i, j int) bool { return counts[names[i]] > counts[names[j]] })
+	if len(names) > prominentSpeakersCount {
+		names = names[:prominentSpeakersCount]
+	}
+	return names
 }

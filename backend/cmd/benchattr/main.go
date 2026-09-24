@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -35,6 +36,9 @@ func main() {
 	noThink := flag.Bool("nothink", false, "enable NoThink")
 	describeOnly := flag.Bool("describe-only", false, "run speakerattr's experimental isolated DescribeChapter pass instead of AttributeChapter - see internal/speakerattr/describe_experiment.go")
 	scareQuoteOnly := flag.Bool("scarequote-only", false, "run speakerattr's ScareQuoteChapter pass instead of AttributeChapter")
+	useRoster := flag.Bool("roster", false, "seed attribution with the book's real character roster (valid names, aliases, most frequent speakers) instead of starting empty")
+	score := flag.Bool("score", false, "score each chapter's dialogue speakers against the ones stored in the library (e.g. hand-corrected chapters)")
+	quiet := flag.Bool("quiet", false, "don't print every paragraph")
 	flag.Parse()
 
 	db, err := sql.Open("duckdb", *dbPath+"?access_mode=READ_ONLY")
@@ -81,19 +85,28 @@ func main() {
 	fmt.Printf("=== %s (book=%q, nothink=%v) ===\n", *label, bookTitle, *noThink)
 
 	var known []string
+	roster := speakerattr.Roster{}
+	if *useRoster {
+		roster = loadRoster(db, *bookID)
+		known = append(known, roster.Names...)
+	}
 	var totalElapsed time.Duration
+	var agree, total int
 	for _, ch := range chapters {
-		prows, err := db.Query(`SELECT idx, content, inline, is_quote FROM paragraphs WHERE chapter_id = ? ORDER BY idx`, ch.id)
+		prows, err := db.Query(`SELECT idx, content, inline, is_quote AND NOT scare_quote, speaker FROM paragraphs WHERE chapter_id = ? ORDER BY idx`, ch.id)
 		if err != nil {
 			log.Fatal(err)
 		}
 		var paras []speakerattr.ParagraphInput
+		stored := map[int]string{}
 		for prows.Next() {
 			var p speakerattr.ParagraphInput
-			if err := prows.Scan(&p.Idx, &p.Text, &p.Inline, &p.IsQuote); err != nil {
+			var sp string
+			if err := prows.Scan(&p.Idx, &p.Text, &p.Inline, &p.IsQuote, &sp); err != nil {
 				log.Fatal(err)
 			}
 			paras = append(paras, p)
+			stored[p.Idx] = sp
 		}
 		prows.Close()
 
@@ -111,7 +124,12 @@ func main() {
 		case *scareQuoteOnly:
 			scareQuotes, remaining, attrErr = client.ScareQuoteChapter(context.Background(), bookTitle, ch.title, paras, nil)
 		default:
-			speakers, _, remaining, attrErr = client.AttributeChapter(context.Background(), bookTitle, ch.title, known, nil, nil, paras, nil)
+			r := roster
+			r.Names = known
+			if *useRoster {
+				r.Prominent = append(append([]string(nil), roster.Prominent...), recentSpeakers(db, *bookID, ch.idx)...)
+			}
+			speakers, _, remaining, attrErr = client.AttributeChapter(context.Background(), bookTitle, ch.title, r, paras, nil)
 		}
 		elapsed := time.Since(start)
 		totalElapsed += elapsed
@@ -120,7 +138,25 @@ func main() {
 		if attrErr != nil {
 			fmt.Printf("ERROR: %v\n", attrErr)
 		}
+		if *score && !*describeOnly && !*scareQuoteOnly {
+			chAgree, chTotal := 0, 0
+			for _, p := range paras {
+				if !p.IsQuote || stored[p.Idx] == "" {
+					continue
+				}
+				chTotal++
+				if speakers[p.Idx] == stored[p.Idx] {
+					chAgree++
+				}
+			}
+			agree += chAgree
+			total += chTotal
+			fmt.Printf("SCORE chapter %d: %d/%d dialogue lines match the stored speaker\n", ch.idx, chAgree, chTotal)
+		}
 		for _, p := range paras {
+			if *quiet {
+				break
+			}
 			text := p.Text
 			if len(text) > 90 {
 				text = text[:90] + "..."
@@ -152,6 +188,9 @@ func main() {
 		}
 	}
 	fmt.Printf("\n=== %s TOTAL attribution time: %v ===\n", *label, totalElapsed)
+	if *score && total > 0 {
+		fmt.Printf("=== %s SCORE: %d/%d (%.1f%%) dialogue lines match the stored speaker ===\n", *label, agree, total, 100*float64(agree)/float64(total))
+	}
 }
 
 func addKnownLocal(known []string, name string) []string {
@@ -164,4 +203,63 @@ func addKnownLocal(known []string, name string) []string {
 		}
 	}
 	return append(known, name)
+}
+
+// loadRoster reads the book's series roster the way httpapi does for a
+// real attribution run: valid characters, their aliases, and the most
+// frequent speakers as Prominent.
+func loadRoster(db *sql.DB, bookID string) speakerattr.Roster {
+	r := speakerattr.Roster{Aliases: map[string][]string{}, Roles: map[string]bool{}}
+	rows, err := db.Query(`SELECT c.name, c.is_role, CAST(c.aliases AS VARCHAR) FROM characters c JOIN books b ON c.scope = CASE WHEN b.series_name = '' THEN 'book:' || b.id ELSE 'series:' || b.series_name END WHERE b.id = ? AND NOT c.invalid ORDER BY c.created_at`, bookID)
+	if err != nil {
+		log.Fatalf("roster: %v", err)
+	}
+	for rows.Next() {
+		var name, aliases string
+		var role bool
+		if err := rows.Scan(&name, &role, &aliases); err != nil {
+			log.Fatal(err)
+		}
+		r.Names = append(r.Names, name)
+		if role {
+			r.Roles[name] = true
+		}
+		var list []string
+		if json.Unmarshal([]byte(aliases), &list) == nil && len(list) > 0 {
+			r.Aliases[name] = list
+		}
+	}
+	rows.Close()
+	crows, err := db.Query(`SELECT p.speaker FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ? AND p.is_quote AND p.speaker NOT IN ('', 'Narrator', 'Unknown') GROUP BY p.speaker ORDER BY count(*) DESC LIMIT 12`, bookID)
+	if err != nil {
+		log.Fatalf("prominent: %v", err)
+	}
+	for crows.Next() {
+		var n string
+		if err := crows.Scan(&n); err != nil {
+			log.Fatal(err)
+		}
+		r.Prominent = append(r.Prominent, n)
+	}
+	crows.Close()
+	return r
+}
+
+// recentSpeakers mirrors httpapi.prominentSpeakers' "still on stage"
+// half: everyone who spoke in the two chapters before chapterIdx.
+func recentSpeakers(db *sql.DB, bookID string, chapterIdx int) []string {
+	rows, err := db.Query(`SELECT DISTINCT p.speaker FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ? AND c.idx >= ? AND c.idx < ? AND p.is_quote AND p.speaker NOT IN ('', 'Narrator', 'Unknown')`, bookID, chapterIdx-2, chapterIdx)
+	if err != nil {
+		log.Fatalf("recent speakers: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			log.Fatal(err)
+		}
+		out = append(out, n)
+	}
+	return out
 }

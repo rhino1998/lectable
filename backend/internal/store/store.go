@@ -12,6 +12,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -209,6 +210,8 @@ CREATE TABLE IF NOT EXISTS characters (
 	ref_line TEXT NOT NULL DEFAULT '',
 	is_role BOOLEAN NOT NULL DEFAULT false,
 	invalid BOOLEAN NOT NULL DEFAULT false,
+	-- Other names this character goes by - see Character.Aliases.
+	aliases JSON NOT NULL DEFAULT '[]',
 	created_at BIGINT NOT NULL,
 	UNIQUE(scope, name)
 );
@@ -449,6 +452,9 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateCharactersAliases(db); err != nil {
+		return nil, err
+	}
 	if err := migrateCharactersInvalid(db); err != nil {
 		db.Close()
 		return nil, err
@@ -599,6 +605,15 @@ func migrateParagraphAudioPointer(db *sql.DB) error {
 func migrateCharactersIsRole(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS is_role BOOLEAN DEFAULT false`); err != nil {
 		return fmt.Errorf("migrate characters.is_role: %w", err)
+	}
+	return nil
+}
+
+// migrateCharactersAliases is migrateCharactersIsRole's own shape again,
+// applied to aliases: characters predating it start with none.
+func migrateCharactersAliases(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS aliases JSON DEFAULT '[]'`); err != nil {
+		return fmt.Errorf("migrate characters.aliases: %w", err)
 	}
 	return nil
 }
@@ -2003,6 +2018,50 @@ func (s *Store) ParagraphAudioStatuses(paragraphIDs []string, voiceID string) (m
 	return out, rows.Err()
 }
 
+// RecentChapterSpeakers returns every distinct dialogue speaker in the
+// n chapters of bookID right before chapterIdx - who's likely still on
+// stage (see httpapi.prominentSpeakers). "", "Narrator" and "Unknown" are
+// left out.
+func (s *Store) RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT p.speaker FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id
+		WHERE c.book_id = ? AND c.idx >= ? AND c.idx < ? AND p.is_quote AND p.speaker NOT IN ('', 'Narrator', 'Unknown') ORDER BY p.speaker`, bookID, chapterIdx-n, chapterIdx)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// SpeakerLineCounts returns how many of bookID's dialogue lines each
+// speaker has - one GROUP BY, for picking a book's main cast (see
+// httpapi.prominentSpeakers). "", "Narrator" and "Unknown" are left out.
+func (s *Store) SpeakerLineCounts(bookID string) (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT p.speaker, count(*) FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id
+		WHERE c.book_id = ? AND p.is_quote AND p.speaker NOT IN ('', 'Narrator', 'Unknown') GROUP BY p.speaker`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var name string
+		var n int
+		if err := rows.Scan(&name, &n); err != nil {
+			return nil, err
+		}
+		out[name] = n
+	}
+	return out, rows.Err()
+}
+
 // CountReadyAudioForSpeaker counts bookID's paragraphs attributed to
 // speaker (the "Narrator"/"" equivalence handled the same way
 // ParagraphsForSpeaker's own does) whose voiceID audio is ready -
@@ -2058,7 +2117,7 @@ func (s *Store) GetParagraph(id string) (*Paragraph, error) {
 // discovery order. Identity/summary only - see CharacterVoicesForModel for
 // their (per-clone-model) voice assignments.
 func (s *Store) ListCharacters(scope string) ([]Character, error) {
-	rows, err := s.db.Query(`SELECT id, scope, name, summary, ref_line, is_role, invalid, created_at FROM characters WHERE scope = ? ORDER BY created_at ASC`, scope)
+	rows, err := s.db.Query(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, created_at FROM characters WHERE scope = ? ORDER BY created_at ASC`, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -2067,7 +2126,7 @@ func (s *Store) ListCharacters(scope string) ([]Character, error) {
 	var out []Character
 	for rows.Next() {
 		var c Character
-		if err := rows.Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -2079,8 +2138,8 @@ func (s *Store) ListCharacters(scope string) ([]Character, error) {
 // routes, which address a character directly rather than by scope+name).
 func (s *Store) GetCharacter(id string) (*Character, error) {
 	var c Character
-	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, created_at FROM characters WHERE id = ?`, id).
-		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.CreatedAt)
+	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, created_at FROM characters WHERE id = ?`, id).
+		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -2092,8 +2151,8 @@ func (s *Store) GetCharacter(id string) (*Character, error) {
 
 func (s *Store) GetCharacterByName(scope, name string) (*Character, error) {
 	var c Character
-	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, created_at FROM characters WHERE scope = ? AND name = ?`, scope, name).
-		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.CreatedAt)
+	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, created_at FROM characters WHERE scope = ? AND name = ?`, scope, name).
+		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -2283,6 +2342,51 @@ func (s *Store) DeleteCharacter(id string) error {
 		return fmt.Errorf("delete character: %w", err)
 	}
 	return tx.Commit()
+}
+
+// SetCharacterAliases replaces characterID's aliases (Character.Aliases)
+// with aliases - trimmed, with blanks, case-insensitive duplicates, and the
+// character's own name dropped. Validation against the rest of the roster
+// (an alias that's another character's name) is the caller's job - see
+// httpapi.handleSetCharacterAliases.
+func (s *Store) SetCharacterAliases(characterID string, aliases []string) error {
+	c, err := s.GetCharacter(characterID)
+	if err != nil {
+		return err
+	}
+	if c == nil {
+		return fmt.Errorf("character %s not found", characterID)
+	}
+	clean := AliasList{}
+	seen := map[string]bool{strings.ToLower(c.Name): true}
+	for _, a := range aliases {
+		a = strings.TrimSpace(a)
+		if a == "" || seen[strings.ToLower(a)] {
+			continue
+		}
+		seen[strings.ToLower(a)] = true
+		clean = append(clean, a)
+	}
+	sort.Strings(clean)
+	encoded, err := clean.Value()
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE characters SET aliases = ? WHERE id = ?`, encoded, characterID)
+	return err
+}
+
+// AddCharacterAliases adds aliases to characterID's existing ones - see
+// SetCharacterAliases.
+func (s *Store) AddCharacterAliases(characterID string, aliases ...string) error {
+	c, err := s.GetCharacter(characterID)
+	if err != nil {
+		return err
+	}
+	if c == nil {
+		return fmt.Errorf("character %s not found", characterID)
+	}
+	return s.SetCharacterAliases(characterID, append(append([]string(nil), c.Aliases...), aliases...))
 }
 
 // ListSeriesBooks returns every book sharing seriesName (non-empty), in

@@ -15,9 +15,9 @@ var widenContextRadii = []int{20, 40, 80}
 
 // maxWidenWindowChars bounds one retry window's own paragraph text, so a
 // chapter of unusually long paragraphs stops growing a window before it
-// crowds out DefaultNCtx (roughly 4 chars/token puts this near 10k tokens
-// of input, alongside systemPrompt and attributeMaxTokens of output).
-const maxWidenWindowChars = 40000
+// crowds out its slot's share of the KV pool (roughly 4 chars/token puts
+// this near 5K tokens of input - see minSlotNCtx).
+const maxWidenWindowChars = 20000
 
 // AttributeWithWideningContext re-attributes targets (paragraph Idx
 // values, each present in all) whose earlier attribution came back as a
@@ -44,7 +44,9 @@ const maxWidenWindowChars = 40000
 // applies. roleNames mirrors AttributeChapter's own. err is the first
 // window's failure, if any - rounds stop there, returning whatever was
 // already accepted.
-func (c *Client) AttributeWithWideningContext(ctx context.Context, bookTitle, chapterTitle string, knownCharacters []string, knownDescriptions map[string]string, knownRoles map[string]bool, all []ParagraphInput, targets []int, reject func(speaker string) bool) (out map[int]string, roleNames map[string]bool, err error) {
+func (c *Client) AttributeWithWideningContext(ctx context.Context, bookTitle, chapterTitle string, roster Roster, all []ParagraphInput, targets []int, reject func(speaker string) bool) (out map[int]string, roleNames map[string]bool, err error) {
+	knownCharacters := roster.Names
+	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases)
 	out = make(map[int]string, len(targets))
 	roleNames = map[string]bool{}
 
@@ -85,7 +87,13 @@ func (c *Client) AttributeWithWideningContext(ctx context.Context, bookTitle, ch
 			}
 
 			window := all[lo : hi+1]
-			attributions, batchErr := c.attributeBatch(ctx, bookTitle, chapterTitle, knownCharacters, knownDescriptions, knownRoles, window)
+			// Only the targets are asked about; the rest of the window is
+			// context.
+			answer := make(map[int]bool, len(covered))
+			for _, pos := range covered {
+				answer[all[pos].Idx] = true
+			}
+			attributions, batchErr := c.attributeBatch(ctx, bookTitle, chapterTitle, roster, window, answer)
 			if batchErr != nil {
 				return out, roleNames, fmt.Errorf("widened paragraphs %d-%d: %w", window[0].Idx, window[len(window)-1].Idx, batchErr)
 			}
@@ -96,8 +104,8 @@ func (c *Client) AttributeWithWideningContext(ctx context.Context, bookTitle, ch
 				if !ok {
 					continue
 				}
-				speaker := normalizeBarePronoun(a.Speaker)
-				raw[idx] = disallowNarratorForDialogue(all[pos].IsQuote, speaker)
+				speaker, _ := sanitizeSpeaker(a.Speaker, a.Role)
+				raw[idx] = disallowNarratorForDialogue(all[pos].IsQuote, resolver.Canonical(speaker))
 			}
 			canon := canonicalizeSpeakerNames(knownCharacters, raw)
 			for _, pos := range covered {

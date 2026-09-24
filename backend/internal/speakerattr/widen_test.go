@@ -2,35 +2,38 @@ package speakerattr
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 )
 
-// fakeAttributor answers every "N: text" line in an attribution prompt
-// with speaker(idx, window), recording each call's window of line idxs.
+// fakeAttributor answers every "N (who?): text" line in an attribution
+// prompt with speaker(idx, window) as a plain "N: speaker" reply line,
+// recording each call's window of line idxs (answered or context).
 type fakeAttributor struct {
 	speaker func(idx int, window []int) string
 	calls   [][]int
 }
 
-var promptLine = regexp.MustCompile(`(?m)^(\d+): `)
+var promptLine = regexp.MustCompile(`(?m)^(\d+)( \(who\?\))?: `)
 
 func (f *fakeAttributor) LLMGenerate(_ context.Context, _, user string, _ float32, _ int) (string, error) {
-	var window []int
+	var window, asked []int
 	for _, m := range promptLine.FindAllStringSubmatch(user, -1) {
 		idx, _ := strconv.Atoi(m[1])
 		window = append(window, idx)
+		if m[2] != "" {
+			asked = append(asked, idx)
+		}
 	}
 	f.calls = append(f.calls, window)
-	var out []attribution
-	for _, idx := range window {
-		out = append(out, attribution{Idx: idx, Speaker: f.speaker(idx, window)})
+	var out strings.Builder
+	for _, idx := range asked {
+		fmt.Fprintf(&out, "%d: %s\n", idx, f.speaker(idx, window))
 	}
-	b, err := json.Marshal(out)
-	return string(b), err
+	return out.String(), nil
 }
 
 func chapterOf(n int) []ParagraphInput {
@@ -60,7 +63,7 @@ func TestAttributeWithWideningContextGrowsUntilAccepted(t *testing.T) {
 		return "Bogus"
 	}}
 	c := NewClient(Config{}, fake)
-	out, _, err := c.AttributeWithWideningContext(context.Background(), "Book", "Ch", nil, nil, nil, chapterOf(200), []int{50}, func(s string) bool { return s == "Bogus" })
+	out, _, err := c.AttributeWithWideningContext(context.Background(), "Book", "Ch", Roster{}, chapterOf(200), []int{50}, func(s string) bool { return s == "Bogus" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +81,7 @@ func TestAttributeWithWideningContextGrowsUntilAccepted(t *testing.T) {
 func TestAttributeWithWideningContextStopsWhenWindowCantGrow(t *testing.T) {
 	fake := &fakeAttributor{speaker: func(int, []int) string { return "Bogus" }}
 	c := NewClient(Config{}, fake)
-	out, _, err := c.AttributeWithWideningContext(context.Background(), "Book", "Ch", nil, nil, nil, chapterOf(10), []int{3, 7}, func(s string) bool { return s == "Bogus" })
+	out, _, err := c.AttributeWithWideningContext(context.Background(), "Book", "Ch", Roster{}, chapterOf(10), []int{3, 7}, func(s string) bool { return s == "Bogus" })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +98,7 @@ func TestAttributeWithWideningContextStopsWhenWindowCantGrow(t *testing.T) {
 func TestAttributeWithWideningContextSharesWindows(t *testing.T) {
 	fake := &fakeAttributor{speaker: func(idx int, _ []int) string { return "Alice" }}
 	c := NewClient(Config{}, fake)
-	out, _, err := c.AttributeWithWideningContext(context.Background(), "Book", "Ch", nil, nil, nil, chapterOf(300), []int{100, 110, 250}, func(s string) bool { return s == "Bogus" })
+	out, _, err := c.AttributeWithWideningContext(context.Background(), "Book", "Ch", Roster{}, chapterOf(300), []int{100, 110, 250}, func(s string) bool { return s == "Bogus" })
 	if err != nil {
 		t.Fatal(err)
 	}

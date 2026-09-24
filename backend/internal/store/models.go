@@ -395,6 +395,13 @@ type DescribesCharacterList []string
 func (d *DescribesCharacterList) Scan(v any) error            { return scanJSON(v, d) }
 func (d DescribesCharacterList) Value() (driver.Value, error) { return jsonValue(d) }
 
+// AliasList implements sql.Scanner/driver.Valuer over characters.aliases -
+// see DescribesCharacterList's own doc comment.
+type AliasList []string
+
+func (a *AliasList) Scan(v any) error            { return scanJSON(v, a) }
+func (a AliasList) Value() (driver.Value, error) { return jsonValue(a) }
+
 // PronunciationList implements sql.Scanner/driver.Valuer over
 // paragraphs.pronunciation - see DescribesCharacterList's own doc comment.
 type PronunciationList []pronounce.Substitution
@@ -594,6 +601,14 @@ type Character struct {
 	// drawn from several different unnamed people who happened to share
 	// this label, not one consistent personality.
 	IsRole bool
+	// Aliases are other names this character goes by ("Albert"/"Al" for
+	// "Bert", "Nic" for "Jagged Nic") - listed in attribution's "Known
+	// characters" prompt, folded back into Name when the model answers
+	// with one, and used to read speech tags ("Albert said") - see
+	// speakerattr.SpeakerNameResolver. Set from the Speakers page, and
+	// added automatically when another character is merged into this one
+	// (the merged-away name becomes an alias). Sorted.
+	Aliases AliasList
 	// Invalid marks this name as not a real speaker at all (a stray
 	// pronoun, a vocative, a generic phrase the LLM keeps latching onto) -
 	// set explicitly from the Speakers page or by an "Auto Split" of this

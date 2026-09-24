@@ -37,12 +37,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -67,43 +70,38 @@ type Config struct {
 	NoThink bool
 }
 
-// DefaultNCtx comfortably covers one attribution/emotion batch (up
-// to maxBatchParagraphs/emotionBatchParagraphs
-// paragraphs of prose plus that pass's own maxTokens of generated JSON)
-// or one characterization call (up to maxCharacterizeQuotes quotes plus
-// characterizeMaxTokens of generated instruction) - exported so cmd/
-// ttsworker/main.go, which now owns SPEAKER_LLM_CTX's own default (see
-// llmworker.Config.NCtx), doesn't need to duplicate this number. Doubled
-// from an original 12288 alongside attributeMaxTokens/
-// characterizeMaxTokens (and the since-removed direction/sfx passes' own
-// budgets) all roughly doubling too - this is
-// llmworker.Config.NCtx's own *per-slot* context size (see its doc
-// comment), so doubling it doubles this model's total KV-cache footprint
-// (already multiplied by SPEAKER_LLM_MAX_CONCURRENT slots, independent of
-// this constant) - a real but modest VRAM cost for a ~4B-class model,
-// worth it to stop clipping longer chapters/more dialogue-heavy batches
-// against the old ceiling. Modern GGUF models increasingly train with a
-// very large native context (e.g. Qwen3's 262144), and defaulting to that
-// (llmworker.Config.NCtx's own zero value) is a real footgun - a KV cache
-// sized for it can fail outright to allocate ("failed to allocate buffer
-// for kv cache") alongside another already-VRAM-resident model, for a
-// batch-of-40-paragraphs task that never needed anywhere near that many
-// tokens anyway. 0 is still available by setting SPEAKER_LLM_CTX=0
-// explicitly, for a model that genuinely needs more than DefaultNCtx.
-const DefaultNCtx = 49152
+// minSlotNCtx is the least per-slot KV budget SlotNCtx ever returns -
+// room for the largest prompt any pass sends (a 40-paragraph batch plus
+// its known-characters list, or a widened Auto Split window capped by
+// maxWidenWindowChars, ~5K tokens) together with its reply.
+const minSlotNCtx = 12288
+
+// SlotNCtx is cmd/ttsworker's default for llmworker.Config.NCtx
+// (SPEAKER_LLM_CTX): the per-generation-slot share of the shared KV pool.
+// The largest reply any pass asks for (MaxOutputTokens), but never below
+// minSlotNCtx. This used to be MaxOutputTokens alone at 24576 (attribution's
+// old JSON-for-every-line budget), reserving ~2x the KV cache - several GB
+// of VRAM at MaxConcurrent 2 - for replies that never came close to it.
+// Modern GGUF models train at very large native contexts (Qwen3: 262144),
+// and a KV cache sized for that can fail outright to allocate next to a
+// TTS model, which is why 0 ("the model's own") is never the default.
+func SlotNCtx() int {
+	return max(MaxOutputTokens(), minSlotNCtx)
+}
 
 // MaxOutputTokens is the largest maxTokens value any batch call in this
 // package will ever pass to LLMGenerate - llmworker.Config sizes its shared KV-cache
 // pool off this per concurrent generation slot (see its own NCtx doc
 // comment), since that's the real per-slot worst case: a batch's own
 // input prompt is always far smaller than its own maxTokens ceiling (see
-// DefaultNCtx's own doc comment, which already sizes for input+output
-// combined and is comfortably larger than any real prompt), so budgeting
+// SlotNCtx, which never drops below minSlotNCtx to leave room for the
+// prompt too), so budgeting
 // maxTokens alone per slot leaves real margin for input too without
 // needing a separate, harder-to-get-right prompt-length estimate.
 func MaxOutputTokens() int {
 	max := attributeMaxTokens
 	for _, t := range []int{
+		jsonPassMaxTokens,
 		characterizeMaxTokens,
 		emotionMaxTokens,
 		pronunciationMaxTokens,
@@ -366,17 +364,32 @@ type ParagraphInput struct {
 // attribution for an entire long chapter.
 const maxBatchParagraphs = 40
 
-// attributeMaxTokens bounds one attribution batch's generated JSON - a
-// batch of maxBatchParagraphs {"idx":N,"speaker":"Name"} entries fits
-// comfortably within this even for long character names, with headroom
-// left over for a "hybrid thinking" model's own <think>...</think>
-// reasoning trace before the JSON itself (see characterizeMaxTokens' doc
-// comment - same reasoning applies here). Doubled from an original 12288
-// after real production failures on longer chapters/more dialogue-heavy
-// batches ran into it - see DefaultNCtx's own doc comment, bumped
-// alongside this so the larger budget actually has context-window room to
-// use, not just a bigger ceiling that gets clipped anyway.
-const attributeMaxTokens = 24576
+// attributeParallelBatches is how many of a chapter's batches
+// AttributeChapter sends at once. Matches llmworker's own default
+// MaxConcurrent (2) - both of the worker's generation slots decode
+// together in one batched call, so a single chapter's attribution (which
+// the job queue already runs one at a time, in chapter order) keeps both
+// busy instead of leaving one idle.
+const attributeParallelBatches = 2
+
+// batchContextLines is how many paragraphs before each batch are shown as
+// unanswered context, so a batch's first lines aren't cut off from the
+// turn-taking or tag right before them.
+const batchContextLines = 3
+
+// attributeMaxTokens bounds one attribution batch's reply: one short
+// "idx: Name" line per dialogue line asked about (at most
+// maxBatchParagraphs), well under a few hundred tokens in practice. Was
+// 24576 when the reply was a JSON object for every line, narration
+// included (~650 tokens and ~10s median per 40-line batch, measured), and
+// earlier still had to leave room for a hybrid-thinking model's own
+// reasoning trace - see the NoThink doc comment.
+const attributeMaxTokens = 2048
+
+// jsonPassMaxTokens bounds the JSON-array replies DescribeChapter and
+// ScareQuoteChapter parse - the largest ever logged from either was ~8KB
+// (~2.5K tokens).
+const jsonPassMaxTokens = 4096
 
 // AttributeChapter attributes chapterTitle's paragraphs to speakers,
 // batching in groups of maxBatchParagraphs. knownCharacters (already-seen
@@ -447,14 +460,22 @@ const attributeMaxTokens = 24576
 // uncollapsed until a later explicit re-attribution - the same
 // best-effort, reader-correctable tradeoff canonicalizeSpeakerNames' own
 // doc comment already describes for cross-chapter/book name variants.
-func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle string, knownCharacters []string, knownDescriptions map[string]string, knownRoles map[string]bool, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int]string, roleNames map[string]bool, remaining []ParagraphInput, err error) {
+//
+// Every raw answer goes through sanitizeSpeaker (non-names, group names,
+// leaked prompt markup -> "Unknown") and is folded onto a known
+// character's own name when it's one of their aliases or a case variant.
+// Once every batch is done, RefineWithSpeechTags corrects the result
+// against explicit speech tags in the chapter text - see refine.go.
+func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle string, roster Roster, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int]string, roleNames map[string]bool, remaining []ParagraphInput, err error) {
+	knownCharacters := roster.Names
 	out = make(map[int]string, len(paragraphs))
 	isRoleByIdx := make(map[int]bool, len(paragraphs))
 	known := append([]string(nil), knownCharacters...)
-	knownIsRole := make(map[string]bool, len(knownRoles))
-	for name, isRole := range knownRoles {
+	knownIsRole := make(map[string]bool, len(roster.Roles))
+	for name, isRole := range roster.Roles {
 		knownIsRole[name] = isRole
 	}
+	resolver := NewSpeakerNameResolver(knownCharacters, roster.Aliases)
 	isQuoteByIdx := make(map[int]bool, len(paragraphs))
 	for _, p := range paragraphs {
 		isQuoteByIdx[p.Idx] = p.IsQuote
@@ -462,6 +483,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 
 	finish := func(out map[int]string) (map[int]string, map[string]bool, []ParagraphInput, error) {
 		canon := canonicalizeSpeakerNames(knownCharacters, out)
+		canon, _ = RefineWithSpeechTags(paragraphs, canon, NewSpeakerNameResolver(known, roster.Aliases))
 		roleNames = make(map[string]bool, len(isRoleByIdx))
 		for idx, isRole := range isRoleByIdx {
 			if !isRole {
@@ -474,34 +496,91 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		return canon, roleNames, remaining, err
 	}
 
+	var starts []int
 	for start := 0; start < len(paragraphs); start += maxBatchParagraphs {
-		if start > 0 && shouldPause != nil && shouldPause() {
-			remaining = paragraphs[start:]
-			return finish(out)
-		}
-		end := start + maxBatchParagraphs
-		if end > len(paragraphs) {
-			end = len(paragraphs)
-		}
-		batch := paragraphs[start:end]
+		starts = append(starts, start)
+	}
 
-		attributions, batchErr := c.attributeBatch(ctx, bookTitle, chapterTitle, known, knownDescriptions, knownIsRole, batch)
-		if batchErr != nil {
-			remaining = paragraphs[start:]
-			err = fmt.Errorf("paragraphs %d-%d: %w", batch[0].Idx, batch[len(batch)-1].Idx, batchErr)
-			return finish(out)
+	// Up to attributeParallelBatches batches in flight at once, each
+	// launched with a snapshot of the names known so far - a name one
+	// in-flight batch discovers reaches every batch launched after it
+	// finishes (canonicalizeSpeakerNames and the resolver fold any variant
+	// spelling that slips through in the meantime). A rolling window
+	// rather than fixed waves, so a narration-only batch (no model call at
+	// all) never leaves the other slot idle.
+	var (
+		mu         sync.Mutex
+		wg         sync.WaitGroup
+		discovered []string // names first seen this call - listed in every later prompt
+		stopAt     = len(starts)
+		firstErr   error
+	)
+	sem := make(chan struct{}, attributeParallelBatches)
+	for bi, start := range starts {
+		if bi > 0 && shouldPause != nil && shouldPause() {
+			mu.Lock()
+			stopAt = min(stopAt, bi)
+			mu.Unlock()
+			break
 		}
-		for idx, a := range attributions {
-			speaker := normalizeBarePronoun(a.Speaker)
-			speaker = disallowNarratorForDialogue(isQuoteByIdx[idx], speaker)
-			out[idx] = speaker
-			known = addKnown(known, speaker)
-			if a.Role && speaker != "" && speaker != "Narrator" && speaker != "Unknown" {
-				isRoleByIdx[idx] = true
-				knownIsRole[speaker] = true
+		sem <- struct{}{}
+		mu.Lock()
+		failed := firstErr != nil
+		batchRoster := Roster{
+			Names:        append([]string(nil), known...),
+			Descriptions: roster.Descriptions,
+			Roles:        maps.Clone(knownIsRole),
+			Aliases:      roster.Aliases,
+			Prominent:    append(append([]string(nil), roster.Prominent...), discovered...),
+		}
+		mu.Unlock()
+		if failed {
+			<-sem
+			break
+		}
+		end := min(start+maxBatchParagraphs, len(paragraphs))
+		answer := map[int]bool{}
+		for _, p := range paragraphs[start:end] {
+			if p.IsQuote {
+				answer[p.Idx] = true
 			}
 		}
+		lines := paragraphs[max(0, start-batchContextLines):end]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			result, batchErr := c.attributeBatch(ctx, bookTitle, chapterTitle, batchRoster, lines, answer)
+			mu.Lock()
+			defer mu.Unlock()
+			if batchErr != nil {
+				if bi < stopAt {
+					stopAt = bi
+					firstErr = fmt.Errorf("paragraphs %d-%d: %w", paragraphs[start].Idx, paragraphs[end-1].Idx, batchErr)
+				}
+				return
+			}
+			for idx, a := range result {
+				speaker, role := sanitizeSpeaker(a.Speaker, a.Role)
+				speaker = resolver.Canonical(speaker)
+				speaker = disallowNarratorForDialogue(isQuoteByIdx[idx], speaker)
+				out[idx] = speaker
+				if !isSentinel(speaker) && !slices.Contains(known, speaker) {
+					discovered = append(discovered, speaker)
+				}
+				known = addKnown(known, speaker)
+				if role && !isSentinel(speaker) {
+					isRoleByIdx[idx] = true
+					knownIsRole[speaker] = true
+				}
+			}
+		}()
 	}
+	wg.Wait()
+	if stopAt < len(starts) {
+		remaining = paragraphs[starts[stopAt]:]
+	}
+	err = firstErr
 	return finish(out)
 }
 
@@ -787,46 +866,179 @@ func addKnown(known []string, name string) []string {
 	return append(known, name)
 }
 
-const systemPrompt = `You are a literary analysis assistant. Given numbered lines from a novel, identify who speaks each one.
-Reply with ONLY a JSON array, no other text: [{"idx": <line number>, "speaker": "<name>", "role": <true or false>}, ...], one entry per input line, in any order.
+const systemPrompt = `You are a literary analysis assistant. Given numbered lines from a novel, identify who speaks each line of dialogue marked "(who?)".
+Reply with ONLY plain text lines, no JSON, no code fence, no commentary: one line per "(who?)" line, made of that line's number, a colon and a space, then its speaker - adding " [role]" after a generic role label (see below). For example:
+
+12: Gandalf
+15: Guard [role]
+16: Unknown
+
+Every "(who?)" line gets exactly one reply line. Lines without "(who?)" - narration, and dialogue outside the part you're asked about - are context only and never appear in your reply. Each number must be copied exactly from the number printed before that line.
 Rules:
-- If a line is narration/description rather than spoken dialogue, its speaker is exactly "Narrator".
-- If a line is dialogue, speaker is the speaking character's short proper name (e.g. "Gandalf", not "the old wizard" or "he").
+- speaker is the speaking character's short proper name (e.g. "Gandalf", not "the old wizard" or "he").
 - speaker must always name exactly ONE person - never combine two or more names into a single value (e.g. "Toby and Jane", "Marcus & Elena", "Sam, Jake"), even when the line is addressed to multiple people, multiple characters are present in the scene, or more than one character seems to speak the same line at once. If a line is genuinely spoken by more than one character in unison, pick whichever one the narration credits as leading it, or use "Unknown" if that can't be determined from context - never invent a joint/combined speaker value.
 - speaker must be the character's bare proper name only - strip away any descriptive or contextual modifier the surrounding narration happens to attach to them at that moment, even if it comes immediately before or after the name (e.g. "a now dressed Veronica" is just "Veronica"; "an exhausted Marcus" is just "Marcus"; "the newly arrived Captain Thorne" is just "Captain Thorne"). Those modifiers describe the character's state or situation in that instant, not their name - never fold one into the speaker value itself, even if it seems to help distinguish this appearance from another.
-- "Narrator" is reserved exclusively for actual narration/description text (the rule above) - NEVER use it for a line of spoken dialogue, no matter who's speaking it. A dialogue line always gets either a real character name, a role label (see below), or "Unknown" - "Narrator" is never a valid answer for one.
+- Every "(who?)" line is spoken dialogue - NEVER answer "Narrator" for one, no matter who's speaking it. It always gets either a real character name, a role label (see below), or "Unknown".
 - Reuse a name exactly as given in "Known characters" when the same character speaks again - never invent a variant spelling or a new label for a character already known. This applies within your own reply too: if the same character speaks more than once across these lines, use the exact same name for every one of their lines - never switch between a short form and a longer/titled form (e.g. "Vesna" vs. "Captain Vesna Thorne") for the same person. Matching a name against "Known characters", and matching two of your own lines against each other, is never sensitive to capitalization alone - "The attendant" and "the attendant" are the same character, not two different ones; once a name/role has an established spelling (from "Known characters", or from earlier in this same reply), keep using that exact spelling, capitalization included, rather than drifting to a differently-cased variant.
 - A bare pronoun ("I"/"me"/"myself"/"he"/"she"/"him"/"her"/"they"/"them") is never a valid speaker value, even when context makes the referent obvious to you - resolve it to that character's actual proper name instead, or use exactly "Unknown" if the name genuinely can't be determined from context.
 - A character's name appearing INSIDE the quoted words themselves does not mean that character is speaking - it almost always means the opposite: someone else is addressing them by name (e.g. "Well, Jake, I wasn't expecting that," or "Thank you, Jake," or a bare "Jake!") is being said TO Jake by another character, not BY Jake. Never pick a name as the speaker just because it's mentioned, vocative, or exclaimed inside the line - identify the actual speaker from the surrounding narration/context, and if that's genuinely unclear, use "Unknown" rather than defaulting to whoever's name appears in the text.
-- If a dialogue line's speaker isn't a specific named individual, but the surrounding narration clearly gives a generic function/type for whoever's speaking instead (e.g. "the guard demanded," "a merchant called out," "one of the thugs replied"), set "role": true and use that type as speaker - a short, generic, capitalized label with no article ("Guard", "Merchant", "Thug", never "a guard" or "the merchant"). A role label doesn't claim this is the same specific person every time it's used, only the same TYPE of minor, unindividuated speaker filling that function - reuse the same role label for every such speaker of that type throughout, the same way you'd reuse a real name, but understand it may cover several different unnamed people rather than one consistent individual. Only fall back to "Unknown" (with "role" false) when even a generic type can't be determined. Never set "role": true for "Narrator" or for a real named individual, including one only ever addressed by a title/epithet that clearly identifies one specific known person (e.g. "the captain" for a single established Captain Mocar) - that's a real individual, not a role, even though it reads like one; "role" is only for a genuinely interchangeable type. Omit "role" (or set it false) for every other line.
+- If a dialogue line's speaker isn't a specific named individual, but the surrounding narration clearly gives a generic function/type for whoever's speaking instead (e.g. "the guard demanded," "a merchant called out," "one of the thugs replied"), use that type as speaker, followed by " [role]" - a short, generic, capitalized label with no article ("Guard", "Merchant", "Thug", never "a guard" or "the merchant"). A role label doesn't claim this is the same specific person every time it's used, only the same TYPE of minor, unindividuated speaker filling that function - reuse the same role label for every such speaker of that type throughout, the same way you'd reuse a real name, but understand it may cover several different unnamed people rather than one consistent individual. Only fall back to "Unknown" when even a generic type can't be determined. Never add " [role]" for a real named individual, including one only ever addressed by a title/epithet that clearly identifies one specific known person (e.g. "the captain" for a single established Captain Mocar) - that's a real individual, not a role, even though it reads like one; " [role]" is only for a genuinely interchangeable type.
 - If a dialogue line's speaker is genuinely unclear from context, use exactly "Unknown" rather than guessing.
 - A blank line in "Lines:" marks a real paragraph break. Lines with NO blank line between them come from one continuous original paragraph - often a quote, then a short "X said" narration tag, then more dialogue right after it, but just as often a quote followed by a longer run of action/description/thought (several sentences, not just a short tag) before the next quote. In either case, the quote before that in-between narration and the quote after it are almost always the SAME speaker - the narration is a beat inside one character's continuous turn, not a hand-off to someone else, no matter how long that beat runs. This holds even when the in-between narration mentions another character by name or describes something that other character does - a passing mention or reaction shot does NOT make that other character the speaker of the quote that follows. Only attribute the quote after the gap to a different speaker when the in-between narration itself explicitly says someone else is now speaking (e.g. a tag like "Jake cut in" or "she interrupted" naming a different character than whoever spoke the line before it).
 - Conversely, when a dialogue line is separated from the dialogue line before it by a blank line (a real paragraph break) with no narration tag anywhere between them naming who's speaking, default to treating that break itself as a signal the speaker changed, not a continuation of the same speaker - back-and-forth dialogue conventionally starts a new paragraph for each new speaker's turn. Only keep the same speaker across a paragraph break like that when something in the surrounding context clearly supports it (e.g. a tag elsewhere in the passage naming them again, or the dialogue is obviously one uninterrupted speech continuing across a paragraph break rather than an exchange).
-- Some entries in "Known characters" carry a short parenthetical description after their name (e.g. "Captain Mocar (a weathered, broad-shouldered sea captain...)"). That's there to help you recognize them when a narration tag names them by role or epithet instead of their proper name ("the captain said," "the old orc grunted") - if a tag's role/epithet clearly matches one character's own parenthetical description and no other known character fits better, attribute the line to that character's exact proper name, never the role/epithet itself (and "role" stays false - this is a real individual, not a generic type). Still use "Unknown" if the match is genuinely ambiguous (e.g. the role could plausibly fit more than one known character, or nothing in "Known characters" matches it at all).
-- Some entries in "Known characters" are marked "[role]" instead of (or alongside) a description - that means the name is itself a generic type label already established earlier (e.g. "Guard [role]"), not one consistent individual. Reuse it exactly, with "role": true, whenever a new line's speaker fits that same generic type, exactly as if it were a brand-new role label - never treat two different appearances of a "[role]" name as necessarily the same specific person.`
+- Some entries in "Known characters" carry a short parenthetical description after their name (e.g. "Captain Mocar (a weathered, broad-shouldered sea captain...)"). That's there to help you recognize them when a narration tag names them by role or epithet instead of their proper name ("the captain said," "the old orc grunted") - if a tag's role/epithet clearly matches one character's own parenthetical description and no other known character fits better, attribute the line to that character's exact proper name, never the role/epithet itself (no " [role]" - this is a real individual, not a generic type). Still use "Unknown" if the match is genuinely ambiguous (e.g. the role could plausibly fit more than one known character, or nothing in "Known characters" matches it at all).
+- Some entries in "Known characters" list other names that character goes by ("Bert (also called Albert, Al)"). A line whose speaker the text calls by any of those names belongs to that entry - answer with the entry's own main name ("Bert"), never the other name.
+- speaker never names a group ("Toby and Jane", "the two clerks", "both of them") - pick the one person the narration credits, or use "Unknown".
+- Some entries in "Known characters" are marked "[role]" instead of (or alongside) a description - that means the name is itself a generic type label already established earlier (e.g. "Guard [role]"), not one consistent individual. Reuse it exactly, with " [role]", whenever a new line's speaker fits that same generic type, exactly as if it were a brand-new role label - never treat two different appearances of a "[role]" name as necessarily the same specific person.`
 
-func (c *Client) attributeBatch(ctx context.Context, bookTitle, chapterTitle string, knownCharacters []string, knownDescriptions map[string]string, knownRoles map[string]bool, batch []ParagraphInput) (map[int]Attributed, error) {
+// Roster is what attribution knows about a book's characters going in:
+// their names, an optional identifying blurb per name (Descriptions),
+// which names are generic role labels (Roles), and other names each one
+// goes by (Aliases, canonical name -> aliases). Every map is nil-safe.
+//
+// Prominent (optional) are the names every batch's prompt lists even when
+// its lines never mention them - a book's main cast, who speak on most
+// pages behind a bare "he said". Everyone else in Names is listed only
+// when the batch's own text mentions them (relevantNames): on a long
+// series the full roster ran to a median 8.7K characters per batch -
+// more than twice the lines being attributed - re-read on every batch.
+type Roster struct {
+	Names        []string
+	Descriptions map[string]string
+	Roles        map[string]bool
+	Aliases      map[string][]string
+	Prominent    []string
+}
+
+// relevantNames picks which of roster.Names to list in a prompt for
+// lines: every Prominent name, plus any name, alias, or distinctive word
+// of either (see SpeakerNameResolver's own token rules) that appears as a
+// whole word in the lines' text. Keeps roster order.
+func relevantNames(roster Roster, lines []ParagraphInput) []string {
+	var text strings.Builder
+	for _, p := range lines {
+		text.WriteString(strings.ToLower(p.Text))
+		text.WriteByte(' ')
+	}
+	words := map[string]bool{}
+	for _, w := range strings.FieldsFunc(text.String(), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '\'' && r != '’' && r != '-'
+	}) {
+		w = strings.TrimSuffix(strings.TrimSuffix(w, "’s"), "'s")
+		words[strings.Trim(w, "'’-")] = true
+	}
+	mentioned := func(form string) bool {
+		distinctive := false
+		for _, w := range strings.Fields(strings.ToLower(form)) {
+			w = strings.Trim(w, ".,'’")
+			if len(w) < 3 || titleWords[w] {
+				continue
+			}
+			distinctive = true
+			if words[w] {
+				return true
+			}
+		}
+		// A name made only of title words - usually a role label like
+		// "Guard" or "Captain" - counts when that word itself appears.
+		if !distinctive {
+			for _, w := range strings.Fields(strings.ToLower(form)) {
+				if words[strings.Trim(w, ".,'’")] {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	prominent := map[string]bool{}
+	for _, n := range roster.Prominent {
+		prominent[n] = true
+	}
+	var out []string
+	for _, name := range roster.Names {
+		keep := prominent[name] || mentioned(name)
+		for _, a := range roster.Aliases[name] {
+			keep = keep || mentioned(a)
+		}
+		if keep {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// maxMissingFollowUps is how many extra rounds attributeBatch spends
+// re-asking lines the model skipped. Measured on Spire's Spite chapters
+// 5-9: the plain-text reply format silently left out ~10% of asked lines
+// (a couple per 40-line batch) - the single biggest accuracy loss against
+// the old answer-every-line JSON format until these follow-ups, each a
+// short reply for just the missing lines.
+const maxMissingFollowUps = 2
+
+// attributeBatch asks for the speaker of every line in answer (paragraph
+// Idx values, all within lines); every other line in lines is shown as
+// context only. Skips the model entirely when answer is empty - a
+// narration-only stretch has nothing to attribute. Lines the reply skips
+// are asked again (only those marked) up to maxMissingFollowUps times,
+// stopping early if a round answers none of them.
+func (c *Client) attributeBatch(ctx context.Context, bookTitle, chapterTitle string, roster Roster, lines []ParagraphInput, answer map[int]bool) (map[int]Attributed, error) {
+	out, err := c.attributeBatchOnce(ctx, bookTitle, chapterTitle, roster, lines, answer)
+	if err != nil {
+		return nil, err
+	}
+	for round := 0; round < maxMissingFollowUps; round++ {
+		missing := make(map[int]bool)
+		for idx := range answer {
+			if _, ok := out[idx]; !ok {
+				missing[idx] = true
+			}
+		}
+		if len(missing) == 0 {
+			break
+		}
+		more, err := c.attributeBatchOnce(ctx, bookTitle, chapterTitle, roster, lines, missing)
+		if err != nil {
+			break // keep what the first reply gave; the rest stay unattributed
+		}
+		for idx, a := range more {
+			out[idx] = a
+		}
+		if len(more) == 0 {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle string, roster Roster, lines []ParagraphInput, answer map[int]bool) (map[int]Attributed, error) {
+	if len(answer) == 0 {
+		return map[int]Attributed{}, nil
+	}
+	knownCharacters, knownDescriptions, knownRoles := relevantNames(roster, lines), roster.Descriptions, roster.Roles
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
 	if len(knownCharacters) > 0 {
 		entries := make([]string, len(knownCharacters))
 		for i, name := range knownCharacters {
-			desc := knownDescriptions[name]
-			switch {
-			case knownRoles[name] && desc != "":
-				entries[i] = fmt.Sprintf("%s [role] (%s)", name, oneLine(desc))
-			case knownRoles[name]:
-				entries[i] = fmt.Sprintf("%s [role]", name)
-			case desc != "":
-				entries[i] = fmt.Sprintf("%s (%s)", name, oneLine(desc))
-			default:
-				entries[i] = name
+			var notes []string
+			if aliases := roster.Aliases[name]; len(aliases) > 0 {
+				notes = append(notes, "also called "+strings.Join(aliases, ", "))
+			}
+			if desc := knownDescriptions[name]; desc != "" {
+				notes = append(notes, oneLine(desc))
+			}
+			entries[i] = name
+			if knownRoles[name] {
+				entries[i] += " [role]"
+			}
+			if len(notes) > 0 {
+				entries[i] += " (" + strings.Join(notes, "; ") + ")"
 			}
 		}
 		fmt.Fprintf(&user, "Known characters: %s\n", strings.Join(entries, ", "))
 	}
 	user.WriteString("\nLines:\n")
-	for i, p := range batch {
+	for i, p := range lines {
 		// A blank line marks a real paragraph break - see systemPrompt.
 		// Never before the very first line of the batch, and never for a
 		// split-out continuation of the paragraph right before it (that's
@@ -834,13 +1046,19 @@ func (c *Client) attributeBatch(ctx context.Context, bookTitle, chapterTitle str
 		if i > 0 && !p.Inline {
 			user.WriteString("\n")
 		}
-		fmt.Fprintf(&user, "%d: %s\n", p.Idx, oneLine(p.Text))
+		if answer[p.Idx] {
+			fmt.Fprintf(&user, "%d (who?): %s\n", p.Idx, oneLine(p.Text))
+		} else {
+			fmt.Fprintf(&user, "%d: %s\n", p.Idx, oneLine(p.Text))
+		}
 	}
 	if c.cfg.NoThink {
 		user.WriteString("\n/no_think")
 	}
 
-	return generateAndParse(ctx, c, systemPrompt, user.String(), 0, attributeMaxTokens, parseAttributions)
+	return generateAndParse(ctx, c, systemPrompt, user.String(), 0, attributeMaxTokens, func(content string) (map[int]Attributed, error) {
+		return parseAttributionLines(content, answer)
+	})
 }
 
 type attribution struct {
@@ -856,6 +1074,53 @@ type attribution struct {
 type Attributed struct {
 	Speaker string
 	Role    bool
+}
+
+// attributionLineRe matches one reply line: "<idx>: <speaker>",
+// tolerating a copied "(who?)" marker, a dash instead of a colon, and
+// surrounding whitespace.
+var attributionLineRe = regexp.MustCompile(`^\s*(\d+)\s*(?:\(who\?\))?\s*[:\-–]\s*(.+?)\s*$`)
+
+// parseAttributionLines reads attributeBatch's plain-text reply, keeping
+// only lines whose idx was asked about (answer). A speaker suffixed
+// " [role]" is a role label (sanitizeSpeaker strips the marker). A model
+// that answers in the old JSON-array shape anyway still parses, via
+// parseAttributions. Only a reply with no usable line at all is an error
+// (so generateAndParse retries it) - a line the model skipped just stays
+// unattributed, the same as a dropped JSON entry always did.
+func parseAttributionLines(content string, answer map[int]bool) (map[int]Attributed, error) {
+	out := make(map[int]Attributed, len(answer))
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "```") {
+		if items, err := parseAttributions(content); err == nil {
+			for idx, a := range items {
+				if answer[idx] {
+					out[idx] = a
+				}
+			}
+		}
+	}
+	if len(out) == 0 {
+		for _, line := range strings.Split(content, "\n") {
+			m := attributionLineRe.FindStringSubmatch(line)
+			if m == nil {
+				continue
+			}
+			idx, err := strconv.Atoi(m[1])
+			if err != nil || !answer[idx] {
+				continue
+			}
+			speaker := strings.Trim(m[2], ` "'*.“”`)
+			if speaker == "" {
+				continue
+			}
+			out[idx] = Attributed{Speaker: speaker, Role: strings.Contains(strings.ToLower(speaker), "[role]")}
+		}
+	}
+	if len(out) == 0 && len(answer) > 0 {
+		return nil, fmt.Errorf("no speaker lines found in response: %s", truncate(content, 200))
+	}
+	return out, nil
 }
 
 // parseAttributions extracts the JSON array from content, tolerating models

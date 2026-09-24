@@ -159,7 +159,7 @@ func (c *Client) describeBatch(ctx context.Context, bookTitle, chapterTitle stri
 		user.WriteString("\n/no_think")
 	}
 
-	return generateAndParse(ctx, c, describeSystemPrompt, user.String(), 0, attributeMaxTokens, parseDescribeItems)
+	return generateAndParse(ctx, c, describeSystemPrompt, user.String(), 0, jsonPassMaxTokens, parseDescribeItems)
 }
 
 type describeItem struct {

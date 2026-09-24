@@ -16,6 +16,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/deliverytags"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/voices"
@@ -822,6 +823,20 @@ func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Reques
 	if speaker != "" && !p.IsQuote {
 		writeError(w, http.StatusBadRequest, "only quoted dialogue can be attributed to a character")
 		return
+	}
+	if speakerattr.IsGroupSpeaker(speaker) {
+		writeError(w, http.StatusBadRequest, "a speaker must be one person, not a group - pick whoever the narration credits, or Unknown")
+		return
+	}
+	if speaker != "" && speaker != "Unknown" {
+		// Typing one of a character's aliases ("Albert") means that
+		// character ("Bert"), not a new one.
+		roster, err := s.Store.ListCharacters(store.SeriesScope(book))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		speaker = rosterResolver(roster).Canonical(speaker)
 	}
 	if speaker != "" {
 		if _, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), speaker, false); err != nil {

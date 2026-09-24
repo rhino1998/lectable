@@ -320,14 +320,17 @@ building/running `ttsworker` does, since both now link into that binary.
   `SPEAKER_LLM_MODEL_PATH` (a `.gguf` file, default
   `~/llm-models/qwen3-4b-instruct-2507-q4_k_m.gguf`, see
   `speakerattr.DefaultModelPath`), `SPEAKER_LLM_GPU_LAYERS` (default `-1`: offload everything a GPU
-  backend can take), `SPEAKER_LLM_CTX` (default `speakerattr.DefaultNCtx`,
-  `24576` - *not* `0`/"the model's own trained context size",
-  deliberately: modern GGUF models increasingly train at a very large
-  native context (Qwen3 trains at 262144), and a KV cache sized for that
-  can fail to allocate alongside another already-VRAM-resident model, for
-  a batch-of-40-paragraphs task that never needed more than a few thousand
-  tokens; set `SPEAKER_LLM_CTX=0` explicitly if a given model genuinely
-  needs more), `SPEAKER_LLM_MAX_CONCURRENT` (default `2`, see
+  backend can take), `SPEAKER_LLM_CTX` (each generation slot's share of
+  the shared KV pool; default `speakerattr.SlotNCtx()` - the largest reply
+  any pass asks for (8192, the emotion pass), never below 12288 so the
+  prompt fits too. It was 24576 while attribution replied with a JSON
+  object for every line, reserving ~2x the KV cache (several GB at 2
+  slots) for replies that never came close. *Not* `0`/"the model's own
+  trained context size", deliberately: modern GGUF models increasingly
+  train at a very large native context (Qwen3 trains at 262144), and a KV
+  cache sized for that can fail to allocate alongside another
+  already-VRAM-resident model; set `SPEAKER_LLM_CTX=0` explicitly if a
+  given model genuinely needs more), `SPEAKER_LLM_MAX_CONCURRENT` (default `2`, see
   `llmworker.Config.MaxConcurrent`'s own doc comment for why), `SPEAKER_LLM_NO_THINK` (bool, default
   `false`) - appends Qwen3's `/no_think` marker to every attribution
   batch's user turn.
@@ -354,10 +357,26 @@ building/running `ttsworker` does, since both now link into that binary.
   LLM-prompted attribution, and recent literary-NLP research agrees
   (prompted Llama-3 beats BookNLP's own quote-attribution baseline - NAACL
   2025).
-    1. **Identify** (`Client.AttributeChapter`) - labels each paragraph
-       `"Narrator"`, `"Unknown"`, or a character name, given the chapter
-       text and names already known for that book's whole series (below)
-       so a recurring character gets one consistent name. `"Narrator"` is
+    1. **Identify** (`Client.AttributeChapter`) - labels each dialogue
+       line with a character name or `"Unknown"`, given the chapter text
+       and names already known for that book's whole series (below) so a
+       recurring character gets one consistent name. Batches of 40
+       paragraphs (plus the 3 before each, as unanswered context) mark
+       only their dialogue lines `N (who?): …`, and the model answers
+       with one plain `N: Name` line each (`N: Guard [role]` for a role
+       label) - narration is never asked about (it's always Narrator), and
+       a narration-only batch makes no call at all. Two batches are in
+       flight at a time (`attributeParallelBatches`, matching the
+       worker's 2 slots, which the one-attribution-task-at-a-time job
+       queue otherwise left half idle), a rolling window so each batch
+       starts with every name found so far. Each prompt lists only the
+       known characters its own lines mention (a name, alias, or
+       distinctive word of either) plus the book's 12 most frequent
+       speakers (`Roster.Prominent`, `httpapi.prominentSpeakers`). Measured
+       from the server log before this change: a 40-line batch replied
+       with ~2KB of JSON (~650 tokens, a JSON object for every line) in a
+       median 10.6s, and its known-characters list (median 8.7K chars on
+       Spire's Spite) was more than twice the size of the lines themselves. `"Narrator"` is
        reserved exclusively for actual narration/description - never
        spoken dialogue, including a first-person narrator's own line about
        themselves (an earlier version special-cased that as `"Narrator"`;
@@ -376,6 +395,40 @@ building/running `ttsworker` does, since both now link into that binary.
        `"Narrator"` to `"Unknown"` for any paragraph that's actual quoted
        dialogue (`ParagraphInput.IsQuote`), enforcing the "never Narrator
        for dialogue" rule in Go rather than trusting the prompt alone.
+       Every raw answer first goes through `sanitizeSpeaker`
+       (`refine.go`): a group ("Fritz and Bert", "Bert & Sid", "the two
+       clerks" - `IsGroupSpeaker`), a non-answer ("None", "No one",
+       "Yes"), a possessive description ("his foe") all become
+       `"Unknown"`; prompt markup leaking back out ("Thug [role]", "Name
+       (description)") is stripped; a role label loses its article ("the
+       guard" -> "Guard"). Each surviving name is folded onto a known
+       character when it's one of their **aliases** (`store.Character.
+       Aliases`, a JSON column - other names they go by, shown in the
+       prompt as "Bert (also called Albert, Al)") or a case variant.
+
+       Then **`RefineWithSpeechTags`** corrects the whole chapter's result
+       against the text itself, with no LLM call: (1) a quote with an
+       explicit named tag - right after it ("…,” Bert said" / "said
+       Bert"), else a lead-in before it in the same paragraph ("Bert
+       said, “…”", "Sid smirked and Bert grinned saying, “…”" - the last
+       *subject*, not the last name: objects, lists after an object,
+       possessives, and names followed by "and" don't count; a name
+       followed by "who" does) - is that character's, when the name (or
+       one word of it, or an alias) resolves to exactly one valid known
+       character (`SpeakerNameResolver`); (2) an untagged quote continues
+       the previous quote's speaker within the same paragraph, unless a
+       pronoun/joint tag or another character starting a sentence in the
+       narration between them ("Bert rounded on Fritz.") says otherwise.
+       Measured on Spire's Spite before adding it: of 624 quotes with an
+       explicit named trailing tag the model credited 42 to someone else,
+       and 25% of multi-quote paragraphs had mixed speakers. Tuned against
+       chapters a reader had already hand-corrected (whose remaining
+       changes were overwhelmingly still-wrong lines) and spot-checked on
+       uncorrected ones (~29/32 continuation changes right; misses were
+       verbs missing from `speechVerbs`). Only ever changes lines the call
+       itself attributed. Group names are also refused outright by the
+       manual speaker PUT and merge, and forced to `"Unknown"` before any
+       attribution result is persisted.
     2. **Describe** (`Client.DescribeChapter`) - a separate, single-purpose
        call (own system prompt, own smaller batch size - `5` vs.
        attribution's `40`) tagging which *narration* paragraphs describe a
@@ -1040,7 +1093,7 @@ build does, since both now link into that one binary.
 - `POST /api/books/{id}/chapters/{idx}/generate` — enqueue background generation (idempotent per chapter while in flight)
 - `POST /api/books/{id}/lookahead` — `{"chapterIdx", "paragraphIdx", "paragraphCount"?}`; enqueues generation of up to `paragraphCount` paragraphs (default `jobs.LookaheadParagraphCount` = 25, capped at `jobs.MaxLookaheadParagraphCount` = 1000) starting at that paragraph for whatever isn't already `AudioReady` (pending/error) - readers scrolling/seeking ahead, not a regenerate
 - `POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/regenerate` — unconditionally resets one already-`AudioReady` paragraph's audio to `pending` and re-enqueues it at urgent priority, even though `lookahead` above would skip it - the "the reader didn't like this line" action
-- `PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker` — `{"speaker": "..."}`; corrects one paragraph's speaker attribution directly, without touching its already-generated audio - a caller wanting the new voice actually narrated still needs a separate `regenerate` call above. `""`/`"Narrator"` both mean "no character"; any other name is registered as a real character if it wasn't one already. 400s if the target paragraph isn't quoted dialogue (`IsQuote`) - narration/description can't be attributed to a speaker
+- `PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker` — `{"speaker": "..."}` (400 for a group like "Bert and Sid"; an alias resolves to its character); corrects one paragraph's speaker attribution directly, without touching its already-generated audio - a caller wanting the new voice actually narrated still needs a separate `regenerate` call above. `""`/`"Narrator"` both mean "no character"; any other name is registered as a real character if it wasn't one already. 400s if the target paragraph isn't quoted dialogue (`IsQuote`) - narration/description can't be attributed to a speaker
 - `POST /api/books/{id}/chapters/{idx}/attribute-speakers` — enqueues LLM speaker attribution for one chapter and returns `202 {"queued": true}` immediately, not the result (503 if the LLM model file is missing) - fire-and-forget; registers any newly-discovered character with no voice yet - characterization/voice assignment happens lazily later, the first time that character's voice is actually needed for generation
 - `POST /api/books/{id}/chapters/{idx}/retag-scare-quotes` / `.../retag-descriptions` — enqueue a `KindScareQuote` / `KindDescription` task for one chapter, `202 {"queued": true}` (always re-runs, even if already tagged); description tagging waits on the chapter's scare-quote tagging
 - `POST /api/books/{id}/chapters/{idx}/resolve-pronunciation` — enqueues pronunciation resolution (ambiguous abbreviations like "Dr.", homographs, numbers) for one chapter, any clone model, `202 {"queued": true}` (503 if the LLM model file is missing) - fire-and-forget
@@ -1057,7 +1110,8 @@ build does, since both now link into that one binary.
 - `DELETE /api/books/{id}/characters/{characterId}` — remove one character: this book's own paragraphs attributed to them revert to Unknown (still real dialogue, just unattributed - "Narrator" is reserved for actual narration, never dialogue), their identity/voice assignments/auto-created voice presets are deleted for their whole series scope - a scalpel next to the above, for cleaning up a single bad attribution without resetting the whole roster
 - `POST /api/books/{id}/characters/{characterId}/merge` — `{"targetName": "..."}`; folds one character into another (or into `"Narrator"`, same effect as the DELETE above): this book's own paragraphs attributed to them are reattributed to targetName instead of blanked, and their own identity/voice/presets are deleted for their whole series scope
 - `POST /api/books/{id}/characters/{characterId}/generate-voice` — force-provisions a voice for one character right now instead of waiting for the lazy path; 409 if there still isn't enough attributed dialogue to characterize them from
-- `PUT /api/books/{id}/characters/{characterId}/invalid` — `{"invalid": bool}`; marks a character as not a real speaker (`store.Character.Invalid`). The row is kept as a tombstone so the name stays known: attribution/reattribution withhold it from "Known characters" and remap any result naming it (case-insensitively, unless a valid character has that exact name) to `"Unknown"`, description tagging drops it, and characterization/voice provisioning (preprocess phases, bulk endpoints, lazy provisioning) skip it. When Auto Split's re-judgment hands a dialogue line back to the speaker being split (or any invalid name), that line is retried with a window of surrounding paragraphs centred on it that widens each round - 20, then 40, then 80 either side, capped at ~40k chars (`speakerattr.Client.AttributeWithWideningContext`) - and only falls back to `"Unknown"` if still rejected at the widest window. Non-destructive - existing lines stay attributed to it until Auto Split (`POST .../speakers/reattribute`, which also sets this flag for any real character, i.e. not `"Unknown"`) redistributes them
+- `PUT /api/books/{id}/characters/{characterId}/invalid` — `{"invalid": bool}`; marks a character as not a real speaker (`store.Character.Invalid`). The row is kept as a tombstone so the name stays known: attribution/reattribution withhold it from "Known characters" and remap any result naming it (case-insensitively, unless a valid character has that exact name) to `"Unknown"`, description tagging drops it, and characterization/voice provisioning (preprocess phases, bulk endpoints, lazy provisioning) skip it. Auto Split (`httpapi.reattributeChapterSpeaker`) touches only the speaker's own lines: non-dialogue ones become Narrator, a line with an explicit speech tag naming someone else takes that name with no model call (`speakerattr.RefineWithSpeechTags`), and only the rest go to the model - in a window of surrounding paragraphs centred on them with only those lines asked about, widening each round (20, then 40, then 80 either side, capped at ~20k chars - `speakerattr.Client.AttributeWithWideningContext`) until the answer isn't the split name or another invalid/group name; still rejected at the widest window, a line falls back to `"Unknown"`. (It used to re-attribute every batch of the whole chapter first and discard everything but the target lines.) Non-destructive - existing lines stay attributed to it until Auto Split (`POST .../speakers/reattribute`, which also sets this flag for any real character, i.e. not `"Unknown"`) redistributes them
+- `PUT /api/books/{id}/characters/{characterId}/aliases` — `{"aliases": [...]}`; replaces a character's other names (`store.Character.Aliases`), which attribution lists in its prompt, folds back into the character's name, and reads in speech tags. 400 for a group ("Bert and Sid") or non-name, 409 for another valid character's name/alias in the series (merge instead). Merging a character into another (`.../merge`) adds the merged-away name and its aliases to the target's automatically; a manual speaker PUT naming an alias resolves to its character
 - `PUT /api/books/{id}/characters/{characterId}/voice` — assign (or clear, with `""`) a character's own narration voice, overriding the auto-assigned one
 - `GET /api/books/{id}/characters/{characterId}/appearances` — every paragraph that character speaks, across every book in their series - a "where does this character show up" list; each one's `audioUrl` is set once its audio is ready under whatever voice it currently resolves to
 - `POST /api/books/{id}/characters/{characterId}/characterize` — force re-run LLM voice characterization for one character (503 if the LLM model file is missing), even if already characterized; invalidates every clone model's assigned voice preset for the character, if any

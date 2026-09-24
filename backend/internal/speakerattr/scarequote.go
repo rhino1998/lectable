@@ -114,7 +114,7 @@ func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle st
 		user.WriteString("\n/no_think")
 	}
 
-	return generateAndParse(ctx, c, scareQuoteSystemPrompt, user.String(), 0, attributeMaxTokens, parseScareQuoteItems)
+	return generateAndParse(ctx, c, scareQuoteSystemPrompt, user.String(), 0, jsonPassMaxTokens, parseScareQuoteItems)
 }
 
 type scareQuoteItem struct {

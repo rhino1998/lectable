@@ -100,7 +100,7 @@ func main() {
 	llmWorker := llmworker.New(llmworker.Config{
 		ModelPath:       speakerattr.ModelPathFromEnv(),
 		NGPULayers:      int32(envIntOr("SPEAKER_LLM_GPU_LAYERS", -1)),
-		NCtx:            uint32(envIntOr("SPEAKER_LLM_CTX", speakerattr.MaxOutputTokens())),
+		NCtx:            uint32(envIntOr("SPEAKER_LLM_CTX", speakerattr.SlotNCtx())),
 		MaxConcurrent:   envIntOr("SPEAKER_LLM_MAX_CONCURRENT", 2),
 		SystemPrompts:   speakerattr.SystemPrompts(),
 		IdleUnloadAfter: idleUnloadAfter,

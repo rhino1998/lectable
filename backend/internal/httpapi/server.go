@@ -185,6 +185,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/voices/variants/{presetId}/{emotion}/audio", s.handleVariantAudio)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/voice", s.handleSetCharacterVoice)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/invalid", s.handleSetCharacterInvalid)
+	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/aliases", s.handleSetCharacterAliases)
 	mux.HandleFunc("DELETE /api/books/{id}/characters/{characterId}", s.handleDeleteCharacter)
 	mux.HandleFunc("POST /api/books/{id}/characters/{characterId}/merge", s.handleMergeCharacter)
 	mux.HandleFunc("POST /api/books/{id}/characters/{characterId}/generate-voice", s.handleGenerateCharacterVoice)
