@@ -76,6 +76,11 @@ data class ParagraphDto(
     // paragraphDTO.DescribesCharacters. Always empty when isQuote is true. Drives ReaderScreen
     // .kt's annotations mode alongside isQuote.
     val describesCharacters: List<String> = emptyList(),
+    // This dialogue line's delivery emotion (e.g. "angry", "whisper" - backend's
+    // internal/emotions ids), null for neutral - see backend's paragraphDTO.Emotion. Only ever
+    // set on real dialogue. Purely informational here, same as [speaker]: the backend already
+    // cloned audioUrl's audio from that emotion's variant of the speaker's reference clip.
+    val emotion: String? = null,
     // Marks this paragraph as a split-out continuation of the previous one (a quote/narration
     // segment split out of one mixed source paragraph by backend's epub.splitQuoteSegments),
     // not the start of a new visual paragraph - see backend's paragraphDTO.Inline. Consecutive
@@ -84,11 +89,10 @@ data class ParagraphDto(
     // frontend/src/pages/ReaderPage.tsx's groupContent, while each still keeps its own
     // playback/highlight unit.
     val inline: Boolean = false,
-    // Every inline Higgs delivery tag active on this paragraph (e.g. "<|emotion:anger|>",
-    // "<|sfx:laughter|>"), each pinned to the exact rune offset into [text] it was inserted at -
-    // see backend's paragraphDTO.DirectionMarks/directionMarkDTO. Already resolved for whichever
-    // clone model currently narrates it; empty for the common case (no tags, or a clone model
-    // that doesn't understand this vocabulary). Purely informational, same as [speaker]: the
+    // Every inline Higgs delivery tag in this paragraph's generation text (today only
+    // "<|prosody:pause|>", before each ellipsis/em dash), each pinned to the exact rune offset
+    // into [text] it was inserted at - see backend's paragraphDTO.DirectionMarks/
+    // directionMarkDTO. Empty for the common case, and always for a non-Higgs clone model. Purely informational, same as [speaker]: the
     // tags are baked into audioUrl's own generated audio server-side, so playback needs no
     // client-side handling of them at all - see ReaderScreen.kt's formatDirectionTag/
     // directionTagCategory for display.

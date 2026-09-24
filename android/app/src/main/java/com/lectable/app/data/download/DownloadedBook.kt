@@ -59,6 +59,7 @@ data class OfflineParagraph(
     val isQuote: Boolean = false,
     val describesCharacters: List<String> = emptyList(),
     val scareQuote: Boolean = false,
+    val emotion: String? = null,
     // Mirrors ParagraphDto.audioPointerSeconds - see its own doc comment. Each downloaded
     // paragraph still gets its own local .wav file (downloadChapter fetches by this paragraph's
     // own audioUrl, which for a scare-quote merge group's non-anchor member already resolves to

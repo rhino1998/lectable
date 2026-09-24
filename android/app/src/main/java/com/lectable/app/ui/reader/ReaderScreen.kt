@@ -522,6 +522,7 @@ fun ReaderScreen(
                         descriptionPickerTarget = DescriptionPickerTarget(chapterIdx, paragraphIndices, fromName)
                     },
                     onSetScareQuote = viewModel::setScareQuote,
+                    onSetEmotion = viewModel::setEmotion,
                     onRegenerateMusic = viewModel::regenerateMusicRegion,
                     onPreviewMusic = viewModel::previewMusicRegion,
                     resolveImageUrl = viewModel::resolveImageUrl,
@@ -821,6 +822,7 @@ private fun InfiniteChapterContent(
     onOpenSpeakerPicker: (chapterIdx: Int, paragraphIndices: List<Int>, currentSpeaker: String) -> Unit,
     onOpenDescriptionPicker: (chapterIdx: Int, paragraphIndices: List<Int>, fromName: String) -> Unit,
     onSetScareQuote: (chapterIdx: Int, paragraphIndices: List<Int>, scareQuote: Boolean) -> Unit,
+    onSetEmotion: (chapterIdx: Int, paragraphIndices: List<Int>, emotion: String) -> Unit,
     onRegenerateMusic: (chapterIdx: Int, regionId: String) -> Unit,
     onPreviewMusic: (regionId: String, audioUrl: String) -> Unit,
     resolveImageUrl: (String) -> Any?,
@@ -930,6 +932,9 @@ private fun InfiniteChapterContent(
                         },
                         onToggleScareQuote = { paragraphIndices, scareQuote ->
                             onSetScareQuote(entry.chapterIdx, paragraphIndices, scareQuote)
+                        },
+                        onSetEmotion = { paragraphIndices, emotion ->
+                            onSetEmotion(entry.chapterIdx, paragraphIndices, emotion)
                         },
                     )
                 }
@@ -1082,6 +1087,7 @@ private fun ParagraphRow(
     onOpenSpeakerPicker: () -> Unit,
     onOpenDescriptionPicker: (fromName: String, paragraphIndices: List<Int>) -> Unit,
     onToggleScareQuote: (paragraphIndices: List<Int>, scareQuote: Boolean) -> Unit,
+    onSetEmotion: (paragraphIndices: List<Int>, emotion: String) -> Unit,
 ) {
     val isActive = activeSegmentIdx >= 0
     val background = if (isActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
@@ -1108,8 +1114,14 @@ private fun ParagraphRow(
         segments.forEach { seg -> seg.describesCharacters.forEach { name -> map.getOrPut(name) { mutableListOf() }.add(seg.idx) } }
         map
     }
-    // Every distinct inline Higgs delivery tag among this block's segments, each with its own
-    // formatted label and category color - mirrors frontend's ReaderPage.tsx directionTags/
+    // Every distinct emotion among this block's dialogue segments (backend internal/emotions
+    // ids) - mirrors frontend ChapterSection's emotion badge. Same "long-press menu, not
+    // inline" placement as [speakers].
+    val emotions = remember(segments) {
+        segments.mapNotNull { it.emotion }.filter { it.isNotEmpty() }.distinct()
+    }
+    // Every distinct inline Higgs delivery tag among this block's segments (today only pauses),
+    // each with its own formatted label and category color - mirrors frontend's
     // formatDirectionTag/directionTagCategory. Same "long-press menu, not inline" placement.
     val directionTags = remember(segments) {
         segments.flatMap { it.directionMarks }.map { it.tag }.distinct()
@@ -1134,6 +1146,12 @@ private fun ParagraphRow(
     // which is the toggle's own target) - mirrors frontend's annotationTitle appending "· Scare
     // quote" to the hover tooltip.
     val hasScareQuote = remember(quoteSegments) { quoteSegments.any { it.scareQuote } }
+    // "Set emotion" targets - only real dialogue carries an emotion (backend
+    // store.Paragraph.EffectiveEmotion), so a scare quote is left out. [currentEmotion] is the
+    // first dialogue segment's ("" = neutral), checked in the emotion menu.
+    val emotionSegments = remember(quoteSegments) { quoteSegments.filter { !it.scareQuote } }
+    val currentEmotion = remember(emotionSegments) { emotionSegments.firstOrNull()?.emotion.orEmpty() }
+    var showEmotionMenu by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -1162,6 +1180,13 @@ private fun ParagraphRow(
                     DropdownMenuItem(
                         text = { Text("Speaker: ${speakers.joinToString(", ")}") },
                         leadingIcon = { AnnotationSwatch(speakerMarkColor) },
+                        enabled = false,
+                        onClick = {},
+                    )
+                }
+                if (emotions.isNotEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("Emotion: ${emotions.joinToString(", ") { formatEmotion(it) }}") },
                         enabled = false,
                         onClick = {},
                     )
@@ -1217,6 +1242,13 @@ private fun ParagraphRow(
                         leadingIcon = { Icon(Icons.Filled.FormatQuote, contentDescription = null) },
                         onClick = { onToggleScareQuote(quoteSegments.map { it.idx }, !allScareQuote); showMenu = false },
                     )
+                    if (emotionSegments.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Set emotion") },
+                            leadingIcon = { Icon(Icons.Filled.Mood, contentDescription = null) },
+                            onClick = { showMenu = false; showEmotionMenu = true },
+                        )
+                    }
                 }
                 DropdownMenuItem(
                     text = { Text(if (isBookmarked) "Remove bookmark" else "Bookmark this paragraph") },
@@ -1236,6 +1268,20 @@ private fun ParagraphRow(
                         showMenu = false
                     },
                 )
+            }
+            DropdownMenu(expanded = showEmotionMenu, onDismissRequest = { showEmotionMenu = false }) {
+                (listOf("") + EMOTION_IDS).forEach { id ->
+                    DropdownMenuItem(
+                        text = { Text(if (id.isEmpty()) "Neutral" else formatEmotion(id)) },
+                        leadingIcon = {
+                            if (id == currentEmotion) Icon(Icons.Filled.Check, contentDescription = "Current emotion")
+                        },
+                        onClick = {
+                            if (id != currentEmotion) onSetEmotion(emotionSegments.map { it.idx }, id)
+                            showEmotionMenu = false
+                        },
+                    )
+                }
             }
         }
         segments.forEach { segment ->
@@ -1858,7 +1904,15 @@ private fun wordCount(text: String): Int {
     return if (trimmed.isEmpty()) 0 else trimmed.split(Regex("\\s+")).size
 }
 
-// Turns a raw Higgs inline delivery tag ("<|emotion:anger|>", "<|style:whispering|>") into a
+// Every emotion id a dialogue line can be set to, in display order - mirrors backend
+// internal/emotions.All and frontend's utils/emotions.ts EMOTIONS.
+internal val EMOTION_IDS = listOf("warm", "excited", "sad", "angry", "afraid", "cold", "whisper", "shout", "weary")
+
+// An emotion id ("angry", "whisper") as a display label ("Angry") - mirrors frontend's
+// utils/emotions.ts emotionLabel, where every label is just the capitalized id.
+internal fun formatEmotion(id: String): String = id.replaceFirstChar { it.uppercase() }
+
+// Turns a raw Higgs inline delivery tag (today only "<|prosody:pause|>") into a
 // short human-readable label ("Anger", "Whispering") - mirrors frontend's ReaderPage.tsx
 // formatDirectionTag exactly, including its fallback: the exact <|category:value|> syntax
 // matters to audio.cpp's tokenizer (see backend speakerattr.validDirectionTags), not to a

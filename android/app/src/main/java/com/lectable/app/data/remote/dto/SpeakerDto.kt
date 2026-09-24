@@ -29,6 +29,11 @@ data class SetParagraphDescriptionRequestDto(val from: String, val to: String)
 @Serializable
 data class SetParagraphScareQuoteRequestDto(val scareQuote: Boolean)
 
+/** Body for [com.lectable.app.data.remote.LectableApi.setParagraphEmotion] - an emotion id
+ *  (backend internal/emotions), or "" for neutral. */
+@Serializable
+data class SetParagraphEmotionRequestDto(val emotion: String)
+
 /** One paragraph a character speaks (or, from the descriptions endpoint, one paragraph that
  *  describes them) - see backend's speakerAppearanceDTO. Spans every book in their series, not
  *  just whichever book SpeakersScreen is open on, hence carrying its own [bookId]/[bookTitle]. */

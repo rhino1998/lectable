@@ -276,8 +276,8 @@ compiled-in default in place if nothing answers in time.
   `LazyListState.layoutInfo` instead of `IntersectionObserver`), plus a
   "jump to chapter" sheet (each row itself long-press-able for a
   chapter-scoped menu: "Generate chapter audio", then one item per LLM pass
-  - "Tag scare quotes", "Attribute speakers", "Tag descriptions", "Tag
-  speech directions", "Score background music" -
+  - "Tag scare quotes", "Attribute speakers", "Tag descriptions", "Label
+  emotions", "Score background music" -
   `ReaderViewModel.generateChapter`/`runChapterPass(idx, ChapterPass)` - and, once
   something's downloaded, "Delete downloaded data"), bookmarks/search
   sheets, and a long-press paragraph menu (regenerate/bookmark/copy/set
@@ -346,16 +346,25 @@ compiled-in default in place if nothing answers in time.
   menu - see below - covers attribution/tagging one chapter directly), and
   every bulk endpoint (characterize-all/generate-voices-all/regenerate-
   voices-all) - each character's own menu action is the single-item call
-  instead. A
+  instead, and the per-speaker emotion-variant list (play/regenerate). A
   paragraph's own long-press "Set speaker" still lives directly in the
   reader - only shown when the block has at least one `isQuote` segment
   (the backend 400s on attributing narration to a character). Metadata-only,
   same as the web action - doesn't touch already-cached audio, so hearing
   the new voice still needs a follow-up regenerate.
-- **Speech-direction tags and pronunciation fixes both display, but
-  running either pass is web-only.** `ParagraphDto.directionMarks` mirrors
-  backend's inline Higgs delivery tags (e.g. `<|emotion:anger|>`,
-  `<|sfx:laughter|>`), each pinned to the exact rune offset it was
+- **Emotions, pause tags and pronunciation fixes all display; emotions
+  can also be set here.** `ParagraphDto.emotion` is a dialogue line's
+  emotion (backend `internal/emotions` id, null for neutral), shown as an
+  "Emotion: ..." row in the long-press menu (`formatEmotion`); the audio
+  itself was already cloned from that emotion's reference-clip variant
+  server-side. The same menu's "Set emotion" (blocks with real dialogue
+  only - scare quotes excluded) opens a second menu of Neutral +
+  `EMOTION_IDS` (mirrors backend `emotions.All`) and calls
+  `ReaderViewModel.setEmotion` -> `PUT .../paragraphs/{pidx}/emotion` for
+  each dialogue segment; the backend regenerates each changed line.
+  `ParagraphDto.directionMarks` mirrors backend's inline Higgs delivery
+  tags - today only `<|prosody:pause|>`, placed before each ellipsis/em
+  dash for a Higgs book - each pinned to the exact rune offset it was
   inserted at. `ParagraphDto.pronunciationMarks` mirrors resolved
   pronunciation substitutions (e.g. "Dr." -> "Doctor") the same way, plus
   original/replacement text for display. Both are shown as inline
@@ -363,15 +372,15 @@ compiled-in default in place if nothing answers in time.
   pronunciation fixes: a strikeout through the exact word - matching
   frontend's `DirectionCaret`/`PronunciationStrike` exactly) and as entries
   in the long-press menu. `POST .../chapters/{idx}/tag-directions` itself
-  (web's "Tag directions" button), and `POST .../resolve-pronunciation`
+  (emotion labeling - web's per-chapter emotion button), and `POST .../resolve-pronunciation`
   (its own pass now), *are* reachable here too, just not from this screen - the
   reader's own chapter picker ("Jump to chapter" sheet) has a long-press
   menu per chapter with "Generate chapter audio" and one item per LLM pass
   (`ReaderViewModel.runChapterPass`, each queuing its own backend job -
   the backend orders attribution/description tagging after scare-quote
   tagging itself) - see
-  `ui/reader/` below. Both survive offline downloads
-  (`OfflineParagraph.directionMarks`/`.pronunciationMarks`).
+  `ui/reader/` below. All three survive offline downloads
+  (`OfflineParagraph.emotion`/`.directionMarks`/`.pronunciationMarks`).
 - **Annotations mode**: a palette-icon toggle in the bottom playback bar
   (local Compose state, not persisted) drawing three independent kinds of
   marks via `drawBehind`/`wordLineBounds`, generalized from the active-word
@@ -380,8 +389,8 @@ compiled-in default in place if nothing answers in time.
       (`isQuote`/`describesCharacters`), colored blue/yellow matching
       frontend's `--annotation-speaker`/`--annotation-description`.
     - A small open-caret ("^") below the line at each delivery tag's
-      insertion point, colored per category (emotion/style/prosody/sfx)
-      matching frontend's `--direction-*` variables - composable with the
+      insertion point (today only pauses), colored per category matching
+      frontend's `--direction-*` variables - composable with the
       underline above.
     - A **strikeout** through each pronunciation fix's exact word,
       deliberately a different shape from the delivery-tag caret so the

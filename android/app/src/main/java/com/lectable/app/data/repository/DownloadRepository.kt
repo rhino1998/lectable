@@ -196,6 +196,7 @@ class DownloadRepository @Inject constructor(
                 isQuote = p.isQuote,
                 describesCharacters = p.describesCharacters,
                 scareQuote = p.scareQuote,
+                emotion = p.emotion,
                 audioPointerSeconds = p.audioPointerSeconds,
             )
         }
@@ -486,6 +487,7 @@ class DownloadRepository @Inject constructor(
                     isQuote = p.isQuote,
                     describesCharacters = p.describesCharacters,
                     scareQuote = p.scareQuote,
+                    emotion = p.emotion,
                     audioPointerSeconds = f.audioPointerSeconds,
                     contentHash = p.contentHash,
                     audioHash = p.audioHash,

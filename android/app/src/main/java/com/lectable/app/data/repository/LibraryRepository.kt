@@ -14,6 +14,7 @@ import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.data.remote.dto.SetParagraphDescriptionRequestDto
+import com.lectable.app.data.remote.dto.SetParagraphEmotionRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphScareQuoteRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphSpeakerRequestDto
 import com.lectable.app.data.remote.dto.SpeakerDto
@@ -134,6 +135,14 @@ class LibraryRepository @Inject constructor(
      *  quote, immediately invalidating its own already-generated audio server-side. */
     suspend fun setParagraphScareQuote(bookId: String, chapterIdx: Int, paragraphIdx: Int, scareQuote: Boolean) {
         api.setParagraphScareQuote(bookId, chapterIdx, paragraphIdx, SetParagraphScareQuoteRequestDto(scareQuote))
+    }
+
+    /** [LectableApi.setParagraphEmotion] - overrides one dialogue line's emotion ("" =
+     *  neutral); the backend regenerates its audio when the effective emotion changes. Throws
+     *  on a non-2xx response so the caller can surface it. */
+    suspend fun setParagraphEmotion(bookId: String, chapterIdx: Int, paragraphIdx: Int, emotion: String) {
+        val response = api.setParagraphEmotion(bookId, chapterIdx, paragraphIdx, SetParagraphEmotionRequestDto(emotion))
+        check(response.isSuccessful) { "Could not set this line's emotion (HTTP ${response.code()})" }
     }
 
     /** [LectableApi.getChapterMusic] - this chapter's own background-music regions. */

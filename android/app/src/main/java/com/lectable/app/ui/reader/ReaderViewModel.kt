@@ -672,6 +672,21 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    /** The long-press "Set emotion" action - a reader's manual override of the emotion pass,
+     *  mirroring the web reader's annotations-view context menu. [paragraphIndices] is this
+     *  block's own real-dialogue segments (isQuote and not a scare quote); [emotion] is a
+     *  backend internal/emotions id, or "" for neutral. The backend regenerates each line whose
+     *  effective emotion changed, and the new status arrives on the chapter's live topic. */
+    fun setEmotion(chapterIdx: Int, paragraphIndices: List<Int>, emotion: String) {
+        if (paragraphIndices.isEmpty()) return
+        viewModelScope.launch {
+            runCatching {
+                paragraphIndices.forEach { idx -> libraryRepository.setParagraphEmotion(bookId, chapterIdx, idx, emotion) }
+            }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
     /** [setParagraphSpeaker]'s own counterpart for a *description* - reassigns which character
      *  [paragraphIndices] (this block's own segments whose describesCharacters already lists
      *  [from] - see ReaderScreen.kt's DescriptionPickerTarget) narrate a description of, from
@@ -911,8 +926,8 @@ class ReaderViewModel @Inject constructor(
      *  explicit triggers). Every one is a separate fire-and-forget backend job; ordering between
      *  them is the backend's own business (a chapter's attribution and description tagging both
      *  wait on its scare-quote tagging, queuing it themselves if it's never run), so nothing here
-     *  sequences them. A failure (e.g. tag-directions 400ing on a non-Higgs voice, or the LLM
-     *  being unconfigured server-side) surfaces as the reader's error banner. */
+     *  sequences them. A failure (e.g. the LLM being unconfigured server-side) surfaces as the
+     *  reader's error banner. */
     fun runChapterPass(chapterIdx: Int, pass: ChapterPass) {
         viewModelScope.launch {
             runCatching {
@@ -1013,7 +1028,7 @@ enum class ChapterPass(val label: String) {
     SCARE_QUOTES("Tag scare quotes"),
     ATTRIBUTION("Attribute speakers"),
     DESCRIPTIONS("Tag descriptions"),
-    DIRECTIONS("Tag speech directions"),
+    DIRECTIONS("Label emotions"),
     PRONUNCIATION("Resolve pronunciation"),
     MUSIC("Score background music"),
 }

@@ -25,6 +25,7 @@ import com.lectable.app.data.remote.dto.RestartWorkerResponseDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.data.remote.dto.SetCharacterVoiceRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphDescriptionRequestDto
+import com.lectable.app.data.remote.dto.SetParagraphEmotionRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphScareQuoteRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphSpeakerRequestDto
 import com.lectable.app.data.remote.dto.SpeakerAppearanceDto
@@ -142,9 +143,8 @@ interface LectableApi {
     @POST("api/books/{id}/chapters/{idx}/retag-scare-quotes")
     suspend fun retagScareQuotes(@Path("id") bookId: String, @Path("idx") idx: Int): QueuedResponseDto
 
-    /** Enqueues speech-direction tagging for one chapter - fire-and-forget, 202 immediately
-     *  (503 if unconfigured, 400 if this book's clone model isn't Higgs). See backend's
-     *  handleTagDirections. */
+    /** Enqueues emotion labeling for one chapter's dialogue - fire-and-forget, 202 immediately
+     *  (503 if unconfigured). Any clone model. See backend's handleTagDirections. */
     @POST("api/books/{id}/chapters/{idx}/tag-directions")
     suspend fun tagDirections(@Path("id") bookId: String, @Path("idx") idx: Int): QueuedResponseDto
 
@@ -249,6 +249,17 @@ interface LectableApi {
         @Path("idx") chapterIdx: Int,
         @Path("pidx") paragraphIdx: Int,
         @Body body: SetParagraphScareQuoteRequestDto,
+    ): Response<Unit>
+
+    /** Manually overrides one dialogue line's emotion ("" = neutral) - like the scare-quote
+     *  toggle, the backend invalidates and regenerates the line's audio itself when its
+     *  effective emotion changes. 400 for narration. See backend's handleSetParagraphEmotion. */
+    @PUT("api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion")
+    suspend fun setParagraphEmotion(
+        @Path("id") bookId: String,
+        @Path("idx") chapterIdx: Int,
+        @Path("pidx") paragraphIdx: Int,
+        @Body body: SetParagraphEmotionRequestDto,
     ): Response<Unit>
 
     /** Assigns (or, with "", clears) a character's own narration voice, overriding whatever

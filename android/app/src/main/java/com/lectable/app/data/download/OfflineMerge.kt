@@ -32,6 +32,7 @@ fun DownloadedChapter.mergedWith(chapter: ChapterDetailDto, json: Json): Downloa
             isQuote = p.isQuote,
             describesCharacters = p.describesCharacters,
             scareQuote = p.scareQuote,
+            emotion = p.emotion,
             audioPointerSeconds = old?.audioPointerSeconds ?: p.audioPointerSeconds,
             contentHash = p.contentHash,
             // A match found by the pre-hash duration heuristic adopts the server's hash, so
