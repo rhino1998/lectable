@@ -277,6 +277,12 @@ type Worker struct {
 	// registry at the same instant.
 	loadMu sync.Mutex
 
+	// residency serializes model *kinds* (clone vs. each design engine vs.
+	// each aux engine) - see residencyGate. Held from the start of every
+	// getCloneModel/getDesignModel/getAux call until the matching release,
+	// so a different kind's eviction never has to skip an in-flight model.
+	residency residencyGate
+
 	cloneMu           sync.Mutex // guards loaded/lru/lruElem below
 	loaded            map[string]*loadedClone
 	lru               *list.List // front = most-recently-used
@@ -503,7 +509,14 @@ func (w *Worker) loadModel(modelPath string, config audiocpp.ModelConfig, option
 // getCloneModel returns cloneModel's loaded instance, loading (and
 // registering in the LRU) it on first use. Mirrors tts-service's
 // _get_clone_model.
-func (w *Worker) getCloneModel(cloneModel string) (*loadedClone, error) {
+func (w *Worker) getCloneModel(cloneModel string) (lc *loadedClone, err error) {
+	w.residency.acquire(gateKindClone)
+	defer func() {
+		if err != nil {
+			w.residency.release()
+		}
+	}()
+
 	w.cloneMu.Lock()
 	if lc, ok := w.loaded[cloneModel]; ok {
 		w.touchLRULocked(cloneModel)
@@ -524,11 +537,10 @@ func (w *Worker) getCloneModel(cloneModel string) (*loadedClone, error) {
 	// every aux engine (ACE-Step/Stable Audio - each its own mutex,
 	// released above and never held nested with cloneMu - see designMu's
 	// own doc comment and getDesignModel/getAux's mirrored step in the
-	// other direction), then over-cap clone models
-	// below. Best-effort/racy against a concurrent getDesignModel/getAux
-	// doing the same thing in reverse - no worse than the eviction here
-	// already was before this method tracked design engines at all, just
-	// VRAM hygiene, not a correctness requirement.
+	// other direction), then over-cap clone models below. Holding the
+	// clone residency gate guarantees none of those design/aux engines is
+	// in flight, so this genuinely frees them rather than skipping busy
+	// ones and loading on top - see residencyGate.
 	w.UnloadDesignModels()
 	w.UnloadAuxEngines()
 
@@ -568,7 +580,7 @@ func (w *Worker) getCloneModel(cloneModel string) (*loadedClone, error) {
 	// idle - or only ever sees one Generate call in flight at a time -
 	// should only ever hold the sessions it's actually using concurrently,
 	// not ClonePoolSize of them.
-	lc := &loadedClone{model: model, fam: fam, poolSize: poolSize, avail: make(chan *audiocpp.Session, poolSize)}
+	lc = &loadedClone{model: model, fam: fam, poolSize: poolSize, avail: make(chan *audiocpp.Session, poolSize)}
 	lc.inFlight++
 	w.loaded[cloneModel] = lc
 	w.touchLRULocked(cloneModel)
@@ -589,6 +601,7 @@ func (w *Worker) releaseCloneModel(lc *loadedClone) {
 	w.cloneMu.Lock()
 	lc.inFlight--
 	w.cloneMu.Unlock()
+	w.residency.release()
 }
 
 // checkoutSession returns one of lc's pooled sessions for Generate to run a
@@ -645,8 +658,15 @@ func (w *Worker) newCloneSessionLocked(model *audiocpp.Model, fam cloneFamily) (
 // getDesignModel returns engine's loaded instance, loading it on first use
 // - loadedClone/getCloneModel's counterpart for a VoiceDesign engine (see
 // loadedDesign's own doc comment). Keyed by engine.id.
-func (w *Worker) getDesignModel(engine designEngine) (*loadedDesign, error) {
+func (w *Worker) getDesignModel(engine designEngine) (ld *loadedDesign, err error) {
 	key := engine.id
+
+	w.residency.acquire(gateKindDesign(key))
+	defer func() {
+		if err != nil {
+			w.residency.release()
+		}
+	}()
 
 	w.designMu.Lock()
 	if ld, ok := w.loadedDesigns[key]; ok {
@@ -684,7 +704,7 @@ func (w *Worker) getDesignModel(engine designEngine) (*loadedDesign, error) {
 	if poolSize < 1 {
 		poolSize = 1
 	}
-	ld := &loadedDesign{model: model, engine: engine, poolSize: poolSize, avail: make(chan *audiocpp.Session, poolSize)}
+	ld = &loadedDesign{model: model, engine: engine, poolSize: poolSize, avail: make(chan *audiocpp.Session, poolSize)}
 	ld.inFlight++
 	w.loadedDesigns[key] = ld
 	log.Printf("%s design engine loaded (session pool created lazily, up to %d sessions).", engine.family, poolSize)
@@ -715,6 +735,7 @@ func (w *Worker) releaseDesignModel(ld *loadedDesign) {
 	w.designMu.Lock()
 	ld.inFlight--
 	w.designMu.Unlock()
+	w.residency.release()
 }
 
 // checkoutDesignSession returns one of ld's pooled sessions for Design to
@@ -812,7 +833,14 @@ func (w *Worker) auxEngine(key string) *auxEngine {
 // Reserves eng via inFlight++ before returning (mirrors loadedClone.
 // inFlight's own "spans the whole call, not just checkout" contract) -
 // callers must call releaseAux exactly once when done.
-func (w *Worker) getAux(eng *auxEngine) error {
+func (w *Worker) getAux(eng *auxEngine) (err error) {
+	w.residency.acquire(gateKindAux(eng.key))
+	defer func() {
+		if err != nil {
+			w.residency.release()
+		}
+	}()
+
 	eng.mu.Lock()
 	if eng.model != nil {
 		eng.inFlight++
@@ -849,6 +877,7 @@ func (w *Worker) releaseAux(eng *auxEngine) {
 	eng.mu.Lock()
 	eng.inFlight--
 	eng.mu.Unlock()
+	w.residency.release()
 }
 
 // checkoutAuxSession returns one of eng's pooled sessions, creating a

@@ -151,7 +151,15 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
   every switch away from TTS work, for the same reason `internal/jobs`'
   `poolLLM`/`poolGeneration` mutual-exclusion (below) avoids acting on
   every switch: a real, observed thrashing incident from an earlier,
-  eager version of an analogous mechanism.
+  eager version of an analogous mechanism. Model *kinds* (all clone
+  models / each design engine / each aux engine like Stable Audio) are
+  mutually exclusive via `residencyGate` (`residency.go`): a request of a
+  different kind waits for every in-flight request of the current kind to
+  finish before its own eviction + load runs, FIFO so a stream of clone
+  calls can't starve it. Without this, eviction had to skip in-flight
+  models and loaded on top of them - Higgs + Stable Audio + a Breeze clone
+  resident at once, observed maxing VRAM and silently killing the worker.
+  The aligner and the LLM aren't gated.
 - **`internal/llmworker`** is the *only* package importing `llamacpp-go`.
   It loads the speaker-attribution GGUF model lazily (on first
   `LLMGenerate` call, or the first call after an idle unload) and serves
