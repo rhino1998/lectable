@@ -5,13 +5,13 @@ import {
   RiCloseLine,
   RiDeleteBinLine,
   RiDiscLine,
+  RiFileHistoryLine,
   RiDoubleQuotesL,
   RiEmotionLine,
   RiSpeakLine,
   RiEqualizerLine,
   RiForbidLine,
   RiGitMergeLine,
-  RiLoader4Line,
   RiMusic2Line,
   RiPauseFill,
   RiPlayFill,
@@ -77,6 +77,7 @@ import {
 import { ApiError } from '../api/client'
 import { DEFAULT_REF_TEXT, VoiceEditorForm, randomSeed } from '../components/VoiceEditorForm'
 import { withCacheBust } from '../utils/cacheBust'
+import { useReimportChapterAction } from '../hooks/useReimportChapterAction'
 import {
   CHARACTER_VOICE_MODE_DESCRIPTIONS,
   CHARACTER_VOICE_MODE_LABELS,
@@ -138,6 +139,8 @@ export function SpeakersPage() {
   const [directionError, setDirectionError] = useState<string | null>(null)
   const pronouncingIdxs = usePronouncingChapters(bookId)
   const [pronunciationError, setPronunciationError] = useState<string | null>(null)
+  const [reimportError, setReimportError] = useState<string | null>(null)
+  const { run: runReimport, reimportingIdx } = useReimportChapterAction(bookId, setReimportError)
   // Same job-queue-derived tracking as attributingIdxs/directingIdxs, for
   // background-music tone-region scoring - see useScoringMusicChapters'
   // own doc comment.
@@ -496,10 +499,6 @@ export function SpeakersPage() {
   const runGenerateUngenerated = runGenerateAll
   const hasUngenerated = book.chapters.some((c) => !isGenerated(c))
 
-  // Status columns between the table's Chapter and actions columns, spanned
-  // by the bulk-action rows' one empty cell.
-  const statusColumnCount = 8
-
   // A chapter's music can only generate once it's scored and its narration
   // is fully generated (each region's clip is sized to its own narration -
   // see api.generateChapterMusic); "missing" is any region without a ready
@@ -644,6 +643,7 @@ export function SpeakersPage() {
         {retagError && <p className="error-text">{retagError}</p>}
         {retagScareQuoteError && <p className="error-text">{retagScareQuoteError}</p>}
         {directionError && <p className="error-text">{directionError}</p>}
+        {reimportError && <p className="error-text">{reimportError}</p>}
         {pronunciationError && <p className="error-text">{pronunciationError}</p>}
         {musicScoreError && <p className="error-text">{musicScoreError}</p>}
         {musicGenerateError && <p className="error-text">{musicGenerateError}</p>}
@@ -660,188 +660,218 @@ export function SpeakersPage() {
               <th>Music</th>
               <th>Audio</th>
               <th>Music audio</th>
-              <th></th>
             </tr>
           </thead>
           <tbody>
             {/* Whole-book counterparts of each chapter row's own action
-                icons, column-aligned with them: the first row only touches
+                icons, each in its pass's column: the first row only touches
                 chapters that aren't done yet, the second re-runs every
-                chapter, the third resets each pass. Actions with no bulk
-                variant get a spacer so the columns still line up. */}
+                chapter, the third resets each pass. */}
             <tr className="chapter-attribute-bulk-row">
               <td className="muted" title="Every chapter that isn't done yet">Rest</td>
-              <td colSpan={statusColumnCount}></td>
               <td>
-                <div className="chapter-attribute-actions">
-                  <BulkActionButton
-                    icon={RiUserSearchLine}
-                    busy={attributingIdxs.size > 0 || bulkRunning.has('attribution')}
-                    disabled={!hasUnattributed}
-                    onClick={runAttributeUnattributed}
-                    title="Attribute unattributed — every chapter that isn't fully attributed yet, skipping ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiPriceTag3Line}
-                    busy={describingIdxs.size > 0 || bulkRunning.has('description')}
-                    disabled={!hasUndescribed}
-                    onClick={runRetagDescriptionsUndescribed}
-                    title="Tag untagged descriptions — every chapter that isn't description-tagged yet, skipping ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiDoubleQuotesL}
-                    busy={scareQuotingIdxs.size > 0 || bulkRunning.has('scare_quote')}
-                    disabled={!hasUnscareQuoted}
-                    onClick={runRetagScareQuotesUntagged}
-                    title="Tag untagged scare quotes — every chapter that isn't scare-quote-tagged yet, skipping ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiEmotionLine}
-                    busy={directingIdxs.size > 0 || bulkRunning.has('direction')}
-                    disabled={!hasUndirected}
-                    onClick={runDirectionUndirected}
-                    title="Label unlabeled emotions — every chapter that isn't emotion-labeled yet, skipping ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiSpeakLine}
-                    busy={pronouncingIdxs.size > 0 || bulkRunning.has('pronunciation')}
-                    disabled={!hasUnresolvedPronunciation}
-                    onClick={runPronunciationUnresolved}
-                    title="Resolve unresolved pronunciation — every chapter that isn't resolved yet, skipping ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiMusic2Line}
-                    busy={scoringMusicIdxs.size > 0 || bulkRunning.has('music_scoring')}
-                    disabled={!hasUnscoredMusic}
-                    onClick={runScoreMusicUnscored}
-                    title="Score unscored music — every chapter that isn't scored yet, skipping ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiVoiceprintLine}
-                    busy={generatingIdxs.size > 0 || bulkRunning.has('generate')}
-                    disabled={!hasUngenerated}
-                    onClick={runGenerateUngenerated}
-                    title="Generate ungenerated — audio for every chapter that isn't fully generated yet, skipping ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiDiscLine}
-                    busy={generatingMusicIdxs.size > 0 || bulkRunning.has('music_generation')}
-                    disabled={missingMusicChapters.length === 0}
-                    onClick={runGenerateMissingMusic}
-                    title="Generate missing music — every scored, fully-narrated chapter that's missing any, retrying failed regions"
-                  />
-                </div>
+                <BulkActionButton
+                  icon={RiUserSearchLine}
+                  busy={bulkRunning.has('attribution')}
+                  disabled={!hasUnattributed}
+                  onClick={runAttributeUnattributed}
+                  title="Attribute unattributed — every chapter that isn't fully attributed yet, skipping ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiPriceTag3Line}
+                  busy={bulkRunning.has('description')}
+                  disabled={!hasUndescribed}
+                  onClick={runRetagDescriptionsUndescribed}
+                  title="Tag untagged descriptions — every chapter that isn't description-tagged yet, skipping ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiDoubleQuotesL}
+                  busy={bulkRunning.has('scare_quote')}
+                  disabled={!hasUnscareQuoted}
+                  onClick={runRetagScareQuotesUntagged}
+                  title="Tag untagged scare quotes — every chapter that isn't scare-quote-tagged yet, skipping ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiEmotionLine}
+                  busy={bulkRunning.has('direction')}
+                  disabled={!hasUndirected}
+                  onClick={runDirectionUndirected}
+                  title="Label unlabeled emotions — every chapter that isn't emotion-labeled yet, skipping ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiSpeakLine}
+                  busy={bulkRunning.has('pronunciation')}
+                  disabled={!hasUnresolvedPronunciation}
+                  onClick={runPronunciationUnresolved}
+                  title="Resolve unresolved pronunciation — every chapter that isn't resolved yet, skipping ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiMusic2Line}
+                  busy={bulkRunning.has('music_scoring')}
+                  disabled={!hasUnscoredMusic}
+                  onClick={runScoreMusicUnscored}
+                  title="Score unscored music — every chapter that isn't scored yet, skipping ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiVoiceprintLine}
+                  busy={bulkRunning.has('generate')}
+                  disabled={!hasUngenerated}
+                  onClick={runGenerateUngenerated}
+                  title="Generate ungenerated — audio for every chapter that isn't fully generated yet, skipping ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiDiscLine}
+                  busy={bulkRunning.has('music_generation')}
+                  disabled={missingMusicChapters.length === 0}
+                  onClick={runGenerateMissingMusic}
+                  title="Generate missing music — every scored, fully-narrated chapter that's missing any, retrying failed regions"
+                />
               </td>
             </tr>
             <tr className="chapter-attribute-bulk-row">
               <td className="muted" title="Every chapter, including ones already done">All</td>
-              <td colSpan={statusColumnCount}></td>
               <td>
-                <div className="chapter-attribute-actions">
-                  <BulkActionButton
-                    icon={RiUserSearchLine}
-                    busy={attributingIdxs.size > 0 || bulkRunning.has('attribution')}
-                    onClick={runAttributeAll}
-                    title="Attribute all — every chapter, including ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiPriceTag3Line}
-                    busy={describingIdxs.size > 0 || bulkRunning.has('description')}
-                    onClick={runRetagDescriptionsAll}
-                    title="Retag all descriptions — every chapter, including ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiDoubleQuotesL}
-                    busy={scareQuotingIdxs.size > 0 || bulkRunning.has('scare_quote')}
-                    onClick={runRetagScareQuotesAll}
-                    title="Retag all scare quotes — every chapter, including ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiEmotionLine}
-                    busy={directingIdxs.size > 0 || bulkRunning.has('direction')}
-                    onClick={runDirectionAll}
-                    title="Label all emotions — every chapter, including ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiSpeakLine}
-                    busy={pronouncingIdxs.size > 0 || bulkRunning.has('pronunciation')}
-                    onClick={runPronunciationAll}
-                    title="Resolve all pronunciation — every chapter, including ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiMusic2Line}
-                    busy={scoringMusicIdxs.size > 0 || bulkRunning.has('music_scoring')}
-                    onClick={runScoreMusicAll}
-                    title="Score all music — every chapter, including ones already done"
-                  />
-                  <BulkActionButton
-                    icon={RiVoiceprintLine}
-                    busy={generatingIdxs.size > 0 || bulkRunning.has('generate')}
-                    onClick={runGenerateAll}
-                    title="Generate all audio — every chapter"
-                  />
-                  {/* No force variant: chapter music generation only ever
-                      fills in missing regions (see api.generateChapterMusic). */}
-                  <BulkActionButton icon={RiDiscLine} />
-                </div>
+                <BulkActionButton
+                  icon={RiUserSearchLine}
+                  busy={bulkRunning.has('attribution')}
+                  onClick={runAttributeAll}
+                  title="Attribute all — every chapter, including ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiPriceTag3Line}
+                  busy={bulkRunning.has('description')}
+                  onClick={runRetagDescriptionsAll}
+                  title="Retag all descriptions — every chapter, including ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiDoubleQuotesL}
+                  busy={bulkRunning.has('scare_quote')}
+                  onClick={runRetagScareQuotesAll}
+                  title="Retag all scare quotes — every chapter, including ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiEmotionLine}
+                  busy={bulkRunning.has('direction')}
+                  onClick={runDirectionAll}
+                  title="Label all emotions — every chapter, including ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiSpeakLine}
+                  busy={bulkRunning.has('pronunciation')}
+                  onClick={runPronunciationAll}
+                  title="Resolve all pronunciation — every chapter, including ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiMusic2Line}
+                  busy={bulkRunning.has('music_scoring')}
+                  onClick={runScoreMusicAll}
+                  title="Score all music — every chapter, including ones already done"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiVoiceprintLine}
+                  busy={bulkRunning.has('generate')}
+                  onClick={runGenerateAll}
+                  title="Generate all audio — every chapter"
+                />
+              </td>
+              <td>
+                {/* No force variant: chapter music generation only ever
+                    fills in missing regions (see api.generateChapterMusic). */}
               </td>
             </tr>
             <tr className="chapter-attribute-bulk-row chapter-attribute-bulk-row-last">
               <td className="muted" title="Clear a pass for every chapter, as though it never ran">
                 Reset
               </td>
-              <td colSpan={statusColumnCount}></td>
               <td>
-                <div className="chapter-attribute-actions">
-                  <BulkActionButton
-                    icon={RiUserSearchLine}
-                    disabled={attributingIdxs.size > 0 || bulkRunning.has('attribution') || resetPass.isPending}
-                    onClick={() => runReset('attribution', 'speaker attribution')}
-                    title="Reset attribution — clear every line's speaker (scare quotes stay Narrator) and delete audio voiced by a character"
-                  />
-                  <BulkActionButton
-                    icon={RiPriceTag3Line}
-                    disabled={describingIdxs.size > 0 || bulkRunning.has('description') || resetPass.isPending}
-                    onClick={() => runReset('description', 'description tags')}
-                    title="Reset descriptions — clear every description tag (no audio is affected)"
-                  />
-                  <BulkActionButton
-                    icon={RiDoubleQuotesL}
-                    disabled={scareQuotingIdxs.size > 0 || bulkRunning.has('scare_quote') || resetPass.isPending}
-                    onClick={() => runReset('scare_quote', 'scare-quote tags')}
-                    title="Reset scare quotes — unflag every scare quote, including manual ones, and delete their audio"
-                  />
-                  <BulkActionButton
-                    icon={RiEmotionLine}
-                    disabled={directingIdxs.size > 0 || bulkRunning.has('direction') || resetPass.isPending}
-                    onClick={() => runReset('direction', 'emotion labels')}
-                    title="Reset emotions — clear every emotion label, including manual overrides, and delete audio voiced with one"
-                  />
-                  <BulkActionButton
-                    icon={RiSpeakLine}
-                    disabled={pronouncingIdxs.size > 0 || bulkRunning.has('pronunciation') || resetPass.isPending}
-                    onClick={() => runReset('pronunciation', 'pronunciation fixes')}
-                    title="Reset pronunciation — clear every pronunciation fix and delete audio that used one"
-                  />
-                  <BulkActionButton
-                    icon={RiMusic2Line}
-                    disabled={scoringMusicIdxs.size > 0 || bulkRunning.has('music_scoring') || resetPass.isPending}
-                    onClick={() => runReset('music_scoring', 'music scoring')}
-                    title="Reset music scoring — delete every music region and its generated music"
-                  />
-                  <BulkActionButton
-                    icon={RiVoiceprintLine}
-                    disabled={generatingIdxs.size > 0 || bulkRunning.has('generate') || resetPass.isPending}
-                    onClick={() => runReset('generate', 'all generated narration audio')}
-                    title="Reset audio — delete every generated narration clip (music regions go back to pending too)"
-                  />
-                  <BulkActionButton
-                    icon={RiDiscLine}
-                    disabled={generatingMusicIdxs.size > 0 || bulkRunning.has('music_generation') || resetPass.isPending}
-                    onClick={() => runReset('music_generation', 'all generated music')}
-                    title="Reset music audio — delete every generated music clip, keeping the scored regions"
-                  />
-                </div>
+                <BulkActionButton
+                  icon={RiUserSearchLine}
+                  disabled={bulkRunning.has('attribution') || resetPass.isPending}
+                  onClick={() => runReset('attribution', 'speaker attribution')}
+                  title="Reset attribution — clear every line's speaker (scare quotes stay Narrator) and delete audio voiced by a character"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiPriceTag3Line}
+                  disabled={bulkRunning.has('description') || resetPass.isPending}
+                  onClick={() => runReset('description', 'description tags')}
+                  title="Reset descriptions — clear every description tag (no audio is affected)"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiDoubleQuotesL}
+                  disabled={bulkRunning.has('scare_quote') || resetPass.isPending}
+                  onClick={() => runReset('scare_quote', 'scare-quote tags')}
+                  title="Reset scare quotes — unflag every scare quote, including manual ones, and delete their audio"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiEmotionLine}
+                  disabled={bulkRunning.has('direction') || resetPass.isPending}
+                  onClick={() => runReset('direction', 'emotion labels')}
+                  title="Reset emotions — clear every emotion label, including manual overrides, and delete audio voiced with one"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiSpeakLine}
+                  disabled={bulkRunning.has('pronunciation') || resetPass.isPending}
+                  onClick={() => runReset('pronunciation', 'pronunciation fixes')}
+                  title="Reset pronunciation — clear every pronunciation fix and delete audio that used one"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiMusic2Line}
+                  disabled={bulkRunning.has('music_scoring') || resetPass.isPending}
+                  onClick={() => runReset('music_scoring', 'music scoring')}
+                  title="Reset music scoring — delete every music region and its generated music"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiVoiceprintLine}
+                  disabled={bulkRunning.has('generate') || resetPass.isPending}
+                  onClick={() => runReset('generate', 'all generated narration audio')}
+                  title="Reset audio — delete every generated narration clip (music regions go back to pending too)"
+                />
+              </td>
+              <td>
+                <BulkActionButton
+                  icon={RiDiscLine}
+                  disabled={bulkRunning.has('music_generation') || resetPass.isPending}
+                  onClick={() => runReset('music_generation', 'all generated music')}
+                  title="Reset music audio — delete every generated music clip, keeping the scored regions"
+                />
               </td>
             </tr>
             {book.chapters.map((c) => {
@@ -855,51 +885,25 @@ export function SpeakersPage() {
               const generatingMusic = generatingMusicIdxs.has(c.idx)
               return (
                 <tr key={c.idx}>
-                  <td>{c.title}</td>
                   <td>
-                    <PassStatus done={c.passes.attribution} busy={attributing} label="Attribution" />
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={reimportingIdx !== null}
+                        onClick={() => runReimport(c.idx, c.title)}
+                        title={
+                          reimportingIdx === c.idx
+                            ? 'Re-importing…'
+                            : "Re-import this chapter from the book's epub — re-parses its paragraphs and resets its passes and audio"
+                        }
+                      >
+                        <RiFileHistoryLine className={reimportingIdx === c.idx ? 'spin' : undefined} />
+                      </button>
+                      {c.title}
+                    </div>
                   </td>
                   <td>
-                    <PassStatus done={c.passes.description} busy={retagging} label="Description tagging" />
-                  </td>
-                  <td>
-                    <PassStatus done={c.passes.scareQuote} busy={retaggingScareQuotes} label="Scare-quote tagging" />
-                  </td>
-                  <td>
-                    <PassStatus done={c.passes.direction} busy={directing} label="Emotion labeling" />
-                  </td>
-                  <td>
-                    <PassStatus done={c.passes.pronunciation} busy={pronouncing} label="Pronunciation resolution" />
-                  </td>
-                  <td>
-                    <PassStatus done={c.passes.music} busy={scoringMusic} label="Music scoring" />
-                  </td>
-                  <td>
-                    <CountStatus
-                      ready={c.readyCount}
-                      total={c.paragraphCount}
-                      busy={generating}
-                      label="Narration audio"
-                    />
-                  </td>
-                  <td>
-                    {musicCounts(c).total === 0 ? (
-                      <span className="chapter-attribute-status" title="Music audio: not scored yet">
-                        —
-                      </span>
-                    ) : (
-                      <CountStatus
-                        ready={musicCounts(c).ready}
-                        total={musicCounts(c).total}
-                        errors={musicCounts(c).errors}
-                        busy={generatingMusic}
-                        label="Music audio"
-                        unit="regions"
-                      />
-                    )}
-                  </td>
-                  <td>
-                    <div className="chapter-attribute-actions">
+                    <div className="chapter-attribute-cell">
                       <button
                         className="icon-action-button"
                         disabled={attributing}
@@ -914,6 +918,11 @@ export function SpeakersPage() {
                       >
                         <RiUserSearchLine className={attributing ? 'spin' : undefined} />
                       </button>
+                      <PassStatus done={c.passes.attribution} label="Attribution" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
                       <button
                         className="icon-action-button"
                         disabled={retagging}
@@ -926,6 +935,11 @@ export function SpeakersPage() {
                       >
                         <RiPriceTag3Line className={retagging ? 'spin' : undefined} />
                       </button>
+                      <PassStatus done={c.passes.description} label="Description tagging" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
                       <button
                         className="icon-action-button"
                         disabled={retaggingScareQuotes}
@@ -938,6 +952,11 @@ export function SpeakersPage() {
                       >
                         <RiDoubleQuotesL className={retaggingScareQuotes ? 'spin' : undefined} />
                       </button>
+                      <PassStatus done={c.passes.scareQuote} label="Scare-quote tagging" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
                       <button
                         className="icon-action-button"
                         disabled={directing}
@@ -952,6 +971,11 @@ export function SpeakersPage() {
                       >
                         <RiEmotionLine className={directing ? 'spin' : undefined} />
                       </button>
+                      <PassStatus done={c.passes.direction} label="Emotion labeling" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
                       <button
                         className="icon-action-button"
                         disabled={pronouncing}
@@ -966,6 +990,11 @@ export function SpeakersPage() {
                       >
                         <RiSpeakLine className={pronouncing ? 'spin' : undefined} />
                       </button>
+                      <PassStatus done={c.passes.pronunciation} label="Pronunciation resolution" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
                       <button
                         className="icon-action-button"
                         disabled={scoringMusic}
@@ -980,6 +1009,11 @@ export function SpeakersPage() {
                       >
                         <RiMusic2Line className={scoringMusic ? 'spin' : undefined} />
                       </button>
+                      <PassStatus done={c.passes.music} label="Music scoring" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
                       <button
                         className="icon-action-button"
                         disabled={generating}
@@ -994,6 +1028,15 @@ export function SpeakersPage() {
                       >
                         <RiVoiceprintLine className={generating ? 'spin' : undefined} />
                       </button>
+                      <CountStatus
+                        ready={c.readyCount}
+                        total={c.paragraphCount}
+                        label="Narration audio"
+                      />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
                       <button
                         className="icon-action-button"
                         disabled={generatingMusic || !canGenerateMusic(c)}
@@ -1012,6 +1055,19 @@ export function SpeakersPage() {
                       >
                         <RiDiscLine className={generatingMusic ? 'spin' : undefined} />
                       </button>
+                      {musicCounts(c).total === 0 ? (
+                        <span className="chapter-attribute-status" title="Music audio: not scored yet">
+                          —
+                        </span>
+                      ) : (
+                        <CountStatus
+                          ready={musicCounts(c).ready}
+                          total={musicCounts(c).total}
+                          errors={musicCounts(c).errors}
+                          label="Music audio"
+                          unit="regions"
+                        />
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -2112,15 +2168,17 @@ function BulkActionButton({
   )
 }
 
-function PassStatus({ done, busy, label }: { done: boolean; busy: boolean; label: string }) {
-  const text = `${label}: ${busy ? 'running…' : done ? 'done' : 'not done'}`
+// PassStatus is a chapter pass's done/not-done mark. No running state of
+// its own - the action button beside it spins while the pass runs.
+function PassStatus({ done, label }: { done: boolean; label: string }) {
+  const text = `${label}: ${done ? 'done' : 'not done'}`
   return (
     <span
-      className={'chapter-attribute-status' + (done && !busy ? ' chapter-attribute-status-done' : '')}
+      className={'chapter-attribute-status' + (done ? ' chapter-attribute-status-done' : '')}
       title={text}
       aria-label={text}
     >
-      {busy ? <RiLoader4Line className="spin" /> : done ? <RiCheckLine /> : <RiCloseLine />}
+      {done ? <RiCheckLine /> : <RiCloseLine />}
     </span>
   )
 }
@@ -2133,31 +2191,28 @@ function CountStatus({
   ready,
   total,
   errors = 0,
-  busy,
   label,
   unit = 'paragraphs',
 }: {
   ready: number
   total: number
   errors?: number
-  busy: boolean
   label: string
   unit?: string
 }) {
   const done = total > 0 && ready >= total
-  const text =
-    `${label}: ${ready}/${total} ${unit} ready` + (errors > 0 ? `, ${errors} failed` : '') + (busy ? ' — generating…' : '')
+  const text = `${label}: ${ready}/${total} ${unit} ready` + (errors > 0 ? `, ${errors} failed` : '')
   return (
     <span
       className={
         'chapter-attribute-status' +
-        (done && !busy ? ' chapter-attribute-status-done' : '') +
-        (errors > 0 && !busy ? ' chapter-attribute-status-error' : '')
+        (done ? ' chapter-attribute-status-done' : '') +
+        (errors > 0 ? ' chapter-attribute-status-error' : '')
       }
       title={text}
       aria-label={text}
     >
-      {busy ? <RiLoader4Line className="spin" /> : done ? <RiCheckLine /> : `${ready}/${total}`}
+      {done ? <RiCheckLine /> : `${ready}/${total}`}
     </span>
   )
 }

@@ -10,7 +10,6 @@ import {
   useCreateBookmark,
   useDeleteBookmark,
   useDeleteChapterAudio,
-  useReimportChapter,
   useDirectingChapters,
   usePronouncingChapters,
   useResolvePronunciation,
@@ -41,6 +40,7 @@ import { useBackgroundMusic } from '../hooks/useBackgroundMusic'
 import { useInView } from '../hooks/useInView'
 import { useClickOutside } from '../hooks/useClickOutside'
 import { useMediaSession } from '../hooks/useMediaSession'
+import { useReimportChapterAction } from '../hooks/useReimportChapterAction'
 import { READER_FONT_FAMILIES, useReaderTypography } from '../hooks/useReaderTypography'
 import { PlayerBar } from '../components/PlayerBar'
 import { ChapterSection } from '../components/ChapterSection'
@@ -137,7 +137,6 @@ export function ReaderPage() {
   // the Speakers page - see SpeakersPage's own "Attribute speakers" button
   // for the fuller roster-management version of the same call.
   const deleteChapterAudio = useDeleteChapterAudio(bookId)
-  const reimportChapter = useReimportChapter(bookId)
   const attributeSpeakers = useAttributeSpeakers(bookId)
   const attributingIdxs = useAttributingChapters(bookId)
   const retagDescriptions = useRetagDescriptions(bookId)
@@ -332,48 +331,7 @@ export function ReaderPage() {
     [deleteChapterAudio],
   )
 
-  // Re-import: re-parse one chapter from the book's stored source epub
-  // (api.reimportChapter). Two recoverable failures - the backend has no
-  // stored epub for an older book (ask for the file, which it then keeps),
-  // or the epub's chapter title differs (confirm, then force).
-  const runReimportChapter = useCallback(
-    (idx: number, title: string) => {
-      if (
-        !confirm(
-          `Re-import "${title}" from the book's epub? Its speakers, emotions, pronunciation fixes, sound effects and generated audio are all reset, and the chapter needs preprocessing again. Other chapters are untouched.`,
-        )
-      ) {
-        return
-      }
-      setChapterActionError(null)
-      const attempt = (file?: File, force?: boolean) =>
-        reimportChapter.mutate(
-          { chapterIdx: idx, file, force },
-          {
-            onError: (err) => {
-              if (err instanceof ApiError && err.code === 'no_source_epub') {
-                const input = document.createElement('input')
-                input.type = 'file'
-                input.accept = '.epub,application/epub+zip'
-                input.onchange = () => {
-                  const picked = input.files?.[0]
-                  if (picked) attempt(picked, force)
-                }
-                input.click()
-                return
-              }
-              if (err instanceof ApiError && err.code === 'title_mismatch') {
-                if (confirm(`${err.message}. Re-import anyway?`)) attempt(file, true)
-                return
-              }
-              setChapterActionError(err instanceof ApiError ? err.message : 'Could not re-import this chapter')
-            },
-          },
-        )
-      attempt()
-    },
-    [reimportChapter],
-  )
+  const { run: runReimportChapter, reimportingIdx } = useReimportChapterAction(bookId, setChapterActionError)
 
   const runAttributeChapter = useCallback(
     (idx: number) => {
@@ -1107,7 +1065,7 @@ export function ReaderPage() {
               placeholderHeight={measuredHeight}
               chapterAttributing={attributingIdxs.has(idx)}
               chapterClearing={deleteChapterAudio.isPending && deleteChapterAudio.variables === idx}
-              chapterReimporting={reimportChapter.isPending && reimportChapter.variables?.chapterIdx === idx}
+              chapterReimporting={reimportingIdx === idx}
               hasAttribution={!!chapterSummary?.passes.attribution}
               chapterRetaggingDescriptions={describingIdxs.has(idx)}
               chapterRetaggingScareQuotes={scareQuotingIdxs.has(idx)}

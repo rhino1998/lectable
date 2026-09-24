@@ -1122,12 +1122,6 @@ label {
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
 }
-.chapter-attribute-table th:last-child,
-.chapter-attribute-table td:last-child {
-  width: 1%;
-  white-space: nowrap;
-  text-align: right;
-}
 .chapter-attribute-table tr:last-child td {
   border-bottom: none;
 }
@@ -1147,12 +1141,14 @@ label {
 .icon-action-spacer {
   visibility: hidden;
 }
-.chapter-attribute-actions {
+/* One SpeakersPage chapter-table cell: the column's action button, then
+   its status - button first so it lines up with the bulk rows' button in
+   the same column. */
+.chapter-attribute-cell {
   display: flex;
-  justify-content: flex-end;
   align-items: center;
-  gap: 0.6rem;
-  flex-wrap: nowrap;
+  gap: 0.4rem;
+  white-space: nowrap;
 }
 .chapter-attribute-status {
   display: inline-flex;
