@@ -1,5 +1,8 @@
 import type {
   BookSummary,
+  BulkAction,
+  BulkScope,
+  ResetPass,
   CustomVoicePreset,
   CustomVoicePresetInput,
   LLMTestOptions,
@@ -334,6 +337,20 @@ export const api = {
   generateRemaining: (bookId: string) =>
     request<{ queued: boolean }>(`/api/books/${bookId}/generate-remaining`, { method: 'POST' }),
 
+  // One whole-book Speakers-page action, queued server-side as a single
+  // cancelable Jobs row ("pipeline_bulk_<action>") wrapping every
+  // per-chapter/per-character task it fans out into - see
+  // httpapi.handleBulkAction. scope "rest" skips what's already done, "all"
+  // re-runs everything. queued is how many chapters/characters it covers.
+  bulkAction: (bookId: string, action: BulkAction, scope: BulkScope) =>
+    request<{ queued: number }>(`/api/books/${bookId}/bulk/${action}?scope=${scope}`, { method: 'POST' }),
+
+  // Clears one pass across the whole book as though it never ran, deleting
+  // whatever generated audio it made stale - see httpapi.handleResetPass.
+  // pass uses bulkAction's names ("generate" = every narration clip).
+  resetPass: (bookId: string, pass: ResetPass) =>
+    request<{ invalidated: number }>(`/api/books/${bookId}/reset/${pass}`, { method: 'POST' }),
+
   // Assigns (or, with "", clears) a character's own narration voice.
   setCharacterVoice: (bookId: string, characterId: string, voicePresetId: string) =>
     request<{ ok: boolean }>(`/api/books/${bookId}/characters/${characterId}/voice`, json('PUT', { voicePresetId })),
@@ -393,21 +410,10 @@ export const api = {
       { method: 'POST' },
     ),
 
-  // Batch-enqueues voice provisioning for every given character id in one
-  // request - fire-and-forget (202, no per-character result) via
-  // httpapi.handleGenerateCharacterVoices, same shape as
-  // characterizeSpeakers above. SpeakersPage's "Generate all voices".
-  generateCharacterVoices: (bookId: string, characterIds: string[]) =>
-    request<{ queued: number }>(
-      `/api/books/${bookId}/characters/generate-voice`,
-      json('POST', { characterIds }),
-    ),
-
   // Batch-forces a fresh reference-clip render for every given character
   // id in one request - fire-and-forget (202, no per-character result) via
-  // httpapi.handleRegenerateCharacterVoices. Unlike generateCharacterVoices
-  // above, this re-renders regardless of whether a character already has a
-  // cached voice - SpeakersPage's "Regenerate all voices".
+  // httpapi.handleRegenerateCharacterVoices, regardless of whether a
+  // character already has a cached voice.
   regenerateCharacterVoices: (bookId: string, characterIds: string[]) =>
     request<{ queued: number }>(
       `/api/books/${bookId}/characters/regenerate-voice`,
@@ -424,23 +430,6 @@ export const api = {
     request<{ summary: string; voiceInvalidated: boolean }>(
       `/api/books/${bookId}/characters/${characterId}/characterize`,
       { method: 'POST' },
-    ),
-
-  // Batch-enqueues re-characterization for every given character id in one
-  // request - fire-and-forget (202, no per-character result) via
-  // httpapi.handleCharacterizeSpeakers/jobs.Manager.EnqueueCharacterization,
-  // unlike characterizeSpeaker above which blocks until that one
-  // character's result comes back. SpeakersPage's "Recharacterize all" -
-  // see that handler's own doc comment for why a batch endpoint exists
-  // instead of just firing characterizeSpeaker once per character from
-  // here (the browser's own per-origin connection cap, plus a page reload
-  // before every request even went out, could otherwise silently drop
-  // whichever characters hadn't been dispatched yet). Progress shows up on
-  // the speakers topic, same as any other characterization.
-  characterizeSpeakers: (bookId: string, characterIds: string[]) =>
-    request<{ queued: number }>(
-      `/api/books/${bookId}/characters/characterize`,
-      json('POST', { characterIds }),
     ),
 
   getPosition: (bookId: string) => request<Position>(`/api/books/${bookId}/position`),

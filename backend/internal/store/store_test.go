@@ -1506,3 +1506,91 @@ func TestClearLegacyTags(t *testing.T) {
 		t.Fatalf("second ClearLegacyTags = %v, %v; want nothing left", idxs, err)
 	}
 }
+
+// TestResetBookPass checks ResetBookPass clears just the named pass: its
+// paragraph columns, its chapters.passes flag (leaving other flags alone),
+// and reports the paragraphs whose audio it made stale.
+func TestResetBookPass(t *testing.T) {
+	s := openTestStore(t)
+	bookID, chapterID := oneChapterBook(t, s, "", 0, `"Hi,"`, `"Bye,"`, "Narration.")
+	if err := s.SetParagraphSpeakers(chapterID, map[int]string{0: "Alice", 1: "Bob", 2: "Narrator"}); err != nil {
+		t.Fatalf("SetParagraphSpeakers: %v", err)
+	}
+	if err := s.SetParagraphScareQuotes(chapterID, map[int]bool{1: true}); err != nil {
+		t.Fatalf("SetParagraphScareQuotes: %v", err)
+	}
+	if err := s.SetParagraphDescriptions(chapterID, map[int][]string{2: {"Alice"}}); err != nil {
+		t.Fatalf("SetParagraphDescriptions: %v", err)
+	}
+	for _, set := range []func(string) error{s.SetChapterAttributed, s.SetChapterScareQuoted, s.SetChapterDescribed, s.SetChapterDirected} {
+		if err := set(chapterID); err != nil {
+			t.Fatalf("set pass: %v", err)
+		}
+	}
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatalf("ListParagraphsRaw: %v", err)
+	}
+	passes := func() Passes {
+		t.Helper()
+		ch, err := s.GetChapterByID(chapterID)
+		if err != nil {
+			t.Fatalf("GetChapterByID: %v", err)
+		}
+		return ch.Passes
+	}
+	para := func(i int) *Paragraph {
+		t.Helper()
+		p, err := s.GetParagraph(paragraphs[i].ID)
+		if err != nil {
+			t.Fatalf("GetParagraph(%d): %v", i, err)
+		}
+		return p
+	}
+
+	affected, err := s.ResetBookPass(bookID, "attribution")
+	if err != nil {
+		t.Fatalf("ResetBookPass(attribution): %v", err)
+	}
+	if got := affected[chapterID]; len(got) != 1 || got[0] != 0 {
+		t.Fatalf("attribution reset affected %v, want only idx 0 (Alice)", affected)
+	}
+	if got := para(0).Speaker; got != "" {
+		t.Fatalf("Alice's line speaker %q after reset, want \"\"", got)
+	}
+	if got := para(1).Speaker; got != "Narrator" {
+		t.Fatalf("scare-quote line speaker %q after attribution reset, want Narrator kept", got)
+	}
+	if want := (Passes{ScareQuote: true, Description: true, Direction: true}); passes() != want {
+		t.Fatalf("passes after attribution reset: %+v, want %+v", passes(), want)
+	}
+
+	affected, err = s.ResetBookPass(bookID, "scare_quote")
+	if err != nil {
+		t.Fatalf("ResetBookPass(scare_quote): %v", err)
+	}
+	if got := affected[chapterID]; len(got) != 1 || got[0] != 1 {
+		t.Fatalf("scare-quote reset affected %v, want only idx 1", affected)
+	}
+	if p := para(1); p.ScareQuote || p.Speaker != "" {
+		t.Fatalf("after scare-quote reset: scareQuote %v speaker %q, want false \"\"", p.ScareQuote, p.Speaker)
+	}
+
+	affected, err = s.ResetBookPass(bookID, "description")
+	if err != nil {
+		t.Fatalf("ResetBookPass(description): %v", err)
+	}
+	if len(affected) != 0 {
+		t.Fatalf("description reset should never affect audio, got %v", affected)
+	}
+	if got := para(2).DescribesCharacters; len(got) != 0 {
+		t.Fatalf("describes after reset: %v, want empty", got)
+	}
+	if want := (Passes{Direction: true}); passes() != want {
+		t.Fatalf("passes after resets: %+v, want %+v", passes(), want)
+	}
+
+	if _, err := s.ResetBookPass(bookID, "bogus"); err == nil {
+		t.Fatalf("expected an error for an unknown pass")
+	}
+}

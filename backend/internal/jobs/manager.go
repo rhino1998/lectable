@@ -1675,7 +1675,7 @@ func (m *Manager) Start(ctx context.Context) {
 }
 
 // EnqueueChapter now lives in pipeline.go, as a cancelable poolPipeline
-// task (pipelineTaskGenerateChapter) - see its own doc comment there.
+// bulk group (see EnqueueChapter's own doc comment).
 
 // EnqueueSample generates only enough leading paragraphs of the chapter to
 // cover roughly wordLimit words (whole paragraphs, so it may run a bit
@@ -2414,8 +2414,8 @@ func (m *Manager) PromoteChapterMusicNear(bookID, chapterID string) {
 }
 
 // EnqueueRemaining and EnqueueBookGenerate now live in pipeline.go, as
-// cancelable poolPipeline tasks (pipelineTaskGenerateRemaining/
-// pipelineTaskGenerateBook) - see their own doc comments there.
+// cancelable bulk groups (EnqueueRemaining/EnqueueBookGenerate) - see their
+// own doc comments there.
 
 // pushTask registers a task as queued (skipping it if already
 // queued/in-flight under the same dedupKey, to avoid dispatching the same
@@ -3540,7 +3540,7 @@ func (m *Manager) EnqueueReattribution(bookID, chapterID string, chapterIdx int,
 
 // RunReattribution is EnqueueReattribution's blocking sibling,
 // RunAttribution's exact counterpart for "Auto Split" - used by the
-// per-chapter fan-out inside an EnqueueAutoSplit run (the one caller), a
+// per-chapter fan-out inside an Auto Split bulk group (the one caller), a
 // background pipeline task rather than an HTTP handler, so blocking is
 // safe for the same reason RunAttribution's own doc comment gives. Same
 // (chapter, speaker)-scoped dedup key as EnqueueReattribution, so a
@@ -3731,7 +3731,14 @@ func (m *Manager) HasHigherPriorityWork() bool {
 // name) for the Jobs dashboard, which otherwise has no chapter/paragraph
 // to show for this kind - see QueueTask.Label.
 func (m *Manager) RunCharacterization(ctx context.Context, bookID, characterID, label string, fn CharacterizationFunc) error {
-	_, err := m.runLLMTask(ctx, KindSpeakerCharacterization, TierUrgent, bookID, "", 0, characterID, label, func(ctx context.Context) (int, error) {
+	return m.RunCharacterizationAt(ctx, TierUrgent, bookID, characterID, label, fn)
+}
+
+// RunCharacterizationAt is RunCharacterization at a caller-chosen tier - for
+// a bulk group's own per-character fan-out (httpapi.handleBulkAction), which
+// dispatches at the group's own live tier rather than TierUrgent.
+func (m *Manager) RunCharacterizationAt(ctx context.Context, tier int, bookID, characterID, label string, fn CharacterizationFunc) error {
+	_, err := m.runLLMTask(ctx, KindSpeakerCharacterization, tier, bookID, "", 0, characterID, label, func(ctx context.Context) (int, error) {
 		return 0, fn(ctx)
 	})
 	return err
@@ -3872,13 +3879,19 @@ func (m *Manager) EnqueueVoiceProvision(bookID, characterID, mode, label string,
 // replaced) is what makes lazy provisioning show up on the Jobs
 // dashboard at all - see provisionWaiters' own doc comment.
 func (m *Manager) RunVoiceProvision(ctx context.Context, bookID, characterID, mode, label string, fn func(ctx context.Context, attempt int) (string, error)) (string, error) {
+	return m.RunVoiceProvisionAt(ctx, TierUrgent, bookID, characterID, mode, label, fn)
+}
+
+// RunVoiceProvisionAt is RunVoiceProvision at a caller-chosen tier - see
+// RunCharacterizationAt.
+func (m *Manager) RunVoiceProvisionAt(ctx context.Context, tier int, bookID, characterID, mode, label string, fn func(ctx context.Context, attempt int) (string, error)) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	resultCh := make(chan provisionOutcome, 1)
 	m.pushTask(&task{
 		kind:             KindVoiceProvision,
-		tier:             TierUrgent,
+		tier:             tier,
 		bookID:           bookID,
 		llmKey:           mode + ":" + characterID,
 		label:            label,
@@ -5145,129 +5158,34 @@ func (m *Manager) PromoteTier(id string, newTier int) error {
 		return ErrTierNotMoreUrgent
 	}
 	if promoted != nil {
-		switch promoted.kind {
-		case pipelineTaskPreprocessPhase:
-			m.cascadePipelinePromotion(promoted.bookID, promoted.phase, newTier)
-		case pipelineTaskGenerateChapter:
-			m.cascadeChapterGeneratePromotion(promoted.bookID, promoted.chapterID, newTier)
-		case pipelineTaskAutoSplit:
-			m.cascadeAutoSplitPromotion(promoted.bookID, promoted.speakerKey, newTier)
+		if f := promoted.children(); f != nil {
+			m.cascadePromotion(promoted.bookID, *f, newTier)
 		}
-		// pipelineTaskGenerateBook/pipelineTaskGenerateRemaining aren't
-		// cascaded - both walk every chapter in the book (or from the
-		// reader's position onward) themselves, at TierBackground per
-		// chapter (see enqueueBookGenerate/enqueueRemaining), so "promote
-		// this whole-book task" has no single chapter's worth of m.queue
-		// tasks to reach the way pipelineTaskGenerateChapter's own exact
-		// chapterID does.
 	}
 	m.notifyChanged()
 	return nil
 }
 
-// cascadePipelinePromotion is PromoteTier's own follow-up for a promoted
-// pipeline phase task: bumping the phase task itself (in PromoteTier
-// above) only reprioritizes how poolPipeline's own bookkeeping sorts among
-// other books'/phases' phase tasks, which barely matters on its own
-// (maxPipelineInFlight is generous, and pipelineTask.Less never
-// distinguishes two phases at all) - the real work a reader actually wants
-// sped up is whatever per-chapter task this phase's own fan-out already
-// dispatched into m.queue (RunAttribution/RunDirection/RunMusicScoring/
-// RunScareQuote/RunDescription),
-// which stayed at whatever tier it was dispatched at (see
-// PipelinePhaseFunc's own doc comment on its tier parameter) regardless of
-// a later promotion, without this. Deliberately excludes the
-// characterization/voice-provision phases: RunCharacterization/
-// RunVoiceProvision both always dispatch at TierUrgent regardless of
-// caller already (see their own doc comments), so a further promotion
-// could never apply to either anyway. WithEachTask, not WithTask - a
-// phase can have many chapters' worth of task queued or in flight for
-// this book at once, all needing the same bump.
-func (m *Manager) cascadePipelinePromotion(bookID string, phase, newTier int) {
-	var kind Kind
-	switch phase {
-	case pipelinePhaseAttribution:
-		kind = KindSpeakerAttribution
-	case pipelinePhaseDirection:
-		kind = KindSpeechDirection
-	case pipelinePhaseMusic:
-		kind = KindMusicScoring
-	case pipelinePhaseScareQuote:
-		kind = KindScareQuote
-	case pipelinePhaseDescription:
-		kind = KindDescription
-	case pipelinePhasePronunciation:
-		kind = KindPronunciation
-	default:
-		return
-	}
-	m.queue.WithEachTask(
-		func(c taskqueue.Task) bool {
-			ct, ok := c.(*task)
-			return ok && ct.kind == kind && ct.bookID == bookID
-		},
-		func(c taskqueue.Task) {
-			if newTier < c.Tier() {
-				c.Promote(newTier)
-			}
-		},
-	)
-}
-
-// cascadeChapterGeneratePromotion is PromoteTier's own follow-up for a
-// promoted pipelineTaskGenerateChapter task ("Generate: Chapter" on the
-// Jobs dashboard) - EnqueueChapter's own real work (enqueueChapter) fans
-// out into m.queue as a mix of Kinds for this exact chapterID: the
-// narration paragraphs themselves (KindVoiceClone/KindVoiceDesign, still
-// TierBackground regardless of a later promotion without this, the same
-// gap cascadePipelinePromotion closes for the five preprocessing phases),
-// KindMusicScoring (maybeScoreChapterMusic, dispatched from inside this
-// same enqueueChapter call when the book has music enabled and this
-// chapter isn't scored yet), and any KindMusicGeneration task a prior
-// scoring run already made eligible for this chapter's own regions. Every
-// one of those is unconditionally this chapter's own dependency - unlike
-// cascadePipelinePromotion, which has to pick one specific Kind per phase,
-// this matches by (bookID, chapterID) alone, regardless of Kind, since
-// nothing else chapter-scoped can show up in m.queue under this exact
-// chapterID that isn't part of "generate this chapter" work.
+// cascadePromotion is PromoteTier's own follow-up for a promoted pipeline
+// task (a preprocessing phase or a bulk group): bumping the pipeline task
+// itself only reprioritizes poolPipeline's own bookkeeping, which barely
+// matters (maxPipelineInFlight is generous, and pipelineTask.Less never
+// distinguishes two of them) - the real work a reader wants sped up is
+// whatever m.queue tasks its fan-out already dispatched, which stay at
+// whatever tier they were dispatched at (see PipelinePhaseFunc's own doc
+// comment on its tier parameter) without this. f (see pipelineTask.children)
+// picks those children out; every match gets the same bump, including a
+// paused chapter's detached continuation the pipeline task's own live
+// tier() can't otherwise reach.
 //
-// Deliberately doesn't also reach for a KindSpeakerAttribution/
-// KindSpeechDirection task blocking one of those - it doesn't need to:
-// speechDirectionDependency/attributionOrderDependency express that as a
-// real taskqueue.Resolver edge *within* m.queue itself, so computeState's
-// own existing dependency-tier-propagation (see taskqueue's "priority
-// promotion" section) already relaxes such a blocker's own effective tier
-// to match whatever now-promoted KindVoiceClone/KindVoiceDesign task
-// depends on it, automatically, the next time Pop or Snapshot runs -
-// no second cascade required for that part.
-func (m *Manager) cascadeChapterGeneratePromotion(bookID, chapterID string, newTier int) {
+// A child's own blockers (e.g. a clone task's speechDirectionDependency)
+// need no cascade here: taskqueue's dependency-tier propagation already
+// relaxes a blocker's effective tier to match whatever depends on it.
+func (m *Manager) cascadePromotion(bookID string, f ChildFilter, newTier int) {
 	m.queue.WithEachTask(
 		func(c taskqueue.Task) bool {
 			ct, ok := c.(*task)
-			return ok && ct.bookID == bookID && ct.chapterID == chapterID
-		},
-		func(c taskqueue.Task) {
-			if newTier < c.Tier() {
-				c.Promote(newTier)
-			}
-		},
-	)
-}
-
-// cascadeAutoSplitPromotion is PromoteTier's own follow-up for a promoted
-// pipelineTaskAutoSplit task - cascadePipelinePromotion's counterpart for
-// one speaker's Auto Split run: every KindSpeakerReattribution task
-// already dispatched for this book under this exact speakerKey (matched by
-// llmKey's own "<chapterID>|<speakerKey>" suffix - see
-// EnqueueReattribution) gets the same bump, including a paused chapter's
-// detached continuation, which the wrapping task's own live tier() can't
-// otherwise reach.
-func (m *Manager) cascadeAutoSplitPromotion(bookID, speakerKey string, newTier int) {
-	suffix := "|" + speakerKey
-	m.queue.WithEachTask(
-		func(c taskqueue.Task) bool {
-			ct, ok := c.(*task)
-			return ok && ct.kind == KindSpeakerReattribution && ct.bookID == bookID && strings.HasSuffix(ct.llmKey, suffix)
+			return ok && ct.bookID == bookID && f.matches(ct)
 		},
 		func(c taskqueue.Task) {
 			if newTier < c.Tier() {

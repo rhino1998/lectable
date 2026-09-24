@@ -53,6 +53,17 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   // One whole "Auto Split" click, wrapping its per-chapter
   // 'speaker-reattribute' rows - see backend jobs.Manager.EnqueueAutoSplit.
   pipeline_auto_split: 'Auto Split: All Chapters',
+  // Speakers-page whole-book actions (see api.bulkAction) - label carries
+  // the scope ("Unfinished chapters", "All characters", ...).
+  pipeline_bulk_attribution: 'Bulk: Attribution',
+  pipeline_bulk_description: 'Bulk: Description Tagging',
+  pipeline_bulk_scare_quote: 'Bulk: Scare Quote Tagging',
+  pipeline_bulk_direction: 'Bulk: Emotion Labeling',
+  pipeline_bulk_pronunciation: 'Bulk: Pronunciation',
+  pipeline_bulk_music_scoring: 'Bulk: Music Scoring',
+  pipeline_bulk_music_generation: 'Bulk: Music Generation',
+  pipeline_bulk_characterization: 'Bulk: Characterization',
+  pipeline_bulk_voices: 'Bulk: Voices',
   sfx_generation: 'SFX',
   sfx_preview: 'SFX/Music Preview',
   llm_preview: 'LLM Preview',

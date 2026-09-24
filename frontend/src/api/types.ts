@@ -649,6 +649,11 @@ export interface QueueTask {
     // 'speaker-reattribute' task that click fans out into. label carries
     // the speaker's own name, same as its per-chapter children.
     | 'pipeline_auto_split'
+    // One Speakers-page whole-book action (see api.bulkAction) - a single
+    // cancelable row wrapping every per-chapter/per-character task it fans
+    // out into. label says which scope ("Unfinished chapters", "All
+    // characters", ...).
+    | `pipeline_bulk_${Exclude<BulkAction, 'generate'>}`
   // label is a human-readable identifier for a kind that isn't chapter/
   // paragraph-scoped - the character's name for "speaker_characterization"
   // and "voice_provision" (see jobs.EnqueueVoiceProvision), a "preview #N"
@@ -765,3 +770,25 @@ export interface SpeakerAppearance {
   // generating first (see AppearanceRow's own "Generate" fallback).
   audioUrl?: string
 }
+
+// A Speakers-page whole-book action (POST /api/books/{id}/bulk/{action} -
+// backend httpapi.handleBulkAction). "generate" queues the same
+// "pipeline_generate_book" row as the library page's Generate: All.
+export type BulkAction =
+  | 'attribution'
+  | 'description'
+  | 'scare_quote'
+  | 'direction'
+  | 'pronunciation'
+  | 'music_scoring'
+  | 'music_generation'
+  | 'generate'
+  | 'characterization'
+  | 'voices'
+
+// "rest" only touches chapters/characters not done yet; "all" re-runs every one.
+export type BulkScope = 'rest' | 'all'
+
+// A pass the Speakers page can reset across a whole book (POST
+// /api/books/{id}/reset/{pass} - backend httpapi.handleResetPass).
+export type ResetPass = Exclude<BulkAction, 'characterization' | 'voices'>

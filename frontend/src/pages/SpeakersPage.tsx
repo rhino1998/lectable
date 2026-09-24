@@ -26,12 +26,14 @@ import {
 import type { IconType } from 'react-icons'
 import {
   useAttributeSpeakers,
+  useBulkAction,
+  useBulkActionsRunning,
+  useResetPass,
   useAttributingChapters,
   useBook,
   useCharacterAppearances,
   useCharacterDescriptions,
   useCharacterizeSpeaker,
-  useCharacterizeSpeakers,
   useCharacterizingCharacters,
   useCreateCustomVoicePreset,
   useCustomVoicePresets,
@@ -44,7 +46,6 @@ import {
   useGenerateChapter,
   useGenerateChapterMusic,
   useGenerateCharacterVoice,
-  useGenerateCharacterVoices,
   useGeneratingChapters,
   useGeneratingMusicChapters,
   useMergeCharacter,
@@ -53,7 +54,6 @@ import {
   useReattributingSpeakers,
   useRegenerateVariant,
   useSetCharacterInvalid,
-  useRegenerateCharacterVoices,
   useRegenerateParagraph,
   useRetagDescriptions,
   useRetagScareQuotes,
@@ -86,7 +86,7 @@ import {
   INSTRUCTED_CLONE_MODEL,
   type CharacterVoiceMode,
 } from '../api/types'
-import type { CustomVoicePreset, Speaker, SpeakerAppearance, SpeakerEmotion, VoicePreset } from '../api/types'
+import type { BulkAction, BulkScope, ResetPass, CustomVoicePreset, Speaker, SpeakerAppearance, SpeakerEmotion, VoicePreset } from '../api/types'
 
 // Per-book speaker management: run LLM attribution chapter by chapter,
 // review who's been identified so far and how much of their dialogue has
@@ -112,15 +112,18 @@ export function SpeakersPage() {
   const generateChapterMusic = useGenerateChapterMusic(bookId)
   const generateChapter = useGenerateChapter(bookId)
   const characterizeSpeaker = useCharacterizeSpeaker(bookId)
-  const characterizeSpeakers = useCharacterizeSpeakers(bookId)
   const deleteSpeakerData = useDeleteSpeakerData(bookId)
   const deleteCharacter = useDeleteCharacter(bookId)
   const setCharacterInvalid = useSetCharacterInvalid(bookId)
   const mergeCharacter = useMergeCharacter(bookId)
   const reattributeSpeaker = useReattributeSpeaker(bookId)
   const generateVoice = useGenerateCharacterVoice(bookId)
-  const generateVoices = useGenerateCharacterVoices(bookId)
-  const regenerateVoices = useRegenerateCharacterVoices(bookId)
+  // Every whole-book button below goes through one bulk endpoint, queued
+  // as a single cancelable Jobs row per click (see api.bulkAction).
+  const bulkAction = useBulkAction(bookId)
+  const bulkRunning = useBulkActionsRunning(bookId)
+  const [bulkError, setBulkError] = useState<string | null>(null)
+  const resetPass = useResetPass(bookId)
 
   // Derived from the shared backend job queue (the live jobs topic), not
   // local mutation state - attribution is fire-and-forget now (see useAttributingChapters'
@@ -208,7 +211,7 @@ export function SpeakersPage() {
 
   // Derived from the shared backend job queue (the live jobs topic), not
   // local mutation state - "Recharacterize all" is fire-and-forget (see
-  // useCharacterizeSpeakers/useCharacterizingCharacters' own doc comments);
+  // api.bulkAction/useCharacterizingCharacters' own doc comments);
   // tracked by character *name* since that's the only identifier a
   // speaker_characterization QueueTask carries. onFinished bumps
   // audioVersion for whichever characters just finished, the same
@@ -441,99 +444,55 @@ export function SpeakersPage() {
 
   const book = bookQuery.data
 
-  // Fires every chapter's own attribute-speakers request at once, rather
-  // than requiring N individual clicks - safe to do in a burst since the
-  // backend queues/serializes them one at a time regardless (TierUrgent,
-  // one shared LLM slot - see internal/jobs' KindSpeakerAttribution).
-  // Re-attributing an already-attributed chapter is the same idempotent
-  // re-run the single "Attribute speakers" button already does, so this
-  // doesn't try to skip chapters that look already done.
-  const runAttributeAll = () => {
-    book.chapters.forEach((c) => runAttribute(c.idx))
+  const runBulk = (action: BulkAction, scope: BulkScope) => {
+    setBulkError(null)
+    bulkAction.mutate(
+      { action, scope },
+      { onError: (err) => setBulkError(err instanceof ApiError ? err.message : 'Could not start this action') },
+    )
   }
 
-  // Same batch trigger as runAttributeAll, but skips any chapter already
-  // marked attributed (see ChapterSummary.passes.attribution) - for
-  // topping up a book after adding chapters or an interrupted run,
-  // without re-running (and re-billing the LLM for) chapters already
-  // done.
-  const runAttributeUnattributed = () => {
-    book.chapters.filter((c) => !c.passes.attribution).forEach((c) => runAttribute(c.idx))
+  // Per-pass "Reset" row: clears the pass for the whole book as though it
+  // never ran, deleting any audio that used it - see api.resetPass. The
+  // character roster is untouched ("Delete speaker data" covers that).
+  const runReset = (pass: ResetPass, what: string) => {
+    if (!confirm(`Reset ${what} for every chapter of "${book.title}"? This can't be undone.`)) return
+    setBulkError(null)
+    resetPass.mutate(pass, {
+      onError: (err) => setBulkError(err instanceof ApiError ? err.message : 'Could not reset this pass'),
+    })
   }
+
+  // "Rest" skips chapters whose pass is already done (ChapterSummary.passes);
+  // "All" re-runs every chapter. Both are one backend bulk task each.
+  const runAttributeAll = () => runBulk('attribution', 'all')
+  const runAttributeUnattributed = () => runBulk('attribution', 'rest')
   const hasUnattributed = book.chapters.some((c) => !c.passes.attribution)
-
-  // Same all/untagged pair for the description and scare-quote tagging
-  // passes (c.passes.description / c.passes.scareQuote).
-  const runRetagDescriptionsAll = () => {
-    book.chapters.forEach((c) => runRetagDescriptions(c.idx))
-  }
-  const runRetagDescriptionsUndescribed = () => {
-    book.chapters.filter((c) => !c.passes.description).forEach((c) => runRetagDescriptions(c.idx))
-  }
+  const runRetagDescriptionsAll = () => runBulk('description', 'all')
+  const runRetagDescriptionsUndescribed = () => runBulk('description', 'rest')
   const hasUndescribed = book.chapters.some((c) => !c.passes.description)
-  const runRetagScareQuotesAll = () => {
-    book.chapters.forEach((c) => runRetagScareQuotes(c.idx))
-  }
-  const runRetagScareQuotesUntagged = () => {
-    book.chapters.filter((c) => !c.passes.scareQuote).forEach((c) => runRetagScareQuotes(c.idx))
-  }
+  const runRetagScareQuotesAll = () => runBulk('scare_quote', 'all')
+  const runRetagScareQuotesUntagged = () => runBulk('scare_quote', 'rest')
   const hasUnscareQuoted = book.chapters.some((c) => !c.passes.scareQuote)
-
-  // isDirected/hasUndirected mirror c.passes.attribution/hasUnattributed
-  // exactly - passes.direction is emotion labeling, a single flat bool for
-  // any clone model. runDirectionAll/runDirectionUndirected fire every chapter's own
-  // request at once, same batching rationale as runAttributeAll/
-  // runAttributeUnattributed - the backend queues them one at a time
-  // regardless (poolLLM, KindSpeechDirection).
-  const isDirected = (c: (typeof book.chapters)[number]) => c.passes.direction
-  const runDirectionAll = () => {
-    book.chapters.forEach((c) => runDirection(c.idx))
-  }
-  const runDirectionUndirected = () => {
-    book.chapters.filter((c) => !isDirected(c)).forEach((c) => runDirection(c.idx))
-  }
-  const hasUndirected = book.chapters.some((c) => !isDirected(c))
-
-  // Same shape again, for pronunciation resolution (c.passes.pronunciation).
-  const runPronunciationAll = () => {
-    book.chapters.forEach((c) => runPronunciation(c.idx))
-  }
-  const runPronunciationUnresolved = () => {
-    book.chapters.filter((c) => !c.passes.pronunciation).forEach((c) => runPronunciation(c.idx))
-  }
+  const runDirectionAll = () => runBulk('direction', 'all')
+  const runDirectionUndirected = () => runBulk('direction', 'rest')
+  const hasUndirected = book.chapters.some((c) => !c.passes.direction)
+  const runPronunciationAll = () => runBulk('pronunciation', 'all')
+  const runPronunciationUnresolved = () => runBulk('pronunciation', 'rest')
   const hasUnresolvedPronunciation = book.chapters.some((c) => !c.passes.pronunciation)
+  // Always allowed regardless of the book-wide musicEnabled toggle - see
+  // api.scoreChapterMusic.
+  const runScoreMusicAll = () => runBulk('music_scoring', 'all')
+  const runScoreMusicUnscored = () => runBulk('music_scoring', 'rest')
+  const hasUnscoredMusic = book.chapters.some((c) => !c.passes.music)
 
-  // isScoredMusic/hasUnscoredMusic/runScoreMusicAll/runScoreMusicUnscored
-  // mirror isDirected/hasUndirected/runDirectionAll/runDirectionUndirected
-  // exactly, for c.passes.music instead - see api.scoreChapterMusic's own
-  // doc comment for why this is always allowed regardless of the book-wide
-  // musicEnabled toggle.
-  const isScoredMusic = (c: (typeof book.chapters)[number]) => c.passes.music
-  const runScoreMusicAll = () => {
-    book.chapters.forEach((c) => runScoreMusic(c.idx))
-  }
-  const runScoreMusicUnscored = () => {
-    book.chapters.filter((c) => !isScoredMusic(c)).forEach((c) => runScoreMusic(c.idx))
-  }
-  const hasUnscoredMusic = book.chapters.some((c) => !isScoredMusic(c))
-
-  // isGenerated/hasUngenerated/runGenerateAll/runGenerateUngenerated mirror
-  // isScoredMusic/hasUnscoredMusic/runScoreMusicAll/runScoreMusicUnscored
-  // exactly, for a chapter's own narration audio (readyCount/paragraphCount
-  // - see PlayerBar's own identical "c.readyCount < c.paragraphCount" not-
-  // fully-generated check) instead of a tagging pass. Each call goes
-  // through the same backend jobs.Manager.EnqueueChapter every other
-  // "generate this chapter" entry point (the reader, the library page's
-  // "Generate audio") already uses, so it's idempotent per chapter and -
-  // per maybeScoreChapterMusic - also kicks off background-music scoring
-  // for a not-yet-scored chapter when the book has music turned on.
+  // A chapter's narration audio is done once every paragraph is ready - see
+  // PlayerBar's identical "c.readyCount < c.paragraphCount" check.
   const isGenerated = (c: (typeof book.chapters)[number]) => c.readyCount >= c.paragraphCount
-  const runGenerateAll = () => {
-    book.chapters.forEach((c) => runGenerate(c.idx))
-  }
-  const runGenerateUngenerated = () => {
-    book.chapters.filter((c) => !isGenerated(c)).forEach((c) => runGenerate(c.idx))
-  }
+  // Generation only ever renders paragraphs that aren't ready yet, so
+  // "All" and "Rest" are the same one whole-book generate task.
+  const runGenerateAll = () => runBulk('generate', 'all')
+  const runGenerateUngenerated = runGenerateAll
   const hasUngenerated = book.chapters.some((c) => !isGenerated(c))
 
   // Status columns between the table's Chapter and actions columns, spanned
@@ -554,55 +513,17 @@ export function SpeakersPage() {
     musicCounts(c).total > 0 && musicCounts(c).ready >= musicCounts(c).total
   const canGenerateMusic = (c: (typeof book.chapters)[number]) => musicCounts(c).total > 0 && isGenerated(c)
   const missingMusicChapters = book.chapters.filter((c) => canGenerateMusic(c) && !isMusicGenerated(c))
-  const runGenerateMissingMusic = () => {
-    missingMusicChapters.forEach((c) => runGenerateMusic(c.idx))
-  }
+  const runGenerateMissingMusic = () => runBulk('music_generation', 'rest')
 
-  // One batch request (see useCharacterizeSpeakers/handleCharacterizeSpeakers)
-  // rather than firing runCharacterize once per character - a real backend
-  // enqueue, not a client-side loop, so it isn't at the mercy of the
-  // browser's own per-origin connection cap or a page reload dropping
-  // whichever characters' requests hadn't gone out yet. Includes characters
-  // with no dialogue attributed yet too - characterizeVoice's own "nothing
-  // to characterize from yet" case is a normal no-op there, not an error,
-  // so there's nothing to gain from trying to pre-filter them out here.
-  const runCharacterizeAll = () => {
-    setCharacterizeError(null)
-    setCharacterizeNote(null)
-    const ids = speakers.map((s) => s.id).filter((id): id is string => !!id)
-    characterizeSpeakers.mutate(ids, {
-      onError: (err) =>
-        setCharacterizeError(err instanceof ApiError ? err.message : 'Recharacterize all failed'),
-    })
-  }
-
-  // One batch request (see useGenerateCharacterVoices/
-  // handleGenerateCharacterVoices), same rationale as runCharacterizeAll.
-  // Only characters with no voice yet - matching the per-row "Generate
-  // voice" button, which is itself only ever shown for those (see
-  // SpeakerRow below); a character that already has one has nothing for
-  // this to do.
-  const runGenerateVoicesAll = () => {
-    setGenerateVoiceError(null)
-    const ids = speakers.filter((s) => s.id && !s.voicePresetId).map((s) => s.id)
-    generateVoices.mutate(ids, {
-      onError: (err) =>
-        setGenerateVoiceError(err instanceof ApiError ? err.message : 'Generate all voices failed'),
-    })
-  }
-
-  // One batch request (see useRegenerateCharacterVoices/
-  // handleRegenerateCharacterVoices) - every character with an id, not
-  // just un-voiced ones (unlike runGenerateVoicesAll above): this forces a
-  // fresh render regardless of whether a voice already exists.
-  const runRegenerateVoicesAll = () => {
-    setGenerateVoiceError(null)
-    const ids = speakers.map((s) => s.id).filter((id): id is string => !!id)
-    regenerateVoices.mutate(ids, {
-      onError: (err) =>
-        setGenerateVoiceError(err instanceof ApiError ? err.message : 'Regenerate all voices failed'),
-    })
-  }
+  // Roster-wide counterparts, over the series roster (characters marked
+  // invalid are skipped server-side). Characters with no dialogue yet are
+  // included - characterizing from a name alone is a normal case.
+  const runCharacterizeAll = () => runBulk('characterization', 'all')
+  // Only characters with no voice yet, matching the per-row "Generate voice"
+  // button.
+  const runGenerateVoicesAll = () => runBulk('voices', 'rest')
+  // Every character, forcing a fresh render whether or not they have a voice.
+  const runRegenerateVoicesAll = () => runBulk('voices', 'all')
 
   // The character roster (names, characterizations, voice assignments,
   // and their auto-created voice presets) is shared across a book's whole
@@ -655,6 +576,8 @@ export function SpeakersPage() {
           </Link>
         </div>
       </div>
+
+      {bulkError && <p className="error-text">{bulkError}</p>}
 
       <section className="speakers-multivoice">
         <label>
@@ -743,8 +666,8 @@ export function SpeakersPage() {
             {/* Whole-book counterparts of each chapter row's own action
                 icons, column-aligned with them: the first row only touches
                 chapters that aren't done yet, the second re-runs every
-                chapter. Actions with no bulk variant get a spacer so the
-                columns still line up. */}
+                chapter, the third resets each pass. Actions with no bulk
+                variant get a spacer so the columns still line up. */}
             <tr className="chapter-attribute-bulk-row">
               <td className="muted" title="Every chapter that isn't done yet">Rest</td>
               <td colSpan={statusColumnCount}></td>
@@ -752,56 +675,56 @@ export function SpeakersPage() {
                 <div className="chapter-attribute-actions">
                   <BulkActionButton
                     icon={RiUserSearchLine}
-                    busy={attributingIdxs.size > 0}
+                    busy={attributingIdxs.size > 0 || bulkRunning.has('attribution')}
                     disabled={!hasUnattributed}
                     onClick={runAttributeUnattributed}
                     title="Attribute unattributed — every chapter that isn't fully attributed yet, skipping ones already done"
                   />
                   <BulkActionButton
                     icon={RiPriceTag3Line}
-                    busy={describingIdxs.size > 0}
+                    busy={describingIdxs.size > 0 || bulkRunning.has('description')}
                     disabled={!hasUndescribed}
                     onClick={runRetagDescriptionsUndescribed}
                     title="Tag untagged descriptions — every chapter that isn't description-tagged yet, skipping ones already done"
                   />
                   <BulkActionButton
                     icon={RiDoubleQuotesL}
-                    busy={scareQuotingIdxs.size > 0}
+                    busy={scareQuotingIdxs.size > 0 || bulkRunning.has('scare_quote')}
                     disabled={!hasUnscareQuoted}
                     onClick={runRetagScareQuotesUntagged}
                     title="Tag untagged scare quotes — every chapter that isn't scare-quote-tagged yet, skipping ones already done"
                   />
                   <BulkActionButton
                     icon={RiEmotionLine}
-                    busy={directingIdxs.size > 0}
+                    busy={directingIdxs.size > 0 || bulkRunning.has('direction')}
                     disabled={!hasUndirected}
                     onClick={runDirectionUndirected}
                     title="Label unlabeled emotions — every chapter that isn't emotion-labeled yet, skipping ones already done"
                   />
                   <BulkActionButton
                     icon={RiSpeakLine}
-                    busy={pronouncingIdxs.size > 0}
+                    busy={pronouncingIdxs.size > 0 || bulkRunning.has('pronunciation')}
                     disabled={!hasUnresolvedPronunciation}
                     onClick={runPronunciationUnresolved}
                     title="Resolve unresolved pronunciation — every chapter that isn't resolved yet, skipping ones already done"
                   />
                   <BulkActionButton
                     icon={RiMusic2Line}
-                    busy={scoringMusicIdxs.size > 0}
+                    busy={scoringMusicIdxs.size > 0 || bulkRunning.has('music_scoring')}
                     disabled={!hasUnscoredMusic}
                     onClick={runScoreMusicUnscored}
                     title="Score unscored music — every chapter that isn't scored yet, skipping ones already done"
                   />
                   <BulkActionButton
                     icon={RiVoiceprintLine}
-                    busy={generatingIdxs.size > 0}
+                    busy={generatingIdxs.size > 0 || bulkRunning.has('generate')}
                     disabled={!hasUngenerated}
                     onClick={runGenerateUngenerated}
                     title="Generate ungenerated — audio for every chapter that isn't fully generated yet, skipping ones already done"
                   />
                   <BulkActionButton
                     icon={RiDiscLine}
-                    busy={generatingMusicIdxs.size > 0}
+                    busy={generatingMusicIdxs.size > 0 || bulkRunning.has('music_generation')}
                     disabled={missingMusicChapters.length === 0}
                     onClick={runGenerateMissingMusic}
                     title="Generate missing music — every scored, fully-narrated chapter that's missing any, retrying failed regions"
@@ -809,56 +732,114 @@ export function SpeakersPage() {
                 </div>
               </td>
             </tr>
-            <tr className="chapter-attribute-bulk-row chapter-attribute-bulk-row-last">
+            <tr className="chapter-attribute-bulk-row">
               <td className="muted" title="Every chapter, including ones already done">All</td>
               <td colSpan={statusColumnCount}></td>
               <td>
                 <div className="chapter-attribute-actions">
                   <BulkActionButton
                     icon={RiUserSearchLine}
-                    busy={attributingIdxs.size > 0}
+                    busy={attributingIdxs.size > 0 || bulkRunning.has('attribution')}
                     onClick={runAttributeAll}
                     title="Attribute all — every chapter, including ones already done"
                   />
                   <BulkActionButton
                     icon={RiPriceTag3Line}
-                    busy={describingIdxs.size > 0}
+                    busy={describingIdxs.size > 0 || bulkRunning.has('description')}
                     onClick={runRetagDescriptionsAll}
                     title="Retag all descriptions — every chapter, including ones already done"
                   />
                   <BulkActionButton
                     icon={RiDoubleQuotesL}
-                    busy={scareQuotingIdxs.size > 0}
+                    busy={scareQuotingIdxs.size > 0 || bulkRunning.has('scare_quote')}
                     onClick={runRetagScareQuotesAll}
                     title="Retag all scare quotes — every chapter, including ones already done"
                   />
                   <BulkActionButton
                     icon={RiEmotionLine}
-                    busy={directingIdxs.size > 0}
+                    busy={directingIdxs.size > 0 || bulkRunning.has('direction')}
                     onClick={runDirectionAll}
                     title="Label all emotions — every chapter, including ones already done"
                   />
                   <BulkActionButton
                     icon={RiSpeakLine}
-                    busy={pronouncingIdxs.size > 0}
+                    busy={pronouncingIdxs.size > 0 || bulkRunning.has('pronunciation')}
                     onClick={runPronunciationAll}
                     title="Resolve all pronunciation — every chapter, including ones already done"
                   />
                   <BulkActionButton
                     icon={RiMusic2Line}
-                    busy={scoringMusicIdxs.size > 0}
+                    busy={scoringMusicIdxs.size > 0 || bulkRunning.has('music_scoring')}
                     onClick={runScoreMusicAll}
                     title="Score all music — every chapter, including ones already done"
                   />
                   <BulkActionButton
                     icon={RiVoiceprintLine}
-                    busy={generatingIdxs.size > 0}
+                    busy={generatingIdxs.size > 0 || bulkRunning.has('generate')}
                     onClick={runGenerateAll}
                     title="Generate all audio — every chapter"
                   />
                   {/* No force variant: chapter music generation only ever
                       fills in missing regions (see api.generateChapterMusic). */}
                   <BulkActionButton icon={RiDiscLine} />
+                </div>
+              </td>
+            </tr>
+            <tr className="chapter-attribute-bulk-row chapter-attribute-bulk-row-last">
+              <td className="muted" title="Clear a pass for every chapter, as though it never ran">
+                Reset
+              </td>
+              <td colSpan={statusColumnCount}></td>
+              <td>
+                <div className="chapter-attribute-actions">
+                  <BulkActionButton
+                    icon={RiUserSearchLine}
+                    disabled={attributingIdxs.size > 0 || bulkRunning.has('attribution') || resetPass.isPending}
+                    onClick={() => runReset('attribution', 'speaker attribution')}
+                    title="Reset attribution — clear every line's speaker (scare quotes stay Narrator) and delete audio voiced by a character"
+                  />
+                  <BulkActionButton
+                    icon={RiPriceTag3Line}
+                    disabled={describingIdxs.size > 0 || bulkRunning.has('description') || resetPass.isPending}
+                    onClick={() => runReset('description', 'description tags')}
+                    title="Reset descriptions — clear every description tag (no audio is affected)"
+                  />
+                  <BulkActionButton
+                    icon={RiDoubleQuotesL}
+                    disabled={scareQuotingIdxs.size > 0 || bulkRunning.has('scare_quote') || resetPass.isPending}
+                    onClick={() => runReset('scare_quote', 'scare-quote tags')}
+                    title="Reset scare quotes — unflag every scare quote, including manual ones, and delete their audio"
+                  />
+                  <BulkActionButton
+                    icon={RiEmotionLine}
+                    disabled={directingIdxs.size > 0 || bulkRunning.has('direction') || resetPass.isPending}
+                    onClick={() => runReset('direction', 'emotion labels')}
+                    title="Reset emotions — clear every emotion label, including manual overrides, and delete audio voiced with one"
+                  />
+                  <BulkActionButton
+                    icon={RiSpeakLine}
+                    disabled={pronouncingIdxs.size > 0 || bulkRunning.has('pronunciation') || resetPass.isPending}
+                    onClick={() => runReset('pronunciation', 'pronunciation fixes')}
+                    title="Reset pronunciation — clear every pronunciation fix and delete audio that used one"
+                  />
+                  <BulkActionButton
+                    icon={RiMusic2Line}
+                    disabled={scoringMusicIdxs.size > 0 || bulkRunning.has('music_scoring') || resetPass.isPending}
+                    onClick={() => runReset('music_scoring', 'music scoring')}
+                    title="Reset music scoring — delete every music region and its generated music"
+                  />
+                  <BulkActionButton
+                    icon={RiVoiceprintLine}
+                    disabled={generatingIdxs.size > 0 || bulkRunning.has('generate') || resetPass.isPending}
+                    onClick={() => runReset('generate', 'all generated narration audio')}
+                    title="Reset audio — delete every generated narration clip (music regions go back to pending too)"
+                  />
+                  <BulkActionButton
+                    icon={RiDiscLine}
+                    disabled={generatingMusicIdxs.size > 0 || bulkRunning.has('music_generation') || resetPass.isPending}
+                    onClick={() => runReset('music_generation', 'all generated music')}
+                    title="Reset music audio — delete every generated music clip, keeping the scored regions"
+                  />
                 </div>
               </td>
             </tr>
@@ -869,7 +850,7 @@ export function SpeakersPage() {
               const directing = directingIdxs.has(c.idx)
               const pronouncing = pronouncingIdxs.has(c.idx)
               const scoringMusic = scoringMusicIdxs.has(c.idx)
-              const generating = generatingIdxs.has(c.idx)
+              const generating = generatingIdxs.has(c.idx) || (bulkRunning.has('generate') && !isGenerated(c))
               const generatingMusic = generatingMusicIdxs.has(c.idx)
               return (
                 <tr key={c.idx}>
@@ -1059,7 +1040,7 @@ export function SpeakersPage() {
                 <button
                   className="icon-action-button"
                   onClick={runCharacterizeAll}
-                  disabled={characterizeSpeakers.isPending || characterizingNames.size > 0}
+                  disabled={bulkRunning.has('characterization') || characterizingNames.size > 0}
                   title={
                     characterizingNames.size > 0
                       ? 'Recharacterizing…'
@@ -1067,7 +1048,7 @@ export function SpeakersPage() {
                   }
                 >
                   <RiUserHeartLine
-                    className={characterizeSpeakers.isPending || characterizingNames.size > 0 ? 'spin' : undefined}
+                    className={bulkRunning.has('characterization') || characterizingNames.size > 0 ? 'spin' : undefined}
                   />
                 </button>
               )}
@@ -1075,20 +1056,20 @@ export function SpeakersPage() {
                 <button
                   className="icon-action-button"
                   onClick={runGenerateVoicesAll}
-                  disabled={generateVoices.isPending}
+                  disabled={bulkRunning.has('voices')}
                   title="Generate all voices — characterize and create a voice now for every character that doesn't have one yet"
                 >
-                  <RiUserVoiceLine className={generateVoices.isPending ? 'spin' : undefined} />
+                  <RiUserVoiceLine className={bulkRunning.has('voices') ? 'spin' : undefined} />
                 </button>
               )}
               {speakers.some((s) => s.id) && (
                 <button
                   className="icon-action-button"
                   onClick={runRegenerateVoicesAll}
-                  disabled={regenerateVoices.isPending}
+                  disabled={bulkRunning.has('voices')}
                   title="Regenerate all voices — force a fresh render for every character's voice, whether or not they already have one"
                 >
-                  <RiRefreshLine className={regenerateVoices.isPending ? 'spin' : undefined} />
+                  <RiRefreshLine className={bulkRunning.has('voices') ? 'spin' : undefined} />
                 </button>
               )}
               <button

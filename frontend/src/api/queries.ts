@@ -7,6 +7,9 @@ import type {
   Bookmark,
   BookDetail,
   BookSummary,
+  BulkAction,
+  BulkScope,
+  ResetPass,
   ChapterDetail,
   ChapterMusic,
   CustomVoicePreset,
@@ -310,6 +313,36 @@ export function useGenerateRemaining() {
   return useMutation({ mutationFn: (bookId: string) => api.generateRemaining(bookId) })
 }
 
+// A Speakers-page whole-book action (see api.bulkAction) - fire-and-forget;
+// see useBulkActionsRunning for the "still running" signal.
+export function useBulkAction(bookId: string) {
+  return useMutation({
+    mutationFn: ({ action, scope }: { action: BulkAction; scope: BulkScope }) =>
+      api.bulkAction(bookId, action, scope),
+  })
+}
+
+// The Speakers page's per-pass reset (see api.resetPass). What it cleared
+// arrives on the chapter/speakers topics by itself.
+export function useResetPass(bookId: string) {
+  return useMutation({ mutationFn: (pass: ResetPass) => api.resetPass(bookId, pass) })
+}
+
+// Which bulk actions currently have a row queued/in flight for bookId.
+// "generate" maps to the pipeline_generate_book row it queues.
+export function useBulkActionsRunning(bookId: string): Set<BulkAction> {
+  const jobs = useJobsSnapshot().data
+  return useMemo(() => {
+    const running = new Set<BulkAction>()
+    for (const t of [...(jobs?.inFlight ?? []), ...(jobs?.queued ?? [])]) {
+      if (t.bookId !== bookId) continue
+      if (t.kind === 'pipeline_generate_book') running.add('generate')
+      else if (t.kind.startsWith('pipeline_bulk_')) running.add(t.kind.slice('pipeline_bulk_'.length) as BulkAction)
+    }
+    return running
+  }, [jobs, bookId])
+}
+
 // Every queued/in-flight task of `kind` for bookId in the live job queue.
 function useBookJobs(bookId: string, kind: QueueTask['kind']): QueueTask[] {
   const jobs = useJobsSnapshot().data
@@ -433,15 +466,8 @@ export function useGenerateCharacterVoice(bookId: string) {
   return useMutation({ mutationFn: (characterId: string) => api.generateCharacterVoice(bookId, characterId) })
 }
 
-// SpeakersPage's "Generate all voices" - fire-and-forget batch enqueue via
-// httpapi.handleGenerateCharacterVoices (onSuccess only means "queued";
-// each character's voice shows up on the speakers topic as it lands).
-export function useGenerateCharacterVoices(bookId: string) {
-  return useMutation({ mutationFn: (characterIds: string[]) => api.generateCharacterVoices(bookId, characterIds) })
-}
-
-// SpeakersPage's "Regenerate all voices" - same fire-and-forget shape as
-// useGenerateCharacterVoices.
+// Batch "regenerate these characters' voices" (PlayerBar's per-character
+// action) - fire-and-forget, see api.regenerateCharacterVoices.
 export function useRegenerateCharacterVoices(bookId: string) {
   return useMutation({ mutationFn: (characterIds: string[]) => api.regenerateCharacterVoices(bookId, characterIds) })
 }
@@ -450,20 +476,11 @@ export function useCharacterizeSpeaker(bookId: string) {
   return useMutation({ mutationFn: (characterId: string) => api.characterizeSpeaker(bookId, characterId) })
 }
 
-// SpeakersPage's "Recharacterize all" - see api.characterizeSpeakers' own
-// doc comment for why this is a single batch request rather than firing
-// useCharacterizeSpeaker's mutation once per character from the component.
-// onSuccess only means "the batch was queued" (202, fire-and-forget) - see
-// useCharacterizingCharacters for per-row progress.
-export function useCharacterizeSpeakers(bookId: string) {
-  return useMutation({ mutationFn: (characterIds: string[]) => api.characterizeSpeakers(bookId, characterIds) })
-}
-
 // Which of bookId's characters (by name - QueueTask.label is the only
 // identifier a speaker_characterization task carries, see its own doc
 // comment) currently have a characterization task queued/in-flight in the
-// shared backend job queue - useCharacterizeSpeakers (the batch
-// "Recharacterize all" endpoint) is fire-and-forget, so there's no
+// shared backend job queue - "Recharacterize all" (a bulk action, see
+// useBulkAction) is fire-and-forget, so there's no
 // mutation-lifecycle moment that means "this one character is actually
 // done" for it to drive a per-row spinner from. useCharacterizeSpeaker (the
 // single-row "Regenerate" button) is still a genuinely blocking request, so

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"slices"
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/taskqueue"
@@ -146,38 +147,6 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 	pipelinePhasePronunciation:    "pipeline_pronunciation",
 }
 
-// pipelineTaskKind distinguishes what a pipelineTask actually represents:
-// one of book-preprocessing's own dependent phases (pipelinePhase*
-// above - pipelineTaskPreprocessPhase, the zero value, keeps every
-// existing preprocessing call site working unchanged), or one of the
-// three independent "generate audio" meta-tasks below -
-// EnqueueChapter/EnqueueBookGenerate/EnqueueRemaining, moved onto this
-// same poolPipeline/pipelineQueue/pipelineWorker machinery instead of a
-// bare fire-and-forget goroutine specifically so each shows up as its own
-// cancelable Jobs-dashboard row, the same way a preprocessing phase
-// already does - canceling one stops it from starting any chapter/
-// paragraph it hasn't reached yet, the identical guarantee CancelPipeline
-// already gives a canceled preprocessing phase (see that function's own
-// doc comment). A generate meta-task's own run is the same shape as a
-// preprocessing phase's PipelinePhaseFunc (fan out real work, check ctx
-// between units, return once done/canceled) - it just isn't part of the
-// phase dependency graph pipelineResolver enforces (see that
-// function's own kind check) and must never count toward
-// IsPipelineRunning (see isPipelineRunningLocked's own kind check), which
-// specifically means "book-preprocessing run in progress" (the library
-// page's preprocessing spinner) - a different concept from "generating
-// audio" that a caller must be able to tell apart. pipelineTaskAutoSplit
-// is the same idea for one "Auto Split" click - see EnqueueAutoSplit.
-type pipelineTaskKind int
-
-const (
-	pipelineTaskPreprocessPhase pipelineTaskKind = iota
-	pipelineTaskGenerateChapter
-	pipelineTaskGenerateBook
-	pipelineTaskGenerateRemaining
-	pipelineTaskAutoSplit
-)
-
 // PipelinePhaseFunc is one phase's own real work for one book - fan out
 // whatever per-chapter/per-character tasks that phase covers (via
 // RunScareQuote/RunAttribution/RunDescription/RunCharacterization/
@@ -209,45 +178,20 @@ const (
 // ignore this parameter.
 type PipelinePhaseFunc func(ctx context.Context, tier func() int) error
 
-// pipelineTask is one book's one phase - taskqueue.Task's minimal
-// implementation for poolPipeline, deliberately much thinner than this
-// package's own real per-item task type: a phase carries no
-// paragraph/voice/LLM-call state of its own, just enough identity
-// (bookID, phase) for pipelineResolver's dependency lookup and
-// CancelPipeline/IsPipelineRunning's own lookups, plus the actual work
-// (run) and its own dispatch context (cancel, set once popped - mirrors
-// task.cancel's own doc comment: nil while still queued, since a queued
-// phase has no context of its own yet to cancel).
+// pipelineTask is one poolPipeline task: either one of a book's
+// preprocessing phases (group == nil - see the pipelinePhase* constants), or
+// a bulk group (see BulkGroup). Carries no paragraph/voice/LLM-call state of
+// its own, just enough identity for pipelineResolver's dependency lookup and
+// CancelPipeline/IsPipelineRunning, plus the actual work (run) and its own
+// dispatch context (cancel, set once popped - nil while still queued, since
+// a queued task has no context of its own yet to cancel).
 type pipelineTask struct {
 	bookID string
-	kind   pipelineTaskKind
-	phase  int // one of the pipelinePhase* constants above - only meaningful when kind == pipelineTaskPreprocessPhase
-	// chapterIdx/chapterID identify which chapter this task covers - only
-	// meaningful when kind == pipelineTaskGenerateChapter (every other
-	// kind covers the whole book, so both are left at their zero value).
-	// chapterID feeds toPipelineQueueTask's own QueueTask.ChapterID, so
-	// the Jobs dashboard resolves this chapter's real stored title
-	// (buildJobsSnapshot's own resolveChapter) instead of guessing one
-	// from chapterIdx alone - a book's own chapter titles aren't
-	// guaranteed to be "Chapter <idx+1>" (already false for this app's
-	// own "Information" front-matter chapter at idx 0, and for any book
-	// using its own Arc/Part naming), so an earlier version's
-	// fmt.Sprintf("Chapter %d", chapterIdx+1) fallback could and did show
-	// a wrong title.
-	chapterIdx int
-	chapterID  string
-	// speakerKey/speakerName identify which speaker an Auto Split run
-	// covers - only meaningful when kind == pipelineTaskAutoSplit.
-	// speakerKey (a character's own ID, or the "unknown" sentinel - see
-	// EnqueueReattribution) namespaces Key() so two different speakers'
-	// runs on the same book stay independent; speakerName is the Jobs
-	// dashboard's own Label, the same name each child
-	// KindSpeakerReattribution row already carries.
-	speakerKey  string
-	speakerName string
-	tier        int
-	run         PipelinePhaseFunc
-	cancel      context.CancelFunc
+	phase  int        // one of the pipelinePhase* constants - only meaningful when group == nil
+	group  *BulkGroup // nil for a preprocessing phase
+	tier   int
+	run    PipelinePhaseFunc
+	cancel context.CancelFunc
 }
 
 // pipelineOutcome is a dispatched pipelineTask's real result, delivered
@@ -290,78 +234,38 @@ func (m *Manager) currentPipelineTier(key string) int {
 }
 
 // toPipelineQueueTask reports t as a QueueTask - the Jobs dashboard's own
-// row shape, shared with every ordinary per-item task (see toQueueTask) so
-// Manager.Snapshot can report both kinds of task through one list without
-// httpapi needing two separate DTOs. A phase has no chapter/paragraph/
-// preset/instruct/attempt of its own (all left at their zero value) - just
-// enough to identify and cancel it (ID, Kind, BookID, Tier); Label is set
-// to a fixed, human-readable "Whole book" rather than left "" (unlike an
-// ordinary task, where "" means "this kind already has a chapter/
-// paragraph to show" - a phase has neither, so leaving Label empty would
-// make the dashboard's own chapter/target column fall back to "Chapter 1"
-// for every phase, which is actively misleading: a phase covers every
-// chapter/character in the book, not chapter index 0).
+// row shape, shared with every ordinary per-item task (see toQueueTask). A
+// preprocessing phase covers the whole book, so its Label is the fixed
+// "Whole book" rather than "" (which would make the dashboard's chapter
+// column fall back to "Chapter 1"); a bulk group reports its own Kind/Label/
+// chapter (see BulkGroup).
 func toPipelineQueueTask(t *pipelineTask, tier int) QueueTask {
-	kind := pipelineKindNames[t.phase]
-	label := "Whole book"
-	chapterIdx := 0
-	chapterID := ""
-	switch t.kind {
-	case pipelineTaskGenerateChapter:
-		// Left "" (not a synthesized "Chapter <idx+1>" guess - an earlier
-		// version did that, and it could and did show a wrong title: a
-		// book's own chapter titles aren't guaranteed to line up with
-		// chapterIdx+1, e.g. this app's own "Information" front-matter
-		// chapter at idx 0, or a book using its own Arc/Part naming) so
-		// ChapterTitle resolves this chapter's real stored title instead,
-		// the same as every other chapter-scoped kind (speech_direction,
-		// music_scoring, ...) already leaves Label empty for - see
-		// queueTaskDTO.Label's own doc comment.
-		kind = "pipeline_generate_chapter"
-		label = ""
-		chapterIdx = t.chapterIdx
-		chapterID = t.chapterID
-	case pipelineTaskGenerateBook:
-		kind = "pipeline_generate_book"
-	case pipelineTaskGenerateRemaining:
-		kind = "pipeline_generate_remaining"
-		label = "Remaining"
-	case pipelineTaskAutoSplit:
-		kind = "pipeline_auto_split"
-		label = t.speakerName
+	qt := QueueTask{
+		ID:     t.Key(),
+		Kind:   pipelineKindNames[t.phase],
+		Label:  "Whole book",
+		BookID: t.bookID,
+		Tier:   tier,
 	}
-	return QueueTask{
-		ID:         t.Key(),
-		Kind:       kind,
-		Label:      label,
-		BookID:     t.bookID,
-		ChapterID:  chapterID,
-		ChapterIdx: chapterIdx,
-		Tier:       tier,
+	if g := t.group; g != nil {
+		qt.Kind = g.Kind
+		qt.Label = g.Label
+		qt.ChapterID = g.ChapterID
+		qt.ChapterIdx = g.ChapterIdx
 	}
+	return qt
 }
 
-// Key namespaces a generate meta-task by kind (and, for
-// pipelineTaskGenerateChapter, by chapterIdx too, since two different
-// chapters of the same book must be independently cancelable/concurrent)
-// so it can never collide with a same-book preprocessing phase's own
-// pipelineKey, nor with another generate kind's - see
-// taskqueue.Queue.Push's own dedup-by-Key doc comment for why this is
-// also what makes a duplicate "generate this again" call while one's
-// already queued/in flight a harmless no-op.
+// Key namespaces a bulk group by its own BulkGroup.Key so it can never
+// collide with a same-book preprocessing phase's pipelineKey - see
+// taskqueue.Queue.Push's own dedup-by-Key doc comment for why this is also
+// what makes a duplicate click while one's already queued/in flight a
+// harmless no-op.
 func (t *pipelineTask) Key() string {
-	switch t.kind {
-	case pipelineTaskGenerateChapter:
-		return fmt.Sprintf("pipeline:%s:generate_chapter:%d", t.bookID, t.chapterIdx)
-	case pipelineTaskGenerateBook:
-		return "pipeline:" + t.bookID + ":generate_book"
-	case pipelineTaskGenerateRemaining:
-		return "pipeline:" + t.bookID + ":generate_remaining"
-	case pipelineTaskAutoSplit:
-		return "pipeline:" + t.bookID + ":auto_split:" + t.speakerKey
-	default:
-		return pipelineKey(t.bookID, t.phase)
+	if t.group != nil {
+		return "pipeline:" + t.bookID + ":" + t.group.Key
 	}
+	return pipelineKey(t.bookID, t.phase)
 }
 func (t *pipelineTask) Pool() taskqueue.PoolKey { return poolPipeline }
 
@@ -402,10 +306,9 @@ func (t *pipelineTask) Promote(newTier int) {
 // becomes eligible.
 func pipelineResolver(lq *taskqueue.LockedQueue, tk taskqueue.Task) []taskqueue.Task {
 	t := tk.(*pipelineTask)
-	// A generate meta-task (any kind other than pipelineTaskPreprocessPhase)
-	// has no dependency at all, the same as pipelinePhaseDirection below -
-	// it doesn't participate in book-preprocessing's own phase ordering.
-	if t.kind != pipelineTaskPreprocessPhase {
+	// A bulk group has no dependency at all - it doesn't participate in
+	// book-preprocessing's own phase ordering.
+	if t.group != nil {
 		return nil
 	}
 	var deps []taskqueue.Task
@@ -484,15 +387,13 @@ func (m *Manager) IsPipelineRunning(bookID string) bool {
 }
 
 func (m *Manager) isPipelineRunningLocked(bookID string) bool {
-	// Deliberately scoped to pipelineTaskPreprocessPhase only: a generate
-	// meta-task (EnqueueChapter/EnqueueBookGenerate/EnqueueRemaining)
+	// Deliberately scoped to preprocessing phases only: a bulk group
 	// sharing this same queue must never trip bookSummaryDTO.Preprocessing
 	// - "generating audio" and "book-preprocessing run in progress" are
-	// different concepts a caller needs to tell apart (see
-	// pipelineTaskKind's own doc comment).
+	// different concepts a caller needs to tell apart.
 	_, ok := m.pipelineQueue.Find(func(c taskqueue.Task) bool {
 		t := c.(*pipelineTask)
-		return t.bookID == bookID && t.kind == pipelineTaskPreprocessPhase
+		return t.bookID == bookID && t.group == nil
 	})
 	return ok
 }
@@ -583,17 +484,95 @@ func (m *Manager) cancelAllPipelineTasks() int {
 	return len(drained) + len(inFlightCancels)
 }
 
-// pushGenerateTask is the shared push+wake+notify shape every
-// EnqueueChapter/EnqueueBookGenerate/EnqueueRemaining call below reduces
-// to - unlike EnqueuePipeline, a generate meta-task needs no pipelineMu-
-// guarded check-then-push atomicity (there's no multi-task "all four
-// phases at once" invariant to protect here, just one single task), so a
-// plain Push suffices: taskqueue.Queue.Push already dedupes by Key() (see
-// its own doc comment), which is exactly the idempotent "already
-// generating this? then this call is a harmless no-op" behavior these
-// three want - same as before any of them were pipeline tasks.
-func (m *Manager) pushGenerateTask(t *pipelineTask) {
-	m.pipelineQueue.Push(t)
+// BulkGroup identifies one bulk group - a single cancelable, promotable
+// Jobs-dashboard row wrapping every per-item task one whole-book (or
+// whole-chapter) action fans out into, so a reader can see, cancel, or
+// promote the whole action at once instead of hunting down one row per
+// chapter/character. Every such action shares this one shape: the library
+// page's "Generate audio" (EnqueueBookGenerate/EnqueueRemaining), the
+// reader's per-chapter generate (EnqueueChapter), Auto Split, and the
+// Speakers page's bulk buttons (httpapi.handleBulkAction).
+//
+// A bulk group dispatches through poolPipeline like a preprocessing phase,
+// but never joins the phase dependency graph (see pipelineResolver) and never
+// counts toward IsPipelineRunning (see isPipelineRunningLocked). Its run is a
+// PipelinePhaseFunc: fan out the real work, block until it finishes, and
+// honor ctx - canceling the row stops any item it hasn't reached yet, while
+// an already-dispatched child keeps running, the same guarantee
+// CancelPipeline gives a canceled phase.
+type BulkGroup struct {
+	// Kind is the row's QueueTask.Kind - "pipeline_"-prefixed by convention
+	// (see pipelineKindNames), and what clients key display/"is this still
+	// running" checks on.
+	Kind Kind
+	// Key namespaces the task within its book (Key() prepends
+	// "pipeline:<bookID>:"); a second EnqueueBulk with the same Key while
+	// the first is still queued/in flight is dropped.
+	Key string
+	// Label is the row's QueueTask.Label. Leave it "" for a chapter-scoped
+	// group so the dashboard resolves the chapter's real stored title from
+	// ChapterID instead (see queueTaskDTO.Label).
+	Label      string
+	ChapterID  string
+	ChapterIdx int
+	Tier       int
+	// Children picks out the m.queue tasks this group's run dispatches, so
+	// promoting the group's row (Manager.PromoteTier) promotes them too -
+	// see cascadePromotion. nil means promotion doesn't cascade.
+	Children *ChildFilter
+}
+
+// ChildFilter matches a bulk group's (or preprocessing phase's) own child
+// tasks in m.queue, always within the group's own book. Every non-zero
+// field must match.
+type ChildFilter struct {
+	Kinds     []Kind // empty matches any kind
+	ChapterID string
+	Label     string // e.g. the speaker name an Auto Split's children carry
+}
+
+func (f ChildFilter) matches(t *task) bool {
+	return (len(f.Kinds) == 0 || slices.Contains(f.Kinds, t.kind)) &&
+		(f.ChapterID == "" || t.chapterID == f.ChapterID) &&
+		(f.Label == "" || t.label == f.Label)
+}
+
+// phaseChildKinds is each preprocessing phase's own child task kind, for
+// cascadePromotion. Characterization/voice provisioning are deliberately
+// absent: RunCharacterization/RunVoiceProvision always dispatch at
+// TierUrgent already, so a further promotion could never apply.
+var phaseChildKinds = map[int]Kind{
+	pipelinePhaseAttribution:   KindSpeakerAttribution,
+	pipelinePhaseDirection:     KindSpeechDirection,
+	pipelinePhaseMusic:         KindMusicScoring,
+	pipelinePhaseScareQuote:    KindScareQuote,
+	pipelinePhaseDescription:   KindDescription,
+	pipelinePhasePronunciation: KindPronunciation,
+}
+
+// children reports which m.queue tasks a promotion of t cascades to, or nil.
+func (t *pipelineTask) children() *ChildFilter {
+	if t.group != nil {
+		return t.group.Children
+	}
+	if kind, ok := phaseChildKinds[t.phase]; ok {
+		return &ChildFilter{Kinds: []Kind{kind}}
+	}
+	return nil
+}
+
+// EnqueueBulk queues run as one bulk group for bookID (see BulkGroup).
+// Needs no pipelineMu-guarded check-then-push the way EnqueuePipeline does -
+// it's one single task, and taskqueue.Queue.Push already dedupes by Key(),
+// which is exactly the idempotent "already running this? then this call is
+// a harmless no-op" behavior a repeated click wants.
+func (m *Manager) EnqueueBulk(bookID string, g BulkGroup, run PipelinePhaseFunc) {
+	m.pipelineQueue.Push(&pipelineTask{
+		bookID: bookID,
+		group:  &g,
+		tier:   g.Tier,
+		run:    run,
+	})
 	select {
 	case m.pipelineWake <- struct{}{}:
 	default:
@@ -602,54 +581,41 @@ func (m *Manager) pushGenerateTask(t *pipelineTask) {
 }
 
 // EnqueueChapter enqueues background TTS generation for every not-yet-
-// generated paragraph in one chapter, as a cancelable poolPipeline task
-// (pipelineTaskGenerateChapter) - the reader/mobile client's own "Generate
-// chapter audio" action, and the per-chapter building block
-// EnqueueBookGenerate/EnqueueRemaining below fan out into. Moved off a
-// bare fire-and-forget goroutine specifically so it shows up as its own
-// row in the Jobs dashboard (Kind "pipeline_generate_chapter"), cancelable
-// there the same way a preprocessing phase already is - though for a
-// single chapter, whose own listing+pushing is normally fast, that mostly
-// buys dashboard visibility and consistency with the other two rather
-// than a long window to actually cancel it in. Idempotent per chapter, as
-// before: a second call while the first's own task is still queued/in
-// flight for this exact chapter is silently dropped (see
-// pushGenerateTask's own doc comment).
+// generated paragraph in one chapter, as a bulk group (Kind
+// "pipeline_generate_chapter") that stays in flight until that audio
+// finishes (see waitForChapterAudio) - the reader/mobile client's own
+// "Generate chapter audio" action. Idempotent per chapter: a second call
+// while the first is still queued/in flight is dropped.
 func (m *Manager) EnqueueChapter(bookID, chapterID string, chapterIdx int) {
-	m.pushGenerateTask(&pipelineTask{
-		bookID:     bookID,
-		kind:       pipelineTaskGenerateChapter,
-		chapterIdx: chapterIdx,
-		chapterID:  chapterID,
-		tier:       TierBackground,
-		run: func(ctx context.Context, _ func() int) error {
-			m.enqueueChapter(ctx, bookID, chapterID, chapterIdx, 0)
-			m.waitForChapterAudio(ctx, map[string]bool{chapterID: true})
-			return nil
-		},
+	m.EnqueueBulk(bookID, BulkGroup{
+		Kind:       "pipeline_generate_chapter",
+		Key:        fmt.Sprintf("generate_chapter:%d", chapterIdx),
+		ChapterID:  chapterID,
+		ChapterIdx: chapterIdx,
+		Tier:       TierBackground,
+		// Anything chapter-scoped in m.queue under this chapterID is part of
+		// "generate this chapter" work.
+		Children: &ChildFilter{ChapterID: chapterID},
+	}, func(ctx context.Context, _ func() int) error {
+		m.enqueueChapter(ctx, bookID, chapterID, chapterIdx, 0)
+		m.waitForChapterAudio(ctx, map[string]bool{chapterID: true})
+		return nil
 	})
 }
 
-// EnqueueBookGenerate enqueues background TTS generation for every
-// chapter in a book at once, as a single cancelable poolPipeline task
-// (pipelineTaskGenerateBook) - the library page's "Generate audio" ->
-// "All" option (see EnqueueRemaining below for the "Remaining" sibling,
-// and handleGenerateBook, which used to loop EnqueueChapter over every
-// chapter itself before this existed). Walks every chapter in bookID in
-// order, checking ctx between each one so canceling this task's own
-// dashboard row stops it from starting any chapter it hasn't reached yet
-// - whatever it already pushed into poolGeneration for earlier chapters
-// keeps running independently and isn't itself touched, the same
-// guarantee CancelPipeline already gives a canceled preprocessing phase.
+// EnqueueBookGenerate enqueues background TTS generation for every chapter
+// in a book at once, as one bulk group (Kind "pipeline_generate_book") - the
+// library page's "Generate audio" -> "All" and the Speakers page's bulk
+// generate. Walks chapters in order, checking ctx between each.
 func (m *Manager) EnqueueBookGenerate(bookID string) {
-	m.pushGenerateTask(&pipelineTask{
-		bookID: bookID,
-		kind:   pipelineTaskGenerateBook,
-		tier:   TierBackground,
-		run: func(ctx context.Context, _ func() int) error {
-			m.enqueueBookGenerate(ctx, bookID)
-			return nil
-		},
+	m.EnqueueBulk(bookID, BulkGroup{
+		Kind:  "pipeline_generate_book",
+		Key:   "generate_book",
+		Label: "Whole book",
+		Tier:  TierBackground,
+	}, func(ctx context.Context, _ func() int) error {
+		m.enqueueBookGenerate(ctx, bookID)
+		return nil
 	})
 }
 
@@ -674,28 +640,22 @@ func (m *Manager) enqueueBookGenerate(ctx context.Context, bookID string) {
 
 // EnqueueRemaining enqueues background TTS generation for every paragraph
 // in a book from its current stored reading position (store.Book.
-// PosChapterIdx/PosParagraphIdx) through the end, as a single cancelable
-// poolPipeline task (pipelineTaskGenerateRemaining) - the library page's
-// "Generate audio" -> "Remaining" option alongside EnqueueBookGenerate's
-// "All". Unlike EnqueueLookahead, there's no LookaheadParagraphCount cap
-// (it walks every chapter to the end, not just a short runway) and every
-// paragraph pushes at TierBackground rather than TierUrgent/TierLookahead
-// - this is bulk background work a reader kicked off deliberately, not
-// "the reader is waiting on this specific paragraph right now", the same
-// tier EnqueueBookGenerate's own "All" uses. Paragraphs before the stored
-// position are left alone, same reasoning as EnqueueLookahead's own doc
-// comment: no point generating audio for ones already played past.
-// Checks ctx between chapters, same cancellation shape as
-// EnqueueBookGenerate above.
+// PosChapterIdx/PosParagraphIdx) through the end, as one bulk group (Kind
+// "pipeline_generate_remaining") - the library page's "Generate audio" ->
+// "Remaining". Unlike EnqueueLookahead there's no paragraph cap, and every
+// paragraph pushes at TierBackground: this is bulk work a reader kicked off
+// deliberately, not something they're waiting on right now. Paragraphs
+// before the stored position are left alone - no point generating audio for
+// ones already played past.
 func (m *Manager) EnqueueRemaining(bookID string) {
-	m.pushGenerateTask(&pipelineTask{
-		bookID: bookID,
-		kind:   pipelineTaskGenerateRemaining,
-		tier:   TierBackground,
-		run: func(ctx context.Context, _ func() int) error {
-			m.enqueueRemaining(ctx, bookID)
-			return nil
-		},
+	m.EnqueueBulk(bookID, BulkGroup{
+		Kind:  "pipeline_generate_remaining",
+		Key:   "generate_remaining",
+		Label: "Remaining",
+		Tier:  TierBackground,
+	}, func(ctx context.Context, _ func() int) error {
+		m.enqueueRemaining(ctx, bookID)
+		return nil
 	})
 }
 
@@ -759,12 +719,19 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 // it, not just stop watching. Already-dispatched paragraphs finish on
 // their own, the same in-flight caveat every other cancel here has.
 func (m *Manager) waitForChapterAudio(ctx context.Context, chapterIDs map[string]bool) {
+	m.waitForChapterTasks(ctx, chapterIDs, KindVoiceClone, KindVoiceDesign)
+}
+
+// waitForChapterTasks is waitForChapterAudio generalized over which task
+// kinds it waits on (and, on cancel, removes) - also used by
+// EnqueueBookMusicGeneration for KindMusicGeneration.
+func (m *Manager) waitForChapterTasks(ctx context.Context, chapterIDs map[string]bool, kinds ...Kind) {
 	if len(chapterIDs) == 0 {
 		return
 	}
 	isChapterAudio := func(c taskqueue.Task) bool {
 		t, ok := c.(*task)
-		return ok && (t.kind == KindVoiceClone || t.kind == KindVoiceDesign) && chapterIDs[t.chapterID]
+		return ok && slices.Contains(kinds, t.kind) && chapterIDs[t.chapterID]
 	}
 	changes := m.SubscribeChanges()
 	defer m.UnsubscribeChanges(changes)
@@ -799,31 +766,40 @@ func (m *Manager) waitForChapterAudio(ctx context.Context, chapterIDs map[string
 	}
 }
 
-// EnqueueAutoSplit queues one "Auto Split" click (httpapi.
-// handleReattributeSpeaker) as a single cancelable poolPipeline task
-// (pipelineTaskAutoSplit, Kind "pipeline_auto_split") wrapping every
-// per-chapter KindSpeakerReattribution task that click fans out into -
-// the same "one Jobs-dashboard row for the whole action" grouping
-// EnqueueBookGenerate already gives "Generate audio" -> "All", so a
-// reader can see (and cancel, or promote) a whole speaker's split at
-// once instead of hunting down one row per chapter. run is the caller's
-// own fan-out (RunReattribution per chapter, blocking until each
-// finishes - see PipelinePhaseFunc), since this package has no Store/
-// Speaker access to build the per-chapter work itself. Canceling this row
-// cancels run's ctx, which RunReattribution's own blocked waits and any
-// not-yet-dispatched chapters observe; a chapter's already-dispatched
-// child task keeps running, the same guarantee CancelPipeline gives a
-// preprocessing phase. Idempotent per (bookID, speakerKey): a second click
-// while the first run is still queued/in flight is a harmless no-op (see
-// pushGenerateTask's own doc comment).
-func (m *Manager) EnqueueAutoSplit(bookID, speakerKey, speakerName string, run PipelinePhaseFunc) {
-	m.pushGenerateTask(&pipelineTask{
-		bookID:      bookID,
-		kind:        pipelineTaskAutoSplit,
-		speakerKey:  speakerKey,
-		speakerName: speakerName,
-		tier:        defaultReattributionTier,
-		run:         run,
+// EnqueueBookMusicGeneration queues the whole-chapter music run
+// (GenerateChapterMusic) for every chapter of bookID that's scored, fully
+// narrated, and missing any region's music, as one bulk group (Kind
+// "pipeline_bulk_music_generation") that stays in flight until those
+// KindMusicGeneration tasks finish - the Speakers page's "Generate missing
+// music". Chapters not yet eligible are skipped silently.
+func (m *Manager) EnqueueBookMusicGeneration(bookID string) {
+	m.EnqueueBulk(bookID, BulkGroup{
+		Kind:     "pipeline_bulk_music_generation",
+		Key:      "bulk:music_generation",
+		Label:    "Missing music",
+		Tier:     TierBackground,
+		Children: &ChildFilter{Kinds: []Kind{KindMusicGeneration}},
+	}, func(ctx context.Context, _ func() int) error {
+		chapters, err := m.store.ListChapterSummaries(bookID, "", nil)
+		if err != nil {
+			return fmt.Errorf("list chapters: %w", err)
+		}
+		pushed := map[string]bool{}
+		defer func() { m.waitForChapterTasks(ctx, pushed, KindMusicGeneration) }()
+		for _, cs := range chapters {
+			if ctx.Err() != nil {
+				return nil
+			}
+			queued, err := m.GenerateChapterMusic(bookID, cs.Chapter.ID)
+			switch {
+			case errors.Is(err, ErrChapterNotScored), errors.Is(err, ErrChapterNotVoiced):
+			case err != nil:
+				log.Printf("jobs: generate music for book %s chapter %d: %v", bookID, cs.Chapter.Idx, err)
+			case queued > 0:
+				pushed[cs.Chapter.ID] = true
+			}
+		}
+		return nil
 	})
 }
 

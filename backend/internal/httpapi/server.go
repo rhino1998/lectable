@@ -172,6 +172,8 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/music-regions/{id}/audio", s.handleGetMusicRegionAudio)
 	mux.HandleFunc("POST /api/music-regions/{id}/regenerate", s.handleRegenerateMusicRegion)
 	mux.HandleFunc("POST /api/books/{id}/preprocess", s.handlePreprocessBook)
+	mux.HandleFunc("POST /api/books/{id}/bulk/{action}", s.handleBulkAction)
+	mux.HandleFunc("POST /api/books/{id}/reset/{pass}", s.handleResetPass)
 	mux.HandleFunc("DELETE /api/books/{id}/chapters/{idx}/audio", s.handleDeleteChapterAudio)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/reimport", s.handleReimportChapter)
 	mux.HandleFunc("POST /api/books/{id}/lookahead", s.handleLookahead)

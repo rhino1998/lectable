@@ -160,5 +160,14 @@ fun kindLabel(kind: String): String = when (kind) {
     "pipeline_generate_remaining" -> "Generate: Remaining"
     "speaker-reattribute" -> "Auto Split"
     "pipeline_auto_split" -> "Auto Split: All Chapters"
+    "pipeline_bulk_attribution" -> "Bulk: Attribution"
+    "pipeline_bulk_description" -> "Bulk: Description Tagging"
+    "pipeline_bulk_scare_quote" -> "Bulk: Scare Quote Tagging"
+    "pipeline_bulk_direction" -> "Bulk: Emotion Labeling"
+    "pipeline_bulk_pronunciation" -> "Bulk: Pronunciation"
+    "pipeline_bulk_music_scoring" -> "Bulk: Music Scoring"
+    "pipeline_bulk_music_generation" -> "Bulk: Music Generation"
+    "pipeline_bulk_characterization" -> "Bulk: Characterization"
+    "pipeline_bulk_voices" -> "Bulk: Voices"
     else -> kind
 }

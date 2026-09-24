@@ -15,6 +15,7 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
+	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
@@ -536,7 +537,7 @@ type reattributeSpeakerRequest struct {
 // speaker upstream - it re-judges every one of that speaker's own
 // paragraphs in this book (chapter by chapter, one KindSpeakerReattribution
 // task per chapter, all grouped under one pipeline_auto_split task - see
-// jobs.Manager.EnqueueAutoSplit/RunReattribution) and
+// jobs.Manager.EnqueueBulk/RunReattribution) and
 // redistributes them to whichever real character/Narrator/Unknown they
 // actually belong to, using the exact same chapter-wide LLM pass
 // attribution itself already runs (reattributeChapterSpeaker reuses
@@ -656,9 +657,15 @@ func (s *Server) handleReattributeSpeaker(w http.ResponseWriter, r *http.Request
 	// One pipeline_auto_split task wraps every chapter's own
 	// KindSpeakerReattribution task, so the whole click shows up (and can
 	// be canceled/promoted) as a single Jobs-dashboard row - see
-	// jobs.Manager.EnqueueAutoSplit.
+	// jobs.BulkGroup.
 	if len(targets) > 0 {
-		s.Jobs.EnqueueAutoSplit(book.ID, speakerKey, name, func(ctx context.Context, tier func() int) error {
+		s.Jobs.EnqueueBulk(book.ID, jobs.BulkGroup{
+			Kind:     "pipeline_auto_split",
+			Key:      "auto_split:" + speakerKey,
+			Label:    name,
+			Tier:     jobs.TierBackground,
+			Children: &jobs.ChildFilter{Kinds: []jobs.Kind{jobs.KindSpeakerReattribution}, Label: name},
+		}, func(ctx context.Context, tier func() int) error {
 			var wg sync.WaitGroup
 			for _, t := range targets {
 				wg.Add(1)

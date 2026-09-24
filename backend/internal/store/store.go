@@ -605,7 +605,7 @@ func migrateCharactersIsRole(db *sql.DB) error {
 
 // migrateMusicRegionsAmbience is migrateCharactersIsRole's own shape again,
 // applied to music_regions.ambience: regions scored before it existed
-// backfill to '' (music only), exactly what they were generated as.
+// backfill to ” (music only), exactly what they were generated as.
 func migrateMusicRegionsAmbience(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE music_regions ADD COLUMN IF NOT EXISTS ambience TEXT DEFAULT ''`); err != nil {
 		return fmt.Errorf("migrate music_regions.ambience: %w", err)
@@ -3334,6 +3334,128 @@ func (s *Store) SetParagraphSFXReady(id string, durationSeconds float64) error {
 
 func (s *Store) SetParagraphSFXError(id, message string) error {
 	return s.upsertSFXStatus(id, AudioError, message, 0)
+}
+
+// PassReset describes how ResetBookPass clears one chapter pass: Flag is
+// the chapters.passes key, Set is the paragraphs SET clause restoring the
+// pass's own columns to their never-run defaults, Where picks which
+// paragraphs Set applies to, and Affected picks the paragraphs whose
+// already-generated audio was rendered with the old value (and so is stale
+// once it's cleared) - "" when the pass never changes generated audio.
+type PassReset struct {
+	Flag     string
+	Set      string
+	Where    string
+	Affected string
+}
+
+// PassResets are the per-chapter passes ResetBookPass knows how to clear,
+// keyed by the same names httpapi's bulk actions use. Music scoring isn't
+// here - its output lives in music_regions, not paragraphs (see
+// ClearBookMusicRegions).
+var PassResets = map[string]PassReset{
+	// Attribution leaves a scare-quote paragraph's "Narrator" alone - that
+	// comes from scare-quote tagging, not attribution (see
+	// SetParagraphScareQuotes). ""/"Narrator" both narrate in the book's
+	// own voice, so only a real character's lines have stale audio.
+	"attribution": {
+		Flag:     "attribution",
+		Set:      "speaker = ''",
+		Where:    "speaker <> '' AND NOT scare_quote",
+		Affected: "speaker NOT IN ('', 'Narrator') AND NOT scare_quote",
+	},
+	// Descriptions only feed characterization, never generation.
+	"description": {
+		Flag:  "description",
+		Set:   "describes_characters = '[]'",
+		Where: "describes_characters::VARCHAR NOT IN ('[]', 'null')",
+	},
+	"scare_quote": {
+		Flag:     "scareQuote",
+		Set:      "scare_quote = false, speaker = CASE WHEN speaker = 'Narrator' THEN '' ELSE speaker END",
+		Where:    "scare_quote",
+		Affected: "scare_quote",
+	},
+	// Only a real dialogue line's emotion is ever applied (see
+	// Paragraph.EffectiveEmotion).
+	"direction": {
+		Flag:     "direction",
+		Set:      "emotion = ''",
+		Where:    "emotion <> ''",
+		Affected: "emotion <> '' AND is_quote AND NOT scare_quote",
+	},
+	"pronunciation": {
+		Flag:     "pronunciation",
+		Set:      "pronunciation = '[]'",
+		Where:    "pronunciation::VARCHAR NOT IN ('[]', 'null')",
+		Affected: "pronunciation::VARCHAR NOT IN ('[]', 'null')",
+	},
+}
+
+// ResetBookPass clears pass (a PassResets key) across every chapter of
+// bookID in one transaction: its paragraph columns back to defaults and its
+// chapters.passes flag unset, as though it had never run. Returns the
+// paragraphs PassReset.Affected matched beforehand, as chapterID -> idxs,
+// for the caller to invalidate their audio (DeleteParagraphAudioForIdxs) -
+// this package never touches the filesystem itself.
+func (s *Store) ResetBookPass(bookID, pass string) (map[string][]int, error) {
+	pr, ok := PassResets[pass]
+	if !ok {
+		return nil, fmt.Errorf("unknown pass %q", pass)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	affected := map[string][]int{}
+	if pr.Affected != "" {
+		rows, err := tx.Query(`SELECT chapter_id, idx FROM paragraphs
+			WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?) AND (`+pr.Affected+`)`, bookID)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var chapterID string
+			var idx int
+			if err := rows.Scan(&chapterID, &idx); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			affected[chapterID] = append(affected[chapterID], idx)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	if _, err := tx.Exec(`UPDATE paragraphs SET `+pr.Set+`
+		WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?) AND (`+pr.Where+`)`, bookID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, json_object(?, NULL)) WHERE book_id = ?`, pr.Flag, bookID); err != nil {
+		return nil, err
+	}
+	return affected, tx.Commit()
+}
+
+// ClearBookMusicRegions is ClearMusicRegions for every chapter of bookID at
+// once: deletes every music region and unsets each chapter's passes.music.
+// The caller removes the regions' audio files (audiopath.MusicDir).
+func (s *Store) ClearBookMusicRegions(bookID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM music_regions WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, '{"music": null}') WHERE book_id = ?`, bookID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // DeleteBookAudio drops every paragraph_audio row for bookID, across every

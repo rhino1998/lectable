@@ -391,8 +391,8 @@ func TestPromoteTierUpgradesQueuedPipelinePhase(t *testing.T) {
 	}
 }
 
-// TestAutoSplitWrapsAsOneCancelablePipelineRow checks EnqueueAutoSplit's
-// own contract: one "pipeline_auto_split" row labeled with the speaker's
+// TestAutoSplitWrapsAsOneCancelablePipelineRow checks EnqueueBulk's own
+// contract, using Auto Split's group: one "pipeline_auto_split" row labeled with the speaker's
 // name, whose run sees a promotion through its live tier(), which never
 // counts toward IsPipelineRunning (not a preprocessing run), and which the
 // dashboard's per-row Cancel reaches by its own ID.
@@ -404,7 +404,7 @@ func TestAutoSplitWrapsAsOneCancelablePipelineRow(t *testing.T) {
 
 	started := make(chan func() int, 1)
 	canceled := make(chan struct{})
-	mgr.EnqueueAutoSplit("book-1", "char-1", "Bogus", func(ctx context.Context, tier func() int) error {
+	mgr.EnqueueBulk("book-1", BulkGroup{Kind: "pipeline_auto_split", Key: "auto_split:char-1", Label: "Bogus", Tier: TierBackground}, func(ctx context.Context, tier func() int) error {
 		started <- tier
 		<-ctx.Done()
 		close(canceled)
@@ -446,5 +446,45 @@ func TestAutoSplitWrapsAsOneCancelablePipelineRow(t *testing.T) {
 	case <-canceled:
 	case <-time.After(time.Second):
 		t.Fatalf("expected Cancel to cancel the Auto Split run's ctx")
+	}
+}
+
+// TestPromoteTierCascadesToBulkGroupChildren checks that promoting a bulk
+// group's own row also promotes exactly the m.queue tasks its
+// BulkGroup.Children filter matches - same book, listed kind - and nothing
+// else.
+func TestPromoteTierCascadesToBulkGroupChildren(t *testing.T) {
+	mgr := newTestManager()
+	mgr.EnqueueBulk("book-1", BulkGroup{
+		Kind:     "pipeline_bulk_attribution",
+		Key:      "bulk:attribution:all",
+		Tier:     TierBackground,
+		Children: &ChildFilter{Kinds: []Kind{KindSpeakerAttribution}},
+	}, func(context.Context, func() int) error { return nil })
+
+	child := &task{kind: KindSpeakerAttribution, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", llmKey: "ch-1"}
+	otherKind := &task{kind: KindSpeechDirection, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", llmKey: "ch-1"}
+	otherBook := &task{kind: KindSpeakerAttribution, tier: TierBackground, bookID: "book-2", chapterID: "ch-2", llmKey: "ch-2"}
+	setQueue(mgr, child, otherKind, otherBook)
+
+	if err := mgr.PromoteTier("pipeline:book-1:bulk:attribution:all", TierUrgent); err != nil {
+		t.Fatalf("PromoteTier: %v", err)
+	}
+	tiers := map[string]int{}
+	_, queued := mgr.Snapshot()
+	for _, qt := range queued {
+		tiers[qt.ID] = qt.Tier
+	}
+	if got := tiers["pipeline:book-1:bulk:attribution:all"]; got != TierUrgent {
+		t.Fatalf("expected the group row itself promoted, got tier %d", got)
+	}
+	if got := tiers[child.Key()]; got != TierUrgent {
+		t.Fatalf("expected matching child promoted, got tier %d", got)
+	}
+	if got := tiers[otherKind.Key()]; got != TierBackground {
+		t.Fatalf("expected other-kind task left alone, got tier %d", got)
+	}
+	if got := tiers[otherBook.Key()]; got != TierBackground {
+		t.Fatalf("expected other-book task left alone, got tier %d", got)
 	}
 }
