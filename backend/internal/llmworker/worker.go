@@ -128,7 +128,7 @@ type Config struct {
 	// Worker.UnloadCloneModels, so the LLM's own load never has to
 	// momentarily coexist in VRAM with whatever clone models happen to be
 	// resident, the same "unload before loading" reasoning as audioworker's
-	// own evictBeforeLoadLocked/Design - this box's GPU has no headroom to
+	// own evictOtherClonesLocked/Design - this box's GPU has no headroom to
 	// spare for both a clone model and the LLM at once (see backend/
 	// CLAUDE.md). UnloadCloneModels, not UnloadAll, deliberately leaves the
 	// shared aligner resident - see that method's own doc comment. Optional

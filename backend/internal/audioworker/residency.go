@@ -25,11 +25,12 @@ import "sync"
 // active group - otherwise jobs' steady stream of concurrent Generate
 // calls would starve a single music/design request indefinitely.
 //
-// Kinds (see the gateKind* helpers): every clone model shares one kind -
-// co-residency among clone models is governed separately by
-// MaxExtraClones' LRU cap, as before - while each design engine and each
-// aux engine is its own kind, matching evictOtherDesignEngines/
-// unloadOtherAux's "one resident at a time" rule. The aligner is small
+// Kinds (see the gateKind* helpers): each clone model, each design engine
+// and each aux engine is its own kind, matching evictOtherClonesLocked/
+// evictOtherDesignEngines/unloadOtherAux's "one resident at a time" rule.
+// Clone models used to share one kind with an LRU cap allowing a second
+// resident beside the default, but an emotion-variant render (Breeze)
+// mid-chapter then loaded right beside the Higgs pool and maxed VRAM. The aligner is small
 // and deliberately persistent (see UnloadCloneModels) so it isn't gated.
 type residencyGate struct {
 	mu      sync.Mutex
@@ -43,10 +44,9 @@ type gateWaiter struct {
 	ready chan struct{}
 }
 
-const gateKindClone = "clone"
-
-func gateKindDesign(engineID string) string { return "design:" + engineID }
-func gateKindAux(key string) string         { return "aux:" + key }
+func gateKindClone(cloneModel string) string { return "clone:" + cloneModel }
+func gateKindDesign(engineID string) string  { return "design:" + engineID }
+func gateKindAux(key string) string          { return "aux:" + key }
 
 // acquire blocks until kind may hold the gate.
 func (g *residencyGate) acquire(kind string) {

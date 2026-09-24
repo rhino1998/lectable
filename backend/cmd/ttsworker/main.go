@@ -75,11 +75,9 @@ func main() {
 	idleUnloadAfter := envDurationOr("MODEL_IDLE_UNLOAD_AFTER", 2*time.Minute)
 
 	defaultCloneModel := envOr("QWEN_TTS_DEFAULT_CLONE_MODEL", "audiocpp-higgs-4b")
-	maxExtraClones := 1
 
 	audioWorker, err := audioworker.New(audioworker.Config{
 		DefaultCloneModel: defaultCloneModel,
-		MaxExtraClones:    maxExtraClones,
 		// Matches internal/jobs' own maxInFlight (4, poolGeneration's
 		// concurrent-Generate-call cap) by default - see audioworker.
 		// Config.ClonePoolSize's own doc comment for why a smaller pool

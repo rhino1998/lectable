@@ -45,7 +45,7 @@ type Config struct {
 	// loud "worker failed to start" instead of a silent dynamic-linker
 	// mismatch.
 	LibDir string
-	// DefaultCloneModel/MaxExtraClones are passed to the worker via env.
+	// DefaultCloneModel is passed to the worker via env.
 	DefaultCloneModel string
 	// RSSLimitBytes is the resident-set-size threshold that triggers a
 	// proactive watchdog restart. Real OOM kills of the equivalent Python

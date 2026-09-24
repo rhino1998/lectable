@@ -9,7 +9,6 @@
 package audioworker
 
 import (
-	"container/list"
 	"fmt"
 	"log"
 	"strings"
@@ -69,7 +68,7 @@ type loadedClone struct {
 	// another goroutine is using it - Session.Run(), or the window between
 	// getCloneModel returning and checkoutSession's own newCloneSessionLocked
 	// call - is a use-after-free, not just a bookkeeping error. Both
-	// evictToCapLocked and UnloadCloneModels skip any loadedClone with
+	// evictOtherClonesLocked and UnloadCloneModels skip any loadedClone with
 	// inFlight > 0 rather than closing it out from under an active caller.
 	inFlight int
 }
@@ -167,11 +166,11 @@ func (e *auxEngine) close() {
 // Config controls how a Worker's clone models are loaded/evicted.
 type Config struct {
 	// DefaultCloneModel is the clone_model every request without an
-	// explicit one falls back to - eagerly loaded by New, and never
-	// evicted by MaxExtraClones (though it is still freed, like everything
-	// else, by an idle-triggered UnloadAll - see IdleUnloadAfter).
+	// explicit one falls back to - eagerly loaded by New. Evicted like any
+	// other clone_model when a different one loads (only one is ever
+	// resident - see getCloneModel), and freed by an idle-triggered
+	// UnloadAll (see IdleUnloadAfter).
 	DefaultCloneModel string
-	MaxExtraClones    int
 	// ClonePoolSize is the most independent audiocpp Session handles each
 	// loaded clone_model will ever create, lazily, as concurrent Generate
 	// calls for it actually need them - see loadedClone's own doc comment
@@ -283,12 +282,9 @@ type Worker struct {
 	// so a different kind's eviction never has to skip an in-flight model.
 	residency residencyGate
 
-	cloneMu           sync.Mutex // guards loaded/lru/lruElem below
+	cloneMu           sync.Mutex // guards loaded below
 	loaded            map[string]*loadedClone
-	lru               *list.List // front = most-recently-used
-	lruElem           map[string]*list.Element
 	defaultCloneModel string
-	maxExtraClones    int
 
 	// designMu guards loadedDesigns below - deliberately its own mutex,
 	// never held nested with cloneMu (see getCloneModel/getDesignModel,
@@ -323,8 +319,7 @@ type Worker struct {
 }
 
 // New creates a Worker and eagerly loads cfg.DefaultCloneModel (the one
-// every request without an explicit clone_model falls back to, and the one
-// never evicted by cfg.MaxExtraClones).
+// every request without an explicit clone_model falls back to).
 func New(cfg Config) (*Worker, error) {
 	registry, err := audiocpp.NewRegistry("")
 	if err != nil {
@@ -334,10 +329,7 @@ func New(cfg Config) (*Worker, error) {
 		registry:          registry,
 		cfg:               cfg,
 		loaded:            make(map[string]*loadedClone),
-		lru:               list.New(),
-		lruElem:           make(map[string]*list.Element),
 		defaultCloneModel: cfg.DefaultCloneModel,
-		maxExtraClones:    cfg.MaxExtraClones,
 		loadedDesigns:     make(map[string]*loadedDesign),
 		auxEngines:        registerAuxEngines(),
 	}
@@ -403,7 +395,7 @@ func (w *Worker) Close() {
 }
 
 // UnloadAll closes every currently-loaded clone model (including
-// DefaultCloneModel - unlike evictExcessLocked, which never touches it),
+// DefaultCloneModel),
 // every currently-loaded design engine, and the aligner model/session, if
 // loaded, freeing their VRAM/RAM immediately. Each reloads lazily on its
 // next actual use, same as any other cache miss (getCloneModel/
@@ -445,7 +437,7 @@ func (w *Worker) UnloadCloneModels() {
 	for id, lc := range w.loaded {
 		if lc.inFlight > 0 {
 			// A Generate call is actively using this clone_model right
-			// now - same use-after-free hazard evictToCapLocked guards
+			// now - same use-after-free hazard evictOtherClonesLocked guards
 			// against (see loadedClone.inFlight's own doc comment), reachable
 			// here too since Design (this method's own caller) and
 			// Generate both dispatch through internal/jobs' shared
@@ -455,10 +447,6 @@ func (w *Worker) UnloadCloneModels() {
 		}
 		lc.close()
 		delete(w.loaded, id)
-		if el, ok := w.lruElem[id]; ok {
-			w.lru.Remove(el)
-			delete(w.lruElem, id)
-		}
 	}
 	w.cloneMu.Unlock()
 }
@@ -506,11 +494,14 @@ func (w *Worker) loadModel(modelPath string, config audiocpp.ModelConfig, option
 	return w.registry.LoadModel(modelPath, config, options)
 }
 
-// getCloneModel returns cloneModel's loaded instance, loading (and
-// registering in the LRU) it on first use. Mirrors tts-service's
+// getCloneModel returns cloneModel's loaded instance, loading it on first
+// use. Only one clone_model is ever resident: each is its own residency
+// kind (see gateKindClone), so by the time a different one gets the gate
+// every other clone_model has drained and evictOtherClonesLocked
+// genuinely frees it before this one's weights load. Mirrors tts-service's
 // _get_clone_model.
 func (w *Worker) getCloneModel(cloneModel string) (lc *loadedClone, err error) {
-	w.residency.acquire(gateKindClone)
+	w.residency.acquire(gateKindClone(cloneModel))
 	defer func() {
 		if err != nil {
 			w.residency.release()
@@ -519,7 +510,6 @@ func (w *Worker) getCloneModel(cloneModel string) (lc *loadedClone, err error) {
 
 	w.cloneMu.Lock()
 	if lc, ok := w.loaded[cloneModel]; ok {
-		w.touchLRULocked(cloneModel)
 		lc.inFlight++
 		w.cloneMu.Unlock()
 		return lc, nil
@@ -537,10 +527,10 @@ func (w *Worker) getCloneModel(cloneModel string) (lc *loadedClone, err error) {
 	// every aux engine (ACE-Step/Stable Audio - each its own mutex,
 	// released above and never held nested with cloneMu - see designMu's
 	// own doc comment and getDesignModel/getAux's mirrored step in the
-	// other direction), then over-cap clone models below. Holding the
-	// clone residency gate guarantees none of those design/aux engines is
-	// in flight, so this genuinely frees them rather than skipping busy
-	// ones and loading on top - see residencyGate.
+	// other direction), then every other clone model below. Holding
+	// this clone model's residency gate guarantees none of those is in
+	// flight, so this genuinely frees them rather than skipping busy ones
+	// and loading on top - see residencyGate.
 	w.UnloadDesignModels()
 	w.UnloadAuxEngines()
 
@@ -549,14 +539,11 @@ func (w *Worker) getCloneModel(cloneModel string) (lc *loadedClone, err error) {
 	if lc, ok := w.loaded[cloneModel]; ok {
 		// Lost the race while cloneMu was released above - another caller
 		// already loaded it.
-		w.touchLRULocked(cloneModel)
 		lc.inFlight++
 		return lc, nil
 	}
 
-	// Free room for this not-yet-loaded clone_model before paying for its
-	// own weights, not after - see evictBeforeLoadLocked's own doc comment.
-	w.evictBeforeLoadLocked(cloneModel)
+	w.evictOtherClonesLocked(cloneModel)
 
 	log.Printf("loading %s (%s, clone_model=%s) on %s for stable preset cloning ...", fam.family, fam.modelPath, cloneModel, backendName)
 	model, err := w.loadModel(fam.modelPath, audiocpp.ModelConfig{FamilyHint: fam.family}, nil)
@@ -583,9 +570,7 @@ func (w *Worker) getCloneModel(cloneModel string) (lc *loadedClone, err error) {
 	lc = &loadedClone{model: model, fam: fam, poolSize: poolSize, avail: make(chan *audiocpp.Session, poolSize)}
 	lc.inFlight++
 	w.loaded[cloneModel] = lc
-	w.touchLRULocked(cloneModel)
 	log.Printf("%s loaded (session pool created lazily, up to %d sessions).", fam.family, poolSize)
-	w.evictExcessLocked()
 	return lc, nil
 }
 
@@ -939,93 +924,25 @@ func (w *Worker) UnloadAuxEngines() {
 	}
 }
 
-func (w *Worker) touchLRULocked(cloneModel string) {
-	if el, ok := w.lruElem[cloneModel]; ok {
-		w.lru.MoveToFront(el)
-		return
-	}
-	w.lruElem[cloneModel] = w.lru.PushFront(cloneModel)
-}
-
-// evictExcessLocked keeps w.loaded within maxExtraClones resident entries
-// beyond defaultCloneModel (never evicted), evicting least-recently-used
-// ones first - mirrors tts-service's _evict_excess_clone_models. Each
-// loaded clone_model is backed by a multi-GB checkpoint, so holding an
-// unbounded number of them resident is what previously risked exhausting
-// VRAM/host RAM on a "compare backends" session.
-func (w *Worker) evictExcessLocked() {
-	cap := w.maxExtraClones
-	if cap < 0 {
-		cap = 0
-	}
-	w.evictToCapLocked(cap)
-}
-
-// evictBeforeLoadLocked frees up room for cloneModel - not yet in w.loaded -
-// before its own (multi-GB) weights are actually loaded, rather than only
-// evicting afterward the way evictExcessLocked's own post-load call still
-// also does as a backstop. Loading a brand-new extra clone_model while
-// every existing one is still resident needs VRAM for all of them at once
-// for the duration of that load call, which can fail outright on hardware
-// with no headroom to spare (this box's GPU has none - see
-// backend/CLAUDE.md) - evicting first means the load itself only ever needs
-// headroom for one clone_model beyond the steady-state cap, not one beyond
-// however many were already resident. A no-op for defaultCloneModel, which
-// evictExcessLocked never evicts anyway and so never counts against the cap.
-func (w *Worker) evictBeforeLoadLocked(cloneModel string) {
-	if cloneModel == w.defaultCloneModel {
-		return
-	}
-	cap := w.maxExtraClones - 1
-	if cap < 0 {
-		cap = 0
-	}
-	w.evictToCapLocked(cap)
-}
-
-// evictToCapLocked is evictExcessLocked/evictBeforeLoadLocked's shared
-// eviction loop, evicting least-recently-used non-default clone models
-// until at most cap of them remain resident.
-func (w *Worker) evictToCapLocked(cap int) {
-	extraCount := 0
-	for el := w.lru.Front(); el != nil; el = el.Next() {
-		if el.Value.(string) != w.defaultCloneModel {
-			extraCount++
+// evictOtherClonesLocked closes every resident clone_model other than keep,
+// before keep's own multi-GB weights load - two clone models resident at
+// once (e.g. the Higgs pool plus Breeze for an emotion-variant render) is
+// what maxed out this box's VRAM, which has no headroom to spare (see
+// backend/CLAUDE.md). The caller holds keep's residency gate, so nothing
+// here should be in flight; the inFlight check is a use-after-free guard
+// (see loadedClone.inFlight), not an expected path.
+func (w *Worker) evictOtherClonesLocked(keep string) {
+	for id, lc := range w.loaded {
+		if id == keep {
+			continue
 		}
-	}
-	for extraCount > cap {
-		var victimEl *list.Element
-		for el := w.lru.Back(); el != nil; el = el.Prev() {
-			name := el.Value.(string)
-			if name == w.defaultCloneModel {
-				continue
-			}
-			if w.loaded[name].inFlight > 0 {
-				// A Generate call is actively using this clone_model
-				// right now - closing it (or a session it's mid-Run on)
-				// out from under that call would be a use-after-free.
-				// See loadedClone.inFlight's own doc comment. Skip past
-				// it and look for an idler LRU victim instead.
-				continue
-			}
-			victimEl = el
-			break
+		if lc.inFlight > 0 {
+			log.Printf("audioworker: clone model %s still in flight while loading %s - leaving it resident", id, keep)
+			continue
 		}
-		if victimEl == nil {
-			// Every non-default clone_model beyond cap is currently busy
-			// - nothing safe to evict right now rather than risk a
-			// use-after-free. Left over-cap; the next eviction pass (the
-			// next getCloneModel call) retries once something frees up.
-			break
-		}
-		victim := victimEl.Value.(string)
-		w.lru.Remove(victimEl)
-		delete(w.lruElem, victim)
-		lc := w.loaded[victim]
-		delete(w.loaded, victim)
-		extraCount--
-		log.Printf("evicting clone model %s (least recently used, over max extra clone models=%d) ...", victim, cap)
+		log.Printf("evicting clone model %s before loading %s ...", id, keep)
 		lc.close()
+		delete(w.loaded, id)
 	}
 }
 

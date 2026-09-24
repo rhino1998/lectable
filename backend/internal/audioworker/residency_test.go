@@ -36,14 +36,14 @@ func requireAcquired(t *testing.T, ch chan struct{}, what string) {
 
 func TestResidencyGateSameKindShares(t *testing.T) {
 	var g residencyGate
-	g.acquire(gateKindClone)
-	requireAcquired(t, acquireAsync(&g, gateKindClone), "second clone")
+	g.acquire(gateKindClone("audiocpp-higgs-4b"))
+	requireAcquired(t, acquireAsync(&g, gateKindClone("audiocpp-higgs-4b")), "second clone")
 }
 
 func TestResidencyGateOtherKindWaitsForDrain(t *testing.T) {
 	var g residencyGate
-	g.acquire(gateKindClone)
-	g.acquire(gateKindClone)
+	g.acquire(gateKindClone("audiocpp-higgs-4b"))
+	g.acquire(gateKindClone("audiocpp-higgs-4b"))
 
 	aux := acquireAsync(&g, gateKindAux("stable_audio_medium"))
 	requireBlocked(t, aux, "aux while clone in flight")
@@ -59,12 +59,12 @@ func TestResidencyGateOtherKindWaitsForDrain(t *testing.T) {
 // caller, or a steady stream of clone requests would starve it.
 func TestResidencyGateNoStarvation(t *testing.T) {
 	var g residencyGate
-	g.acquire(gateKindClone)
+	g.acquire(gateKindClone("audiocpp-higgs-4b"))
 
 	design := acquireAsync(&g, gateKindDesign("breeze_tts"))
 	requireBlocked(t, design, "design while clone in flight")
 
-	lateClone := acquireAsync(&g, gateKindClone)
+	lateClone := acquireAsync(&g, gateKindClone("audiocpp-higgs-4b"))
 	requireBlocked(t, lateClone, "clone arriving behind a waiting design")
 
 	g.release()
@@ -81,12 +81,24 @@ func TestResidencyGateAdmitsSameKindBatch(t *testing.T) {
 	var g residencyGate
 	g.acquire(gateKindAux("ace_step"))
 
-	a := acquireAsync(&g, gateKindClone)
+	a := acquireAsync(&g, gateKindClone("audiocpp-higgs-4b"))
 	requireBlocked(t, a, "first clone")
-	b := acquireAsync(&g, gateKindClone)
+	b := acquireAsync(&g, gateKindClone("audiocpp-higgs-4b"))
 	requireBlocked(t, b, "second clone")
 
 	g.release()
 	requireAcquired(t, a, "first clone")
 	requireAcquired(t, b, "second clone")
+}
+
+// Different clone models are different kinds - only one is ever resident.
+func TestResidencyGateCloneModelsExclusive(t *testing.T) {
+	var g residencyGate
+	g.acquire(gateKindClone("audiocpp-higgs-4b"))
+
+	breeze := acquireAsync(&g, gateKindClone("audiocpp-breeze-tts"))
+	requireBlocked(t, breeze, "breeze clone while higgs in flight")
+
+	g.release()
+	requireAcquired(t, breeze, "breeze clone after higgs drained")
 }
