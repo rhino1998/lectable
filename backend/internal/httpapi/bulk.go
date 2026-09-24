@@ -342,6 +342,7 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 		for _, cs := range chapters {
 			_ = os.RemoveAll(audiopath.MusicDir(s.DataDir, book.ID, cs.Chapter.ID))
 		}
+		_ = os.RemoveAll(audiopath.AmbienceDir(s.DataDir, book.ID))
 		return nil
 	}
 

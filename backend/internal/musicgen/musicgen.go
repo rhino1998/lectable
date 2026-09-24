@@ -47,11 +47,20 @@
 // A region's own served clip also loops in the clients (source.loop=true)
 // whenever its paragraphs outlast its own generated duration - a *third*
 // kind of seam, entirely internal to one region's own clip, distinct from
-// both of the above. GenerateRegion renders extra margin at both ends for
-// exactly this (see loopCrossfadeFraction/trimToLoopableClip) and trims it
-// back off before returning, so every clip this package hands back is
-// already loop-ready - no duplication or further audio processing needed
-// on the frontend to make that wrap sound smooth.
+// both of the above. GenerateRegion renders loopCrossfadeSeconds past the
+// served length and folds that overrun back over the clip's head (see
+// trimToLoopableClip), so every clip this package hands back is already
+// loop-ready - no duplication or further audio processing needed on the
+// frontend to make that wrap sound smooth.
+//
+// Ambience is not rendered per region: a setting's soundscape is steady
+// texture, so GenerateRegion renders one AmbienceLoopSeconds loop per
+// ambience prompt (Region.AmbiencePrompt, left empty once the caller has
+// that setting's loop cached) and TileLoop lays it under each region.
+// (Batching the loop with a region's first music chunk into one Stable
+// Audio call was measured and dropped: the GPU is already saturated at
+// batch 1, and a batch renders every item at its longest duration, so it
+// was 18-25% slower whenever the two lengths differed.)
 package musicgen
 
 import (
@@ -64,58 +73,36 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/wav"
 )
 
-// Backend is the one call this package needs against the ttsworker
-// process - satisfied by *internal/ttsworker.Manager. A small local
-// interface rather than a concrete dependency, the same reasoning
-// internal/speakerattr's own llmBackend gives: keeps this package free of
-// any transitive audiocpp-go/cgo dependency of its own.
+// Backend is the one call this package needs against the ttsworker process -
+// satisfied by *internal/ttsworker.Manager. A small local interface rather
+// than a concrete dependency, the same reasoning internal/speakerattr's own
+// llmBackend gives: keeps this package free of any transitive
+// audiocpp-go/cgo dependency of its own.
 type Backend interface {
 	StableAudioMedium(ctx context.Context, req ttsproto.StableAudioRequest) ([]byte, error)
 }
 
 // maxChunkSeconds bounds one Stable Audio call's own requested *new*
-// duration - see the package doc comment for why this app deliberately
-// requests less than audio.cpp's own 120s default per call. A seeded
-// call's own total requested DurationSeconds is this plus however much
-// seed context it was given (bounded by continuationSeedSeconds), so the
-// real per-call ceiling is a bit higher than this alone - still well
-// under audio.cpp's own default.
-const maxChunkSeconds = 60.0
+// duration; a region longer than this chains several calls. A seeded
+// call's total is this plus up to continuationSeedSeconds of seed, well
+// under Medium's own ~380s limit. Measured on this box, a seeded call
+// costs ~2.4x an unseeded one per new second (the seed is re-rendered), so
+// fewer, longer chunks are cheaper.
+const maxChunkSeconds = 110.0
 
-// continuationSeedSeconds bounds how much of the immediately preceding
-// chunk's own tail is fed back in as the next chunk's own inpaint context
-// - always the last continuationSeedSeconds of whatever was generated most
-// recently, never a region's full accumulated audio so far, so the input
-// audio length on any one Stable Audio call stays bounded regardless of
-// how many chunks a long region ends up chaining through.
-const continuationSeedSeconds = 30.0
+// continuationSeedSeconds bounds how much of the preceding audio's tail is
+// fed back in as a continuation's inpaint context - always a bounded tail,
+// never a region's whole accumulated audio, so the seed's re-render cost
+// stays fixed however long the region or its predecessor is.
+const continuationSeedSeconds = 10.0
 
-// Region is one call's worth of input to GenerateRegion.
-type Region struct {
-	Prompt                string
-	NegativePrompt        string
-	TargetDurationSeconds float64
-	// Seed, when non-nil, is the previous region's own finished clip (raw
-	// WAV bytes) - this region's first chunk is generated continuation-
-	// seeded from its tail instead of unseeded. nil means generate this
-	// region's first chunk unseeded (a "cut" transition, or the chapter's
-	// first region) - see the package doc comment.
-	Seed []byte
-}
-
-// loopCrossfadeFraction is how much extra margin GenerateRegion renders
-// at each end of a region's own clip - purely internal overhead, trimmed
-// back off before the clip is ever returned (see trimToLoopableClip) - so
-// the served clip is 2*loopCrossfadeFraction (here, 20%) longer to render
-// than its own served length. Exists because Stable
-// Audio tapers its own output toward silence at the true start/end of
-// anything it renders, and a region's own clip loops indefinitely
-// whenever its paragraphs outlast it (frontend useBackgroundMusic's own
-// source.loop=true) - so that taper used to land squarely on the loop
-// seam every single wrap, a real, confirmed listening complaint
-// ("substantial start/end ... periods of low music audio"). 0.1 (10%
-// margin on each end) is comfortably wider than that taper.
-const loopCrossfadeFraction = 0.1
+// loopCrossfadeSeconds is how far past its served length every clip is
+// rendered: the overrun is crossfaded over the clip's head so its loop
+// seam is continuous (see trimToLoopableClip). Stable Audio's own
+// duration_padding_seconds (6s, left at its default) already renders past
+// the requested end and trims, so the tail this reads sits clear of the
+// model's end-of-clip fade.
+const loopCrossfadeSeconds = 4.0
 
 // crossfadePaddingSeconds is added on top of every region's own
 // TargetDurationSeconds (the summed narration it plays under) - the
@@ -128,40 +115,68 @@ const loopCrossfadeFraction = 0.1
 // wrapping onto its own loop seam mid-crossfade.
 const crossfadePaddingSeconds = 10.0
 
+// AmbienceLoopSeconds is the length of one setting's ambience loop - long
+// enough that the repeat isn't obvious under narration.
+const AmbienceLoopSeconds = 60.0
+
+// Region is one call's worth of input to GenerateRegion.
+type Region struct {
+	Prompt                string
+	NegativePrompt        string
+	TargetDurationSeconds float64
+	// Seed, when non-nil, is the previous region's own finished clip (raw
+	// WAV bytes) - this region's first chunk is generated continuation-
+	// seeded from its tail instead of unseeded. nil means generate this
+	// region's first chunk unseeded (a "cut" transition, or the chapter's
+	// first region) - see the package doc comment.
+	Seed []byte
+	// AmbiencePrompt, when set, also renders that setting's ambience loop
+	// (Result.AmbienceLoop). Leave empty when the loop is already cached.
+	AmbiencePrompt string
+}
+
+// Result is GenerateRegion's output, raw WAV bytes each.
+type Result struct {
+	// Music is the region's loop-ready music clip, exactly
+	// TargetDurationSeconds+crossfadePaddingSeconds long.
+	Music []byte
+	// AmbienceLoop is the AmbienceLoopSeconds seamless ambience loop, nil
+	// unless Region.AmbiencePrompt was set.
+	AmbienceLoop []byte
+}
+
 // GenerateRegion renders one chapter tone region's full-duration
-// background-music clip, chaining as many Stable Audio Medium calls as
-// the (margin-padded - see loopCrossfadeFraction) render target needs
-// (see maxChunkSeconds) and stitching them together with plain
+// background-music clip, chaining as many Stable Audio Medium calls as it
+// needs (see maxChunkSeconds) and stitching them together with plain
 // concatenation - see the package doc comment for why no crossfade is
-// needed at any of these internal chunk-to-chunk seams (that's a
-// different seam from the one loopCrossfadeFraction/
-// trimToLoopableClip exists for - this one is entirely within one
-// continuous render, always flowing forward). Returns raw WAV bytes,
-// already trimmed to exactly TargetDurationSeconds+crossfadePaddingSeconds
-// and loop-crossfaded, ready to persist and play as-is.
+// needed at those internal seams. The result is trimmed to exactly
+// TargetDurationSeconds+crossfadePaddingSeconds and loop-crossfaded,
+// ready to persist and play as-is. With Region.AmbiencePrompt set it also
+// renders that setting's ambience loop.
 //
 // Deliberately no minimum on TargetDurationSeconds - a region covering
 // only a couple of short paragraphs generates a correspondingly short
-// clip rather than being padded out to some "musically coherent" floor. A
-// generated clip's own length is meant to track the narration it plays
-// under, not a fixed musical minimum - a short region is fine to leave
-// short.
-func GenerateRegion(ctx context.Context, backend Backend, in Region) ([]byte, error) {
+// clip rather than being padded out to some "musically coherent" floor.
+func GenerateRegion(ctx context.Context, backend Backend, in Region) (Result, error) {
 	served := in.TargetDurationSeconds + crossfadePaddingSeconds
-	margin := served * loopCrossfadeFraction
-	renderTarget := served + 2*margin
+	renderTarget := served + loopCrossfadeSeconds
 
-	numChunks := int(renderTarget / maxChunkSeconds)
-	if renderTarget-float64(numChunks)*maxChunkSeconds > 0 {
-		numChunks++
-	}
+	numChunks := int(math.Ceil(renderTarget / maxChunkSeconds))
 	if numChunks < 1 {
 		numChunks = 1
 	}
 	chunkSeconds := renderTarget / float64(numChunks)
 
+	var res Result
 	var out *wav.Clip
-	seedAudio := in.Seed
+	var seedAudio []byte
+	if in.Seed != nil {
+		seed, err := wav.Decode(in.Seed)
+		if err != nil {
+			return Result{}, fmt.Errorf("decode seed: %w", err)
+		}
+		seedAudio = tailWavBytes(seed)
+	}
 	for i := 0; i < numChunks; i++ {
 		var chunk *wav.Clip
 		var err error
@@ -171,14 +186,14 @@ func GenerateRegion(ctx context.Context, backend Backend, in Region) ([]byte, er
 			chunk, err = generateContinuationChunk(ctx, backend, in.Prompt, in.NegativePrompt, seedAudio, chunkSeconds)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("generate chunk %d/%d: %w", i+1, numChunks, err)
+			return Result{}, fmt.Errorf("generate chunk %d/%d: %w", i+1, numChunks, err)
 		}
 		if out == nil {
 			out = chunk
 		} else {
 			out, err = wav.Concat(out, chunk)
 			if err != nil {
-				return nil, fmt.Errorf("stitch chunk %d/%d: %w", i+1, numChunks, err)
+				return Result{}, fmt.Errorf("stitch chunk %d/%d: %w", i+1, numChunks, err)
 			}
 		}
 		if i < numChunks-1 {
@@ -188,78 +203,102 @@ func GenerateRegion(ctx context.Context, backend Backend, in Region) ([]byte, er
 		}
 	}
 
-	out = trimToLoopableClip(out, margin, served)
+	if in.AmbiencePrompt != "" {
+		amb, err := generateChunk(ctx, backend, in.AmbiencePrompt, "", AmbienceLoopSeconds+loopCrossfadeSeconds)
+		if err != nil {
+			return Result{}, fmt.Errorf("generate ambience loop: %w", err)
+		}
+		if res.AmbienceLoop, err = encodeLoop(amb, AmbienceLoopSeconds); err != nil {
+			return Result{}, err
+		}
+	}
 
+	music, err := encodeLoop(out, served)
+	if err != nil {
+		return Result{}, err
+	}
+	res.Music = music
+	return res, nil
+}
+
+func encodeLoop(clip *wav.Clip, servedSeconds float64) ([]byte, error) {
+	out := trimToLoopableClip(clip, servedSeconds, loopCrossfadeSeconds)
 	return wav.Encode(out.Samples, out.SampleRate, out.Channels)
 }
 
-// trimToLoopableClip is GenerateRegion's own last step: given clip
-// (rendered 2*marginSeconds longer than servedSeconds - see
-// loopCrossfadeFraction), trims it down to exactly servedSeconds while
-// crossfading the loop seam with real, already-rendered margin audio
-// rather than leaving the clip's own literal true edges - the ones
-// Stable Audio actually tapers - as what plays right at the wrap.
-//
-// The "core" servedSeconds in the middle of clip, offset marginSeconds in
-// from both true edges (so neither of its own two ends sits inside
-// Stable Audio's own start/end taper any more), becomes the served
-// clip's own body, unmodified except at its own tail: that tail is
-// crossfaded into the head margin - the audio that, in the original
-// continuous render, played immediately *before* the core began - rather
-// than left as the core's own unmodified tail. When frontend playback
-// loops the served clip (source.loop), what plays right before wrapping
-// back to the core's own start is genuinely the *same* audio that led
-// into that exact content the first time through, in one continuous
-// render - not a synthetic blend of unrelated material, just replayed at
-// the loop point instead of only once. The tail margin (audio that
-// continued past the core, on the far side) is rendered purely so the
-// core's own tail also sits safely clear of the true end's own taper -
-// its actual samples are never used; there's only one crossfade point
-// (the loop seam) per clip, and the head margin is what naturally leads
-// into the core's own start.
+// trimToLoopableClip trims clip (rendered crossfadeSeconds longer than
+// servedSeconds) to exactly servedSeconds, folding the overrun back over
+// the head with an equal-power crossfade: the served clip's first
+// crossfadeSeconds fade from the overrun (the audio that followed the
+// served clip's last sample in the continuous render) into the clip's own
+// head. So when playback loops, the wrap from the last sample to the
+// first is the same continuous audio the model rendered - not a jump to a
+// start that fades in from silence. The served clip's tail is untouched
+// render, which also keeps it clean as the next region's continuation
+// seed.
 //
 // Falls back to clip unmodified if it came back shorter than
-// 2*marginSeconds+servedSeconds (a short/degenerate render) - better a
+// servedSeconds+crossfadeSeconds (a short/degenerate render) - better a
 // clip a bit longer or shorter than requested than an out-of-bounds slice.
-func trimToLoopableClip(clip *wav.Clip, marginSeconds, servedSeconds float64) *wav.Clip {
+func trimToLoopableClip(clip *wav.Clip, servedSeconds, crossfadeSeconds float64) *wav.Clip {
 	if clip.Channels <= 0 || clip.SampleRate <= 0 {
 		return clip
 	}
-	marginSamples := int(marginSeconds*float64(clip.SampleRate)) * clip.Channels
-	servedSamples := int(servedSeconds*float64(clip.SampleRate)) * clip.Channels
-	if marginSamples < 0 || servedSamples <= 0 || 2*marginSamples+servedSamples > len(clip.Samples) {
+	fadeFrames := int(crossfadeSeconds * float64(clip.SampleRate))
+	servedFrames := int(servedSeconds * float64(clip.SampleRate))
+	fadeSamples := fadeFrames * clip.Channels
+	servedSamples := servedFrames * clip.Channels
+	if fadeFrames < 0 || servedFrames <= 0 || fadeFrames > servedFrames || servedSamples+fadeSamples > len(clip.Samples) {
 		return clip
 	}
 
-	headMargin := clip.Samples[0:marginSamples]
-	core := clip.Samples[marginSamples : marginSamples+servedSamples]
-
 	out := make([]float32, servedSamples)
-	copy(out, core)
-
-	if marginSamples > 0 {
-		tailStart := servedSamples - marginSamples
-		if tailStart < 0 {
-			tailStart = 0
-		}
-		n := servedSamples - tailStart
-		for i := 0; i < n; i++ {
-			// Equal-power crossfade so the blended tail's own loudness
-			// stays roughly constant across it rather than dipping toward
-			// silence partway through, the way a plain linear fade would.
-			t := float64(i) / float64(n)
-			fadeOut := float32(math.Cos(t * math.Pi / 2))
-			fadeIn := float32(math.Sin(t * math.Pi / 2))
-			out[tailStart+i] = core[tailStart+i]*fadeOut + headMargin[i]*fadeIn
+	copy(out, clip.Samples[:servedSamples])
+	overrun := clip.Samples[servedSamples : servedSamples+fadeSamples]
+	for f := 0; f < fadeFrames; f++ {
+		// Equal-power so the blend's loudness stays roughly constant
+		// across it rather than dipping partway through.
+		t := float64(f) / float64(fadeFrames)
+		fadeIn := float32(math.Sin(t * math.Pi / 2))
+		fadeOut := float32(math.Cos(t * math.Pi / 2))
+		for c := 0; c < clip.Channels; c++ {
+			i := f*clip.Channels + c
+			out[i] = out[i]*fadeIn + overrun[i]*fadeOut
 		}
 	}
-
 	return &wav.Clip{Samples: out, SampleRate: clip.SampleRate, Channels: clip.Channels}
 }
 
-// generateChunk renders seconds of plain, unseeded audio - GenerateRegion's
-// own path for a chunk with no seed to continue from (the very first chunk
-// of an unseeded region).
+// TileLoop returns seconds of loop (raw WAV bytes of a seamless loop, e.g.
+// Result.AmbienceLoop) repeated end to end, starting offsetSeconds into
+// it - callers vary the offset so neighbouring regions sharing one loop
+// don't all start on the same sound.
+func TileLoop(loop []byte, seconds, offsetSeconds float64) ([]byte, error) {
+	clip, err := wav.Decode(loop)
+	if err != nil {
+		return nil, fmt.Errorf("decode loop: %w", err)
+	}
+	if clip.Channels <= 0 || clip.SampleRate <= 0 {
+		return nil, fmt.Errorf("loop has no audio")
+	}
+	frames := len(clip.Samples) / clip.Channels
+	if frames == 0 {
+		return nil, fmt.Errorf("loop has no audio")
+	}
+	outFrames := int(seconds * float64(clip.SampleRate))
+	start := int(offsetSeconds*float64(clip.SampleRate)) % frames
+	if start < 0 {
+		start += frames
+	}
+	out := make([]float32, 0, outFrames*clip.Channels)
+	for pos := start; len(out) < outFrames*clip.Channels; pos = 0 {
+		n := min(frames-pos, outFrames-len(out)/clip.Channels)
+		out = append(out, clip.Samples[pos*clip.Channels:(pos+n)*clip.Channels]...)
+	}
+	return wav.Encode(out, clip.SampleRate, clip.Channels)
+}
+
+// generateChunk renders seconds of plain, unseeded audio.
 func generateChunk(ctx context.Context, backend Backend, prompt, negativePrompt string, seconds float64) (*wav.Clip, error) {
 	wavBytes, err := backend.StableAudioMedium(ctx, ttsproto.StableAudioRequest{
 		Prompt:          prompt,
@@ -364,8 +403,9 @@ const ambienceRelativeLevel = 0.6
 // to if the two layers together would otherwise clip.
 const mixPeakCeiling = 0.98
 
-// MixAmbience layers ambience (raw WAV bytes, a GenerateRegion render of
-// the region's ambience prompt) under music (likewise), returning the
+// MixAmbience layers ambience (raw WAV bytes, the setting's ambience loop
+// tiled to the region's length - see TileLoop) under music (a
+// GenerateRegion clip), returning the
 // summed clip as WAV bytes. The layers are rendered separately rather
 // than from one combined prompt - Stable Audio 3's training data tags a
 // clip as either music or SFX, so one prompt asking for both tends to
@@ -373,9 +413,9 @@ const mixPeakCeiling = 0.98
 // what let this set their balance: ambience is level-matched to
 // ambienceRelativeLevel of the music's own RMS, whatever loudness each
 // render happened to come out at. Both come from the same checkpoint, so
-// the formats match; the mix is as long as the shorter of the two (both
-// are trimmed to the same served length by GenerateRegion, so any
-// difference is a frame or two of rounding).
+// the formats match; the mix is as long as the shorter of the two (the
+// caller tiles ambience to the music's length, so any difference is a
+// frame or two of rounding).
 func MixAmbience(music, ambience []byte) ([]byte, error) {
 	m, err := wav.Decode(music)
 	if err != nil {

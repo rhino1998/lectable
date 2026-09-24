@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"os"
 	"reflect"
@@ -1419,6 +1420,8 @@ type Manager struct {
 	// across a restart, so a stored "generating" would only ever go stale.
 	musicGenMu      sync.Mutex
 	musicGenerating map[string]bool
+	// ambienceLocks: see lockAmbience.
+	ambienceLocks sync.Map
 
 	store        store.Store
 	tts          *ttsworker.Manager
@@ -4777,44 +4780,57 @@ func (m *Manager) generateMusicRegionWithRetry(ctx context.Context, bookID, chap
 	return err
 }
 
-// musicSeeds are one region's continuation seeds, one per layer - each nil
-// when that layer starts fresh. See musicRegionSeeds.
+// musicSeeds are one region's continuation seeds - nil when the music
+// starts fresh. See musicRegionSeeds.
 type musicSeeds struct {
-	music    []byte
-	ambience []byte
+	music []byte
 }
 
-// musicRegionSeeds reads the continuation seeds for region from the region
-// immediately before it (prevRegionID, "" for none), layer by layer: the
-// music layer continues only across a "continuation" transition, while
-// the ambience layer continues whenever both regions have the identical
-// ambience prompt - the place hasn't changed, so its sound shouldn't
-// restart even where the music hard-cuts (speakerattr's describe pass
-// keeps an unchanged setting's prompt byte-identical for exactly this).
-// Each layer is seeded from its own stem (audiopath.MusicRegionStemFile),
-// never the mix, so the other layer never bleeds into the continuation; a
-// region generated before stems existed falls back to its served clip for
-// the music layer, which was music only then.
+// musicRegionSeeds reads region's continuation seed from the region
+// immediately before it (prevRegionID, "" for none): the music layer
+// continues only across a "continuation" transition, seeded from the
+// previous region's music stem (audiopath.MusicRegionStemFile), never the
+// mix, so ambience never bleeds into the continuation; a region generated
+// before stems existed falls back to its served clip. Ambience needs no
+// seed - a setting's ambience is one shared loop (see generateMusicRegion).
 func (m *Manager) musicRegionSeeds(bookID, chapterID string, region store.MusicRegion, prevRegionID string) musicSeeds {
 	var seeds musicSeeds
-	if prevRegionID == "" {
+	if prevRegionID == "" || region.Transition != store.MusicTransitionContinuation {
 		return seeds
 	}
-	if region.Transition == store.MusicTransitionContinuation {
-		if data, err := os.ReadFile(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, prevRegionID, "music")); err == nil {
-			seeds.music = data
-		} else if data, err := os.ReadFile(audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, prevRegionID)); err == nil {
-			seeds.music = data
-		}
-	}
-	if region.Ambience != "" {
-		if prev, err := m.store.GetMusicRegion(prevRegionID); err == nil && prev != nil && prev.Ambience == region.Ambience {
-			if data, err := os.ReadFile(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, prevRegionID, "ambience")); err == nil {
-				seeds.ambience = data
-			}
-		}
+	if data, err := os.ReadFile(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, prevRegionID, "music")); err == nil {
+		seeds.music = data
+	} else if data, err := os.ReadFile(audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, prevRegionID)); err == nil {
+		seeds.music = data
 	}
 	return seeds
+}
+
+// lockAmbience serializes work on one book's ambience loop for prompt, so
+// two regions set in the same place never both render it.
+func (m *Manager) lockAmbience(bookID, prompt string) func() {
+	v, _ := m.ambienceLocks.LoadOrStore(audiopath.AmbienceLoopFile("", bookID, prompt), &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+// mixAmbienceLoop tiles loop to music's length and mixes it under music.
+// The loop's start offset is derived from regionID, so neighbouring regions
+// in one place don't all open on the same sound.
+func mixAmbienceLoop(music, loop []byte, regionID string) ([]byte, error) {
+	dur, err := wav.Duration(music)
+	if err != nil {
+		return nil, err
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(regionID))
+	offset := float64(h.Sum32()%1000) / 1000 * musicgen.AmbienceLoopSeconds
+	ambience, err := musicgen.TileLoop(loop, dur.Seconds(), offset)
+	if err != nil {
+		return nil, err
+	}
+	return musicgen.MixAmbience(music, ambience)
 }
 
 // generateMusicRegion is generateChapterMusicBatch's own per-region work:
@@ -4823,53 +4839,58 @@ func (m *Manager) musicRegionSeeds(bookID, chapterID string, region store.MusicR
 // package's own doc comment) and persist it exactly like an ordinary
 // paragraph's own audio (saveParagraphAudio's shape, just against
 // music_regions/audiopath.MusicRegionFile instead of paragraph_audio/
-// audiopath.ParagraphFile). A region with an ambience prompt renders that
-// layer as a second, separate GenerateRegion call and serves the two
-// mixed (musicgen.MixAmbience); both stems are kept on disk to seed the
-// next region's layers (musicRegionSeeds).
+// audiopath.ParagraphFile). A region with an ambience prompt gets that
+// setting's ambience loop (audiopath.AmbienceLoopFile - rendered alongside
+// this region's music the first time the setting appears, reused after)
+// tiled under it and served mixed (musicgen.MixAmbience); the music stem is
+// kept on disk to seed the next region (musicRegionSeeds).
 func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID string, region store.MusicRegion, targetDuration float64, seeds musicSeeds) error {
-	music, err := musicgen.GenerateRegion(ctx, m.tts, musicgen.Region{
+	in := musicgen.Region{
 		Prompt:                region.Prompt,
 		TargetDurationSeconds: targetDuration,
 		Seed:                  seeds.music,
-	})
+	}
+	var loop []byte
+	loopPath := audiopath.AmbienceLoopFile(m.dataDir, bookID, region.Ambience)
+	if region.Ambience != "" {
+		defer m.lockAmbience(bookID, region.Ambience)()
+		if data, err := os.ReadFile(loopPath); err == nil {
+			loop = data
+		} else {
+			in.AmbiencePrompt = region.Ambience
+		}
+	}
+	res, err := musicgen.GenerateRegion(ctx, m.tts, in)
 	if err != nil {
 		_ = m.store.SetMusicRegionError(region.ID, err.Error())
 		return err
 	}
+	music := res.Music
 	audio := music
-	var ambience []byte
-	if region.Ambience != "" {
-		ambience, err = musicgen.GenerateRegion(ctx, m.tts, musicgen.Region{
-			Prompt:                region.Ambience,
-			TargetDurationSeconds: targetDuration,
-			Seed:                  seeds.ambience,
-		})
+	if res.AmbienceLoop != nil {
+		loop = res.AmbienceLoop
+		if err := os.MkdirAll(audiopath.AmbienceDir(m.dataDir, bookID), 0o755); err == nil {
+			if err := os.WriteFile(loopPath, loop, 0o644); err != nil {
+				log.Printf("jobs: save ambience loop for region %s: %v", region.ID, err)
+			}
+		}
+	}
+	if loop != nil {
+		audio, err = mixAmbienceLoop(music, loop, region.ID)
 		if err != nil {
 			_ = m.store.SetMusicRegionError(region.ID, "ambience: "+err.Error())
 			return fmt.Errorf("ambience: %w", err)
-		}
-		audio, err = musicgen.MixAmbience(music, ambience)
-		if err != nil {
-			_ = m.store.SetMusicRegionError(region.ID, "mix ambience: "+err.Error())
-			return fmt.Errorf("mix ambience: %w", err)
 		}
 	}
 	if err := audiopath.EnsureMusicDir(m.dataDir, bookID, chapterID); err != nil {
 		_ = m.store.SetMusicRegionError(region.ID, "failed to create music dir: "+err.Error())
 		return err
 	}
-	stems := map[string][]byte{"music": music, "ambience": ambience}
-	for stem, data := range stems {
-		path := audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, region.ID, stem)
-		if data == nil {
-			_ = os.Remove(path)
-			continue
-		}
-		if err := os.WriteFile(path, data, 0o644); err != nil {
-			_ = m.store.SetMusicRegionError(region.ID, "failed to save "+stem+" stem: "+err.Error())
-			return err
-		}
+	// Regions generated before ambience loops kept an ambience stem.
+	_ = os.Remove(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, region.ID, "ambience"))
+	if err := os.WriteFile(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, region.ID, "music"), music, 0o644); err != nil {
+		_ = m.store.SetMusicRegionError(region.ID, "failed to save music stem: "+err.Error())
+		return err
 	}
 	outPath := audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, region.ID)
 	if err := os.WriteFile(outPath, audio, 0o644); err != nil {

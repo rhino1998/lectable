@@ -4,6 +4,8 @@
 package audiopath
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -101,6 +103,20 @@ func RemoveMusicRegionFiles(dataDir, bookID, chapterID, regionID string) {
 	for _, stem := range []string{"music", "ambience"} {
 		_ = os.Remove(MusicRegionStemFile(dataDir, bookID, chapterID, regionID, stem))
 	}
+}
+
+// AmbienceDir holds a book's ambience loops - one per distinct ambience
+// prompt, shared by every region (in any chapter) set in that place.
+func AmbienceDir(dataDir, bookID string) string {
+	return filepath.Join(dataDir, "audio", bookID, "ambience")
+}
+
+// AmbienceLoopFile is the ambience loop for one ambience prompt, keyed by
+// the prompt's hash (the describe pass keeps an unchanged setting's prompt
+// byte-identical, so the same place maps to the same file).
+func AmbienceLoopFile(dataDir, bookID, prompt string) string {
+	sum := sha256.Sum256([]byte(prompt))
+	return filepath.Join(AmbienceDir(dataDir, bookID), hex.EncodeToString(sum[:8])+".wav")
 }
 
 func EnsureMusicDir(dataDir, bookID, chapterID string) error {
