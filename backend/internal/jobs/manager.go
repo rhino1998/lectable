@@ -4219,7 +4219,7 @@ func selectWholeChapterMusic(regions []store.MusicRegion, regionDuration func(st
 			// paragraphs) - nothing further along can be trusted either.
 			break
 		}
-		if len(batch) == 0 && region.Transition == store.MusicTransitionContinuation && i > 0 && regions[i-1].Status == store.AudioReady {
+		if len(batch) == 0 && i > 0 && regions[i-1].Status == store.AudioReady {
 			initialSeedRegionID = regions[i-1].ID
 		}
 		batch = append(batch, pendingMusicRegion{region: region, targetDuration: total})
@@ -4273,13 +4273,11 @@ func (m *Manager) advanceLiveMusic(bookID, chapterID string, chapterIdx int, reg
 		}
 		return
 	}
-	// Seeded from prevID's clip only if it's a continuation - read at run
-	// time, by which point liveMusicDependency has made sure prevID's own
-	// generation (if any was pending) is done.
-	seedID := ""
-	if next.region.Transition == store.MusicTransitionContinuation {
-		seedID = prevID
-	}
+	// Seeded from prevID's stems, layer by layer (musicRegionSeeds decides
+	// which, from the transition and the two ambience prompts) - read at
+	// run time, by which point liveMusicDependency has made sure prevID's
+	// own generation (if any was pending) is done.
+	seedID := prevID
 	prevChapterID := chapterID
 	if prevID == "" && carry.prevRegionID != "" && next.region.ID == regions[0].ID {
 		// First region of a chapter the chain crossed into: wait on the
@@ -4565,13 +4563,8 @@ func (m *Manager) generateChapterMusicBatch(ctx context.Context, bookID, chapter
 			}
 			continue
 		}
-		var seed []byte
-		if item.region.Transition == store.MusicTransitionContinuation && prevRegionID != "" {
-			if data, rerr := os.ReadFile(audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, prevRegionID)); rerr == nil {
-				seed = data
-			}
-		}
-		err := m.generateMusicRegionWithRetry(ctx, bookID, chapterID, item.region, item.targetDuration, seed)
+		seeds := m.musicRegionSeeds(bookID, chapterID, item.region, prevRegionID)
+		err := m.generateMusicRegionWithRetry(ctx, bookID, chapterID, item.region, item.targetDuration, seeds)
 		m.releaseMusicRegion(item.region.ID)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -4607,13 +4600,13 @@ const musicRegionRetryDelay = 2 * time.Second
 // the outer whole-task failure was ever logged, which (now that a batch
 // can cover 15-20+ regions) made an individual region's own permanent
 // failure easy to lose track of.
-func (m *Manager) generateMusicRegionWithRetry(ctx context.Context, bookID, chapterID string, region store.MusicRegion, targetDuration float64, seed []byte) error {
+func (m *Manager) generateMusicRegionWithRetry(ctx context.Context, bookID, chapterID string, region store.MusicRegion, targetDuration float64, seeds musicSeeds) error {
 	var err error
 	for attempt := 0; attempt < maxTaskAttempts; attempt++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		err = m.generateMusicRegion(ctx, bookID, chapterID, region, targetDuration, seed)
+		err = m.generateMusicRegion(ctx, bookID, chapterID, region, targetDuration, seeds)
 		if err == nil {
 			return nil
 		}
@@ -4634,26 +4627,99 @@ func (m *Manager) generateMusicRegionWithRetry(ctx context.Context, bookID, chap
 	return err
 }
 
+// musicSeeds are one region's continuation seeds, one per layer - each nil
+// when that layer starts fresh. See musicRegionSeeds.
+type musicSeeds struct {
+	music    []byte
+	ambience []byte
+}
+
+// musicRegionSeeds reads the continuation seeds for region from the region
+// immediately before it (prevRegionID, "" for none), layer by layer: the
+// music layer continues only across a "continuation" transition, while
+// the ambience layer continues whenever both regions have the identical
+// ambience prompt - the place hasn't changed, so its sound shouldn't
+// restart even where the music hard-cuts (speakerattr's describe pass
+// keeps an unchanged setting's prompt byte-identical for exactly this).
+// Each layer is seeded from its own stem (audiopath.MusicRegionStemFile),
+// never the mix, so the other layer never bleeds into the continuation; a
+// region generated before stems existed falls back to its served clip for
+// the music layer, which was music only then.
+func (m *Manager) musicRegionSeeds(bookID, chapterID string, region store.MusicRegion, prevRegionID string) musicSeeds {
+	var seeds musicSeeds
+	if prevRegionID == "" {
+		return seeds
+	}
+	if region.Transition == store.MusicTransitionContinuation {
+		if data, err := os.ReadFile(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, prevRegionID, "music")); err == nil {
+			seeds.music = data
+		} else if data, err := os.ReadFile(audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, prevRegionID)); err == nil {
+			seeds.music = data
+		}
+	}
+	if region.Ambience != "" {
+		if prev, err := m.store.GetMusicRegion(prevRegionID); err == nil && prev != nil && prev.Ambience == region.Ambience {
+			if data, err := os.ReadFile(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, prevRegionID, "ambience")); err == nil {
+				seeds.ambience = data
+			}
+		}
+	}
+	return seeds
+}
+
 // generateMusicRegion is generateChapterMusicBatch's own per-region work:
 // render region's full-duration clip via internal/musicgen (chaining as
 // many Stable Audio Medium calls as targetDuration needs - see that
 // package's own doc comment) and persist it exactly like an ordinary
 // paragraph's own audio (saveParagraphAudio's shape, just against
 // music_regions/audiopath.MusicRegionFile instead of paragraph_audio/
-// audiopath.ParagraphFile).
-func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID string, region store.MusicRegion, targetDuration float64, seed []byte) error {
-	audio, err := musicgen.GenerateRegion(ctx, m.tts, musicgen.Region{
+// audiopath.ParagraphFile). A region with an ambience prompt renders that
+// layer as a second, separate GenerateRegion call and serves the two
+// mixed (musicgen.MixAmbience); both stems are kept on disk to seed the
+// next region's layers (musicRegionSeeds).
+func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID string, region store.MusicRegion, targetDuration float64, seeds musicSeeds) error {
+	music, err := musicgen.GenerateRegion(ctx, m.tts, musicgen.Region{
 		Prompt:                region.Prompt,
 		TargetDurationSeconds: targetDuration,
-		Seed:                  seed,
+		Seed:                  seeds.music,
 	})
 	if err != nil {
 		_ = m.store.SetMusicRegionError(region.ID, err.Error())
 		return err
 	}
+	audio := music
+	var ambience []byte
+	if region.Ambience != "" {
+		ambience, err = musicgen.GenerateRegion(ctx, m.tts, musicgen.Region{
+			Prompt:                region.Ambience,
+			TargetDurationSeconds: targetDuration,
+			Seed:                  seeds.ambience,
+		})
+		if err != nil {
+			_ = m.store.SetMusicRegionError(region.ID, "ambience: "+err.Error())
+			return fmt.Errorf("ambience: %w", err)
+		}
+		audio, err = musicgen.MixAmbience(music, ambience)
+		if err != nil {
+			_ = m.store.SetMusicRegionError(region.ID, "mix ambience: "+err.Error())
+			return fmt.Errorf("mix ambience: %w", err)
+		}
+	}
 	if err := audiopath.EnsureMusicDir(m.dataDir, bookID, chapterID); err != nil {
 		_ = m.store.SetMusicRegionError(region.ID, "failed to create music dir: "+err.Error())
 		return err
+	}
+	stems := map[string][]byte{"music": music, "ambience": ambience}
+	for stem, data := range stems {
+		path := audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, region.ID, stem)
+		if data == nil {
+			_ = os.Remove(path)
+			continue
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			_ = m.store.SetMusicRegionError(region.ID, "failed to save "+stem+" stem: "+err.Error())
+			return err
+		}
 	}
 	outPath := audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, region.ID)
 	if err := os.WriteFile(outPath, audio, 0o644); err != nil {

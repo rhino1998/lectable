@@ -338,6 +338,9 @@ CREATE TABLE IF NOT EXISTS music_regions (
 	end_idx INTEGER NOT NULL,
 	mood TEXT NOT NULL DEFAULT '',
 	prompt TEXT NOT NULL DEFAULT '',
+	-- Ambient-soundscape prompt mixed under the music, '' for none - see
+	-- store.MusicRegion.Ambience.
+	ambience TEXT NOT NULL DEFAULT '',
 	-- 'cut' or 'continuation' - see store.MusicTransition's own doc comment.
 	transition TEXT NOT NULL DEFAULT 'cut',
 	-- One of AudioPending/AudioGenerating/AudioReady/AudioError - the same
@@ -455,6 +458,10 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := migrateParagraphsEmotion(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateMusicRegionsAmbience(db); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -592,6 +599,16 @@ func migrateParagraphAudioPointer(db *sql.DB) error {
 func migrateCharactersIsRole(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS is_role BOOLEAN DEFAULT false`); err != nil {
 		return fmt.Errorf("migrate characters.is_role: %w", err)
+	}
+	return nil
+}
+
+// migrateMusicRegionsAmbience is migrateCharactersIsRole's own shape again,
+// applied to music_regions.ambience: regions scored before it existed
+// backfill to '' (music only), exactly what they were generated as.
+func migrateMusicRegionsAmbience(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE music_regions ADD COLUMN IF NOT EXISTS ambience TEXT DEFAULT ''`); err != nil {
+		return fmt.Errorf("migrate music_regions.ambience: %w", err)
 	}
 	return nil
 }
@@ -1489,12 +1506,13 @@ func (s *Store) AppendMusicRegions(chapterID string, regions []MusicRegionInput,
 			EndIdx:     endIdx,
 			Mood:       r.Mood,
 			Prompt:     r.Prompt,
+			Ambience:   r.Ambience,
 			Transition: r.Transition,
 			Status:     AudioPending,
 		}
 		_, err := s.db.Exec(
-			`INSERT INTO music_regions (id, chapter_id, idx, start_idx, end_idx, mood, prompt, transition, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			region.ID, region.ChapterID, region.Idx, region.StartIdx, region.EndIdx, region.Mood, region.Prompt, region.Transition, region.Status,
+			`INSERT INTO music_regions (id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			region.ID, region.ChapterID, region.Idx, region.StartIdx, region.EndIdx, region.Mood, region.Prompt, region.Ambience, region.Transition, region.Status,
 		)
 		if err != nil {
 			return nil, err
@@ -1513,12 +1531,13 @@ type MusicRegionInput struct {
 	StartIdx   int
 	Mood       string
 	Prompt     string
+	Ambience   string
 	Transition MusicTransition
 }
 
 // ListMusicRegions returns chapterID's own music regions in idx order.
 func (s *Store) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
-	rows, err := s.db.Query(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, transition, status, error, duration_seconds FROM music_regions WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
+	rows, err := s.db.Query(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, status, error, duration_seconds FROM music_regions WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
 	}
@@ -1527,7 +1546,7 @@ func (s *Store) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
 	var out []MusicRegion
 	for rows.Next() {
 		var r MusicRegion
-		if err := rows.Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Transition, &r.Status, &r.Error, &r.DurationSeconds); err != nil {
+		if err := rows.Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Ambience, &r.Transition, &r.Status, &r.Error, &r.DurationSeconds); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -1539,8 +1558,8 @@ func (s *Store) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
 // own single-row lookup, not a whole chapter's list.
 func (s *Store) GetMusicRegion(id string) (*MusicRegion, error) {
 	var r MusicRegion
-	err := s.db.QueryRow(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, transition, status, error, duration_seconds FROM music_regions WHERE id = ?`, id).
-		Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Transition, &r.Status, &r.Error, &r.DurationSeconds)
+	err := s.db.QueryRow(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, status, error, duration_seconds FROM music_regions WHERE id = ?`, id).
+		Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Ambience, &r.Transition, &r.Status, &r.Error, &r.DurationSeconds)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

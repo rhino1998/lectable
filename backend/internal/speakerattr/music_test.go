@@ -196,3 +196,47 @@ func TestSplitLongRegionsHandlesMultipleRegionsIndependently(t *testing.T) {
 		}
 	}
 }
+
+func TestParseMusicRegionDescriptionBuildsTaggedPrompts(t *testing.T) {
+	raw, err := parseMusicRegionDescription(`{"mood": "quiet dread", "setting": "harbor at night", "genres": ["Ambient", "Cinematic", "Drone"], "instruments": ["low strings", "", "Genre: synth pad", "low strings", "a, b"], "bpm": 300, "music": "Slow, uneasy and sparse.", "ambience": "  None "}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw.Ambience != "" {
+		t.Fatalf("ambience = %q, want \"none\" normalized to empty", raw.Ambience)
+	}
+	got := buildMusicPrompt(raw)
+	want := "TrackType: Music, VocalType: Instrumental, Genre: Ambient, Genre: Cinematic, Instruments: low strings, Genre synth pad, Slow, uneasy and sparse, subtle background underscore, 140 BPM"
+	if got != want {
+		t.Fatalf("buildMusicPrompt() =\n%q\nwant\n%q", got, want)
+	}
+	if buildAmbiencePrompt("") != "" {
+		t.Fatal("buildAmbiencePrompt(\"\") should stay empty")
+	}
+}
+
+func TestParseMusicRegionDescriptionAcceptsLegacyPrompt(t *testing.T) {
+	raw, err := parseMusicRegionDescription(`{"mood": "calm", "prompt": "soft piano"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw.Music != "soft piano" {
+		t.Fatalf("music = %q, want the legacy prompt field used", raw.Music)
+	}
+	if _, err := parseMusicRegionDescription(`{"mood": "calm"}`); err == nil {
+		t.Fatal("want an error for a description with no music at all")
+	}
+}
+
+func TestSameAmbienceIgnoresCopyDrift(t *testing.T) {
+	prev := "ocean waves on a rocky shore, distant gulls"
+	if !sameAmbience("Ocean waves on a rocky shore - distant gulls.", prev) {
+		t.Fatal("want punctuation/case drift treated as the same ambience")
+	}
+	if sameAmbience("busy tavern interior, crowd murmur", prev) {
+		t.Fatal("want a different setting treated as different")
+	}
+	if sameAmbience("", "") {
+		t.Fatal("want empty never treated as a match")
+	}
+}

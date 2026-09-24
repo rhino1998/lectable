@@ -342,9 +342,13 @@ type MusicRegion struct {
 	// relative to each other and because it means a chapter's regions can
 	// never have a gap or overlap in the first place, by construction,
 	// rather than by validation.
-	EndIdx     int
-	Mood       string
-	Prompt     string
+	EndIdx int
+	Mood   string
+	Prompt string
+	// Ambience is the Stable Audio prompt for the region's ambient
+	// soundscape layer (speakerattr.MusicRegionResult.Ambience), rendered
+	// separately and mixed under the music - "" means music only.
+	Ambience   string
 	Transition MusicTransition
 	// Status is one of AudioPending/AudioGenerating/AudioReady/AudioError -
 	// the same four-state vocabulary paragraph/SFX audio already uses,

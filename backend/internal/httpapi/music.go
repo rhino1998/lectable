@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"os"
 	"strconv"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
@@ -30,7 +29,10 @@ type musicRegionDTO struct {
 	// "score" a reader can see without needing to actually hear the
 	// result, surfaced by the reader's annotations view as this region's
 	// own boundary marker tooltip (see ChapterSection.MusicRegionBoundary).
-	Prompt          string  `json:"prompt"`
+	Prompt string `json:"prompt"`
+	// Ambience is the region's ambient-soundscape prompt
+	// (store.MusicRegion.Ambience), mixed under the music - "" for none.
+	Ambience        string  `json:"ambience,omitempty"`
 	Transition      string  `json:"transition"` // "cut" or "continuation" - see store.MusicTransition
 	Status          string  `json:"status"`
 	Error           string  `json:"error,omitempty"`
@@ -51,6 +53,7 @@ func musicRegionDTOFrom(r store.MusicRegion) musicRegionDTO {
 		EndIdx:          r.EndIdx,
 		Mood:            r.Mood,
 		Prompt:          r.Prompt,
+		Ambience:        r.Ambience,
 		Transition:      string(r.Transition),
 		Status:          r.Status,
 		Error:           r.Error,
@@ -297,7 +300,7 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 		// own disk-delete pairing: a clip that was never actually
 		// generated simply has no file to remove, not an error.
 		for _, r := range existing {
-			_ = os.Remove(audiopath.MusicRegionFile(s.DataDir, book.ID, ch.ID, r.ID))
+			audiopath.RemoveMusicRegionFiles(s.DataDir, book.ID, ch.ID, r.ID)
 		}
 		if _, err := s.Store.ClearMusicRegions(ch.ID); err != nil {
 			return 0, nil, err
@@ -350,6 +353,7 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 				StartIdx:   region.StartIdx,
 				Mood:       region.Mood,
 				Prompt:     region.Prompt,
+				Ambience:   region.Ambience,
 				Transition: musicTransitionFromString(region.Transition),
 			}
 		}
@@ -464,7 +468,7 @@ func (s *Server) handleRegenerateMusicRegion(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_ = os.Remove(audiopath.MusicRegionFile(s.DataDir, ch.BookID, ch.ID, regionID))
+	audiopath.RemoveMusicRegionFiles(s.DataDir, ch.BookID, ch.ID, regionID)
 
 	s.Jobs.MaybeAdvanceChapterMusic(ch.BookID, ch.ID)
 	_ = s.Jobs.PromoteTier("music_gen:"+ch.ID, jobs.TierUrgent) // best-effort - a no-op if not queued yet

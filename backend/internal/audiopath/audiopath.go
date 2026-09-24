@@ -76,6 +76,22 @@ func MusicRegionFile(dataDir, bookID, chapterID, regionID string) string {
 	return filepath.Join(MusicDir(dataDir, bookID, chapterID), regionID+".wav")
 }
 
+// MusicRegionStemFile is one layer of a music region's clip, kept beside
+// the served mix (MusicRegionFile) so the next region can be continuation-
+// seeded from that layer alone: stem is "music" or "ambience".
+func MusicRegionStemFile(dataDir, bookID, chapterID, regionID, stem string) string {
+	return filepath.Join(MusicDir(dataDir, bookID, chapterID), regionID+"."+stem+".wav")
+}
+
+// RemoveMusicRegionFiles best-effort deletes a region's served clip and
+// both of its stems - a file that was never written is not an error.
+func RemoveMusicRegionFiles(dataDir, bookID, chapterID, regionID string) {
+	_ = os.Remove(MusicRegionFile(dataDir, bookID, chapterID, regionID))
+	for _, stem := range []string{"music", "ambience"} {
+		_ = os.Remove(MusicRegionStemFile(dataDir, bookID, chapterID, regionID, stem))
+	}
+}
+
 func EnsureMusicDir(dataDir, bookID, chapterID string) error {
 	return os.MkdirAll(MusicDir(dataDir, bookID, chapterID), 0o755)
 }

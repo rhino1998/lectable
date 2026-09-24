@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // musicBatchParagraphs bounds one pass-1 (boundary) music-scoring
@@ -77,9 +78,13 @@ Rules:
 // musicSystemPrompt's own doc comment for why only a start is ever asked
 // for or stored.
 type MusicRegionResult struct {
-	StartIdx   int
-	Mood       string
-	Prompt     string
+	StartIdx int
+	Mood     string
+	Prompt   string // Stable Audio music prompt - see buildMusicPrompt
+	// Ambience is the Stable Audio prompt for this region's ambient
+	// soundscape layer (see buildAmbiencePrompt), mixed under the music -
+	// "" when the region has no clear physical setting to hear.
+	Ambience   string
 	Transition string // "cut" or "continuation" - see musicSystemPrompt
 }
 
@@ -426,47 +431,115 @@ func splitLongRegions(regions []musicBoundary, paragraphs []ParagraphInput) []mu
 	return out
 }
 
-// musicDescribeMaxTokens bounds pass 2's generated JSON - a mood label
-// plus one composer-brief paragraph per call, comfortably smaller than
-// pass 1's own batch-of-several-regions budget used to need, since this is
-// one region's own single description.
+// musicDescribeMaxTokens bounds pass 2's generated JSON - a mood label,
+// a handful of short music fields and one ambience description per call,
+// comfortably smaller than pass 1's own batch-of-several-regions budget,
+// since this is one region's own single description.
 const musicDescribeMaxTokens = 1024
 
 // musicDescribeSystemPrompt is pass 2: given the real text of one region
 // scoreMusicBoundaries already identified (rather than a numbered listing
 // spanning several regions at once, the way the old single-pass prompt
-// worked), write that region's own mood label and music generation prompt.
-// Splitting this out from the boundary judgment is the same lesson
-// DescribeChapter was already split from AttributeChapter over
-// (backend/CLAUDE.md) - asking one call to both place a
-// boundary and justify a full composer brief for it in the same breath
-// left the single-pass version measurably worse on real chapters (ad hoc
-// comparison against two real book chapters: the combined pass produced
-// 15 regions for a 63-paragraph chapter - its own prompt calls 4+ "a sign
-// something went wrong" - with all but one marked "cut", apparently
-// because justifying a differently-worded brief made every tone change
-// look like a hard cut; splitting the judgment out produced 8 regions
-// with far fewer spurious cuts on the same chapter, and also sidestepped a
-// batch-seam parse failure that had permanently lost the back half of
-// another chapter under the combined prompt).
-const musicDescribeSystemPrompt = `You are scoring one background instrumental music cue for a single contiguous stretch of a novel chapter - a tone region that has already been identified for you by an earlier pass. You will be given the full text of every paragraph within that region, in order.
+// worked), describe that region's own background bed - a music cue and,
+// where the scene has a clear physical setting, an ambience layer mixed
+// under it (see musicgen.MixAmbience). Splitting this out from the
+// boundary judgment is the same lesson DescribeChapter was already split
+// from AttributeChapter over (backend/CLAUDE.md) - asking one call to both
+// place a boundary and justify a full composer brief for it in the same
+// breath left the single-pass version measurably worse on real chapters
+// (ad hoc comparison against two real book chapters: the combined pass
+// produced 15 regions for a 63-paragraph chapter - its own prompt calls 4+
+// "a sign something went wrong" - with all but one marked "cut",
+// apparently because justifying a differently-worded brief made every tone
+// change look like a hard cut; splitting the judgment out produced 8
+// regions with far fewer spurious cuts on the same chapter, and also
+// sidestepped a batch-seam parse failure that had permanently lost the
+// back half of another chapter under the combined prompt).
+//
+// The model fills structured fields (genres, instruments, bpm, a short
+// description) rather than writing the final Stable Audio prompt itself:
+// buildMusicPrompt assembles them into Stable Audio 3's own documented
+// AudioSparx tag shape ("TrackType: Music, VocalType: Instrumental,
+// Genre: ..., Instruments: ..., <description>, <n> BPM" - see the
+// stable-audio-3 prompting guide), so the tag syntax can never drift or be
+// half-remembered by a 4B model. The previous region's own description is
+// passed back in (musicDescribeContext) so a "continuation" keeps its
+// palette and a setting that hasn't changed keeps byte-identical ambience,
+// which is what lets the ambience layer be continuation-seeded across
+// regions (jobs.Manager.musicRegionSeeds).
+const musicDescribeSystemPrompt = `You are the sound designer for an audiobook. Behind the narrator's voice plays a quiet background bed made of two layers: an instrumental music underscore, and (when the scene has a clear physical setting) an ambient soundscape of that place - ocean waves, a busy tavern, city streets, rain on a roof, a forest at night. You are designing the bed for one contiguous stretch of a novel chapter, which an earlier pass has already identified as a single tone region. You will be given the full text of every paragraph within that region, in order, and possibly a description of the region that plays just before it.
 
-Write a music generation prompt describing instrumental background music matching this region's own tone - genre, instrumentation, tempo, mood/atmosphere descriptors, dynamics. Never mention plot events, character names, or lyrics - describe only the music itself, as if briefing a composer who has never read the book, and never ask for vocals/lyrics (this is instrumental-only music).
+MUSIC - an underscore that sits under spoken narration, never competing with it:
+- Match the region's emotional register, and pick a palette that fits the book's world (historical or fantasy settings suit acoustic, folk or orchestral instruments; futuristic settings suit synths and electronic textures; contemporary settings can go either way).
+- Keep it sparse and steady: sustained pads, soft textures, low or mid-register instruments, gentle pulses. Avoid a prominent lead melody, bright high-pitched solo instruments, heavy drums, sudden drops or big builds - anything that would fight the voice for attention. Even tense or action scenes stay restrained: tension comes from rhythm, low drones and dissonance, not loudness.
+- Instrumental only - never vocals, choirs singing words, or lyrics.
+- If the previous region is given and this region's transition is "continuation", keep the same genre and core instruments, evolving the mood and energy rather than switching style. On a "cut", choose freely.
 
-Also give a short mood label (2-4 words, e.g. "tense confrontation", "quiet melancholy", "warm banter") summarizing this region's own emotional register.
+AMBIENCE - the continuous sound of the place where this region physically happens:
+- Describe it the way a field recording is labeled: the sound sources, how busy or sparse they are, the space and perspective (e.g. "ocean waves breaking on a rocky shore, distant gulls, steady sea wind, wide open outdoor perspective"; "busy medieval tavern interior, low indistinct crowd murmur, clinking mugs, crackling hearth fire, wooden room"; "night city street, distant traffic hum, occasional far-off car horn, light rain on pavement").
+- Only continuous, loopable background sound - never a one-off event (no single door slam, gunshot, scream, explosion or line of speech), and never music. Crowds are fine as indistinct murmur, never as intelligible speech.
+- Use "" (empty) when there is no clear, sustained physical setting to hear: a quiet interior with nothing notable audible, a dream or abstract space, a stretch of reflection or summary, or a setting you would only be guessing at.
+- If the previous region's ambience is given and the characters are still in the same place, copy that ambience string exactly, character for character. Only write a new one when the physical setting actually changes.
+
+Never mention plot events, character names or story specifics in any field - describe only sound, as if briefing someone who has never read the book.
 
 Reply with a JSON object only, no other text, no markdown code fence:
 
-{"mood": "<short label>", "prompt": "<music generation prompt>"}`
+{"mood": "<2-4 word emotional label, e.g. tense confrontation, quiet melancholy, warm banter>", "setting": "<2-6 word physical setting, or empty>", "genres": ["<1-2 genres, e.g. Ambient, Cinematic, Folk, Orchestral, Electronic>"], "instruments": ["<2-4 instruments or textures>"], "bpm": <integer tempo, 50-120>, "music": "<one sentence on the music's mood, energy, dynamics and texture>", "ambience": "<field-recording style description, or empty>"}`
+
+// musicDescription is pass 2's own finished judgment for one region - the
+// assembled Stable Audio prompts (see buildMusicPrompt/
+// buildAmbiencePrompt), plus the raw fields the next region's own call is
+// shown as context (see musicDescribeContext).
+type musicDescription struct {
+	Mood     string
+	Setting  string
+	Prompt   string // assembled music prompt
+	Ambience string // assembled ambience prompt, "" for none
+	// music/ambience are the model's own raw sentences, before assembly -
+	// what the next region's own call sees as its predecessor, so it can
+	// copy an unchanged ambience back verbatim.
+	music       string
+	rawAmbience string
+	genres      []string
+	instruments []string
+}
 
 type musicDescriptionRaw struct {
-	Mood   string `json:"mood"`
+	Mood        string   `json:"mood"`
+	Setting     string   `json:"setting"`
+	Genres      []string `json:"genres"`
+	Instruments []string `json:"instruments"`
+	BPM         float64  `json:"bpm"`
+	Music       string   `json:"music"`
+	Ambience    string   `json:"ambience"`
+	// Prompt is the old single-string shape - accepted as a fallback for
+	// Music so a model that ignores the new schema still yields a usable
+	// cue instead of a failed parse.
 	Prompt string `json:"prompt"`
 }
 
-func (c *Client) describeMusicRegion(ctx context.Context, bookTitle, chapterTitle string, regionParagraphs []ParagraphInput) (mood, prompt string, err error) {
+// musicDescribeContext is the previous region's own description, as shown
+// to the next region's describe call - nil for a chapter's (or resumed
+// run's) first region.
+type musicDescribeContext struct {
+	prev       *musicDescription
+	transition string
+}
+
+func (c *Client) describeMusicRegion(ctx context.Context, bookTitle, chapterTitle string, regionParagraphs []ParagraphInput, mctx musicDescribeContext) (musicDescription, error) {
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
+	fmt.Fprintf(&user, "This region's transition: %s\n", mctx.transition)
+	if p := mctx.prev; p != nil {
+		user.WriteString("\nPrevious region:\n")
+		fmt.Fprintf(&user, "- mood: %s\n", p.Mood)
+		fmt.Fprintf(&user, "- setting: %s\n", orNone(p.Setting))
+		fmt.Fprintf(&user, "- genres: %s\n", strings.Join(p.genres, ", "))
+		fmt.Fprintf(&user, "- instruments: %s\n", strings.Join(p.instruments, ", "))
+		fmt.Fprintf(&user, "- music: %s\n", p.music)
+		fmt.Fprintf(&user, "- ambience: %q\n", p.rawAmbience)
+	}
 	user.WriteString("\nRegion text:\n")
 	for i, p := range regionParagraphs {
 		if p.Inline {
@@ -485,9 +558,48 @@ func (c *Client) describeMusicRegion(ctx context.Context, bookTitle, chapterTitl
 
 	raw, err := generateAndParse(ctx, c, musicDescribeSystemPrompt, user.String(), 0, musicDescribeMaxTokens, parseMusicRegionDescription)
 	if err != nil {
-		return "", "", err
+		return musicDescription{}, err
 	}
-	return raw.Mood, raw.Prompt, nil
+	d := musicDescription{
+		Mood:        raw.Mood,
+		Setting:     raw.Setting,
+		Prompt:      buildMusicPrompt(raw),
+		music:       raw.Music,
+		rawAmbience: raw.Ambience,
+		genres:      raw.Genres,
+		instruments: raw.Instruments,
+	}
+	// An unchanged setting must produce a byte-identical ambience prompt
+	// (see musicDescribeSystemPrompt) - the model is asked to copy it, but
+	// a small model's copy can drift by a character or two, which would
+	// silently lose the seeded continuation. Snap a near-copy back.
+	if p := mctx.prev; p != nil && p.rawAmbience != "" && sameAmbience(raw.Ambience, p.rawAmbience) {
+		d.rawAmbience = p.rawAmbience
+	}
+	d.Ambience = buildAmbiencePrompt(d.rawAmbience)
+	return d, nil
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+// sameAmbience reports whether a is the previous region's ambience b,
+// copied back with only case/whitespace/punctuation drift.
+func sameAmbience(a, b string) bool {
+	norm := func(s string) string {
+		var sb strings.Builder
+		for _, r := range strings.ToLower(s) {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				sb.WriteRune(r)
+			}
+		}
+		return sb.String()
+	}
+	return norm(a) != "" && norm(a) == norm(b)
 }
 
 func parseMusicRegionDescription(content string) (musicDescriptionRaw, error) {
@@ -501,11 +613,92 @@ func parseMusicRegionDescription(content string) (musicDescriptionRaw, error) {
 		return musicDescriptionRaw{}, fmt.Errorf("parse JSON object: %w", err)
 	}
 	raw.Mood = strings.TrimSpace(raw.Mood)
-	raw.Prompt = strings.TrimSpace(raw.Prompt)
-	if raw.Prompt == "" {
-		return musicDescriptionRaw{}, fmt.Errorf("empty music generation prompt")
+	raw.Setting = strings.TrimSpace(raw.Setting)
+	raw.Music = strings.TrimSpace(raw.Music)
+	if raw.Music == "" {
+		raw.Music = strings.TrimSpace(raw.Prompt)
+	}
+	raw.Ambience = cleanAmbience(raw.Ambience)
+	raw.Genres = cleanTagList(raw.Genres, 2)
+	raw.Instruments = cleanTagList(raw.Instruments, 4)
+	if raw.Music == "" && len(raw.Instruments) == 0 {
+		return musicDescriptionRaw{}, fmt.Errorf("empty music description")
 	}
 	return raw, nil
+}
+
+// cleanAmbience normalizes the model's "no ambience" spellings ("none",
+// "n/a", "silence") to "" - an ambience layer is an extra Stable Audio
+// render, so a placeholder must never get sent as a real prompt.
+func cleanAmbience(s string) string {
+	s = strings.TrimSpace(s)
+	switch strings.Trim(strings.ToLower(s), ".()[] ") {
+	case "", "none", "n/a", "na", "null", "empty", "silence", "no ambience", "nothing":
+		return ""
+	}
+	return s
+}
+
+// cleanTagList trims, drops empties/duplicates and anything containing the
+// ", " / ":" separators buildMusicPrompt's own tag syntax relies on, and
+// caps the list at max entries.
+func cleanTagList(in []string, max int) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range in {
+		s = strings.TrimSpace(strings.ReplaceAll(s, ":", ""))
+		if s == "" || strings.Contains(s, ",") || seen[strings.ToLower(s)] {
+			continue
+		}
+		seen[strings.ToLower(s)] = true
+		out = append(out, s)
+		if len(out) == max {
+			break
+		}
+	}
+	return out
+}
+
+// musicMinBPM/musicMaxBPM clamp the model's own tempo - anything outside
+// is either a hallucination or far too busy to sit under narration.
+const (
+	musicMinBPM = 40
+	musicMaxBPM = 140
+)
+
+// buildMusicPrompt assembles raw into Stable Audio 3's own tag shape - see
+// musicDescribeSystemPrompt's own doc comment. "VocalType: Instrumental" is
+// the guide's own documented way to keep vocals out (the default
+// guidance_scale of 1.0 makes a negative prompt a no-op, so this has to
+// live in the positive prompt), and "underscore, background music" steer
+// toward the stock/library-music end of its training data.
+func buildMusicPrompt(raw musicDescriptionRaw) string {
+	parts := []string{"TrackType: Music", "VocalType: Instrumental"}
+	for _, g := range raw.Genres {
+		parts = append(parts, "Genre: "+g)
+	}
+	if len(raw.Instruments) > 0 {
+		parts = append(parts, "Instruments: "+strings.Join(raw.Instruments, ", "))
+	}
+	if raw.Music != "" {
+		parts = append(parts, strings.TrimRight(raw.Music, ". "))
+	}
+	parts = append(parts, "subtle background underscore")
+	if bpm := int(raw.BPM); bpm > 0 {
+		bpm = max(musicMinBPM, min(musicMaxBPM, bpm))
+		parts = append(parts, fmt.Sprintf("%d BPM", bpm))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// buildAmbiencePrompt wraps a raw ambience description in the guide's own
+// "TrackType: SFX" tag (sound rather than music) plus Freesound-style
+// field-recording descriptors - "" stays "" (no ambience layer).
+func buildAmbiencePrompt(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	return "TrackType: SFX, ambience field recording, " + strings.TrimRight(raw, ". ") + ", continuous seamless background atmosphere, no music"
 }
 
 // ScoreMusic tone-scores chapterTitle's paragraphs into background-music
@@ -513,12 +706,15 @@ func parseMusicRegionDescription(content string) (musicDescriptionRaw, error) {
 // (pass 1) decides only where each region starts and whether it's a "cut"
 // or "continuation", batching in groups of musicBatchParagraphs; then, for
 // each resulting region, describeMusicRegion (pass 2) writes that region's
-// own mood label and music generation prompt from its own actual
+// own mood label, music prompt and ambience prompt from its own actual
 // paragraph span - one call per region, once its real boundaries are
 // known, rather than asking the model to write a description while
 // simultaneously still deciding where the region even begins/ends. See
 // musicDescribeSystemPrompt's own doc comment for the ad hoc comparison
-// that motivated this split.
+// that motivated this split. Pass 2 runs strictly in region order, each
+// call shown the previous region's own description (musicDescribeContext)
+// so palettes carry through continuations and an unchanged setting keeps
+// an identical ambience prompt.
 //
 // shouldPause (nil-safe: nil never pauses) is threaded through pass 1's
 // own batches (see scoreMusicBoundaries) and, separately, checked again
@@ -547,6 +743,7 @@ func (c *Client) ScoreMusic(ctx context.Context, bookTitle, chapterTitle string,
 
 	lastIdx := paragraphs[len(paragraphs)-1].Idx
 	out = make([]MusicRegionResult, 0, len(boundaries))
+	var prev *musicDescription
 	for i, b := range boundaries {
 		if i > 0 && shouldPause != nil && shouldPause() {
 			remaining = paragraphsFromIdx(paragraphs, b.StartIdx)
@@ -560,11 +757,12 @@ func (c *Client) ScoreMusic(ctx context.Context, bookTitle, chapterTitle string,
 		if len(span) == 0 {
 			continue
 		}
-		mood, prompt, derr := c.describeMusicRegion(ctx, bookTitle, chapterTitle, span)
+		d, derr := c.describeMusicRegion(ctx, bookTitle, chapterTitle, span, musicDescribeContext{prev: prev, transition: b.Transition})
 		if derr != nil {
 			return out, paragraphsFromIdx(paragraphs, b.StartIdx), fmt.Errorf("describing region starting at %d: %w", b.StartIdx, derr)
 		}
-		out = append(out, MusicRegionResult{StartIdx: b.StartIdx, Mood: mood, Prompt: prompt, Transition: b.Transition})
+		prev = &d
+		out = append(out, MusicRegionResult{StartIdx: b.StartIdx, Mood: d.Mood, Prompt: d.Prompt, Ambience: d.Ambience, Transition: b.Transition})
 	}
 	return out, remaining, nil
 }

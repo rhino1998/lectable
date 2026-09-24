@@ -354,3 +354,71 @@ func tailWavBytes(clip *wav.Clip) []byte {
 	}
 	return data
 }
+
+// ambienceRelativeLevel is the ambience layer's RMS relative to the music
+// layer's own in MixAmbience - a little under the music (about -4.4dB), so
+// the place is clearly audible without the soundscape drowning the score.
+const ambienceRelativeLevel = 0.6
+
+// mixPeakCeiling is the peak MixAmbience scales the summed mix back down
+// to if the two layers together would otherwise clip.
+const mixPeakCeiling = 0.98
+
+// MixAmbience layers ambience (raw WAV bytes, a GenerateRegion render of
+// the region's ambience prompt) under music (likewise), returning the
+// summed clip as WAV bytes. The layers are rendered separately rather
+// than from one combined prompt - Stable Audio 3's training data tags a
+// clip as either music or SFX, so one prompt asking for both tends to
+// come back as one with a trace of the other - and separate stems are
+// what let this set their balance: ambience is level-matched to
+// ambienceRelativeLevel of the music's own RMS, whatever loudness each
+// render happened to come out at. Both come from the same checkpoint, so
+// the formats match; the mix is as long as the shorter of the two (both
+// are trimmed to the same served length by GenerateRegion, so any
+// difference is a frame or two of rounding).
+func MixAmbience(music, ambience []byte) ([]byte, error) {
+	m, err := wav.Decode(music)
+	if err != nil {
+		return nil, fmt.Errorf("decode music: %w", err)
+	}
+	a, err := wav.Decode(ambience)
+	if err != nil {
+		return nil, fmt.Errorf("decode ambience: %w", err)
+	}
+	if m.SampleRate != a.SampleRate || m.Channels != a.Channels {
+		return nil, fmt.Errorf("layer format mismatch: music %dHz/%dch, ambience %dHz/%dch", m.SampleRate, m.Channels, a.SampleRate, a.Channels)
+	}
+	n := min(len(m.Samples), len(a.Samples))
+	gain := float32(0)
+	if ar := rms(a.Samples[:n]); ar > 0 {
+		gain = float32(ambienceRelativeLevel * rms(m.Samples[:n]) / ar)
+	}
+	out := make([]float32, n)
+	var peak float32
+	for i := range out {
+		v := m.Samples[i] + a.Samples[i]*gain
+		out[i] = v
+		if v < 0 {
+			v = -v
+		}
+		peak = max(peak, v)
+	}
+	if peak > mixPeakCeiling {
+		scale := mixPeakCeiling / peak
+		for i := range out {
+			out[i] *= scale
+		}
+	}
+	return wav.Encode(out, m.SampleRate, m.Channels)
+}
+
+func rms(samples []float32) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	var sum float64
+	for _, s := range samples {
+		sum += float64(s) * float64(s)
+	}
+	return math.Sqrt(sum / float64(len(samples)))
+}
