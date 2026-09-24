@@ -122,21 +122,24 @@ export interface Paragraph {
   // backend store.Paragraph.DescribesCharacters. Always empty when
   // isQuote is true.
   describesCharacters?: string[]
+  // This dialogue line's delivery emotion (an id from utils/emotions.ts),
+  // absent for neutral - see backend store.Paragraph.EffectiveEmotion.
+  // Only ever set on real dialogue (isQuote && !scareQuote). It picks
+  // which emotion variant of the speaker's reference clip the line is
+  // cloned from.
+  emotion?: string
   // Empty until alignment finishes (arrives later as a chapter-topic
   // patch - see api/live.ts) -
   // ParagraphText falls back to estimating word timing from character
   // position until then.
   words: WordTiming[]
   // DirectionMarks mirrors backend paragraphDTO.DirectionMarks - every
-  // inline Higgs delivery tag (e.g. "<|emotion:anger|>", "<|sfx:laughter|>")
-  // currently active on this paragraph, each pinned to where it was
-  // actually inserted (offset is a JS-string-index-compatible code point
-  // count into `text` - see the backend field's own doc comment), already
-  // resolved for whichever clone model currently narrates it, in speaking
-  // order. A paragraph can carry more than one (a mid-quote emotion shift,
-  // or an emotion tag stacked with an inline sfx tag). Empty/absent for
-  // the common case (no tags, or a clone model that doesn't understand
-  // this vocabulary).
+  // inline Higgs delivery tag (today only "<|prosody:pause|>", inserted
+  // before each ellipsis/em dash) the generation text carries, each
+  // pinned to where it's inserted (offset is a JS-string-index-compatible
+  // code point count into `text` - see the backend field's own doc
+  // comment), in speaking order. Empty/absent for the common case, and
+  // always for a non-Higgs clone model.
   directionMarks?: DirectionMark[]
   // PronunciationMarks mirrors backend paragraphDTO.PronunciationMarks -
   // every resolved pronunciation substitution ("Dr." -> "Doctor") active
@@ -725,6 +728,22 @@ export interface Speaker {
   // creates/assigns this name; lines already attributed to it stay put
   // until Auto Split redistributes them.
   invalid?: boolean
+  // Every emotion this speaker's dialogue uses in this book, with the
+  // state of the emotion-variant reference clip those lines clone from -
+  // see SpeakerEmotion. Absent when they have no emotional lines.
+  emotions?: SpeakerEmotion[]
+}
+
+// One emotion a speaker uses (backend speakerEmotionDTO). status is
+// 'ready' (audioUrl plays the variant clip), 'pending' (renders lazily the
+// first time one of these lines generates), or 'failed' (these lines
+// clone from the base clip instead).
+export interface SpeakerEmotion {
+  emotion: string
+  label: string
+  count: number
+  status: 'ready' | 'pending' | 'failed'
+  audioUrl?: string
 }
 
 // One paragraph a character speaks, from GET

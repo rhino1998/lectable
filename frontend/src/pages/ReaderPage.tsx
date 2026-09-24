@@ -26,16 +26,15 @@ import {
   useScoreChapterMusic,
   useScoringMusicChapters,
   useSetParagraphDescription,
+  useSetParagraphEmotion,
   useSetParagraphScareQuote,
   useSetParagraphSFXPrompt,
   useSetParagraphSpeaker,
   useSpeakers,
   useTagDirections,
   useUpdatePosition,
-  useVoice,
 } from '../api/queries'
 import { ApiError } from '../api/client'
-import { DEFAULT_CLONE_MODEL, HIGGS_CLONE_MODEL } from '../api/types'
 import { usePlayback } from '../hooks/usePlayback'
 import { useBackgroundMusic } from '../hooks/useBackgroundMusic'
 import { useInView } from '../hooks/useInView'
@@ -47,6 +46,7 @@ import { ChapterSection } from '../components/ChapterSection'
 import { AnnotationTooltip } from '../components/AnnotationTooltip'
 import type { AnnotationTooltipHandle } from '../components/AnnotationTooltip'
 import type { ChapterDetail, MusicRegion, Paragraph } from '../api/types'
+import { EMOTIONS } from '../utils/emotions'
 import { matchesSelectedSpeaker } from '../utils/annotations'
 
 // Wraps `fn` in a stable function identity (never changes across renders)
@@ -154,15 +154,6 @@ export function ReaderPage() {
   const describingIdxs = useDescribingChapters(bookId)
   const scareQuotingIdxs = useScareQuotingChapters(bookId)
 
-  // Mirrors SpeakersPage's own effectiveCloneModel/directionSupported: the
-  // chapter-header direction-tagging button is only offered when the
-  // book's own clone model is Higgs, the only clone
-  // model whose tokenizer understands this tag vocabulary - see
-  // SpeakersPage's own doc comment on directionSupported for the fuller
-  // reasoning (the backend enforces the same check server-side regardless,
-  // this is just so the button isn't offered when it can't work).
-  const voiceQuery = useVoice(bookId)
-  const directionSupported = (voiceQuery.data?.cloneModel || DEFAULT_CLONE_MODEL) === HIGGS_CLONE_MODEL
 
   // Colors narrator/speaker/description segments in the paragraph list
   // instead of leaving that distinction to the speaker-hint badge alone
@@ -188,6 +179,7 @@ export function ReaderPage() {
   const setParagraphSpeaker = useSetParagraphSpeaker(bookId)
   const setParagraphDescription = useSetParagraphDescription(bookId)
   const setParagraphScareQuote = useSetParagraphScareQuote(bookId)
+  const setParagraphEmotion = useSetParagraphEmotion(bookId)
   const [contextMenu, setContextMenu] = useState<{
     chapterIdx: number
     paragraphIdx: number
@@ -195,6 +187,7 @@ export function ReaderPage() {
     currentSpeaker: string
     describesCharacters: string[]
     scareQuote: boolean
+    emotion: string
     x: number
     y: number
   } | null>(null)
@@ -213,6 +206,7 @@ export function ReaderPage() {
         currentSpeaker: p.speaker ?? '',
         describesCharacters: p.describesCharacters ?? [],
         scareQuote: !!p.scareQuote,
+        emotion: p.emotion ?? '',
         x: e.clientX,
         y: e.clientY,
       })
@@ -304,6 +298,22 @@ export function ReaderPage() {
     )
     setContextMenu(null)
   }, [contextMenu, setParagraphScareQuote])
+
+  // Manual emotion override for a dialogue line ('' = neutral) - like
+  // toggleScareQuote, the backend invalidates and regenerates the line's
+  // audio itself when its effective emotion changes.
+  const setEmotion = useCallback(
+    (emotion: string) => {
+      if (!contextMenu) return
+      setChapterActionError(null)
+      setParagraphEmotion.mutate(
+        { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, emotion },
+        { onError: (err) => setChapterActionError(err instanceof ApiError ? err.message : 'Could not set this line\'s emotion') },
+      )
+      setContextMenu(null)
+    },
+    [contextMenu, setParagraphEmotion],
+  )
 
   const runClearChapterAudio = useCallback(
     (idx: number, title: string) => {
@@ -1062,7 +1072,6 @@ export function ReaderPage() {
               hasPronunciation={!!chapterSummary?.passes.pronunciation}
               hasMusic={!!chapterSummary?.passes.music}
               isGenerated={!!chapterSummary && chapterSummary.readyCount >= chapterSummary.paragraphCount}
-              directionSupported={directionSupported}
               annotationsView={annotationsView}
               selectedSpeaker={selectedSpeaker}
               isActiveChapter={isActiveChapter}
@@ -1150,6 +1159,26 @@ export function ReaderPage() {
               <button className="speaker-context-menu-item" onClick={toggleScareQuote}>
                 {contextMenu.scareQuote ? 'Unmark as scare quote' : 'Mark as scare quote'}
               </button>
+              {!contextMenu.scareQuote && (
+                <>
+                  <div className="speaker-context-menu-section">Emotion</div>
+                  <div className="speaker-context-menu-chips">
+                    {[{ id: '', label: 'Neutral' }, ...EMOTIONS].map((e) => (
+                      <button
+                        key={e.id}
+                        className={
+                          'speaker-context-menu-chip' +
+                          (e.id === contextMenu.emotion ? ' speaker-context-menu-chip-active' : '')
+                        }
+                        disabled={e.id === contextMenu.emotion}
+                        onClick={() => setEmotion(e.id)}
+                      >
+                        {e.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
               {nearbyReassignTargets.length > 0 && <div className="speaker-context-menu-section">Nearby</div>}
               {nearbyReassignTargets.map((name) => (
                 <button

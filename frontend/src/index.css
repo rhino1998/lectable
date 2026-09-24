@@ -2209,6 +2209,71 @@ label {
   font-weight: 600;
   cursor: default;
 }
+/* Emotion picker in the dialogue context menu (ReaderPage's setEmotion) -
+   a wrapping row of small chips rather than one full-width item per
+   emotion, which would push the reassign list far down the menu. */
+.speaker-context-menu-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding: 0 0.6rem 0.3rem;
+}
+.speaker-context-menu-chip {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text);
+}
+.speaker-context-menu-chip:hover:not(:disabled) {
+  background: var(--bg-subtle);
+}
+.speaker-context-menu-chip-active,
+.speaker-context-menu-chip:disabled {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  cursor: default;
+}
+/* SpeakersPage's per-speaker emotion variants (SpeakerEmotions) - one
+   chip per emotion the speaker's lines use, tinted by variant status. */
+.speaker-emotions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.25rem 0;
+  font-size: 0.8rem;
+}
+.speaker-emotion-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.1rem 0.35rem 0.1rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.speaker-emotion-ready {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.speaker-emotion-pending {
+  border-style: dashed;
+}
+.speaker-emotion-failed {
+  border-color: color-mix(in srgb, #dc2626 60%, var(--border));
+}
+.speaker-emotion-button {
+  display: inline-flex;
+  align-items: center;
+  background: none;
+  border: none;
+  padding: 0.1rem;
+  color: inherit;
+}
+.speaker-emotion-button:disabled {
+  opacity: 0.5;
+}
 .speaker-context-menu-empty {
   padding: 0.4rem 0.6rem;
   font-size: 0.8rem;

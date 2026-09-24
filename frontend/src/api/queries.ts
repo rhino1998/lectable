@@ -178,6 +178,22 @@ export function useSetParagraphScareQuote(bookId: string) {
   })
 }
 
+// Manual per-line emotion override - see api.setParagraphEmotion.
+export function useSetParagraphEmotion(bookId: string) {
+  return useMutation({
+    mutationFn: ({ chapterIdx, paragraphIdx, emotion }: { chapterIdx: number; paragraphIdx: number; emotion: string }) =>
+      api.setParagraphEmotion(bookId, chapterIdx, paragraphIdx, emotion),
+  })
+}
+
+// Re-renders one speaker's emotion variant - see api.regenerateVariant.
+export function useRegenerateVariant(bookId: string) {
+  return useMutation({
+    mutationFn: ({ speaker, emotion }: { speaker: string; emotion: string }) =>
+      api.regenerateVariant(bookId, speaker, emotion),
+  })
+}
+
 // Saves a paragraph's own sound-effect test prompt and/or trigger word -
 // see api.setParagraphSFXPrompt's own doc comment.
 export function useSetParagraphSFXPrompt(bookId: string) {

@@ -135,6 +135,26 @@ export const api = {
       json('PUT', { scareQuote }),
     ),
 
+  // Manually overrides one dialogue line's emotion (an id from
+  // utils/emotions.ts, or '' for neutral) - see
+  // httpapi.handleSetParagraphEmotion. The line's audio regenerates
+  // server-side when its effective emotion changes. 400 for narration.
+  setParagraphEmotion: (bookId: string, chapterIdx: number, paragraphIdx: number, emotion: string) =>
+    request<{ ok: boolean }>(
+      `/api/books/${bookId}/chapters/${chapterIdx}/paragraphs/${paragraphIdx}/emotion`,
+      json('PUT', { emotion }),
+    ),
+
+  // Re-renders the emotion variant `speaker`'s lines clone from, resetting
+  // this book's audio for their lines in that emotion - see
+  // httpapi.handleRegenerateVariant. Fire-and-forget; the speakers topic
+  // reports the new status once it renders.
+  regenerateVariant: (bookId: string, speaker: string, emotion: string) =>
+    request<{ queued: boolean }>(
+      `/api/books/${bookId}/speakers/variants/regenerate`,
+      json('POST', { speaker, emotion }),
+    ),
+
   // Sound-effect (Stable Audio SFX) test surface (see backend/CLAUDE.md's
   // "SFX sound effects" section) - saves a paragraph's own text-to-audio
   // prompt and/or trigger word without generating anything yet.
@@ -240,13 +260,12 @@ export const api = {
       method: 'POST',
     }),
 
-  // Enqueues speech-direction tagging (Higgs's own inline delivery tags,
-  // e.g. <|emotion:anger|>) for one chapter - fire-and-forget, same
-  // {queued} shape as attributeSpeakers, for the same reason: it runs the
-  // LLM over a whole chapter in batches and can take a while. 400 if the
-  // book's resolved clone model isn't Higgs's (audiocpp-higgs-4b), 503 if
-  // the backend has no SPEAKER_LLM_MODEL_PATH configured - see
-  // httpapi.handleTagDirections. Progress/completion is observed the same
+  // Enqueues emotion labeling (each dialogue line gets an emotion from
+  // utils/emotions.ts, or stays neutral) for one chapter - fire-and-forget,
+  // same {queued} shape as attributeSpeakers, for the same reason: it runs
+  // the LLM over a whole chapter in batches and can take a while. Any
+  // clone model. 503 if the backend has no SPEAKER_LLM_MODEL_PATH
+  // configured - see httpapi.handleTagDirections. Progress/completion is observed the same
   // way attribution's is (GET /api/jobs), not this call's own response.
   tagDirections: (bookId: string, chapterIdx: number) =>
     request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/tag-directions`, {
@@ -255,8 +274,7 @@ export const api = {
 
   // Enqueues pronunciation resolution (ambiguous abbreviations like "Dr." ->
   // "Doctor") for one chapter - fire-and-forget, same {queued} shape as
-  // tagDirections, but for any clone model (a word substitution reads
-  // correctly under all of them). 503 without SPEAKER_LLM_MODEL_PATH - see
+  // tagDirections. 503 without SPEAKER_LLM_MODEL_PATH - see
   // httpapi.handleResolvePronunciation.
   resolvePronunciation: (bookId: string, chapterIdx: number) =>
     request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/resolve-pronunciation`, {

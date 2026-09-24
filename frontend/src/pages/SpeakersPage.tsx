@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import {
   RiCheckLine,
@@ -13,6 +13,8 @@ import {
   RiGitMergeLine,
   RiLoader4Line,
   RiMusic2Line,
+  RiPauseFill,
+  RiPlayFill,
   RiPriceTag3Line,
   RiRefreshLine,
   RiScissorsCutLine,
@@ -49,6 +51,7 @@ import {
   usePreprocessBook,
   useReattributeSpeaker,
   useReattributingSpeakers,
+  useRegenerateVariant,
   useSetCharacterInvalid,
   useRegenerateCharacterVoices,
   useRegenerateParagraph,
@@ -80,11 +83,10 @@ import {
   DEFAULT_CHARACTER_VOICE_MODE,
   DEFAULT_DESIGN_MODEL,
   DEFAULT_CLONE_MODEL,
-  HIGGS_CLONE_MODEL,
   INSTRUCTED_CLONE_MODEL,
   type CharacterVoiceMode,
 } from '../api/types'
-import type { CustomVoicePreset, Speaker, SpeakerAppearance, VoicePreset } from '../api/types'
+import type { CustomVoicePreset, Speaker, SpeakerAppearance, SpeakerEmotion, VoicePreset } from '../api/types'
 
 // Per-book speaker management: run LLM attribution chapter by chapter,
 // review who's been identified so far and how much of their dialogue has
@@ -236,16 +238,10 @@ export function SpeakersPage() {
 
   // Mirrors backend narration.BookCloneModel: the book's own clone model
   // (a property of the book, not of any voice), or DEFAULT_CLONE_MODEL if
-  // it's somehow unset. Direction tagging's own tag vocabulary is specific to Higgs's tokenizer (see
-  // backend speakerattr.validDirectionTags), so this gates whether the
-  // tag-directions buttons below do anything - the backend enforces the
-  // same check server-side regardless (400 for any other clone model),
-  // this is just so the UI doesn't offer an action that can't work.
+  // it's somehow unset.
   const effectiveCloneModel = voiceQuery.data?.cloneModel || DEFAULT_CLONE_MODEL
-  const directionSupported = effectiveCloneModel === HIGGS_CLONE_MODEL
 
-  // Same gating shape as directionSupported, for
-  // instructCharacterVoices - only actually does anything when the book's
+  // Gates instructCharacterVoices - only actually does anything when the book's
   // clone model is INSTRUCTED_CLONE_MODEL (the one family
   // that honors a clone-time style instruction alongside a reference
   // clip). Backend narration.Resolver already no-ops the setting itself
@@ -484,9 +480,8 @@ export function SpeakersPage() {
   const hasUnscareQuoted = book.chapters.some((c) => !c.passes.scareQuote)
 
   // isDirected/hasUndirected mirror c.passes.attribution/hasUnattributed
-  // exactly - passes.direction is a single flat bool, not keyed by clone
-  // model (only Higgs ever produces sentence/inline tags - see
-  // directionSupported). runDirectionAll/runDirectionUndirected fire every chapter's own
+  // exactly - passes.direction is emotion labeling, a single flat bool for
+  // any clone model. runDirectionAll/runDirectionUndirected fire every chapter's own
   // request at once, same batching rationale as runAttributeAll/
   // runAttributeUnattributed - the backend queues them one at a time
   // regardless (poolLLM, KindSpeechDirection).
@@ -499,8 +494,7 @@ export function SpeakersPage() {
   }
   const hasUndirected = book.chapters.some((c) => !isDirected(c))
 
-  // Same shape again, for pronunciation resolution (c.passes.pronunciation)
-  // - available for every clone model, unlike direction tagging.
+  // Same shape again, for pronunciation resolution (c.passes.pronunciation).
   const runPronunciationAll = () => {
     book.chapters.forEach((c) => runPronunciation(c.idx))
   }
@@ -544,7 +538,7 @@ export function SpeakersPage() {
 
   // Status columns between the table's Chapter and actions columns, spanned
   // by the bulk-action rows' one empty cell.
-  const statusColumnCount = directionSupported ? 8 : 7
+  const statusColumnCount = 8
 
   // A chapter's music can only generate once it's scored and its narration
   // is fully generated (each region's clip is sized to its own narration -
@@ -652,7 +646,7 @@ export function SpeakersPage() {
             className="text-button"
             onClick={handlePreprocess}
             disabled={book.preprocessing || preprocessBook.isPending}
-            title="Preprocess: attribute speakers, characterize, provision voices, and tag directions for the whole book"
+            title="Preprocess: attribute speakers, characterize, provision voices, and label emotions for the whole book"
           >
             {book.preprocessing ? 'Preprocessing…' : 'Preprocess'}
           </button>
@@ -694,14 +688,12 @@ export function SpeakersPage() {
             disabled={!voiceQuery.data || updateVoice.isPending}
             onChange={(e) => toggleSpeechDirection(e.target.checked)}
           />
-          {directionSupported
-            ? 'Wait for direction tagging and pronunciation before generating audio'
-            : 'Wait for pronunciation resolution before generating audio'}
+          Wait for emotion labeling and pronunciation before generating audio
         </label>
         <p className="muted">
-          {directionSupported
-            ? "When on, a chapter's audio waits for direction tagging and pronunciation resolution to finish first, so its narration picks up any delivery tags and resolved abbreviations right away instead of needing a later regenerate. Off by default."
-            : `When on, a chapter's audio waits for pronunciation resolution to finish first, so ambiguous abbreviations are read correctly right away instead of needing a later regenerate. Off by default. (Direction tagging is only available for the "${HIGGS_CLONE_MODEL}" clone model - this book uses "${effectiveCloneModel}".)`}
+          When on, a chapter's audio waits for emotion labeling and pronunciation resolution to finish first, so
+          each line is voiced in its emotion and ambiguous abbreviations are read correctly right away, instead of
+          needing a later regenerate. Off by default.
         </p>
 
         <label className="checkbox-label">
@@ -724,13 +716,6 @@ export function SpeakersPage() {
         <div className="library-header">
           <h2>Attribute speakers</h2>
         </div>
-        {!directionSupported && (
-          <p className="muted">
-            Speech-direction tagging (inline delivery tags like <code>&lt;|emotion:anger|&gt;</code>) is only
-            available for the "{HIGGS_CLONE_MODEL}" clone model - this book uses "
-            {effectiveCloneModel}".
-          </p>
-        )}
         {attributeError && <p className="error-text">{attributeError}</p>}
         {retagError && <p className="error-text">{retagError}</p>}
         {retagScareQuoteError && <p className="error-text">{retagScareQuoteError}</p>}
@@ -746,7 +731,7 @@ export function SpeakersPage() {
               <th>Attribution</th>
               <th>Description</th>
               <th>Scare quotes</th>
-              {directionSupported && <th>Direction</th>}
+              <th>Emotion</th>
               <th>Pronunciation</th>
               <th>Music</th>
               <th>Audio</th>
@@ -786,15 +771,13 @@ export function SpeakersPage() {
                     onClick={runRetagScareQuotesUntagged}
                     title="Tag untagged scare quotes — every chapter that isn't scare-quote-tagged yet, skipping ones already done"
                   />
-                  {directionSupported && (
-                    <BulkActionButton
-                      icon={RiEmotionLine}
-                      busy={directingIdxs.size > 0}
-                      disabled={!hasUndirected}
-                      onClick={runDirectionUndirected}
-                      title="Tag undirected — every chapter that isn't fully direction-tagged yet, skipping ones already done"
-                    />
-                  )}
+                  <BulkActionButton
+                    icon={RiEmotionLine}
+                    busy={directingIdxs.size > 0}
+                    disabled={!hasUndirected}
+                    onClick={runDirectionUndirected}
+                    title="Label unlabeled emotions — every chapter that isn't emotion-labeled yet, skipping ones already done"
+                  />
                   <BulkActionButton
                     icon={RiSpeakLine}
                     busy={pronouncingIdxs.size > 0}
@@ -849,14 +832,12 @@ export function SpeakersPage() {
                     onClick={runRetagScareQuotesAll}
                     title="Retag all scare quotes — every chapter, including ones already done"
                   />
-                  {directionSupported && (
-                    <BulkActionButton
-                      icon={RiEmotionLine}
-                      busy={directingIdxs.size > 0}
-                      onClick={runDirectionAll}
-                      title="Tag all directions — every chapter, including ones already done"
-                    />
-                  )}
+                  <BulkActionButton
+                    icon={RiEmotionLine}
+                    busy={directingIdxs.size > 0}
+                    onClick={runDirectionAll}
+                    title="Label all emotions — every chapter, including ones already done"
+                  />
                   <BulkActionButton
                     icon={RiSpeakLine}
                     busy={pronouncingIdxs.size > 0}
@@ -902,11 +883,9 @@ export function SpeakersPage() {
                   <td>
                     <PassStatus done={c.passes.scareQuote} busy={retaggingScareQuotes} label="Scare-quote tagging" />
                   </td>
-                  {directionSupported && (
-                    <td>
-                      <PassStatus done={c.passes.direction} busy={directing} label="Direction tagging" />
-                    </td>
-                  )}
+                  <td>
+                    <PassStatus done={c.passes.direction} busy={directing} label="Emotion labeling" />
+                  </td>
                   <td>
                     <PassStatus done={c.passes.pronunciation} busy={pronouncing} label="Pronunciation resolution" />
                   </td>
@@ -977,22 +956,20 @@ export function SpeakersPage() {
                       >
                         <RiDoubleQuotesL className={retaggingScareQuotes ? 'spin' : undefined} />
                       </button>
-                      {directionSupported && (
-                        <button
-                          className="icon-action-button"
-                          disabled={directing}
-                          onClick={() => runDirection(c.idx)}
-                          title={
-                            directing
-                              ? 'Tagging…'
-                              : c.passes.direction
-                                ? 'Re-tag speech direction for this chapter'
-                                : 'Tag speech direction for this chapter'
-                          }
-                        >
-                          <RiEmotionLine className={directing ? 'spin' : undefined} />
-                        </button>
-                      )}
+                      <button
+                        className="icon-action-button"
+                        disabled={directing}
+                        onClick={() => runDirection(c.idx)}
+                        title={
+                          directing
+                            ? 'Tagging…'
+                            : c.passes.direction
+                              ? 'Re-tag speech direction for this chapter'
+                              : 'Tag speech direction for this chapter'
+                        }
+                      >
+                        <RiEmotionLine className={directing ? 'spin' : undefined} />
+                      </button>
                       <button
                         className="icon-action-button"
                         disabled={pronouncing}
@@ -1204,6 +1181,95 @@ export function SpeakersPage() {
   )
 }
 
+// One speaker's emotion variants - every emotion their dialogue uses in
+// this book (backend speakerRowDTO.Emotions), each a chip with its line
+// count, a play button once the variant clip exists, and a regenerate
+// button (re-renders the variant and resets those lines' audio - see
+// api.regenerateVariant). A pending variant renders by itself the first
+// time one of its lines generates.
+function SpeakerEmotions({
+  bookId,
+  speakerName,
+  emotions,
+}: {
+  bookId: string
+  speakerName: string
+  emotions: SpeakerEmotion[]
+}) {
+  const regenerate = useRegenerateVariant(bookId)
+  const [error, setError] = useState<string | null>(null)
+  // Bumped per emotion on regenerate, so the replaced clip's URL isn't
+  // served from the browser cache.
+  const [versions, setVersions] = useState<Record<string, number>>({})
+  const [playing, setPlaying] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  useEffect(() => () => audioRef.current?.pause(), [])
+
+  const togglePlay = (e: SpeakerEmotion) => {
+    audioRef.current?.pause()
+    if (playing === e.emotion || !e.audioUrl) {
+      setPlaying(null)
+      return
+    }
+    const audio = new Audio(withCacheBust(e.audioUrl, versions[e.emotion]))
+    audio.onended = () => setPlaying(null)
+    audioRef.current = audio
+    setPlaying(e.emotion)
+    audio.play().catch(() => setPlaying(null))
+  }
+
+  const runRegenerate = (emotion: string) => {
+    setError(null)
+    regenerate.mutate(
+      { speaker: speakerName, emotion },
+      {
+        onSuccess: () => setVersions((v) => ({ ...v, [emotion]: Date.now() })),
+        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not regenerate this variant'),
+      },
+    )
+  }
+
+  return (
+    <div className="speaker-emotions">
+      <span className="muted">Emotions:</span>
+      {emotions.map((e) => (
+        <span
+          key={e.emotion}
+          className={'speaker-emotion-chip speaker-emotion-' + e.status}
+          title={
+            e.status === 'ready'
+              ? `${e.label}: ${e.count} line(s), variant ready`
+              : e.status === 'failed'
+                ? `${e.label}: ${e.count} line(s) - the variant couldn't be rendered, so these lines use the base voice`
+                : `${e.label}: ${e.count} line(s) - the variant renders the first time one of these lines generates`
+          }
+        >
+          {e.status === 'ready' && (
+            <button
+              className="speaker-emotion-button"
+              onClick={() => togglePlay(e)}
+              aria-label={playing === e.emotion ? `Stop ${e.label} sample` : `Play ${e.label} sample`}
+            >
+              {playing === e.emotion ? <RiPauseFill /> : <RiPlayFill />}
+            </button>
+          )}
+          {e.label} <span className="muted">{e.count}</span>
+          <button
+            className="speaker-emotion-button"
+            onClick={() => runRegenerate(e.emotion)}
+            disabled={regenerate.isPending}
+            aria-label={`Regenerate ${e.label} variant`}
+            title={`Regenerate the ${e.label} variant (and re-voice these lines)`}
+          >
+            <RiRefreshLine />
+          </button>
+        </span>
+      ))}
+      {error && <span className="error-text">{error}</span>}
+    </div>
+  )
+}
+
 function SpeakerRow({
   bookId,
   speaker,
@@ -1310,6 +1376,9 @@ function SpeakerRow({
         <p className="muted speaker-row-refline">
           Reference line: <em>&ldquo;{speaker.refLine}&rdquo;</em>
         </p>
+      )}
+      {speaker.emotions && speaker.emotions.length > 0 && (
+        <SpeakerEmotions bookId={bookId} speakerName={speaker.name} emotions={speaker.emotions} />
       )}
 
       <div className="speaker-row-actions">

@@ -1,6 +1,7 @@
 import { ANNOTATION_LABELS } from '../api/types'
 import type { AnnotationKind, Paragraph } from '../api/types'
 import { formatDirectionTag } from './directionTags'
+import { emotionLabel } from './emotions'
 
 // Which of the three narration roles a paragraph segment plays - dialogue
 // (isQuote) takes priority regardless of whether it's been attributed to a
@@ -25,11 +26,9 @@ export function annotationKind(p: Paragraph): AnnotationKind {
 // Hover text for one segment's annotation highlight - names the actual
 // character where one's known, rather than just the generic role label
 // ANNOTATION_LABELS alone would give: "Speaker" tells you it's dialogue,
-// "Speaker: Jake" tells you whose. Direction tags, when present, are
-// appended regardless of kind - they're an orthogonal "how it's delivered"
-// fact, not a narration-role classification of its own, and a segment can
-// carry more than one (a mid-quote emotion shift, or a stacked emotion +
-// sfx tag).
+// "Speaker: Jake" tells you whose. The line's emotion and any direction
+// tags (pauses) are appended regardless of kind - they're an orthogonal
+// "how it's delivered" fact, not a narration-role classification.
 export function annotationTitle(p: Paragraph): string {
   const kind = annotationKind(p)
   let base: string
@@ -45,6 +44,9 @@ export function annotationTitle(p: Paragraph): string {
   }
   if (p.scareQuote) {
     base += ' · Scare quote'
+  }
+  if (p.emotion) {
+    base += ` · ${emotionLabel(p.emotion)}`
   }
   const tags = p.directionMarks ?? []
   return tags.length > 0 ? `${base} · ${tags.map((m) => formatDirectionTag(m.tag)).join(', ')}` : base

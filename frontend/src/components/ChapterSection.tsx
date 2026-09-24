@@ -19,7 +19,7 @@ import {
 } from 'react-icons/ri'
 import type { ChapterDetail, ContentItem, MusicRegion, Paragraph } from '../api/types'
 import { hasActiveTextSelection } from '../utils/selection'
-import { formatDirectionTag } from '../utils/directionTags'
+import { emotionLabel } from '../utils/emotions'
 import { annotationKind, annotationTitle, matchesSelectedSpeaker } from '../utils/annotations'
 import { resolveGenerationText } from '../utils/resolveGenerationText'
 import { ParagraphText } from './ParagraphText'
@@ -152,9 +152,9 @@ const ParagraphGroup = memo(function ParagraphGroup({
   // they're looking at, inline dialogue included.
   const firstIdx = segments[0].idx
   const speakers = [...new Set(segments.map((p) => p.speaker).filter((s): s is string => !!s))]
-  const directionTags = [
-    ...new Set(segments.flatMap((p) => (p.directionMarks ?? []).map((m) => m.tag))),
-  ].map(formatDirectionTag)
+  const emotionLabels = [
+    ...new Set(segments.map((p) => p.emotion).filter((e): e is string => !!e)),
+  ].map(emotionLabel)
   const regenerating = segments.some((p) => p.audioStatus === 'generating')
 
   return (
@@ -225,12 +225,12 @@ const ParagraphGroup = memo(function ParagraphGroup({
             <RiUser3Line /> {speakers.join(', ')}
           </span>
         )}
-        {directionTags.length > 0 && (
+        {emotionLabels.length > 0 && (
           <span
             className={'paragraph-direction-hint' + (annotationsView ? ' paragraph-direction-hint-visible' : '')}
-            title={`Delivery: ${directionTags.join(', ')}`}
+            title={`Emotion: ${emotionLabels.join(', ')}`}
           >
-            <RiEmotionLine /> {directionTags.join(', ')}
+            <RiEmotionLine /> {emotionLabels.join(', ')}
           </span>
         )}
         <button
@@ -523,11 +523,6 @@ interface ChapterSectionProps {
   // c.readyCount >= c.paragraphCount (SpeakersPage's own isGenerated) -
   // only used for the generate button's own title wording.
   isGenerated: boolean
-  // Mirrors SpeakersPage's own directionSupported: the book's resolved
-  // clone model isn't Higgs, so the direction-tagging button (whose tag
-  // vocabulary is Higgs-specific) is left out entirely rather than shown
-  // disabled - same "don't offer an action that can't work" reasoning.
-  directionSupported: boolean
   // Windowing (see ReaderPage's chapterHeights/registerHeight): false once
   // this chapter has been measured at least once and sits outside the
   // render window around whatever chapter is actually on screen - instead
@@ -603,7 +598,6 @@ export const ChapterSection = memo(function ChapterSection({
   hasPronunciation,
   hasMusic,
   isGenerated,
-  directionSupported,
   renderFull,
   placeholderHeight,
   annotationsView,
@@ -715,22 +709,20 @@ export const ChapterSection = memo(function ChapterSection({
           >
             <RiDoubleQuotesL className={chapterRetaggingScareQuotes ? 'spin' : undefined} />
           </button>
-          {directionSupported && (
-            <button
-              className="icon-action-button"
-              onClick={() => onTagDirections(idx)}
-              disabled={chapterDirecting}
-              title={
-                chapterDirecting
-                  ? 'Tagging…'
-                  : hasDirection
-                    ? 'Re-tag speech direction for this chapter'
-                    : 'Tag speech direction for this chapter'
-              }
-            >
-              <RiEmotionLine className={chapterDirecting ? 'spin' : undefined} />
-            </button>
-          )}
+          <button
+            className="icon-action-button"
+            onClick={() => onTagDirections(idx)}
+            disabled={chapterDirecting}
+            title={
+              chapterDirecting
+                ? 'Tagging…'
+                : hasDirection
+                  ? 'Re-tag speech direction for this chapter'
+                  : 'Tag speech direction for this chapter'
+            }
+          >
+            <RiEmotionLine className={chapterDirecting ? 'spin' : undefined} />
+          </button>
           <button
             className="icon-action-button"
             onClick={() => onResolvePronunciation(idx)}
