@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import {
   useAttributeSpeakers,
@@ -72,6 +72,11 @@ function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...a
 // expanding a placeholder back to full content is a synchronous re-render,
 // not a network wait.
 const RENDER_WINDOW_RADIUS = 2
+
+// How many viewport-heights away the active paragraph can be before
+// following it jumps there instantly instead of smooth-scrolling - see
+// scrollToActiveParagraph.
+const FAR_SCROLL_VIEWPORTS = 3
 
 // A stable empty-array reference for a chapter with no music regions (or
 // while annotations view is off, so none were fetched at all) - handing
@@ -445,6 +450,13 @@ export function ReaderPage() {
     }
     return map
   }, [chapterResults])
+  // What the scroll list itself renders from. Live topic updates arrive
+  // through useSyncExternalStore, which always renders urgently - so a
+  // newly-loaded chapter (a couple hundred paragraphs mounting at once)
+  // blocked the main thread mid-scroll. Deferred, React mounts it in an
+  // interruptible background render instead. Playback, lookahead, and
+  // everything else logic-side keep reading the live `chapters`.
+  const renderedChapters = useDeferredValue(chapters)
 
   // Background-music regions for every currently-loaded chapter - backs
   // annotations view's region boundary markers (ChapterSection.
@@ -677,8 +689,19 @@ export function ReaderPage() {
 
   const topSentinelRef = useRef<HTMLDivElement>(null)
   const bottomSentinelRef = useRef<HTMLDivElement>(null)
-  useInView(topSentinelRef, expandUp, '800px', [range?.start])
-  useInView(bottomSentinelRef, expandDown, '800px', [range?.end])
+  // Each sentinel only exists once the chapter at its edge of the range
+  // has actually arrived (or failed). Until then that chapter is just a
+  // short "Loading chapter…" block, so the sentinel beyond it stays inside
+  // its 800px margin and would expand again, and again - on a book resumed
+  // mid-way (or after a jump resets the range) that chained through a
+  // couple dozen chapters above the resume point, all fetched and fully
+  // mounted at once, before real content finally pushed the sentinel away.
+  const edgeSettled = (idx: number) =>
+    renderedChapters.has(idx) || !!(range && chapterResults[idx - range.start]?.isError)
+  const startSettled = range !== null && edgeSettled(range.start)
+  const endSettled = range !== null && edgeSettled(range.end)
+  useInView(topSentinelRef, expandUp, '800px', [range?.start, startSettled])
+  useInView(bottomSentinelRef, expandDown, '800px', [range?.end, endSettled])
 
   const paragraphRefs = useRef(new Map<string, HTMLElement>())
   const registerParagraphRef = useCallback((key: string, el: HTMLElement | null) => {
@@ -704,6 +727,11 @@ export function ReaderPage() {
   const chapterVisibilityRef = useRef(new Map<number, number>())
   const [visibleChapterIdx, setVisibleChapterIdx] = useState<number | null>(null)
   useEffect(() => {
+    // A fresh observer reports every observed section on its first
+    // callback, so drop ratios left over from the previous range - after
+    // a jump resets the range, a chapter no longer mounted would otherwise
+    // keep its last ratio forever and could win "most visible".
+    chapterVisibilityRef.current.clear()
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -718,7 +746,16 @@ export function ReaderPage() {
             best = idx
           }
         }
-        if (best !== null) setVisibleChapterIdx(best)
+        // A transition: this recenters the render window (focusChapterIdx
+        // below), which mounts whole chapters - a couple hundred
+        // paragraphs each - as they come into range. Rendered urgently
+        // that blocked the main thread for hundreds of ms mid-scroll (and
+        // right after every far jump); as a transition React time-slices
+        // it between frames instead.
+        if (best !== null) {
+          const next = best
+          startTransition(() => setVisibleChapterIdx(next))
+        }
       },
       { threshold: [0, 0.1, 0.25, 0.5, 0.75, 1] },
     )
@@ -783,26 +820,64 @@ export function ReaderPage() {
   // scroll position (and fire 'scroll') with no user input at all.
   const [autoFollow, setAutoFollow] = useState(true)
   const hasScrolledOnceRef = useRef(false)
+  // Read through a ref so scrollToActiveParagraph's identity doesn't churn
+  // every time the observer above reports a new most-visible chapter.
+  const visibleChapterIdxRef = useRef(visibleChapterIdx)
+  visibleChapterIdxRef.current = visibleChapterIdx
+  // Which paragraph ("chapterIdx:paragraphIdx") following last actually
+  // scrolled to - lets the follow effect below retry only while the
+  // target hasn't rendered yet, instead of re-scrolling on every
+  // `chapters` change (a live chapter update lands each time a paragraph's
+  // audio finishes generating, and each chapter the sentinels load in is
+  // another). Re-issuing scrollIntoView on those restarted any smooth
+  // scroll still in flight, which read as stutter.
+  const followedKeyRef = useRef<string | null>(null)
 
+  // A requested smooth scroll turns into an instant jump when the target
+  // is far from what's on screen - more than one chapter away from the
+  // most-visible chapter, or more than FAR_SCROLL_VIEWPORTS screens away
+  // within one long chapter. Smooth-scrolling across that much of a long
+  // book takes seconds, and passes over chapters that are still sized
+  // placeholders (see the windowing above) mounting their full DOM
+  // mid-animation, so the scroll stutters and can land off-target as
+  // their real heights settle. The target itself is always mounted (the
+  // playing chapter never collapses to a placeholder); its neighbors fill
+  // in afterwards as a transition (see the IntersectionObserver above).
+  // Returns whether the target paragraph was mounted at all (false =
+  // retry once it renders).
   const scrollToActiveParagraph = useCallback(
     (behavior: ScrollBehavior) => {
       const key = `${playback.chapterIdx}:${playback.paragraphIdx}`
       const el = paragraphRefs.current.get(key)
-      if (!el) return
+      if (!el) return false
+      followedKeyRef.current = key
+      if (behavior === 'smooth') {
+        const visibleIdx = visibleChapterIdxRef.current
+        const chapterDistance = visibleIdx === null ? 0 : Math.abs(playback.chapterIdx - visibleIdx)
+        const rect = el.getBoundingClientRect()
+        const viewportDistance = Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2) / window.innerHeight
+        if (chapterDistance > 1 || viewportDistance > FAR_SCROLL_VIEWPORTS) behavior = 'instant'
+      }
       el.scrollIntoView({ block: 'center', behavior })
       hasScrolledOnceRef.current = true
+      return true
     },
     [playback.chapterIdx, playback.paragraphIdx],
   )
 
   useEffect(() => {
-    if (!autoFollow) return
+    if (!autoFollow) {
+      followedKeyRef.current = null
+      return
+    }
+    if (followedKeyRef.current === `${playback.chapterIdx}:${playback.paragraphIdx}`) return
     scrollToActiveParagraph(hasScrolledOnceRef.current ? 'smooth' : 'auto')
-    // Re-runs when `chapters` changes too, so it retries once the resumed
+    // Re-runs when renderedChapters changes too (the deferred copy the
+    // paragraphs are actually rendered from), so it retries once the resumed
     // chapter's paragraphs actually render (first tick after load, the ref
-    // won't exist yet).
+    // won't exist yet) - but only until that first successful scroll.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playback.chapterIdx, playback.paragraphIdx, chapters, autoFollow])
+  }, [playback.chapterIdx, playback.paragraphIdx, renderedChapters, autoFollow])
 
   useEffect(() => {
     const SCROLL_KEYS = new Set([
@@ -1040,10 +1115,10 @@ export function ReaderPage() {
           } as React.CSSProperties
         }
       >
-        {range.start > 0 && <div ref={topSentinelRef} className="scroll-sentinel" />}
+        {range.start > 0 && startSettled && <div ref={topSentinelRef} className="scroll-sentinel" />}
 
         {Array.from({ length: range.end - range.start + 1 }, (_, i) => range.start + i).map((idx) => {
-          const chapter = chapters.get(idx)
+          const chapter = renderedChapters.get(idx)
           const chapterSummary = book.chapters[idx]
           const chapterTitle = chapter?.title ?? chapterSummary?.title ?? ''
           const isActiveChapter = idx === playback.chapterIdx
@@ -1109,7 +1184,7 @@ export function ReaderPage() {
           )
         })}
 
-        {range.end < totalChapters - 1 && <div ref={bottomSentinelRef} className="scroll-sentinel" />}
+        {range.end < totalChapters - 1 && endSettled && <div ref={bottomSentinelRef} className="scroll-sentinel" />}
       </div>
 
       <PlayerBar

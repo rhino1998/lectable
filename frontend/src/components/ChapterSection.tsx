@@ -123,7 +123,9 @@ function EmotionIcon({
 // over an unrelated paragraph, a playback tick, a scroll-visibility
 // update) doesn't force every other paragraph in every loaded chapter to
 // re-render along with it. Only re-renders when its own group data,
-// active/annotation state, or bookmark status actually changes.
+// active/annotation state, or bookmark status actually changes - see
+// paragraphGroupPropsEqual for what "its own" means for group and
+// audioElement.
 const ParagraphGroup = memo(function ParagraphGroup({
   group,
   chapterIdx,
@@ -387,7 +389,43 @@ const ParagraphGroup = memo(function ParagraphGroup({
       )}
     </>
   )
-})
+}, paragraphGroupPropsEqual)
+
+// groupContent rebuilds every group object on each ChapterSection render
+// (any live patch to the chapter, e.g. one paragraph's audio finishing),
+// so compare groups by what they hold instead: live patches keep an
+// unchanged paragraph's own object identity (see api/live.ts applyOps),
+// so a group whose paragraphs are all the same objects is unchanged.
+// Without this every paragraph in the chapter - a couple hundred - re-
+// rendered on each such patch, a several-hundred-ms stall mid-scroll.
+function groupsEqual(a: ContentGroup, b: ContentGroup): boolean {
+  if (a === b) return true
+  if (a.kind !== b.kind || a.key !== b.key) return false
+  if (a.kind === 'image') return a.imageUrl === (b as typeof a).imageUrl
+  if (a.kind === 'break') return true
+  const bp = (b as typeof a).paragraphs
+  return a.paragraphs.length === bp.length && a.paragraphs.every((p, i) => p === bp[i])
+}
+
+// audioElement is the real, per-paragraph-swapping playback element only
+// for the group that's actually playing (ParagraphText ignores it
+// otherwise), and ChapterSection passes activeParagraphIdx to that group
+// alone (null for the rest) - so a paragraph advance re-renders just the
+// outgoing and incoming groups, not the whole playing chapter.
+function paragraphGroupPropsEqual(prev: ParagraphGroupProps, next: ParagraphGroupProps): boolean {
+  for (const key of Object.keys(next) as (keyof ParagraphGroupProps)[]) {
+    if (key === 'group') {
+      if (!groupsEqual(prev.group, next.group)) return false
+    } else if (key === 'audioElement') {
+      if ((prev.activeParagraphIdx !== null || next.activeParagraphIdx !== null) && prev.audioElement !== next.audioElement) {
+        return false
+      }
+    } else if (prev[key] !== next[key]) {
+      return false
+    }
+  }
+  return true
+}
 
 // formatMusicStatus is MusicRegionBoundary's own status label for a region
 // that hasn't finished generating yet (or failed) - a region that's
@@ -848,7 +886,11 @@ export const ChapterSection = memo(function ChapterSection({
                 annotationsView={annotationsView}
                 selectedSpeaker={selectedSpeaker}
                 isActiveChapter={isActiveChapter}
-                activeParagraphIdx={activeParagraphIdx}
+                activeParagraphIdx={
+                  isActiveChapter && group.kind === 'text' && group.paragraphs.some((p) => p.idx === activeParagraphIdx)
+                    ? activeParagraphIdx
+                    : null
+                }
                 audioElement={audioElement}
                 bookmarked={group.kind === 'text' ? bookmarkByKey.has(`${idx}:${group.paragraphs[0].idx}`) : false}
                 onSeek={onSeek}
