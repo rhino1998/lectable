@@ -45,8 +45,7 @@ type Book struct {
 	// instruct_character_voices, plus a never-shipped third) - replaced by
 	// this single enum because those three booleans only ever actually
 	// produced these four distinct, mutually exclusive behaviors in
-	// combination anyway (see cmd/migrate_character_voice_mode for the
-	// migration off the old columns).
+	// combination anyway.
 	CharacterVoiceMode CharacterVoiceMode
 	// SpeechDirection gates jobs.Manager's speechDirectionDependency -
 	// see the schema's own doc comment on speech_direction for why

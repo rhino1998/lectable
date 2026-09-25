@@ -1,12 +1,10 @@
 package store
 
 import (
-	"database/sql"
 	"path/filepath"
 	"testing"
 
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
-	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
 // openTestStore opens a fresh DuckDB-backed Store in a per-test temp
@@ -141,147 +139,6 @@ func TestOpenSeedsDefaultVoice(t *testing.T) {
 	}
 	if v2 != (DefaultVoice{PresetID: "custom-preset", Instruct: "speak warmly", Language: "English", Seed: 42, CloneModel: "audiocpp-higgs-4b"}) {
 		t.Fatalf("unexpected default voice after set: %+v", v2)
-	}
-}
-
-// TestMigrateCharactersRefLineBackfillsExisting simulates a pre-ref_line
-// database (the characters table shape before this column existed) and
-// confirms Open's migrateCharactersRefLine backfills an already-
-// characterized character's ref_line to voices.DefaultRefText - not ” -
-// matching what that character's already-cached reference clip was
-// actually rendered from (see migrateCharactersRefLine's own doc comment).
-// A regression test specifically because this is a real, one-off exception
-// to this package's usual "no migrations" policy, and a future DuckDB
-// upgrade changing ALTER TABLE ADD COLUMN behavior would otherwise fail
-// silently for anyone with pre-existing data rather than as a build-time
-// or even an easily-noticed runtime error.
-func TestMigrateCharactersRefLineBackfillsExisting(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "library.duckdb")
-
-	raw, err := sql.Open("duckdb", path)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	if _, err := raw.Exec(`CREATE TABLE characters (
-		id TEXT PRIMARY KEY,
-		scope TEXT NOT NULL,
-		name TEXT NOT NULL,
-		summary TEXT NOT NULL DEFAULT '',
-		created_at BIGINT NOT NULL,
-		UNIQUE(scope, name)
-	)`); err != nil {
-		t.Fatalf("create pre-migration characters table: %v", err)
-	}
-	if _, err := raw.Exec(
-		`INSERT INTO characters (id, scope, name, summary, created_at) VALUES (?, ?, ?, ?, ?)`,
-		"char-1", "scope-1", "Gandalf", "An old wizard, warm but commanding.", int64(1000),
-	); err != nil {
-		t.Fatalf("seed pre-migration character: %v", err)
-	}
-	if err := raw.Close(); err != nil {
-		t.Fatalf("close raw db: %v", err)
-	}
-
-	s, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open (should migrate ref_line in): %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
-	c, err := s.GetCharacter("char-1")
-	if err != nil {
-		t.Fatalf("GetCharacter: %v", err)
-	}
-	if c == nil {
-		t.Fatalf("expected pre-migration character to survive Open")
-	}
-	if c.Summary != "An old wizard, warm but commanding." {
-		t.Fatalf("summary lost during migration: %+v", c)
-	}
-	if c.RefLine != voices.DefaultRefText {
-		t.Fatalf("ref_line not backfilled to voices.DefaultRefText: got %q", c.RefLine)
-	}
-}
-
-// TestMigrateCloneModelToBook simulates a database from before the clone
-// model moved from voice_presets onto books/default_voice, and confirms
-// Open's migrateCloneModelToBook backfills each existing book with the
-// model its narrator preset used to clone through, drops the removed
-// "soprano" preset, and gives default_voice the new factory default.
-func TestMigrateCloneModelToBook(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "library.duckdb")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	custom, err := s.CreateVoicePreset("Custom", "speak softly", "ref", 3, 1.0, voices.DefaultDesignModel)
-	if err != nil {
-		t.Fatalf("CreateVoicePreset: %v", err)
-	}
-	bookIDs := map[string]string{}
-	for _, presetID := range []string{voices.DefaultPresetID, voices.FastPresetID, "soprano", custom.ID} {
-		id, _, err := s.CreateBook("Book "+presetID, "Author", "en", "", "", 0, nil)
-		if err != nil {
-			t.Fatalf("CreateBook: %v", err)
-		}
-		if err := s.UpdateVoice(id, presetID, "", "Auto", 1, "", CharacterVoiceModeNarrator, false, false); err != nil {
-			t.Fatalf("UpdateVoice: %v", err)
-		}
-		bookIDs[presetID] = id
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-
-	raw, err := sql.Open("duckdb", path)
-	if err != nil {
-		t.Fatalf("sql.Open: %v", err)
-	}
-	for _, stmt := range []string{
-		`ALTER TABLE books DROP COLUMN clone_model`,
-		`ALTER TABLE default_voice DROP COLUMN clone_model`,
-		`ALTER TABLE voice_presets ADD COLUMN clone_model TEXT DEFAULT 'audiocpp-higgs-4b'`,
-		`UPDATE voice_presets SET clone_model = 'audiocpp-qwen3-0.6b' WHERE id = '` + custom.ID + `'`,
-		`UPDATE default_voice SET preset_id = 'soprano'`,
-	} {
-		if _, err := raw.Exec(stmt); err != nil {
-			t.Fatalf("simulate pre-migration schema (%s): %v", stmt, err)
-		}
-	}
-	if err := raw.Close(); err != nil {
-		t.Fatalf("close raw db: %v", err)
-	}
-
-	s, err = Open(path)
-	if err != nil {
-		t.Fatalf("Open (should migrate clone_model onto books): %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
-	want := map[string]struct{ presetID, cloneModel string }{
-		voices.DefaultPresetID: {voices.DefaultPresetID, voices.HiggsCloneModel},
-		voices.FastPresetID:    {voices.FastPresetID, voices.FastCloneModel},
-		"soprano":              {voices.DefaultPresetID, voices.SopranoCloneModel},
-		custom.ID:              {custom.ID, "audiocpp-qwen3-0.6b"},
-	}
-	for oldPreset, w := range want {
-		b, err := s.GetBook(bookIDs[oldPreset])
-		if err != nil || b == nil {
-			t.Fatalf("GetBook: %v", err)
-		}
-		if b.VoicePresetID != w.presetID || b.CloneModel != w.cloneModel {
-			t.Errorf("book on preset %q: got preset %q / clone model %q, want %q / %q", oldPreset, b.VoicePresetID, b.CloneModel, w.presetID, w.cloneModel)
-		}
-	}
-	dv, err := s.GetDefaultVoice()
-	if err != nil {
-		t.Fatalf("GetDefaultVoice: %v", err)
-	}
-	if dv.PresetID != voices.DefaultPresetID || dv.CloneModel != voices.DefaultCloneModel {
-		t.Errorf("default voice: got %+v", dv)
-	}
-	if got, err := s.GetVoicePreset(custom.ID); err != nil || got == nil {
-		t.Fatalf("custom preset lost during migration: %v", err)
 	}
 }
 
@@ -458,53 +315,6 @@ func TestSetChapterPronouncedIsItsOwnPass(t *testing.T) {
 	}
 	if want := (Passes{Pronunciation: true, Direction: true}); ch.Passes != want {
 		t.Fatalf("expected Pronunciation to survive SetChapterDirected, got %+v", ch.Passes)
-	}
-}
-
-// TestMigratePronunciationPassBackfillsDirected confirms a chapter directed
-// before pronunciation became its own pass (when direction tagging still
-// resolved pronunciation too) comes back with Passes.Pronunciation set,
-// while an undirected chapter and one with an explicit pronunciation value
-// are left alone.
-func TestMigratePronunciationPassBackfillsDirected(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "library.duckdb")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	_, directed := oneChapterBook(t, s, "", 0, "p1")
-	_, undirected := oneChapterBook(t, s, "", 0, "p1")
-	_, explicit := oneChapterBook(t, s, "", 0, "p1")
-	for id, passes := range map[string]string{
-		directed:   `{"direction": true}`,
-		undirected: `{"attribution": true}`,
-		explicit:   `{"direction": true, "pronunciation": false}`,
-	} {
-		if _, err := s.db.Exec(`UPDATE chapters SET passes = ? WHERE id = ?`, passes, id); err != nil {
-			t.Fatalf("seed passes: %v", err)
-		}
-	}
-	if err := s.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	s, err = Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
-	for id, want := range map[string]Passes{
-		directed:   {Direction: true, Pronunciation: true},
-		undirected: {Attribution: true},
-		explicit:   {Direction: true},
-	} {
-		ch, err := s.GetChapterByID(id)
-		if err != nil {
-			t.Fatalf("GetChapterByID: %v", err)
-		}
-		if ch.Passes != want {
-			t.Errorf("chapter %s: expected %+v, got %+v", id, want, ch.Passes)
-		}
 	}
 }
 

@@ -823,9 +823,8 @@ building/running `ttsworker` does, since both now link into that binary.
   It runs for every clone model. With `store.Book.SpeechDirection` on, a
   chapter's generation waits on both it and emotion labeling
   (`jobs.Manager.pronunciationDependency`/`speechDirectionDependency`); chapters
-  directed before the split were backfilled with `passes.pronunciation`
-  (`store.migratePronunciationPass`), since direction tagging used to
-  resolve it too.
+  directed before the split already carry `passes.pronunciation`, since
+  direction tagging used to resolve it too.
 - `internal/jobs/` — a single priority queue shared by every
   chapter/paragraph/character-scoped background job, generalized over a
   `Kind` (`KindVoiceClone`, `KindVoiceDesign`, `KindSpeakerAttribution`,
