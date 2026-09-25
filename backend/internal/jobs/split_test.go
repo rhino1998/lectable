@@ -245,6 +245,68 @@ func TestGenerateCloneCheckedSkipsRetryForCompleteAudio(t *testing.T) {
 	}
 }
 
+// TestGenerateCloneCheckedRetriesExtraWords covers the transcription half
+// of the check: a clip that transcribes to the text plus a run of extra
+// words (a repeat, a leaked reference line) must be regenerated even
+// though alignment finds nothing missing, keeping the clean retry.
+func TestGenerateCloneCheckedRetriesExtraWords(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	fixedPaceAlign(fake)
+	text := sentencesText(4, 5) // 20 words
+	fake.OnGenerate = func(req ttsproto.GenerateRequest) ([]byte, error) {
+		if req.TextChunkSize == 0 {
+			return syntheticRefWav(t, 6), nil
+		}
+		return syntheticRefWav(t, 4), nil
+	}
+	fake.OnTranscribe = func(ttsproto.TranscribeRequest) (string, error) {
+		if len(fake.TranscribeCalls()) == 1 {
+			return text + " and then some words nobody wrote", nil
+		}
+		return text, nil
+	}
+	mgr := newTestManager()
+	mgr.tts = fake.Manager()
+
+	audio, _, err := mgr.generateCloneChecked(t.Context(), "audiocpp-higgs-4b", syntheticRefWav(t, 8), wordsText(20), "en", text, "", text)
+	if err != nil {
+		t.Fatalf("generateCloneChecked: %v", err)
+	}
+	if n := len(fake.GenerateCalls()); n != 2 {
+		t.Fatalf("expected the default attempt plus one retry, got %d calls", n)
+	}
+	if dur, _ := wav.Duration(audio); dur > 4100*time.Millisecond {
+		t.Fatalf("expected the clean 4s retry kept, got %v", dur)
+	}
+}
+
+// TestGenerateCloneCheckedIgnoresTranscriptionFailure confirms a failed
+// transcription only skips the extra-words check - no retry, no error.
+func TestGenerateCloneCheckedIgnoresTranscriptionFailure(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	fixedPaceAlign(fake)
+	fake.OnGenerate = func(ttsproto.GenerateRequest) ([]byte, error) {
+		return syntheticRefWav(t, 4), nil
+	}
+	fake.OnTranscribe = func(ttsproto.TranscribeRequest) (string, error) {
+		return "", errors.New("transcriber unavailable")
+	}
+	mgr := newTestManager()
+	mgr.tts = fake.Manager()
+
+	text := sentencesText(4, 5)
+	_, words, err := mgr.generateCloneChecked(t.Context(), "audiocpp-higgs-4b", syntheticRefWav(t, 8), wordsText(20), "en", text, "", text)
+	if err != nil {
+		t.Fatalf("generateCloneChecked: %v", err)
+	}
+	if n := len(fake.GenerateCalls()); n != 1 {
+		t.Fatalf("expected exactly 1 generate call, got %d", n)
+	}
+	if len(words) != 20 {
+		t.Fatalf("expected the check's own 20 words returned, got %d", len(words))
+	}
+}
+
 // TestGenerateCloneCheckedKeepsMostCompleteAttempt confirms that when no
 // retry is fully complete, the attempt missing the fewest words wins -
 // never an error.

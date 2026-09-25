@@ -168,6 +168,18 @@ type AlignResponse struct {
 	Words []Word `json:"words"`
 }
 
+// TranscribeRequest is POST /transcribe's body: free ASR of AudioBase64 (a
+// WAV clip), not forced against any expected text - see
+// audioworker.Worker.Transcribe.
+type TranscribeRequest struct {
+	AudioBase64 string `json:"audioBase64"`
+}
+
+// TranscribeResponse is POST /transcribe's response body.
+type TranscribeResponse struct {
+	Text string `json:"text"`
+}
+
 // LLMGenerateRequest is POST /llm/generate's body: one independent chat
 // completion (system + user turn in, reply text out) against the worker's
 // embedded GGUF model (internal/llmworker) - the wire-format counterpart of

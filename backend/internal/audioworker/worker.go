@@ -312,6 +312,15 @@ type Worker struct {
 	alignSessionH *audiocpp.Session
 	alignErr      error
 
+	asrMu       sync.Mutex // guards asrModel/asrSessionH/asrErr below - see asr.go
+	asrModel    *audiocpp.Model
+	asrSessionH *audiocpp.Session
+	asrErr      error
+	// asrRunMu serializes Session.Run on asrSessionH - singleSessionRunMu's
+	// counterpart for the transcriber, kept separate so a transcription
+	// and an alignment of the same clip can run side by side.
+	asrRunMu sync.Mutex
+
 	lastUsed atomic.Int64 // UnixNano of the most recent Generate/Design/Align call; 0 = never used
 
 	idleStop chan struct{}
@@ -398,8 +407,8 @@ func (w *Worker) Close() {
 
 // UnloadAll closes every currently-loaded clone model (including
 // DefaultCloneModel),
-// every currently-loaded design engine, and the aligner model/session, if
-// loaded, freeing their VRAM/RAM immediately. Each reloads lazily on its
+// every currently-loaded design engine, and the aligner and transcriber
+// models/sessions, if loaded, freeing their VRAM/RAM immediately. Each reloads lazily on its
 // next actual use, same as any other cache miss (getCloneModel/
 // getDesignModel/alignSession). See Config.IdleUnloadAfter, whose own
 // background sweep is UnloadAll's main caller - or call it directly for
@@ -415,6 +424,7 @@ func (w *Worker) UnloadAll() {
 	w.UnloadDesignModels()
 	w.UnloadAuxEngines()
 	w.unloadAligner()
+	w.unloadTranscriber()
 }
 
 // UnloadCloneModels closes every currently-loaded clone model (including

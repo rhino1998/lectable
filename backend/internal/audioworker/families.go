@@ -1147,6 +1147,13 @@ var alignerModelPath = envOr(
 	modelPath("Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forced-aligner-0.6b-q8_0.gguf"),
 )
 
+// transcriberModelPath is the ASR model behind POST /transcribe (asr.go).
+// Parakeet TDT: ~0.03 RTF on a 7900 XTX and punctuated, cased output.
+var transcriberModelPath = envOr(
+	"LECTABLE_TRANSCRIBER_MODEL_PATH",
+	modelPath("Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf"),
+)
+
 // backendName picks which of audio.cpp's own GPU backends to run on -
 // "cuda"/"hip"/"vulkan"/"cpu"/"best".
 var backendName = envOr("LECTABLE_AUDIOCPP_BACKEND", "hip")

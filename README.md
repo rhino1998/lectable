@@ -48,6 +48,7 @@ individually with the env var shown.
 | **Qwen3-TTS 12Hz 1.7B VoiceDesign** | VoiceDesign for the built-in `velvet-narrator` preset (the default book voice). Selectable for other presets too. | `LECTABLE_AUDIOCPP_QWEN3_DESIGN_MODEL_PATH` |
 | **PocketTTS (English, 100M)** | Fast throwaway samples used to estimate speech length (chars/sec). | `LECTABLE_AUDIOCPP_POCKET_MODEL_PATH` |
 | **Qwen3-ForcedAligner 0.6B** | Word-level timestamps for generated audio, which drive word highlighting during playback. | `LECTABLE_ALIGNER_MODEL_PATH` |
+| **Parakeet TDT 0.6B v3** | Transcribes each generated clip to catch extra words the TTS model added (repeats, leaked reference lines), which triggers a regeneration. | `LECTABLE_TRANSCRIBER_MODEL_PATH` |
 | **Qwen3-4B-Instruct-2507** (Q4_K_M, via llama.cpp) | Speaker attribution, character voice descriptions, speech-direction tagging, pronunciation resolution, and music scoring prompts. Optional: those features are turned off if the model file isn't there. | `SPEAKER_LLM_MODEL_PATH` |
 | **Stable Audio 3 Medium** | Background music for chapters. | `LECTABLE_AUDIOCPP_STABLE_AUDIO_MEDIUM_MODEL_PATH` |
 | **Stable Audio 3 Small SFX** | Sound effects. | `LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_MODEL_PATH` |

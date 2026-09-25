@@ -180,7 +180,9 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
   given a caller-supplied reference clip), `/design` (render a fresh
   reference clip via VoiceDesign), `/align` (forced word-level alignment -
   see `alignerSampleRate`'s comment for a real, easy-to-get-wrong gotcha
-  about the sample rate audio.cpp reports timestamps in), and `/health`.
+  about the sample rate audio.cpp reports timestamps in), `/transcribe`
+  (free ASR via Parakeet TDT, for the completeness check's extra-words
+  half), and `/health`.
   Holds **no per-preset state** - the caller (backend) resends a preset's
   reference audio bytes on every call; audio.cpp's own session-level cache
   (`cloneFamily.sessionOptions`, 8 slots) transparently dedupes repeated
@@ -203,8 +205,8 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
   Only one clone model is ever resident (no default-plus-extras LRU): an
   emotion-variant render's Breeze clone used to load right beside the
   Higgs pool mid-chapter and max VRAM, so a different clone model now
-  waits for the current one to drain and evicts it. The aligner and the
-  LLM aren't gated.
+  waits for the current one to drain and evicts it. The aligner, the
+  transcriber, and the LLM aren't gated.
 - **`internal/llmworker`** is the *only* package importing `llamacpp-go`.
   It loads the speaker-attribution GGUF model lazily (on first
   `LLMGenerate` call, or the first call after an idle unload) and serves
@@ -950,7 +952,15 @@ building/running `ttsworker` does, since both now link into that binary.
       with a smaller audio.cpp `text_chunk_size` request option (half,
       then a quarter of the text's length, floored at 80 chars - see
       `retryChunkSizes`), keeping the most complete attempt; its word
-      timings are saved directly. Everything else (VoiceDesign, or a
+      timings are saved directly. The same check also transcribes the
+      clip (`/transcribe`) and diffs it word by word against the text
+      (`extraWordRun`): a run of >=3 consecutive words the text doesn't
+      contain (a repeated phrase, a leaked reference line) triggers the
+      same retries - the forced aligner can't catch these itself, since it
+      stretches a neighboring word over extra speech rather than leaving
+      a gap. Measured on 405 real paragraphs: none had a run over 1, so
+      ASR slips alone don't trip it. Retries keep the attempt with the
+      fewest missing plus extra words. Everything else (VoiceDesign, or a
       failed check) still aligns as a detached follow-up. Each paragraph resolves its own voice via
       `internal/narration.Resolver` before being queued, so a chapter's
       paragraphs can dispatch to, and cache audio under, several different

@@ -160,19 +160,23 @@ func (m *Manager) generateClone(ctx context.Context, cloneModel string, refAudio
 
 // generateCloneChecked is generateClone plus a completeness check: it
 // force-aligns alignText (the plain spoken words - never the tagged
-// generation text, see generate's own comment) against the result and, if
-// the clip is missing words (missingWordCount - a real, observed failure
-// mode where Higgs reaches EOC early and silently drops a paragraph's
-// final sentence or more), regenerates with a smaller audio.cpp
-// text_chunk_size (retryChunkSizes), so each internal chunk is short
-// enough to render in full. Keeps whichever attempt is missing the fewest
-// words - a later attempt can be worse, and a clip with most of its words
-// still beats an error - and returns that attempt's own word timings so
-// the caller needn't align it again.
+// generation text, see generate's own comment) against the result and
+// transcribes it (free ASR, see extraWordsIn), then regenerates with a
+// smaller audio.cpp text_chunk_size (retryChunkSizes) if the clip is
+// missing words (missingWordCount - a real, observed failure mode where
+// Higgs reaches EOC early and silently drops a paragraph's final sentence
+// or more) or speaks extra ones (a repeated phrase, a leaked reference
+// line, babble past the text's end). Each retry is a fresh sample either
+// way, and shorter chunks leave the model less room to stop early or run
+// on. Keeps whichever attempt has the fewest missing plus extra words - a
+// later attempt can be worse, and a clip with most of its words still
+// beats an error - and returns that attempt's own word timings so the
+// caller needn't align it again.
 //
 // words is nil when alignText is "" or alignment itself failed - the
 // caller falls back to its ordinary detached alignment then, and the
-// audio is returned unchecked rather than failed.
+// audio is returned unchecked rather than failed. A failed transcription
+// only skips the extra-words half of the check.
 func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct, alignText string) ([]byte, []ttsproto.Word, error) {
 	audio, err := m.generateClone(ctx, cloneModel, refAudio, refText, language, text, cloneInstruct)
 	if err != nil || alignText == "" {
@@ -183,13 +187,14 @@ func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, r
 		log.Printf("jobs: completeness check alignment failed, keeping audio unchecked: %v", err)
 		return audio, nil, nil
 	}
+	extra := m.extraWordsIn(ctx, audio, alignText, text)
 	for _, chunkSize := range retryChunkSizes(text) {
-		if missing < minMissingWords {
+		if missing < minMissingWords && extra < minExtraWords {
 			break
 		}
 		log.Printf(
-			"jobs: generated audio is missing %d of %d words (aligned past the clip's end); regenerating with text_chunk_size=%d",
-			missing, len(words), chunkSize,
+			"jobs: generated audio is missing %d of %d words (aligned past the clip's end) and speaks %d extra; regenerating with text_chunk_size=%d",
+			missing, len(words), extra, chunkSize,
 		)
 		retryAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, text, cloneInstruct, chunkSize, maxGenerationSplitDepth)
 		if err != nil {
@@ -201,12 +206,13 @@ func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, r
 			log.Printf("jobs: text_chunk_size=%d retry alignment failed: %v", chunkSize, err)
 			continue
 		}
-		if retryMissing < missing {
-			audio, words, missing = retryAudio, retryWords, retryMissing
+		retryExtra := m.extraWordsIn(ctx, retryAudio, alignText, text)
+		if retryMissing+retryExtra < missing+extra {
+			audio, words, missing, extra = retryAudio, retryWords, retryMissing, retryExtra
 		}
 	}
-	if missing >= minMissingWords {
-		log.Printf("jobs: generated audio still missing %d of %d words after every chunking retry; keeping the most complete attempt", missing, len(words))
+	if missing >= minMissingWords || extra >= minExtraWords {
+		log.Printf("jobs: generated audio still missing %d of %d words and speaking %d extra after every chunking retry; keeping the best attempt", missing, len(words), extra)
 	}
 	return audio, words, nil
 }
@@ -223,6 +229,28 @@ func (m *Manager) alignForCompleteness(ctx context.Context, text string, audioWa
 		return nil, 0, err
 	}
 	return words, missingWordCount(words, dur.Seconds()), nil
+}
+
+// extraWordsIn transcribes audioWav and returns the longest run of words it
+// speaks beyond the input text (extraWordRun), measured against both
+// alignText (the plain words) and generationText (with any pronunciation
+// respellings applied) and taking the closer match, since the audio may
+// follow either. The forced aligner can't answer this itself: it places
+// only the words it's given, and confirmed live, it stretches a word over
+// any extra speech before or between them rather than leaving a gap.
+// Returns 0 when transcription fails - the missing-words half of the
+// check still stands on its own.
+func (m *Manager) extraWordsIn(ctx context.Context, audioWav []byte, alignText, generationText string) int {
+	transcript, err := m.tts.Transcribe(ctx, audioWav)
+	if err != nil {
+		log.Printf("jobs: completeness check transcription failed, skipping extra-words check: %v", err)
+		return 0
+	}
+	extra := extraWordRun(alignText, transcript)
+	if generationText != alignText {
+		extra = min(extra, extraWordRun(generationText, transcript))
+	}
+	return extra
 }
 
 // missingWordCount counts aligned words that end past clipSeconds (plus

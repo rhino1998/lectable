@@ -57,24 +57,28 @@ const (
 type Server struct {
 	*httptest.Server
 
-	mu             sync.Mutex
-	generateCalls  []ttsproto.GenerateRequest
-	designCalls    []ttsproto.DesignRequest
-	alignCalls     []ttsproto.AlignRequest
-	llmGenCalls    []ttsproto.LLMGenerateRequest
-	generateCount  int
-	designCount    int
-	unloadTTSCount int
-	unloadLLMCount int
+	mu              sync.Mutex
+	generateCalls   []ttsproto.GenerateRequest
+	designCalls     []ttsproto.DesignRequest
+	alignCalls      []ttsproto.AlignRequest
+	transcribeCalls []ttsproto.TranscribeRequest
+	llmGenCalls     []ttsproto.LLMGenerateRequest
+	generateCount   int
+	designCount     int
+	unloadTTSCount  int
+	unloadLLMCount  int
 
 	// OnGenerate/OnDesign/OnAlign/OnLLMGenerate let a test override the
 	// default synthetic behavior (e.g. to simulate a failure, or return a
 	// specific reply) - nil means "use the default". Set directly on the
 	// Server value before the code under test calls it; not safe to
 	// mutate concurrently with an in-flight request.
-	OnGenerate    func(ttsproto.GenerateRequest) ([]byte, error)
-	OnDesign      func(ttsproto.DesignRequest) ([]byte, error)
-	OnAlign       func(ttsproto.AlignRequest) ([]ttsproto.Word, error)
+	OnGenerate func(ttsproto.GenerateRequest) ([]byte, error)
+	OnDesign   func(ttsproto.DesignRequest) ([]byte, error)
+	OnAlign    func(ttsproto.AlignRequest) ([]ttsproto.Word, error)
+	// OnTranscribe's default returns an empty transcript, which jobs'
+	// completeness check reads as "no extra words".
+	OnTranscribe  func(ttsproto.TranscribeRequest) (string, error)
 	OnLLMGenerate func(ttsproto.LLMGenerateRequest) (string, error)
 }
 
@@ -87,6 +91,7 @@ func New(t testing.TB) *Server {
 	mux.HandleFunc("POST /generate", s.handleGenerate)
 	mux.HandleFunc("POST /design", s.handleDesign)
 	mux.HandleFunc("POST /align", s.handleAlign)
+	mux.HandleFunc("POST /transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /llm/generate", s.handleLLMGenerate)
 	mux.HandleFunc("POST /unload", s.handleUnloadTTS)
 	mux.HandleFunc("POST /llm/unload", s.handleUnloadLLM)
@@ -194,6 +199,29 @@ func (s *Server) handleDesign(w http.ResponseWriter, r *http.Request) {
 	writeAudio(w, synthesize(len(req.RefText)))
 }
 
+func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
+	var req ttsproto.TranscribeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.mu.Lock()
+	s.transcribeCalls = append(s.transcribeCalls, req)
+	hook := s.OnTranscribe
+	s.mu.Unlock()
+
+	var text string
+	if hook != nil {
+		var err error
+		if text, err = hook(req); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ttsproto.TranscribeResponse{Text: text})
+}
+
 func (s *Server) handleAlign(w http.ResponseWriter, r *http.Request) {
 	var req ttsproto.AlignRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -293,7 +321,7 @@ func (s *Server) UnloadLLMCount() int {
 	return s.unloadLLMCount
 }
 
-// GenerateCalls/DesignCalls/AlignCalls/LLMGenerateCalls return a snapshot of every call
+// GenerateCalls/DesignCalls/AlignCalls/TranscribeCalls/LLMGenerateCalls return a snapshot of every call
 // received so far, in order - copies, safe to range over even while more
 // calls may still be arriving concurrently.
 func (s *Server) GenerateCalls() []ttsproto.GenerateRequest {
@@ -312,6 +340,12 @@ func (s *Server) AlignCalls() []ttsproto.AlignRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]ttsproto.AlignRequest(nil), s.alignCalls...)
+}
+
+func (s *Server) TranscribeCalls() []ttsproto.TranscribeRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ttsproto.TranscribeRequest(nil), s.transcribeCalls...)
 }
 
 func (s *Server) LLMGenerateCalls() []ttsproto.LLMGenerateRequest {

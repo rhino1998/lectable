@@ -670,6 +670,21 @@ func (m *Manager) Align(ctx context.Context, text string, audio []byte, language
 	return out.Words, err
 }
 
+// Transcribe runs free ASR over audio (a WAV clip), returning what's
+// actually spoken in it - see audioworker.Worker.Transcribe.
+func (m *Manager) Transcribe(ctx context.Context, audio []byte) (string, error) {
+	m.restartGate.RLock()
+	defer m.restartGate.RUnlock()
+	jobID := m.beginJob()
+	defer m.endJob(jobID)
+
+	var out ttsproto.TranscribeResponse
+	err := m.do(ctx, http.MethodPost, "/transcribe", ttsproto.TranscribeRequest{
+		AudioBase64: base64.StdEncoding.EncodeToString(audio),
+	}, &out)
+	return out.Text, err
+}
+
 // LLMGenerate runs one independent chat completion (system + user turn in,
 // reply text out) against ttsworker's own embedded GGUF model
 // (internal/llmworker, hosted in the same worker process as the TTS clone

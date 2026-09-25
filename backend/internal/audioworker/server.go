@@ -161,6 +161,33 @@ func (w *Worker) HandleStableAudioMedium(rw http.ResponseWriter, r *http.Request
 	writeWav(rw, audio.Samples, audio.SampleRate, audio.Channels)
 }
 
+// HandleTranscribe serves POST /transcribe.
+func (w *Worker) HandleTranscribe(rw http.ResponseWriter, r *http.Request) {
+	var req ttsproto.TranscribeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(req.AudioBase64)
+	if err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid audioBase64: %w", err))
+		return
+	}
+	clip, err := decodeWav(raw)
+	if err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid wav: %w", err))
+		return
+	}
+
+	text, err := w.Transcribe(clip.Samples, clip.SampleRate, clip.Channels)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(rw).Encode(ttsproto.TranscribeResponse{Text: text})
+}
+
 // HandleAlign serves POST /align.
 func (w *Worker) HandleAlign(rw http.ResponseWriter, r *http.Request) {
 	var req ttsproto.AlignRequest
