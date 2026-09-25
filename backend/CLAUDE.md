@@ -1047,9 +1047,9 @@ building/running `ttsworker` does, since both now link into that binary.
   resampled to 48kHz, 24kHz narration encoded natively, pre-skip and end
   trimming so decoded length matches the WAV exactly, ~1 page per second.
   The encoder is `github.com/kazzmir/opus-go` (transpiled libopus 1.6.1,
-  no cgo), currently `replace`d in `go.mod` with a local fork
-  (`../../opus-go`, branch `lectable-local`) carrying fixes pending
-  upstream. Two are load-bearing here, and both corrupted audio silently:
+  no cgo), v1.6.0 or later - the first upstream release carrying the
+  fixes this app used to take from a local fork. Two are load-bearing
+  here, and both corrupted audio silently:
   (1) v1.4.0's libc shim zero-extends signed->unsigned casts, which
   garbles every SILK/hybrid frame - libopus's normal mode for speech
   (measured: SNR about -19 dB on real narration; `TestSpeechSurvivesSILK`
@@ -1057,8 +1057,9 @@ building/running `ttsworker` does, since both now link into that binary.
   `uintptr`s into caller buffers that may sit on a goroutine stack that
   moves mid-call (all-zero packets; `Encode` also pins its buffers as a
   second line of defence, and `TestDeterministic` guards it). With both
-  fixed, the fork's output is byte-identical to a plain-C build of libopus
-  1.6.1. **Don't drop the `replace` until upstream has both.**
+  fixed, the output is byte-identical to a plain-C build of libopus 1.6.1.
+  **Never downgrade below v1.6.0** - both tests above fail on older
+  versions.
 - `internal/audiomaint/` — background housekeeping started by
   `cmd/server` (`Run`): sweeps orphaned audio, converts pre-Opus WAV clips
   (`MigrateLegacyWAV`, NumCPU/4 workers, idempotent - a restart just

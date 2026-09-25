@@ -6,7 +6,7 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/duckdb/duckdb-go/v2 v2.10505.0
 	github.com/hashicorp/mdns v1.0.7
-	github.com/kazzmir/opus-go v1.4.0
+	github.com/kazzmir/opus-go v1.6.0
 	golang.org/x/net v0.59.0
 )
 
@@ -37,14 +37,10 @@ require (
 	golang.org/x/sync v0.19.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260116145544-c6413dc483f5 // indirect
-	golang.org/x/tools v0.41.0 // indirect
+	golang.org/x/tools v0.41.0
 	golang.org/x/xerrors v0.0.0-20240903120638-7835f813f4da // indirect
 )
 
 replace github.com/rhino1998/lectable/audiocpp-go => ../audiocpp-go
 
 replace github.com/rhino1998/lectable/llamacpp-go => ../llamacpp-go
-
-// Local fixes pending upstream (encoder writing packets into moved stack
-// memory, Ogg end-of-stream framing) - see ~/opus-go-wav2oggopus-bugs.md.
-replace github.com/kazzmir/opus-go => ../../opus-go
