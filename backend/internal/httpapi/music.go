@@ -260,8 +260,7 @@ func resumeMusicScoring(existing []store.MusicRegion, alreadyFullyScored bool) (
 //
 // The resumed run's own first region is forced to "cut" (see
 // musicSystemPrompt's own "always use cut for the very first region"
-// rule, and scoreMusicBoundaries' own identical forced-cut reasoning at a
-// batch seam) - speakerattr.Client.ScoreMusic has no visibility into the
+// rule) - speakerattr.Client.ScoreMusic has no visibility into the
 // previous run's own last region at all in a resumed call, so it can't
 // genuinely judge whether this one continues from it.
 //

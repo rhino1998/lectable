@@ -240,3 +240,59 @@ func TestSameAmbienceIgnoresCopyDrift(t *testing.T) {
 		t.Fatal("want empty never treated as a match")
 	}
 }
+
+func TestSplitLongRegionsMarksSplits(t *testing.T) {
+	got := splitLongRegions([]musicBoundary{regionAt(0, "cut")}, plainParagraphs(25))
+	if got[0].split || !got[1].split || !got[2].split {
+		t.Fatalf("splitLongRegions() = %+v, want only inserted boundaries marked split", got)
+	}
+}
+
+func TestParseMusicBoundariesSeamCarriesOver(t *testing.T) {
+	// Seam context 16-19, batch 20-29: a lone first region means the tone
+	// already playing carries on - no boundary at the seam at all.
+	shown := plainParagraphs(30)[16:]
+	got, err := parseMusicBoundaries(`[{"startIdx": 16, "transition": "cut"}]`, shown, 20)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("parseMusicBoundaries() = %+v, %v; want no boundaries", got, err)
+	}
+}
+
+func TestParseMusicBoundariesSeamKeepsModelTransition(t *testing.T) {
+	shown := plainParagraphs(30)[16:]
+	got, err := parseMusicBoundaries(`[{"startIdx": 16, "transition": "cut"}, {"startIdx": 20, "transition": "continuation"}, {"startIdx": 25, "transition": "cut"}]`, shown, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []musicBoundary{regionAt(20, "continuation"), regionAt(25, "cut")}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("parseMusicBoundaries() = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseMusicBoundariesChangeInsideSeamLandsOnBatchStart(t *testing.T) {
+	// A change the model placed inside the context is what's playing when
+	// the batch starts.
+	shown := plainParagraphs(30)[16:]
+	got, err := parseMusicBoundaries(`[{"startIdx": 16, "transition": "cut"}, {"startIdx": 18, "transition": "cut"}, {"startIdx": 24, "transition": "continuation"}]`, shown, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []musicBoundary{regionAt(20, "cut"), regionAt(24, "continuation")}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("parseMusicBoundaries() = %+v, want %+v", got, want)
+	}
+}
+
+func TestMusicSeamContextCountsNumberedLines(t *testing.T) {
+	ps := plainParagraphs(10)
+	ps[8].Inline = true
+	got := musicSeamContext(ps)
+	// Lines 5, 6, 7(+8 inline), 9 - four numbered lines.
+	if len(got) != 5 || got[0].Idx != 5 {
+		t.Fatalf("musicSeamContext() starts at %d with %d paragraphs, want 5 with 5", got[0].Idx, len(got))
+	}
+	if short := musicSeamContext(ps[:2]); len(short) != 2 {
+		t.Fatalf("musicSeamContext() of 2 paragraphs = %d, want all of them", len(short))
+	}
+}
