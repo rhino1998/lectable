@@ -88,6 +88,11 @@ func TestFixedAbbreviationExpansion(t *testing.T) {
 		{"It took approx. an hour.", "approximately"},
 		{"John Smith Jr. arrived first.", "Junior"},
 		{"John Smith Sr. arrived last.", "Senior"},
+		{"He walked the bounds of his demesne.", "domain"},
+		{"The lords' demesnes stretched east.", "domains"},
+		{"Demesne law applied there.", "Domain"},
+		{"THE DEMESNES OF THE KING", "DOMAINS"},
+		{"The demesne's borders held.", "domain"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.want, func(t *testing.T) {

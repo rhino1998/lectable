@@ -122,6 +122,11 @@ var pronunciationCandidates = []pronunciationCandidate{
 	{re: regexp.MustCompile(`\bapprox\.`), candidates: []string{"approximately"}},
 	{re: regexp.MustCompile(`\bJr\.`), candidates: []string{"Junior"}},
 	{re: regexp.MustCompile(`\bSr\.`), candidates: []string{"Senior"}},
+	// Rare words TTS sounds out letter by letter ("de-MES-nee"), respelled
+	// as an exact homophone - one reading each, so like the expansions
+	// above they never reach the LLM. Case-insensitive, with the result
+	// case-matched to the original (see respellCandidates).
+	{re: regexp.MustCompile(`(?i)\bdemesne(s?)\b`), dynamicCandidates: respellCandidates("domain")},
 	// A capitalized name immediately followed by a Roman numeral ("Henry
 	// VIII", "Elizabeth II") - genuinely ambiguous the same way a bare
 	// "M/D" date is: TTS has no reliable way to read "VIII" as anything but
@@ -237,6 +242,20 @@ func caseMatch(sample, alt string) string {
 func homographCandidates(defaultSpelling, otherSpelling string) func(groups []string) []string {
 	return func(groups []string) []string {
 		return []string{caseMatch(groups[0], defaultSpelling), caseMatch(groups[0], otherSpelling)}
+	}
+}
+
+// respellCandidates builds a dynamicCandidates function for a single fixed
+// respelling whose regex captures an optional plural suffix as group 1
+// ("demesnes" -> "domains"), case-matched to the original - all caps
+// stays all caps, a leading capital stays capitalized.
+func respellCandidates(spelling string) func(groups []string) []string {
+	return func(groups []string) []string {
+		out := spelling + strings.ToLower(groups[1])
+		if len(groups[0]) > 1 && groups[0] == strings.ToUpper(groups[0]) {
+			return []string{strings.ToUpper(out)}
+		}
+		return []string{caseMatch(groups[0], out)}
 	}
 }
 
