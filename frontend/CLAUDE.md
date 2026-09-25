@@ -43,7 +43,7 @@ export PATH=/home/rhino/node-toolchains/v24.21.0/bin:$PATH
   hooks (`useAttributingChapters` etc.) are pure derivations from the live
   jobs topic.
 - `src/hooks/usePlayback.ts` — the sequential-chunk audio player. A book
-  has one `.wav` per paragraph, not one per chapter; this hook owns a
+  has one clip (Ogg Opus) per paragraph, not one per chapter; this hook owns a
   single `<audio>` element and advances to the next paragraph's URL on
   `ended`, reporting `{chapterIdx, paragraphIdx, seconds}` back
   (throttled) for position persistence. It's keyed by `(chapterIdx,

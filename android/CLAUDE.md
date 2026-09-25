@@ -148,7 +148,7 @@ compiled-in default in place if nothing answers in time.
   through the store refreshes that chapter's downloaded copy (title, text,
   speakers, annotations, content/image order) if it's COMPLETE - keeping
   each paragraph's stored `durationSeconds`/`audioPointerSeconds`, which
-  describe the downloaded .wav, not whatever the backend has since
+  describe the downloaded clip, not whatever the backend has since
   re-generated. Only updates existing rows; what gets downloaded is still
   `DownloadRepository`'s call. Uses the DAOs directly (not
   `DownloadRepository`, which depends on `LiveStore` - a cycle).
@@ -184,7 +184,10 @@ compiled-in default in place if nothing answers in time.
   playable offline throughout and a failed refresh leaves it untouched.
 - `playback/ParagraphPlayer.kt` - the Android analogue of
   `../frontend/src/hooks/usePlayback.ts`: one ExoPlayer instance advancing
-  through a book's paragraphs one `.wav` at a time. **App-scoped
+  through a book's paragraphs one clip at a time. Downloaded clips are
+  saved as `%05d.wav` whatever their format - the backend now serves Ogg
+  Opus (older downloads are real WAV) - and ExoPlayer picks the extractor
+  by sniffing content, so both play. **App-scoped
   (`@Singleton`), not tied to the Reader screen's ViewModel** - playback
   (and the `MediaSession` exposing it to the system) needs to survive
   leaving/backgrounding the reader; `ReaderViewModel.onCleared()`

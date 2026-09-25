@@ -394,6 +394,22 @@ func tailWavBytes(clip *wav.Clip) []byte {
 	return data
 }
 
+// SeedTail cuts a finished region's music layer (raw WAV bytes) down to
+// the tail a following continuation region is seeded from - all
+// GenerateRegion ever reads of Region.Seed - so only that much needs
+// keeping on disk.
+func SeedTail(music []byte) ([]byte, error) {
+	clip, err := wav.Decode(music)
+	if err != nil {
+		return nil, err
+	}
+	tail := tailWavBytes(clip)
+	if tail == nil {
+		return nil, fmt.Errorf("musicgen: can't cut a seed from a %d-channel clip", clip.Channels)
+	}
+	return tail, nil
+}
+
 // ambienceRelativeLevel is the ambience layer's RMS relative to the music
 // layer's own in MixAmbience - a little under the music (about -4.4dB), so
 // the place is clearly audible without the soundscape drowning the score.

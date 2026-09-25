@@ -230,7 +230,7 @@ func resolveAudioID(p store.Paragraph, state store.AudioState, byIdx map[int]str
 // already-loaded old clip, or a browser a cached one, under an unchanged
 // URL. The endpoint ignores the query. "" if the file can't be stat'd.
 func (s *Server) audioVersion(bookID, chapterID, voiceID string, idx int) string {
-	fi, err := os.Stat(s.paragraphAudioPath(bookID, chapterID, voiceID, idx))
+	fi, err := os.Stat(audiopath.Resolve(s.paragraphAudioPath(bookID, chapterID, voiceID, idx)))
 	if err != nil {
 		return ""
 	}
@@ -706,7 +706,7 @@ func (s *Server) handleGenerateParagraphSFX(w http.ResponseWriter, r *http.Reque
 			_ = s.Store.SetParagraphSFXError(p.ID, err.Error())
 			return err
 		}
-		if err := os.WriteFile(audiopath.SFXFile(s.DataDir, ch.BookID, ch.ID, p.Idx), wavBytes, 0o644); err != nil {
+		if err := audiopath.WriteClip(audiopath.SFXFile(s.DataDir, ch.BookID, ch.ID, p.Idx), wavBytes); err != nil {
 			_ = s.Store.SetParagraphSFXError(p.ID, err.Error())
 			return err
 		}
@@ -749,7 +749,7 @@ func (s *Server) handleGetParagraphSFXAudio(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "chapter not found")
 		return
 	}
-	http.ServeFile(w, r, audiopath.SFXFile(s.DataDir, ch.BookID, ch.ID, p.Idx))
+	serveClip(w, r, audiopath.SFXFile(s.DataDir, ch.BookID, ch.ID, p.Idx))
 }
 
 type setParagraphSpeakerRequest struct {
@@ -1253,7 +1253,7 @@ func (s *Server) handleGetAudio(w http.ResponseWriter, r *http.Request) {
 	// a regenerated clip is written under the same path, so a heuristically
 	// cached copy would replay the old render.
 	w.Header().Set("Cache-Control", "no-cache")
-	http.ServeFile(w, r, s.paragraphAudioPath(ch.BookID, ch.ID, voiceID, p.Idx))
+	serveClip(w, r, s.paragraphAudioPath(ch.BookID, ch.ID, voiceID, p.Idx))
 }
 
 func (s *Server) handleGetImage(w http.ResponseWriter, r *http.Request) {

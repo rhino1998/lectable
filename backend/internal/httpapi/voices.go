@@ -664,6 +664,13 @@ func (s *Server) handleUpdateCustomVoicePreset(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Keep the Speakers page's characterization of whoever this voice is
+	// assigned to in step with its edited prompt - see
+	// store.SyncCharacterSummariesFromPreset.
+	if err := s.Store.SyncCharacterSummariesFromPreset(id, req.Instruct, req.RefText, req.Instruct != existing.Instruct, req.RefText != existing.RefText); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	p := store.VoicePreset{
 		ID: id, Name: req.Name, Instruct: req.Instruct, RefText: req.RefText, Seed: seedVal,
 		SpeedMultiplier: speedVal, DesignModel: designModelVal, CreatedAt: existing.CreatedAt,
@@ -773,7 +780,7 @@ func (s *Server) invalidateAudioForVoicePreset(preset store.VoicePreset) {
 				continue
 			}
 			for _, ref := range refs {
-				if rerr := os.Remove(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil && !os.IsNotExist(rerr) {
+				if rerr := audiopath.RemoveClip(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil {
 					log.Printf("httpapi: remove stale audio file for voice %q: %v", preset.Name, rerr)
 				}
 			}

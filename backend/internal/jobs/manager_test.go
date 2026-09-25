@@ -13,6 +13,7 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/oggopus"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/taskqueue"
@@ -2146,7 +2147,7 @@ func TestManagerMergesScareQuoteGroupIntoOneGenerateCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read anchor audio file: %v", err)
 	}
-	anchorDur, err := wavDurationSeconds(anchorData)
+	anchorDur, err := clipDurationSeconds(anchorData)
 	if err != nil {
 		t.Fatalf("parse anchor duration: %v", err)
 	}
@@ -2242,8 +2243,8 @@ func TestManagerFallsBackToIndependentGenerationWhenAlignmentFails(t *testing.T)
 	}
 }
 
-func wavDurationSeconds(data []byte) (float64, error) {
-	d, err := wav.Duration(data)
+func clipDurationSeconds(data []byte) (float64, error) {
+	d, err := oggopus.Duration(data)
 	if err != nil {
 		return 0, err
 	}

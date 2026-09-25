@@ -391,7 +391,7 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 				log.Printf("httpapi: reset %s for book %s: invalidate audio for chapter %s: %v", pass, book.ID, chapterID, derr)
 			}
 			for _, ref := range refs {
-				if rerr := os.Remove(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil && !os.IsNotExist(rerr) {
+				if rerr := audiopath.RemoveClip(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil {
 					log.Printf("httpapi: reset %s for book %s: remove stale audio file: %v", pass, book.ID, rerr)
 				}
 			}

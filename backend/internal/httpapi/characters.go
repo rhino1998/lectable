@@ -1659,7 +1659,7 @@ func (s *Server) invalidateParagraphAudio(book *store.Book, paragraphs []store.P
 			continue
 		}
 		voiceID := voice.VoiceID()
-		if err := os.Remove(audiopath.ParagraphFile(s.DataDir, book.ID, p.ChapterID, voiceID, p.Idx)); err != nil && !os.IsNotExist(err) {
+		if err := audiopath.RemoveClip(audiopath.ParagraphFile(s.DataDir, book.ID, p.ChapterID, voiceID, p.Idx)); err != nil {
 			log.Printf("invalidateParagraphAudio: remove audio file for paragraph %s: %v", p.ID, err)
 		}
 		if err := s.Store.ResetParagraphAudio(p.ID, voiceID); err != nil {
@@ -1874,7 +1874,7 @@ func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *sto
 			log.Printf("pronounceChapter: invalidate audio for chapter %s: %v", ch.ID, derr)
 		}
 		for _, ref := range refs {
-			if rerr := os.Remove(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil && !os.IsNotExist(rerr) {
+			if rerr := audiopath.RemoveClip(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil {
 				log.Printf("pronounceChapter: remove stale audio file: %v", rerr)
 			}
 		}
@@ -2919,7 +2919,7 @@ func (s *Server) recharacterizeAndInvalidate(ctx context.Context, book *store.Bo
 			return fresh.Summary, invalidated, nil
 		}
 		for _, ref := range refs {
-			if rerr := os.Remove(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil && !os.IsNotExist(rerr) {
+			if rerr := audiopath.RemoveClip(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil {
 				log.Printf("httpapi: remove stale audio file for %q: %v", fresh.Name, rerr)
 			}
 		}

@@ -2313,6 +2313,30 @@ func (s *DuckStore) SetCharacterSummary(id, summary, refLine string) error {
 	return err
 }
 
+// SyncCharacterSummariesFromPreset copies an edited voice preset's
+// instruct/refText back onto every character it's assigned to (across any
+// clone model - see character_voices) as their Summary/RefLine - the
+// reverse of recharacterizeAndInvalidate's Summary -> preset.Instruct
+// sync, so editing a speaker's voice prompt (Voices page or the Speakers
+// page's own voice editor) keeps the Speakers page's shown
+// characterization in step with the voice actually narrating them. Only
+// the fields the caller says changed are written, so a name/speed-only
+// edit never touches a character's LLM-written characterization.
+func (s *DuckStore) SyncCharacterSummariesFromPreset(presetID, instruct, refText string, instructChanged, refTextChanged bool) error {
+	const assigned = `id IN (SELECT character_id FROM character_voices WHERE voice_preset_id = ?)`
+	if instructChanged {
+		if _, err := s.db.Exec(`UPDATE characters SET summary = ? WHERE `+assigned, instruct, presetID); err != nil {
+			return err
+		}
+	}
+	if refTextChanged {
+		if _, err := s.db.Exec(`UPDATE characters SET ref_line = ? WHERE `+assigned, refText, presetID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // SetCharacterInvalid marks (or, with false, unmarks) id as invalid - see
 // store.Character.Invalid. Identity/summary/voice assignments are left
 // alone either way, so unmarking restores the character exactly as it was.
@@ -3617,6 +3641,87 @@ func (s *DuckStore) ResetAllChapterMusicAudioForBook(bookID string) error {
 		AudioPending, bookID,
 	)
 	return err
+}
+
+// AudioRefs is everything under DATA_DIR/audio the database still
+// refers to - what audiomaint.SweepOrphans keeps.
+type AudioRefs struct {
+	// ChapterBooks maps every chapter id to its book id; every book id
+	// is in Books.
+	ChapterBooks map[string]string
+	Books        map[string]bool
+	// ChapterVoices holds, per chapter, every voice_id with any
+	// paragraph_audio row there - rows are created (as generating)
+	// before their file is written, and an old voice's rows are kept
+	// until explicitly deleted, so its files are too.
+	ChapterVoices map[string]map[string]bool
+	// ChapterRegions holds, per chapter, every music region id.
+	ChapterRegions map[string]map[string]bool
+	// BookAmbience holds, per book, every non-empty ambience prompt a
+	// region uses (see audiopath.AmbienceLoopFile).
+	BookAmbience map[string]map[string]bool
+}
+
+// AudioRefs reads the whole library's AudioRefs in four scans.
+func (s *DuckStore) AudioRefs() (AudioRefs, error) {
+	refs := AudioRefs{
+		ChapterBooks:   map[string]string{},
+		Books:          map[string]bool{},
+		ChapterVoices:  map[string]map[string]bool{},
+		ChapterRegions: map[string]map[string]bool{},
+		BookAmbience:   map[string]map[string]bool{},
+	}
+	addTo := func(m map[string]map[string]bool, k, v string) {
+		if m[k] == nil {
+			m[k] = map[string]bool{}
+		}
+		m[k][v] = true
+	}
+	scan := func(query string, row func(a, b, c string)) error {
+		rows, err := s.db.Query(query)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		cols, err := rows.Columns()
+		if err != nil {
+			return err
+		}
+		vals := make([]string, 3)
+		ptrs := []any{&vals[0], &vals[1], &vals[2]}[:len(cols)]
+		for rows.Next() {
+			if err := rows.Scan(ptrs...); err != nil {
+				return err
+			}
+			row(vals[0], vals[1], vals[2])
+		}
+		return rows.Err()
+	}
+	if err := scan(`SELECT id FROM books`, func(id, _, _ string) {
+		refs.Books[id] = true
+	}); err != nil {
+		return refs, err
+	}
+	if err := scan(`SELECT id, book_id FROM chapters`, func(id, bookID, _ string) {
+		refs.ChapterBooks[id] = bookID
+	}); err != nil {
+		return refs, err
+	}
+	if err := scan(`SELECT DISTINCT p.chapter_id, pa.voice_id
+		FROM paragraph_audio pa JOIN paragraphs p ON p.id = pa.paragraph_id`, func(chapterID, voiceID, _ string) {
+		addTo(refs.ChapterVoices, chapterID, voiceID)
+	}); err != nil {
+		return refs, err
+	}
+	if err := scan(`SELECT r.chapter_id, r.id, r.ambience FROM music_regions r`, func(chapterID, regionID, ambience string) {
+		addTo(refs.ChapterRegions, chapterID, regionID)
+		if bookID, ok := refs.ChapterBooks[chapterID]; ok && ambience != "" {
+			addTo(refs.BookAmbience, bookID, ambience)
+		}
+	}); err != nil {
+		return refs, err
+	}
+	return refs, nil
 }
 
 // SpeakerAudioRef identifies one on-disk audio file

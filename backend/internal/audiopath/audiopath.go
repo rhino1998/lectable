@@ -1,15 +1,113 @@
 // Package audiopath computes the on-disk location of generated audio and
 // extracted images from IDs alone, so neither ever needs to be persisted
 // in the database.
+//
+// Served clips (paragraph narration, SFX, music regions) are Ogg Opus -
+// written through WriteClip, never os.WriteFile. They used to be WAV, and
+// a data dir from before the switch is converted in the background after
+// startup (internal/audiomaint), so until that finishes a clip may still
+// exist only as its legacy .wav sibling: read through Resolve and delete
+// through RemoveClip, which both cover it. Everything a model reads back
+// as input (voice reference clips, ambience loops, music seeds) stays WAV.
 package audiopath
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/rhino1998/lectable/backend/internal/oggopus"
 )
+
+// ClipExt is the served-clip extension, and LegacyClipExt the one they
+// had before.
+const (
+	ClipExt       = ".opus"
+	LegacyClipExt = ".wav"
+)
+
+// ClipContentType is what a served clip is sent as - set explicitly since
+// Go's mime table doesn't know .opus.
+const ClipContentType = "audio/ogg; codecs=opus"
+
+// LegacyWAV is clip path's pre-Opus sibling.
+func LegacyWAV(path string) string {
+	return strings.TrimSuffix(path, ClipExt) + LegacyClipExt
+}
+
+// Resolve returns path, or its legacy WAV sibling when only that exists
+// (a clip the background conversion hasn't reached yet). Returns path
+// when neither exists, so callers' own not-found handling still applies.
+func Resolve(path string) string {
+	if _, err := os.Stat(path); err != nil {
+		if legacy := LegacyWAV(path); legacy != path {
+			if _, err := os.Stat(legacy); err == nil {
+				return legacy
+			}
+		}
+	}
+	return path
+}
+
+// RemoveClip deletes clip path and its legacy WAV sibling; a missing file
+// is not an error.
+func RemoveClip(path string) error {
+	var errs []error
+	for _, p := range []string{path, LegacyWAV(path)} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// WriteClip encodes wavBytes as Ogg Opus and atomically replaces path
+// with it (a reader mid-ServeFile keeps the old file), then drops any
+// legacy WAV sibling so it can't be converted over the new clip later.
+func WriteClip(path string, wavBytes []byte) error {
+	data, err := oggopus.EncodeWAV(wavBytes)
+	if err != nil {
+		return fmt.Errorf("encode opus: %w", err)
+	}
+	if err := WriteFileAtomic(path, data); err != nil {
+		return err
+	}
+	_ = os.Remove(LegacyWAV(path))
+	return nil
+}
+
+// WriteFileAtomic writes data to a temp file beside path and renames it
+// into place. Temp files are dot-prefixed, which the orphan sweep treats
+// as removable once stale.
+func WriteFileAtomic(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
+}
 
 // VoiceDir is where one voice's generated audio for one chapter lives.
 // Keyed by voiceID (a hash of the full voice config - see store.VoiceID) so
@@ -19,7 +117,7 @@ func VoiceDir(dataDir, bookID, chapterID, voiceID string) string {
 }
 
 func ParagraphFile(dataDir, bookID, chapterID, voiceID string, idx int) string {
-	return filepath.Join(VoiceDir(dataDir, bookID, chapterID, voiceID), fmt.Sprintf("%05d.wav", idx))
+	return filepath.Join(VoiceDir(dataDir, bookID, chapterID, voiceID), fmt.Sprintf("%05d"+ClipExt, idx))
 }
 
 func EnsureVoiceDir(dataDir, bookID, chapterID, voiceID string) error {
@@ -65,7 +163,7 @@ func SFXDir(dataDir, bookID, chapterID string) string {
 }
 
 func SFXFile(dataDir, bookID, chapterID string, idx int) string {
-	return filepath.Join(SFXDir(dataDir, bookID, chapterID), fmt.Sprintf("%05d.wav", idx))
+	return filepath.Join(SFXDir(dataDir, bookID, chapterID), fmt.Sprintf("%05d"+ClipExt, idx))
 }
 
 func EnsureSFXDir(dataDir, bookID, chapterID string) error {
@@ -86,22 +184,33 @@ func MusicDir(dataDir, bookID, chapterID string) string {
 // so a positional filename would risk a stale file from a deleted region
 // silently lingering under a new region's own index.
 func MusicRegionFile(dataDir, bookID, chapterID, regionID string) string {
-	return filepath.Join(MusicDir(dataDir, bookID, chapterID), regionID+".wav")
+	return filepath.Join(MusicDir(dataDir, bookID, chapterID), regionID+ClipExt)
 }
 
-// MusicRegionStemFile is one layer of a music region's clip, kept beside
-// the served mix (MusicRegionFile) so the next region can be continuation-
-// seeded from that layer alone: stem is "music" or "ambience".
-func MusicRegionStemFile(dataDir, bookID, chapterID, regionID, stem string) string {
+// MusicRegionSeedFile is the tail of a region's music layer (no ambience),
+// kept as WAV beside the served mix (MusicRegionFile) so a following
+// "continuation" region can be seeded from it - only the tail, since
+// that's all musicgen.GenerateRegion ever feeds back in.
+func MusicRegionSeedFile(dataDir, bookID, chapterID, regionID string) string {
+	return filepath.Join(MusicDir(dataDir, bookID, chapterID), regionID+".seed.wav")
+}
+
+// LegacyMusicRegionStemFile is a region's full-length stem as written
+// before seeds were cut to their tail - "music" or "ambience" (from before
+// ambience became a shared loop). Only internal/audiomaint's conversion
+// and RemoveMusicRegionFiles still touch these.
+func LegacyMusicRegionStemFile(dataDir, bookID, chapterID, regionID, stem string) string {
 	return filepath.Join(MusicDir(dataDir, bookID, chapterID), regionID+"."+stem+".wav")
 }
 
-// RemoveMusicRegionFiles best-effort deletes a region's served clip and
-// both of its stems - a file that was never written is not an error.
+// RemoveMusicRegionFiles best-effort deletes a region's served clip, its
+// seed, and any legacy stems - a file that was never written is not an
+// error.
 func RemoveMusicRegionFiles(dataDir, bookID, chapterID, regionID string) {
-	_ = os.Remove(MusicRegionFile(dataDir, bookID, chapterID, regionID))
+	_ = RemoveClip(MusicRegionFile(dataDir, bookID, chapterID, regionID))
+	_ = os.Remove(MusicRegionSeedFile(dataDir, bookID, chapterID, regionID))
 	for _, stem := range []string{"music", "ambience"} {
-		_ = os.Remove(MusicRegionStemFile(dataDir, bookID, chapterID, regionID, stem))
+		_ = os.Remove(LegacyMusicRegionStemFile(dataDir, bookID, chapterID, regionID, stem))
 	}
 }
 

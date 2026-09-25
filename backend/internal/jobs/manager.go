@@ -4656,7 +4656,7 @@ func (m *Manager) MusicRegionGenerating(id string) bool {
 // generateChapterMusicBatch is MaybeAdvanceChapterMusic's own dispatched
 // work: generate and persist every region in batch, strictly in order,
 // within one task. A "continuation" region's seed is read from whichever
-// region immediately precedes it on disk (audiopath.MusicRegionFile) right
+// region immediately precedes it on disk (audiopath.MusicRegionSeedFile) right
 // before generating it, not precomputed up front - by the time this loop
 // reaches that region, the previous one has either already settled before
 // this batch was even built (initialSeedRegionID, only ever consulted for
@@ -4789,19 +4789,26 @@ type musicSeeds struct {
 // musicRegionSeeds reads region's continuation seed from the region
 // immediately before it (prevRegionID, "" for none): the music layer
 // continues only across a "continuation" transition, seeded from the
-// previous region's music stem (audiopath.MusicRegionStemFile), never the
-// mix, so ambience never bleeds into the continuation; a region generated
-// before stems existed falls back to its served clip. Ambience needs no
-// seed - a setting's ambience is one shared loop (see generateMusicRegion).
+// previous region's music-only seed tail (audiopath.MusicRegionSeedFile),
+// never the mix, so ambience never bleeds into the continuation. A region
+// the background conversion (internal/audiomaint) hasn't reached yet
+// still has its full legacy music stem, or - generated before stems
+// existed - only a WAV mix. Ambience needs no seed - a setting's ambience
+// is one shared loop (see generateMusicRegion).
 func (m *Manager) musicRegionSeeds(bookID, chapterID string, region store.MusicRegion, prevRegionID string) musicSeeds {
 	var seeds musicSeeds
 	if prevRegionID == "" || region.Transition != store.MusicTransitionContinuation {
 		return seeds
 	}
-	if data, err := os.ReadFile(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, prevRegionID, "music")); err == nil {
-		seeds.music = data
-	} else if data, err := os.ReadFile(audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, prevRegionID)); err == nil {
-		seeds.music = data
+	for _, path := range []string{
+		audiopath.MusicRegionSeedFile(m.dataDir, bookID, chapterID, prevRegionID),
+		audiopath.LegacyMusicRegionStemFile(m.dataDir, bookID, chapterID, prevRegionID, "music"),
+		audiopath.LegacyWAV(audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, prevRegionID)),
+	} {
+		if data, err := os.ReadFile(path); err == nil {
+			seeds.music = data
+			break
+		}
 	}
 	return seeds
 }
@@ -4842,8 +4849,9 @@ func mixAmbienceLoop(music, loop []byte, regionID string) ([]byte, error) {
 // audiopath.ParagraphFile). A region with an ambience prompt gets that
 // setting's ambience loop (audiopath.AmbienceLoopFile - rendered alongside
 // this region's music the first time the setting appears, reused after)
-// tiled under it and served mixed (musicgen.MixAmbience); the music stem is
-// kept on disk to seed the next region (musicRegionSeeds).
+// tiled under it and served mixed (musicgen.MixAmbience), as Ogg Opus; the
+// music layer's tail is kept on disk to seed the next region
+// (musicRegionSeeds).
 func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID string, region store.MusicRegion, targetDuration float64, seeds musicSeeds) error {
 	in := musicgen.Region{
 		Prompt:                region.Prompt,
@@ -4886,14 +4894,22 @@ func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID str
 		_ = m.store.SetMusicRegionError(region.ID, "failed to create music dir: "+err.Error())
 		return err
 	}
-	// Regions generated before ambience loops kept an ambience stem.
-	_ = os.Remove(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, region.ID, "ambience"))
-	if err := os.WriteFile(audiopath.MusicRegionStemFile(m.dataDir, bookID, chapterID, region.ID, "music"), music, 0o644); err != nil {
-		_ = m.store.SetMusicRegionError(region.ID, "failed to save music stem: "+err.Error())
+	// A regenerated region may still have full-length stems from before
+	// seeds were cut to their tail.
+	for _, stem := range []string{"music", "ambience"} {
+		_ = os.Remove(audiopath.LegacyMusicRegionStemFile(m.dataDir, bookID, chapterID, region.ID, stem))
+	}
+	seed, err := musicgen.SeedTail(music)
+	if err != nil {
+		_ = m.store.SetMusicRegionError(region.ID, "failed to cut music seed: "+err.Error())
+		return err
+	}
+	if err := audiopath.WriteFileAtomic(audiopath.MusicRegionSeedFile(m.dataDir, bookID, chapterID, region.ID), seed); err != nil {
+		_ = m.store.SetMusicRegionError(region.ID, "failed to save music seed: "+err.Error())
 		return err
 	}
 	outPath := audiopath.MusicRegionFile(m.dataDir, bookID, chapterID, region.ID)
-	if err := os.WriteFile(outPath, audio, 0o644); err != nil {
+	if err := audiopath.WriteClip(outPath, audio); err != nil {
 		_ = m.store.SetMusicRegionError(region.ID, "failed to save audio: "+err.Error())
 		return err
 	}
@@ -5918,7 +5934,7 @@ func (m *Manager) failParagraph(t *task, paragraph store.Paragraph, err error) {
 // directly instead of running alignParagraph.
 func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio []byte, words []ttsproto.Word) {
 	outPath := audiopath.ParagraphFile(m.dataDir, t.bookID, t.chapterID, t.voiceID, paragraph.Idx)
-	if err := os.WriteFile(outPath, audio, 0o644); err != nil {
+	if err := audiopath.WriteClip(outPath, audio); err != nil {
 		log.Printf("jobs: write audio file: %v", err)
 		_ = m.store.SetParagraphError(paragraph.ID, t.voiceID, "failed to save audio: "+err.Error())
 		return
@@ -6032,7 +6048,7 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, precomputed []
 
 	anchor := t.mergeParagraphs[0]
 	outPath := audiopath.ParagraphFile(m.dataDir, t.bookID, t.chapterID, t.voiceID, anchor.Idx)
-	if err := os.WriteFile(outPath, mergedAudio, 0o644); err != nil {
+	if err := audiopath.WriteClip(outPath, mergedAudio); err != nil {
 		log.Printf("jobs: write merged audio file: %v", err)
 		for _, p := range t.mergeParagraphs {
 			m.failParagraph(t, p, fmt.Errorf("failed to save audio: %w", err))

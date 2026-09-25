@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/rhino1998/lectable/backend/internal/audiomaint"
 	"github.com/rhino1998/lectable/backend/internal/httpapi"
 	"github.com/rhino1998/lectable/backend/internal/instanceid"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
@@ -107,6 +108,10 @@ func main() {
 
 	jobManager := jobs.NewManager(st, ttsMgr, dataDir)
 	jobManager.Start(ctx)
+
+	// Converts clips from before the switch to Ogg Opus and deletes audio
+	// the library no longer refers to - once now, then sweeping daily.
+	go audiomaint.Run(ctx, dataDir, st)
 
 	// Live state push (GET /api/events): every committed store write and
 	// every job-queue change invalidates the topics depending on it - see

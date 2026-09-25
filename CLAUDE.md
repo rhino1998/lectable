@@ -77,7 +77,7 @@ relative `/api/*` path; `android` has no such proxy, so it needs the
 backend's actual LAN address entered in-app (see `android/CLAUDE.md`).
 
 The **paragraph** is the unit of everything: it's what gets sent to the TTS
-worker in one call, what gets cached as one `.wav` file, and what the
+worker in one call, what gets cached as one audio clip (Ogg Opus), and what the
 frontend highlights while its audio plays. Chapters are generated
 paragraph-by-paragraph in the background so playback of paragraph 0 can
 start before the rest of the chapter finishes.
@@ -139,7 +139,11 @@ client, not a browser.)
 
 - No auth, no multi-user support — this is a single-user local app.
 - All persistent state lives under the backend's `DATA_DIR` (default
-  `./data`): `library.duckdb`, `audio/<bookID>/<chapterID>/<idx>.wav`,
+  `./data`): `library.duckdb`,
+  `audio/<bookID>/<chapterID>/<voiceID>/<idx>.opus` (served clips - narration,
+  plus `sfx/` and `music/` beside the voice dirs - are Ogg Opus; model inputs
+  like `music/<regionID>.seed.wav` and `audio/<bookID>/ambience/*.wav` stay
+  WAV; see `backend/CLAUDE.md`'s `internal/audiomaint`),
   `covers/<bookID>.<ext>`, `epubs/<bookID>.epub` (the source epub, kept for
   single-chapter re-import), `voice-refs/<presetID>.wav`,
   `voice-refs/variants/<presetID>/<emotion>.wav`. Nothing is stored

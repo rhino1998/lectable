@@ -414,7 +414,7 @@ func (s *Server) handleGetMusicRegionAudio(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "chapter not found")
 		return
 	}
-	http.ServeFile(w, r, audiopath.MusicRegionFile(s.DataDir, ch.BookID, ch.ID, region.ID))
+	serveClip(w, r, audiopath.MusicRegionFile(s.DataDir, ch.BookID, ch.ID, region.ID))
 }
 
 // handleRegenerateMusicRegion is POST /api/music-regions/{id}/regenerate -

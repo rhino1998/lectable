@@ -12,6 +12,7 @@ import "github.com/rhino1998/lectable/backend/internal/pronounce"
 type Store interface {
 	AddCharacterAliases(characterID string, aliases ...string) error
 	AppendMusicRegions(chapterID string, regions []MusicRegionInput, lastParagraphIdx int) ([]MusicRegion, error)
+	AudioRefs() (AudioRefs, error)
 	BookNarrationStats(bookID, voiceID string, overrides []SpeakerVoice) (NarrationStats, error)
 	BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string]NarrationStats, error)
 	CharacterVoiceForModel(characterID, cloneModel string) (string, error)
@@ -114,6 +115,7 @@ type Store interface {
 	SyncTreeNodes(bookID, version string) (map[int]SyncTreeNode, error)
 	UpdateBookmarkNote(id, note string) error
 	UpdatePosition(bookID string, chapterIdx, paragraphIdx int, seconds float64) error
+	SyncCharacterSummariesFromPreset(presetID, instruct, refText string, instructChanged, refTextChanged bool) error
 	UpdateVoice(bookID, presetID, instruct, language string, seed int, cloneModel string, characterVoiceMode CharacterVoiceMode, speechDirection, musicEnabled bool) error
 	UpdateVoicePreset(id, name, instruct, refText string, seed int, speedMultiplier float64, designModel string) error
 	UpdateVoicePresetSeed(id string, seed int) error

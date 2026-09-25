@@ -503,6 +503,64 @@ func TestCustomVoicePresetCreateAndDelete(t *testing.T) {
 	}
 }
 
+// TestUpdateCustomVoicePresetSyncsCharacterSummary confirms editing a
+// speaker's voice prompt also rewrites that speaker's own Summary/RefLine
+// (what the Speakers page shows) - see
+// store.SyncCharacterSummariesFromPreset - while a name-only edit leaves
+// them alone.
+func TestUpdateCustomVoicePresetSyncsCharacterSummary(t *testing.T) {
+	_, s, _, ts := newTestServer(t)
+	bookID := createTestBook(t, s, "", 0, "Alice said hello.")
+	book, err := s.GetBook(bookID)
+	if err != nil || book == nil {
+		t.Fatalf("GetBook: %v", err)
+	}
+	char, _, err := s.UpsertCharacter(store.SeriesScope(book), "Alice", false)
+	if err != nil {
+		t.Fatalf("UpsertCharacter: %v", err)
+	}
+	if err := s.SetCharacterSummary(char.ID, "old prompt", "old line"); err != nil {
+		t.Fatalf("SetCharacterSummary: %v", err)
+	}
+	preset, err := s.CreateVoicePreset("Alice", "old prompt", "old line", 1, 1.0, "")
+	if err != nil {
+		t.Fatalf("CreateVoicePreset: %v", err)
+	}
+	if err := s.SetCharacterVoice(char.ID, book.CloneModel, preset.ID); err != nil {
+		t.Fatalf("SetCharacterVoice: %v", err)
+	}
+
+	summaryOf := func() (string, string) {
+		t.Helper()
+		c, err := s.GetCharacter(char.ID)
+		if err != nil || c == nil {
+			t.Fatalf("GetCharacter: %v", err)
+		}
+		return c.Summary, c.RefLine
+	}
+
+	update := customVoicePresetRequest{Name: "Alice", Instruct: "new prompt", RefText: "old line"}
+	if resp := doJSON(t, http.MethodPut, ts.URL+"/api/voices/custom-presets/"+preset.ID, update, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT custom preset: status %d", resp.StatusCode)
+	}
+	if summary, refLine := summaryOf(); summary != "new prompt" || refLine != "old line" {
+		t.Fatalf("expected summary synced to the new prompt and refLine untouched, got %q / %q", summary, refLine)
+	}
+
+	// A character-side-only rewrite (e.g. a later recharacterize racing
+	// ahead) followed by a name-only preset edit mustn't be clobbered.
+	if err := s.SetCharacterSummary(char.ID, "llm prompt", "llm line"); err != nil {
+		t.Fatalf("SetCharacterSummary: %v", err)
+	}
+	update.Name = "Alice (renamed)"
+	if resp := doJSON(t, http.MethodPut, ts.URL+"/api/voices/custom-presets/"+preset.ID, update, nil); resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT custom preset: status %d", resp.StatusCode)
+	}
+	if summary, refLine := summaryOf(); summary != "llm prompt" || refLine != "llm line" {
+		t.Fatalf("expected a name-only edit to leave summary/refLine alone, got %q / %q", summary, refLine)
+	}
+}
+
 func TestAttributeSpeakersUnavailableWithoutSpeakerConfigured(t *testing.T) {
 	_, s, _, ts := newTestServer(t)
 	bookID := createTestBook(t, s, "", 0, "p1")

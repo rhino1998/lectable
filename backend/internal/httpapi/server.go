@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
@@ -314,4 +315,16 @@ func (s *Server) chapterByID(id string) (*store.Chapter, error) {
 
 func (s *Server) paragraphAudioPath(bookID, chapterID, voiceID string, idx int) string {
 	return audiopath.ParagraphFile(s.DataDir, bookID, chapterID, voiceID, idx)
+}
+
+// serveClip serves a generated audio clip - its legacy WAV if the
+// background conversion hasn't reached it yet (audiopath.Resolve) -
+// labelled with its real content type. Range-request-capable via
+// http.ServeFile.
+func serveClip(w http.ResponseWriter, r *http.Request, path string) {
+	path = audiopath.Resolve(path)
+	if strings.HasSuffix(path, audiopath.ClipExt) {
+		w.Header().Set("Content-Type", audiopath.ClipContentType)
+	}
+	http.ServeFile(w, r, path)
 }
