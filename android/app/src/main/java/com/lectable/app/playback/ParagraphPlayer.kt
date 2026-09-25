@@ -55,6 +55,9 @@ data class SleepTimerState(
     val remainingSeconds: Int = 0,
 )
 
+/** How many upcoming paragraph clips [ParagraphPlayer] keeps queued behind the current one. */
+private const val QUEUED_CLIPS = 3
+
 /**
  * Owns one ExoPlayer instance and advances through a book's paragraphs one
  * `.wav` at a time - the Android analogue of frontend/src/hooks/usePlayback.ts.
@@ -438,14 +441,13 @@ class ParagraphPlayer @Inject constructor(
     }
 
     /**
-     * The paragraph whose clip plays after the loaded one: the first paragraph past the loaded
-     * clip's scare-quote merge group (whose members all share one clip), crossing into the next
-     * chapter when that's already cached. Null when it isn't ready yet or doesn't start its own
-     * clip - [advanceToNext] handles those the old way once the current clip ends.
+     * The paragraph whose clip plays after [from]'s (whose clip is [url]): the first paragraph
+     * past that clip's scare-quote merge group (whose members all share one clip), crossing into
+     * the next chapter when that's already cached. Null when it isn't ready yet or doesn't start
+     * its own clip - [advanceToNext] handles those the old way once the current clip ends.
      */
-    private fun nextClipStart(): Pair<Int, Int>? {
-        var (chapterIdx, paragraphIdx) = loadedTarget ?: return null
-        val url = loadedAudioUrl ?: return null
+    private fun clipStartAfter(from: Pair<Int, Int>, url: String): Pair<Int, Int>? {
+        var (chapterIdx, paragraphIdx) = from
         while (true) {
             val chapter = chapters[chapterIdx] ?: return null
             paragraphIdx++
@@ -462,20 +464,36 @@ class ParagraphPlayer @Inject constructor(
     }
 
     /**
-     * Queues the next paragraph's clip behind the current one, so ExoPlayer opens and buffers it
-     * while the current one plays and moves straight on at the boundary. Loading each clip only
-     * once the previous one had ended left an audible gap at every paragraph - an Ogg Opus clip
-     * takes several round trips to open (headers, then a seek to the end for its duration).
-     * Idempotent: leaves an already-correct queue alone.
+     * Queues the next [QUEUED_CLIPS] paragraphs' clips behind the current one, so ExoPlayer opens
+     * and buffers them while the current one plays and moves straight on at each boundary.
+     * Loading each clip only once the previous one had ended left an audible gap at every
+     * paragraph - an Ogg Opus clip takes several round trips to open (headers, then a seek to the
+     * end for its duration). More than one ahead because a short clip (especially at high speed)
+     * is read to its end by the audio renderer within milliseconds of becoming current - before
+     * [onQueuedClipStarted] could queue its successor - and a renderer that hits the end of the
+     * playlist has to tear down and rebuild its AudioTrack, clipping the next clip's start.
+     * Idempotent: keeps whatever prefix of the queue is already correct.
      */
     private fun queueNextClip() {
         if (player.mediaItemCount == 0) return
-        val current = player.currentMediaItemIndex
-        val wanted = nextClipStart()?.let { (c, p) -> mediaItemFor(c, p) }
-        val queued = if (player.mediaItemCount > current + 1) player.getMediaItemAt(current + 1) else null
-        if (queued?.mediaId == wanted?.mediaId) return
-        if (queued != null) player.removeMediaItems(current + 1, player.mediaItemCount)
-        if (wanted != null) player.addMediaItem(wanted)
+        val wanted = mutableListOf<MediaItem>()
+        var from = loadedTarget
+        var url = loadedAudioUrl
+        while (from != null && url != null && wanted.size < QUEUED_CLIPS) {
+            val next = clipStartAfter(from, url) ?: break
+            wanted += mediaItemFor(next.first, next.second) ?: break
+            from = next
+            url = chapters[next.first]?.paragraphs?.getOrNull(next.second)?.audioUrl
+        }
+        val firstQueued = player.currentMediaItemIndex + 1
+        var keep = 0
+        while (keep < wanted.size && firstQueued + keep < player.mediaItemCount &&
+            player.getMediaItemAt(firstQueued + keep).mediaId == wanted[keep].mediaId
+        ) {
+            keep++
+        }
+        if (firstQueued + keep < player.mediaItemCount) player.removeMediaItems(firstQueued + keep, player.mediaItemCount)
+        if (keep < wanted.size) player.addMediaItems(wanted.subList(keep, wanted.size))
     }
 
     /** The player moved on to a clip [queueNextClip] queued: make it the current paragraph. */
