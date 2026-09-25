@@ -93,8 +93,8 @@ just a reference-clip recipe. New books start with the default clone model
 set on the Voices page.
 
 Dialogue lines can also carry an **emotion** (a small fixed set -
-`backend/internal/emotions`: warm, excited, sad, angry, afraid, cold,
-whisper, shout, weary), labeled by an LLM pass or overridden per line in
+`backend/internal/emotions`: warm, excited, teasing, sad, pleading,
+angry, afraid, nervous, cold, whisper, shout, weary, pained), labeled by an LLM pass or overridden per line in
 the reader. An emotion isn't a TTS control token: each voice lazily gets
 one reference-clip *variant* per emotion its lines actually use (rendered
 by BreezeTTS instructed cloning of the base clip), and an emotional line

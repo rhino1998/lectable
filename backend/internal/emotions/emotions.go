@@ -23,19 +23,19 @@ package emotions
 type Emotion struct {
 	// ID is the stored/wire value (store.Paragraph.Emotion) and the
 	// variant clip's file name - lowercase, stable, never renamed.
-	ID string
+	ID string `json:"id"`
 	// Label is the human-readable name shown in the UI.
-	Label string
+	Label string `json:"label"`
 	// Description tells the labeling LLM what this emotion covers - see
 	// speakerattr's emotion prompt.
-	Description string
+	Description string `json:"-"`
 	// Instruction is the BreezeTTS clone-time style instruction the
 	// variant is rendered with.
-	Instruction string
+	Instruction string `json:"-"`
 	// RefLine is what the variant clip actually says. Chosen to carry the
 	// emotion in its own words, since a flat line reads flat whatever the
 	// instruction asks for.
-	RefLine string
+	RefLine string `json:"-"`
 }
 
 // Neutral is the absence of an emotion - a line with no label clones from
@@ -63,11 +63,25 @@ var All = []Emotion{
 		RefLine:     "We did it! Do you hear me? We actually did it! I can't believe it worked, it actually worked!",
 	},
 	{
+		ID:          "teasing",
+		Label:       "Teasing",
+		Description: "teasing, playful, sly, smug, mischievous, joking, flirtatious",
+		Instruction: "Speak playfully and teasingly, with a sly, knowing smile in the voice, light and a little smug.",
+		RefLine:     "Oh, is that so? The great hero, scared of a little spider. Don't worry, your secret's safe with me. Mostly.",
+	},
+	{
 		ID:          "sad",
 		Label:       "Sad",
 		Description: "sad, grieving, melancholy, resigned, heartbroken, close to tears",
 		Instruction: "Speak sadly and quietly, voice heavy with grief, slow and close to tears.",
 		RefLine:     "He's gone. I kept thinking he'd walk back through that door, but he's not coming back, is he. Not this time.",
+	},
+	{
+		ID:          "pleading",
+		Label:       "Pleading",
+		Description: "pleading, begging, desperate, imploring, beseeching",
+		Instruction: "Speak pleadingly and desperately, voice strained and rising, urgently begging.",
+		RefLine:     "Please, I'm begging you, don't do this. He's all I have left. Take anything else, anything, just let him go.",
 	},
 	{
 		ID:          "angry",
@@ -79,14 +93,21 @@ var All = []Emotion{
 	{
 		ID:          "afraid",
 		Label:       "Afraid",
-		Description: "afraid, anxious, panicked, nervous, pleading, desperate",
+		Description: "afraid, terrified, panicked, frightened",
 		Instruction: "Speak fearfully, voice trembling and breathless with panic, quick and shaky.",
 		RefLine:     "Did you hear that? Something's out there. Please, please, we have to go, we have to go right now, it's coming closer.",
 	},
 	{
+		ID:          "nervous",
+		Label:       "Nervous",
+		Description: "nervous, hesitant, awkward, unsure, flustered, stammering",
+		Instruction: "Speak nervously and hesitantly, unsure of yourself, with small pauses and a slightly shaky voice.",
+		RefLine:     "I, um... I wasn't sure if I should say anything. It's probably nothing. I just thought... well, maybe you'd want to know?",
+	},
+	{
 		ID:          "cold",
 		Label:       "Cold",
-		Description: "cold, contemptuous, sarcastic, menacing, disdainful, threatening",
+		Description: "cold, contemptuous, cutting sarcasm, menacing, disdainful, threatening",
 		Instruction: "Speak coldly and contemptuously, flat and controlled, with icy disdain.",
 		RefLine:     "How touching. You really thought that would work? Run along now, and do try not to embarrass yourself any further.",
 	},
@@ -107,9 +128,16 @@ var All = []Emotion{
 	{
 		ID:          "weary",
 		Label:       "Weary",
-		Description: "exhausted, weak, injured, drained, spoken with great effort",
+		Description: "exhausted, weak, drained, sleepy, worn out",
 		Instruction: "Speak wearily, exhausted and weak, slow and breathy, as if barely able to stand.",
 		RefLine:     "Just... give me a minute. I haven't slept in three days. My legs won't hold me much longer, I'm sorry.",
+	},
+	{
+		ID:          "pained",
+		Label:       "Pained",
+		Description: "in pain, hurt, wounded, strained, gasping, speaking through physical effort",
+		Instruction: "Speak through physical pain, voice tight and strained, gasping between words, teeth gritted.",
+		RefLine:     "Argh... it's my leg. I think it's broken. Just... pull me up. On three. One, two... ahh!",
 	},
 }
 

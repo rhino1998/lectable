@@ -46,6 +46,7 @@ Rules:
 - Only ever label a line marked "(dialogue)". Narration lines are there for context only and must never appear in your reply.
 - Judge how the line is actually spoken: the words themselves, the narration around it ("she hissed", "he bellowed", "Maya said, fighting back tears"), and the scene. A narration beat naming a manner of speaking is strong evidence - "she whispered" -> whisper, "he roared" -> shout.
 - whisper and shout are about volume and should win over an emotion when the narration says a line was whispered or shouted.
+- Pick the closer of neighboring labels by intensity and kind: nervous is mild unease, afraid is real fear; pleading is begging someone for something, not fear itself; teasing is playful, cold is contemptuous; pained is physical hurt, weary is exhaustion.
 - The bar is high: only label a line whose emotion is clear and strong, not merely plausible. Ordinary conversation, questions, explanations, and mild reactions stay neutral. An exclamation mark alone is not enough.
 - Never label a line just because its topic is emotional - judge the delivery, not the subject.
 - Each number must be copied exactly from the number printed before that line - never shift it to a neighboring line.`)
