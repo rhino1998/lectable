@@ -167,7 +167,10 @@ export function useBackgroundMusic({
 
   function ensureContext(): AudioContext {
     let ctx = ctxRef.current
-    if (!ctx) {
+    // A closed context can't be resumed or played into - treat it as
+    // absent (see the unmount teardown below, which normally clears the
+    // ref itself).
+    if (!ctx || ctx.state === 'closed') {
       ctx = new AudioContext()
       const master = ctx.createGain()
       // The master-volume fade effect below only reacts to musicEnabled
@@ -271,8 +274,14 @@ export function useBackgroundMusic({
     if (cached) return Promise.resolve(cached)
     const pending = pendingFetchRef.current.get(region.id)
     if (pending) return pending
-    const promise = fetch(region.audioUrl!)
-      .then((res) => res.arrayBuffer())
+    // no-cache: a regenerated region keeps its same URL, so let the
+    // browser revalidate (http.ServeFile answers If-Modified-Since) rather
+    // than hand back the old clip from its heuristic cache.
+    const promise = fetch(region.audioUrl!, { cache: 'no-cache' })
+      .then((res) => {
+        if (!res.ok) throw new Error(`music region ${region.id}: HTTP ${res.status}`)
+        return res.arrayBuffer()
+      })
       .then((bytes) => ctx.decodeAudioData(bytes))
       .then((buffer) => {
         bufferCacheRef.current.set(region.id, buffer)
@@ -291,6 +300,19 @@ export function useBackgroundMusic({
   // and is it already what's playing.
   useEffect(() => {
     if (!musicEnabled || !data || data.regions.length === 0) return
+
+    // A region that's no longer ready (the reader hit Regenerate, or the
+    // chapter was re-scored) drops its cached clip, so it gets refetched
+    // once it's ready again instead of replaying the old decode forever.
+    for (const r of [...data.regions, ...(nextChapterData?.regions ?? [])]) {
+      if (r.status !== 'ready' || !r.audioUrl) bufferCacheRef.current.delete(r.id)
+    }
+
+    // A context that exists but never got to run - created with no user
+    // activation on the page yet (narration started from OS media keys,
+    // say), so resume() was refused - retries here on every tick until
+    // one succeeds, rather than staying silent until a reload.
+    if (ctxRef.current?.state === 'suspended' && isPlaying) void ctxRef.current.resume()
 
     // Re-evaluate isJumpRef only on a genuine (chapterIdx, paragraphIdx)
     // transition (see lastParagraphPosRef's own doc comment) - the very
@@ -406,7 +428,15 @@ export function useBackgroundMusic({
   }, [musicEnabled, data, nextChapterData, chapterParagraphCount, paragraphIdx, paragraphCurrentTime, paragraphDuration, playbackRate])
 
   // Full teardown on unmount (leaving the reader, or switching books).
+  // Clears every ref pointing into the closed context, not just closes it:
+  // StrictMode's dev-only double effect and Vite fast refresh both run
+  // this cleanup and then re-run every effect on the *same* refs, and a
+  // closed context left in ctxRef would silently swallow every later
+  // switch - no music at all until a full reload. Decoded AudioBuffers
+  // aren't tied to a context, so bufferCacheRef survives.
   useEffect(() => {
+    const switchToken = switchTokenRef
+    const pendingFetches = pendingFetchRef.current
     return () => {
       if (activeDeckRef.current) {
         try {
@@ -416,6 +446,14 @@ export function useBackgroundMusic({
         }
       }
       void ctxRef.current?.close()
+      ctxRef.current = null
+      masterGainRef.current = null
+      activeDeckRef.current = null
+      lastParagraphPosRef.current = null
+      pendingFetches.clear()
+      // Supersedes any switch still waiting on a fetch, which would
+      // otherwise start its source on the closed context.
+      switchToken.current++
     }
   }, [])
 }

@@ -1844,13 +1844,9 @@ func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *sto
 	// Every paragraph this run actually reached gets its stored
 	// substitutions replaced - including clearing a stale list the new
 	// pass no longer produces (ResolvePronunciation omits paragraphs with
-	// nothing to substitute). Every paragraph the pass touches - one it
-	// finds a substitution in, or one whose stored list it clears - loses
-	// its audio, even when its substitutions are unchanged: existing audio
-	// can't be trusted to have actually applied them (a bug once dropped
-	// fixes nested inside emphasis - see pronounce.Compose), and re-running
-	// the pass is how a reader asks for them to be re-applied. Paragraphs
-	// with nothing to substitute before or after keep their audio.
+	// nothing to substitute). Only a paragraph whose substitutions
+	// actually changed loses its audio; one resolved to the same list it
+	// already had keeps it.
 	unreached := make(map[int]bool, len(remaining))
 	for _, p := range remaining {
 		unreached[p.Idx] = true
@@ -1864,8 +1860,6 @@ func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *sto
 		subs := pronunciation[p.Idx]
 		if !slices.Equal(subs, []pronounce.Substitution(p.Pronunciation)) {
 			updates[p.Idx] = subs
-		}
-		if len(subs) > 0 || len(p.Pronunciation) > 0 {
 			touched = append(touched, p.Idx)
 		}
 	}

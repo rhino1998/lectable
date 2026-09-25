@@ -224,6 +224,19 @@ func resolveAudioID(p store.Paragraph, state store.AudioState, byIdx map[int]str
 	return p.ID
 }
 
+// audioVersion is a "?v=" query suffix naming which render of a
+// paragraph's clip an audioUrl points at (the file's mtime), so a
+// regenerated clip gets a new URL: a player never keeps playing an
+// already-loaded old clip, or a browser a cached one, under an unchanged
+// URL. The endpoint ignores the query. "" if the file can't be stat'd.
+func (s *Server) audioVersion(bookID, chapterID, voiceID string, idx int) string {
+	fi, err := os.Stat(s.paragraphAudioPath(bookID, chapterID, voiceID, idx))
+	if err != nil {
+		return ""
+	}
+	return "?v=" + strconv.FormatInt(fi.ModTime().UnixNano(), 36)
+}
+
 // contentItemDTO gives the frontend chapter content in original document
 // order (text interleaved with images). Text items point back into
 // `paragraphs` by index rather than duplicating its fields, since
@@ -410,7 +423,8 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 			pd.Words = json.RawMessage("[]")
 		}
 		if state.Status == store.AudioReady {
-			pd.AudioURL = "/api/paragraphs/" + resolveAudioID(p, state, idByIdx) + "/audio"
+			pd.AudioURL = "/api/paragraphs/" + resolveAudioID(p, state, idByIdx) + "/audio" +
+				s.audioVersion(ch.BookID, ch.ID, voiceIDByParagraph[p.ID], p.Idx-state.PointerOffset)
 			pd.AudioPointerSeconds = state.PointerSeconds
 		}
 		pd.ContentHash = paragraphContentHash(pd)
@@ -1235,6 +1249,10 @@ func (s *Server) handleGetAudio(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "audio not ready")
 		return
 	}
+	// Revalidate every time (a cheap 304 off Last-Modified when unchanged):
+	// a regenerated clip is written under the same path, so a heuristically
+	// cached copy would replay the old render.
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, s.paragraphAudioPath(ch.BookID, ch.ID, voiceID, p.Idx))
 }
 

@@ -5850,11 +5850,54 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		m.failParagraph(t, t.paragraph, result.err)
 		return
 	}
+	if fresh, stale := m.refreshStaleGeneration(t); stale {
+		log.Printf("jobs: paragraph %s generation text changed while generating, discarding and requeueing", t.paragraph.ID)
+		m.pushTask(fresh)
+		return
+	}
 	if len(t.mergeParagraphs) > 1 {
 		m.handleMergedResult(t, result.audio, result.words)
 		return
 	}
 	m.saveParagraphAudio(t, t.paragraph, result.audio, result.words)
+}
+
+// refreshStaleGeneration re-reads t's paragraph(s) and reports whether any
+// one's generation text changed after t snapshotted it - e.g. a
+// pronunciation re-run landing while the clip was rendering, whose audio
+// invalidation (DeleteParagraphAudioForIdxs) this result would otherwise
+// silently undo by saving audio of the old text. When stale, fresh is a
+// copy of t carrying the current paragraphs, to render again (not counted
+// as a retry attempt - nothing failed). A paragraph that can't be re-read
+// is treated as unchanged.
+func (m *Manager) refreshStaleGeneration(t *task) (fresh *task, stale bool) {
+	cloneModel := t.cloneModel
+	if cloneModel == "" {
+		cloneModel = voices.DefaultCloneModel
+	}
+	current := func(p store.Paragraph) store.Paragraph {
+		cur, err := m.store.GetParagraph(p.ID)
+		if err != nil || cur == nil {
+			return p
+		}
+		if cur.ResolveGenerationText(cloneModel) != p.ResolveGenerationText(cloneModel) {
+			stale = true
+		}
+		return *cur
+	}
+	cp := *t
+	cp.cancel = nil
+	cp.paragraph = current(t.paragraph)
+	if len(t.mergeParagraphs) > 1 {
+		cp.mergeParagraphs = make([]store.Paragraph, len(t.mergeParagraphs))
+		for i, p := range t.mergeParagraphs {
+			cp.mergeParagraphs[i] = current(p)
+		}
+	}
+	if !stale {
+		return nil, false
+	}
+	return &cp, true
 }
 
 // failParagraph marks one paragraph AudioError and publishes it - shared by

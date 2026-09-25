@@ -13,6 +13,7 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
@@ -1429,6 +1430,46 @@ func TestHandleResultRetriesGenerationFailureThenGivesUp(t *testing.T) {
 	}
 	if got := audioErrorFor(); got == "" {
 		t.Fatalf("expected the paragraph to be marked AudioError once budget is exhausted")
+	}
+}
+
+// TestHandleResultDiscardsStaleGenerationText covers a clip whose
+// paragraph's generation text changed while it rendered (a pronunciation
+// re-run landing mid-generation): the result must not be saved - that
+// would undo the re-run's audio invalidation with audio of the old text -
+// and the paragraph is requeued carrying its current text instead.
+func TestHandleResultDiscardsStaleGenerationText(t *testing.T) {
+	s := openTestStore(t)
+	_, chapterID := createBookAndChapter(t, s, "", 0, "Free demesnes.")
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil || len(paragraphs) != 1 {
+		t.Fatalf("ListParagraphsRaw: %v (n=%d)", err, len(paragraphs))
+	}
+	mgr := newTestManagerWithStore(s)
+	tk := &task{kind: KindVoiceClone, paragraph: paragraphs[0], voiceID: "voice-1"}
+	mgr.pushTask(tk)
+	if got, ok := mgr.queue.Pop(); !ok || got.(*task) != tk {
+		t.Fatal("test setup: expected to dispatch the task just pushed")
+	}
+
+	fix := []pronounce.Substitution{{Offset: 5, Length: 8, Replacement: "domains"}}
+	if err := mgr.store.SetParagraphPronunciation(chapterID, map[int][]pronounce.Substitution{0: fix}); err != nil {
+		t.Fatalf("SetParagraphPronunciation: %v", err)
+	}
+	mgr.handleResult(tk, taskResult{audio: []byte("stale")})
+
+	got := queuedTasks(mgr)
+	if len(got) != 1 {
+		t.Fatalf("expected the stale paragraph to be requeued, got %d queued tasks", len(got))
+	}
+	if text := got[0].paragraph.ResolveGenerationText(""); text != "Free domains." {
+		t.Errorf("requeued generation text = %q, want %q", text, "Free domains.")
+	}
+	if got[0].attempt != 0 {
+		t.Errorf("requeued attempt = %d, want 0 (a stale result isn't a failure)", got[0].attempt)
+	}
+	if st, err := s.GetParagraphAudioStatus(paragraphs[0].ID, "voice-1"); err == nil && st == store.AudioReady {
+		t.Errorf("stale audio was saved as ready")
 	}
 }
 
