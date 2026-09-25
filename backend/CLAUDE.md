@@ -1166,6 +1166,44 @@ building/running `ttsworker` does, since both now link into that binary.
   mDNS goodbye packet) on the same signal-triggered shutdown path. Pure
   advertisement — the backend never browses for anything itself.
 
+## Metrics
+
+`GET /metrics` on the main server (`:8080`) serves Prometheus metrics
+(`client_golang`, default registry - so also the server's own `go_*`/
+`process_*`). All are recorded in `cmd/server`, never inside the worker:
+
+- `lectable_worker_request_duration_seconds{endpoint,outcome}` (histogram),
+  `lectable_worker_requests_in_flight`, `lectable_worker_restarts_total
+  {reason=process_died|rss_limit|stuck|manual}` - `internal/ttsworker`.
+  `outcome` is `ok`, `canceled`, `decode_budget` (Higgs never reached EOC -
+  the "before EOC for this text chunk" error), or `error`.
+- `lectable_ttsworker_process_*` - the worker process's CPU seconds, RSS,
+  fds, via a process collector pointed at its current pid.
+- `lectable_tts_generate_duration_seconds{clone_model,outcome}` and
+  `lectable_tts_generated_audio_seconds_total{clone_model}` - per-call
+  real-time factor is `rate(..._duration_seconds_sum{outcome="ok"}) /
+  rate(..._audio_seconds_total)` (concurrent calls overlap, so throughput
+  is audio seconds per wall second instead).
+- `lectable_tts_completeness_retries_total{reason=missing|extra|both}`,
+  `lectable_tts_completeness_results_total{result=clean|fixed|unfixed|
+  unchecked}` - `jobs.generateCloneChecked`.
+- `lectable_jobs_task_run_seconds{kind,outcome}`,
+  `lectable_jobs_task_wait_seconds{kind,tier}` (histograms, from
+  `logTaskTiming`), and `lectable_jobs_queued`/`lectable_jobs_in_flight
+  {kind,tier}`/`lectable_jobs_paused`, read from `Manager.Snapshot` at
+  scrape time.
+- `lectable_http_request_duration_seconds{route,method,code}` - `route` is
+  the matched ServeMux pattern (`GET /api/books/{id}`), never a raw path.
+- `lectable_db_call_duration_seconds{op}` - every call on the single DuckDB
+  connection (`begin_wait` is time spent waiting for it).
+
+Useful queries: worker CPU cores
+`rate(lectable_ttsworker_process_cpu_seconds_total[5m])`; generation
+failure ratio by model `sum by (clone_model, outcome)
+(rate(lectable_tts_generate_duration_seconds_count[1h]))`; p90 generation
+latency `histogram_quantile(0.9, sum by (le, clone_model)
+(rate(lectable_tts_generate_duration_seconds_bucket[15m])))`.
+
 ## Toolchain note
 
 This module's `go.mod` needs a newer Go than the box's default

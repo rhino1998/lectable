@@ -72,10 +72,12 @@ var slowCallThreshold = func() time.Duration {
 	return 100 * time.Millisecond
 }()
 
-// logCallTiming logs op if it took at least slowCallThreshold, naming the
-// Store method that made the call.
+// logCallTiming records op's duration (dbCallDuration) and logs it if it
+// took at least slowCallThreshold, naming the Store method that made the
+// call.
 func logCallTiming(op string, start time.Time) {
 	d := time.Since(start)
+	dbCallDuration.WithLabelValues(metricOp(op)).Observe(d.Seconds())
 	if slowCallThreshold < 0 || d < slowCallThreshold {
 		return
 	}

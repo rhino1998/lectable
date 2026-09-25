@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
+	"github.com/rhino1998/lectable/backend/internal/wav"
 )
 
 // Config controls how the worker process is spawned and watched.
@@ -143,6 +144,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	if err := m.spawnAndWait(ctx); err != nil {
 		return err
 	}
+	m.registerProcessCollector()
 	go m.watchdogLoop(ctx)
 	return nil
 }
@@ -265,6 +267,7 @@ func (m *Manager) isHealthy(ctx context.Context) bool {
 // button, `POST /api/jobs/restart-worker`), e.g. to recover from a stuck or
 // visibly leaking worker without waiting for RSSLimitBytes to be crossed.
 func (m *Manager) Restart(ctx context.Context, reason string) error {
+	restarts.WithLabelValues("manual").Inc()
 	return m.restart(ctx, reason)
 }
 
@@ -433,12 +436,14 @@ func (m *Manager) watchdogLoop(ctx context.Context) {
 			rss, err := readRSSBytes(pid)
 			if err != nil {
 				log.Printf("ttsworker: worker (pid %d) appears to have died: %v", pid, err)
+				restarts.WithLabelValues("process_died").Inc()
 				if err := m.restart(ctx, "process died"); err != nil {
 					log.Printf("ttsworker: restart failed: %v", err)
 				}
 				continue
 			}
 			if rss >= m.cfg.RSSLimitBytes {
+				restarts.WithLabelValues("rss_limit").Inc()
 				if err := m.restart(ctx, fmt.Sprintf("RSS %d bytes >= limit %d bytes", rss, m.cfg.RSSLimitBytes)); err != nil {
 					log.Printf("ttsworker: restart failed: %v", err)
 				}
@@ -446,6 +451,7 @@ func (m *Manager) watchdogLoop(ctx context.Context) {
 			}
 			if busyFor, any := m.stuckSince(); any && busyFor >= m.cfg.StuckJobTimeout {
 				reason := fmt.Sprintf("job(s) in flight for %s >= stuck timeout %s", busyFor.Round(time.Second), m.cfg.StuckJobTimeout)
+				restarts.WithLabelValues("stuck").Inc()
 				if err := m.hardRestart(ctx, reason); err != nil {
 					log.Printf("ttsworker: hard restart failed: %v", err)
 				}
@@ -483,12 +489,16 @@ func readRSSBytes(pid int) (int64, error) {
 // non-2xx status into an error using the worker's {detail} JSON shape.
 func (m *Manager) do(ctx context.Context, method, path string, reqBody, respBody any) (err error) {
 	start := time.Now()
+	requestsInFlight.Inc()
 	defer func() {
+		requestsInFlight.Dec()
+		took := time.Since(start)
+		requestDuration.WithLabelValues(path, outcome(err)).Observe(took.Seconds())
 		status := "ok"
 		if err != nil {
 			status = "err: " + err.Error()
 		}
-		log.Printf("ttsworker: timing %s %s took %s (%s)", method, path, time.Since(start).Round(time.Millisecond), status)
+		log.Printf("ttsworker: timing %s %s took %s (%s)", method, path, took.Round(time.Millisecond), status)
 	}()
 	var bodyReader io.Reader
 	if reqBody != nil {
@@ -569,6 +579,7 @@ func (m *Manager) generate(ctx context.Context, text, cloneModel string, refAudi
 	jobID := m.beginJob()
 	defer m.endJob(jobID)
 
+	start := time.Now()
 	var out []byte
 	err := m.do(ctx, http.MethodPost, "/generate", ttsproto.GenerateRequest{
 		Text:           text,
@@ -581,6 +592,12 @@ func (m *Manager) generate(ctx context.Context, text, cloneModel string, refAudi
 		Temperature:    temperature,
 		TextChunkSize:  textChunkSize,
 	}, &out)
+	generateDuration.WithLabelValues(cloneModel, outcome(err)).Observe(time.Since(start).Seconds())
+	if err == nil {
+		if d, derr := wav.Duration(out); derr == nil {
+			generatedAudio.WithLabelValues(cloneModel).Add(d.Seconds())
+		}
+	}
 	return out, err
 }
 

@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rhino1998/lectable/backend/internal/audiomaint"
 	"github.com/rhino1998/lectable/backend/internal/httpapi"
 	"github.com/rhino1998/lectable/backend/internal/instanceid"
@@ -107,6 +108,9 @@ func main() {
 	go cached.LogStatsEvery(time.Minute, ctx.Done())
 
 	jobManager := jobs.NewManager(st, ttsMgr, dataDir)
+	if err := jobManager.RegisterMetrics(prometheus.DefaultRegisterer); err != nil {
+		log.Fatalf("register job metrics: %v", err)
+	}
 	jobManager.Start(ctx)
 
 	// Converts clips from before the switch to Ogg Opus and deletes audio

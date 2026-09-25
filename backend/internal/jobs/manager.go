@@ -3299,12 +3299,15 @@ func logTaskTiming(t *task, err error) {
 	if !t.pushedAt.IsZero() {
 		waited = t.startedAt.Sub(t.pushedAt)
 	}
+	ran := now.Sub(t.startedAt)
+	taskRunSeconds.WithLabelValues(string(t.kind), taskOutcome(err)).Observe(ran.Seconds())
+	taskWaitSeconds.WithLabelValues(string(t.kind), tierName(t.tier)).Observe(waited.Seconds())
 	status := "ok"
 	if err != nil {
 		status = "err: " + err.Error()
 	}
 	log.Printf("jobs: timing %s %s tier=%d attempt=%d waited=%s ran=%s (%s)",
-		t.kind, t.dedupKey(), t.tier, t.attempt, waited.Round(time.Millisecond), now.Sub(t.startedAt).Round(time.Millisecond), status)
+		t.kind, t.dedupKey(), t.tier, t.attempt, waited.Round(time.Millisecond), ran.Round(time.Millisecond), status)
 }
 
 func (m *Manager) finishTask(t *task) {

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/live"
@@ -231,14 +232,15 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/voices/custom-presets/{id}/test", s.handleTestCustomVoicePreset)
 	mux.HandleFunc("POST /api/voices/custom-presets/{id}/regenerate", s.handleRegenerateCustomVoicePreset)
 
-	return withCORS(s.AllowOrigin, withLogging(mux))
+	// Prometheus metrics (see backend/CLAUDE.md's "Metrics" section) - not
+	// an API route, so a plain Handle, which cmd/apigen doesn't read.
+	mux.Handle("GET /metrics", promhttp.Handler())
+
+	return withCORS(s.AllowOrigin, withMetrics(mux))
 }
 
-func withLogging(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s", r.Method, r.URL.Path)
-	})
+func logRequest(r *http.Request) {
+	log.Printf("%s %s", r.Method, r.URL.Path)
 }
 
 func withCORS(allowOrigin string, next http.Handler) http.Handler {

@@ -185,13 +185,17 @@ func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, r
 	words, missing, err := m.alignForCompleteness(ctx, alignText, audio, language)
 	if err != nil {
 		log.Printf("jobs: completeness check alignment failed, keeping audio unchecked: %v", err)
+		completenessResults.WithLabelValues("unchecked").Inc()
 		return audio, nil, nil
 	}
 	extra := m.extraWordsIn(ctx, audio, alignText, text)
+	retried := false
 	for _, chunkSize := range retryChunkSizes(text) {
 		if missing < minMissingWords && extra < minExtraWords {
 			break
 		}
+		retried = true
+		completenessRetries.WithLabelValues(incompleteReason(missing, extra)).Inc()
 		log.Printf(
 			"jobs: generated audio is missing %d of %d words (aligned past the clip's end) and speaks %d extra; regenerating with text_chunk_size=%d",
 			missing, len(words), extra, chunkSize,
@@ -211,10 +215,27 @@ func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, r
 			audio, words, missing, extra = retryAudio, retryWords, retryMissing, retryExtra
 		}
 	}
-	if missing >= minMissingWords || extra >= minExtraWords {
+	switch {
+	case missing >= minMissingWords || extra >= minExtraWords:
 		log.Printf("jobs: generated audio still missing %d of %d words and speaking %d extra after every chunking retry; keeping the best attempt", missing, len(words), extra)
+		completenessResults.WithLabelValues("unfixed").Inc()
+	case retried:
+		completenessResults.WithLabelValues("fixed").Inc()
+	default:
+		completenessResults.WithLabelValues("clean").Inc()
 	}
 	return audio, words, nil
+}
+
+// incompleteReason labels why a generation failed its completeness check.
+func incompleteReason(missing, extra int) string {
+	switch {
+	case missing >= minMissingWords && extra >= minExtraWords:
+		return "both"
+	case missing >= minMissingWords:
+		return "missing"
+	}
+	return "extra"
 }
 
 // alignForCompleteness aligns text against audioWav and reports how many
