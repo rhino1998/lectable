@@ -177,6 +177,18 @@ func (m *Manager) spawnAndWait(ctx context.Context) error {
 	return m.spawnAndWaitLocked(ctx)
 }
 
+// workerOMPThreads caps OpenMP teams in the worker (OMP_NUM_THREADS, unless
+// already set). audio.cpp's CPU-side preprocessing - the aligner's and
+// Parakeet's mel spectrograms, Higgs's delay pattern and reference
+// resampling - runs in OpenMP parallel regions that ignore the session's
+// thread count and default to one thread per core. LLVM's libomp also keeps
+// a separate team per calling OS thread, and cgo calls land on whichever
+// thread Go picks, so a 32-core box accumulated ~23 teams of 31 (~780
+// threads), each woken from sleep for every short region: ~17 cores,
+// mostly kernel time, measured while generating. Matches audioworker's
+// sessionThreads.
+const workerOMPThreads = 4
+
 // spawnAndWaitLocked starts the worker process and blocks until it answers
 // GET /health, or startupTimeout elapses. Caller must hold m.mu.
 func (m *Manager) spawnAndWaitLocked(ctx context.Context) error {
@@ -184,6 +196,9 @@ func (m *Manager) spawnAndWaitLocked(ctx context.Context) error {
 	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH="+m.cfg.LibDir+":"+os.Getenv("LD_LIBRARY_PATH"))
 	if m.cfg.DefaultCloneModel != "" {
 		cmd.Env = append(cmd.Env, "QWEN_TTS_DEFAULT_CLONE_MODEL="+m.cfg.DefaultCloneModel)
+	}
+	if _, set := os.LookupEnv("OMP_NUM_THREADS"); !set {
+		cmd.Env = append(cmd.Env, "OMP_NUM_THREADS="+strconv.Itoa(workerOMPThreads))
 	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
