@@ -1196,11 +1196,23 @@ these exported by hand:
 make build   # go build -o ttsworker ./cmd/ttsworker && go build -o server ./cmd/server
 make test    # go test ./...
 make vet     # go vet ./...
+make generate # regenerate the frontend/Android API clients (cmd/apigen)
+make deploy   # rebuild both binaries + restart the running backend (deploy.sh)
+make rollback # restart on the previous binaries (*.prev) instead
 make tidy    # go mod tidy
 make run     # builds then launches via run.sh - see "Run" below
 ```
 
 ## Run
+
+To rebuild and restart a running backend, use `./deploy.sh` (`make
+deploy`): it builds both binaries before stopping anything (a failed build
+leaves the old server running), keeps the previous ones as `server.prev`/
+`ttsworker.prev`, stops only the server running from this directory,
+relaunches through `run.sh`, waits for `/api/instance`, and re-pauses the
+job queue if it was paused - queued work itself is lost either way, since
+the queue is in memory. `./deploy.sh --rollback` (`make rollback`)
+restarts on the `.prev` binaries.
 
 ```
 go build -o ttsworker ./cmd/ttsworker   # needs CGO_LDFLAGS/LD_LIBRARY_PATH (audio.cpp *and* llama.cpp now), see above

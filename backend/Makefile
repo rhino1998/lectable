@@ -18,7 +18,7 @@ export PATH := $(GO_TOOLCHAIN_DIR):$(PATH)
 export GOTOOLCHAIN := local
 endif
 
-.PHONY: build test vet tidy run
+.PHONY: build test vet tidy run generate deploy rollback
 
 # build only - never launches the server (see run.sh's own --build, which
 # does launch it afterward; use `make run` for that instead).
@@ -35,7 +35,20 @@ vet:
 tidy:
 	go mod tidy
 
+# Regenerates the frontend's/Android client's API types from
+# internal/httpapi's DTOs (cmd/apigen).
+generate:
+	go generate ./internal/httpapi
+
 # Builds then launches via run.sh (which sets these same env vars itself,
 # so this works even if invoked directly instead of through make).
 run:
 	./run.sh --build
+
+# Rebuilds both binaries and restarts the running backend, keeping the old
+# binaries as *.prev (see deploy.sh); rollback restarts on those.
+deploy:
+	./deploy.sh
+
+rollback:
+	./deploy.sh --rollback

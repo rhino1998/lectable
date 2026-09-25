@@ -10,7 +10,7 @@ GO_MODULES := backend audiocpp-go llamacpp-go
 GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || echo $(shell go env GOPATH)/bin/golangci-lint)
 ANDROID_SDK_ROOT ?= /home/rhino/android-sdk-toolchains
 
-.PHONY: lint lint-go lint-frontend lint-android
+.PHONY: lint lint-go lint-frontend lint-android deploy deploy-backend install-android
 
 lint: lint-go lint-frontend lint-android
 
@@ -22,3 +22,14 @@ lint-frontend:
 
 lint-android:
 	cd android && ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ./gradlew -q lintDebug
+
+# Rebuild + restart the backend (backend/deploy.sh), then build + install the
+# Android app on the connected device (android/install.sh). The web frontend
+# needs nothing: its Vite dev server picks up changes on reload.
+deploy: deploy-backend install-android
+
+deploy-backend:
+	$(MAKE) -C backend deploy
+
+install-android:
+	cd android && ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ./install.sh

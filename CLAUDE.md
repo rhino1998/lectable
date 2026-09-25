@@ -124,6 +124,11 @@ plain Go pass before ellipses/em dashes. See `backend/CLAUDE.md`'s
    its Settings screen; an emulator can reach a host-machine backend at the
    default `http://10.0.2.2:8080/`, a physical device needs the host's LAN IP.
 
+To redeploy after changes, `make deploy` from the repo root rebuilds and
+restarts the backend (`backend/deploy.sh`) and then builds and installs the
+Android app on the connected device (`android/install.sh`; `make
+deploy-backend`/`install-android` run either half).
+
 Default ports: backend `8080`, ttsworker `8091` (loopback only, not meant
 to be reached directly), frontend `5173`. The backend's `ALLOW_ORIGIN` env
 var (default `http://localhost:5173`) must match wherever the frontend dev

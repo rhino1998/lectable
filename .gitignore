@@ -3,6 +3,9 @@ backend/data/
 backend/server
 backend/ttsworker
 backend/benchattr
+backend/*.prev
+backend/*.new
+backend/server.failed
 backend/*.duckdb
 
 # frontend
