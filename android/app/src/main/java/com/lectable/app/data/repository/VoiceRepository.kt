@@ -7,6 +7,7 @@ import com.lectable.app.data.remote.dto.TestVoiceDesignRequestDto
 import com.lectable.app.data.remote.dto.TestVoiceRequestDto
 import com.lectable.app.data.remote.dto.VoicePresetsDto
 import com.lectable.app.data.remote.dto.VoiceSettingsDto
+import com.lectable.app.data.remote.dto.toUpdate
 import javax.inject.Inject
 import javax.inject.Singleton
 import okhttp3.ResponseBody
@@ -19,7 +20,7 @@ class VoiceRepository @Inject constructor(
     suspend fun getVoice(bookId: String): VoiceSettingsDto = api.getVoice(bookId)
 
     suspend fun updateVoice(bookId: String, settings: VoiceSettingsDto): VoiceSettingsDto =
-        api.updateVoice(bookId, settings)
+        api.updateVoice(bookId, settings.toUpdate())
 
     suspend fun presets(): VoicePresetsDto = api.voicePresets()
 
@@ -27,9 +28,9 @@ class VoiceRepository @Inject constructor(
 
     suspend fun getDefaultVoice(): VoiceSettingsDto = api.getDefaultVoice()
 
-    suspend fun updateDefaultVoice(settings: VoiceSettingsDto): VoiceSettingsDto = api.updateDefaultVoice(settings)
+    suspend fun updateDefaultVoice(settings: VoiceSettingsDto): VoiceSettingsDto = api.updateDefaultVoice(settings.toUpdate())
 
-    suspend fun customPresets(): List<CustomVoicePresetDto> = api.customVoicePresets()
+    suspend fun customPresets(): List<CustomVoicePresetDto> = api.listCustomVoicePresets()
 
     suspend fun createCustomPreset(input: CustomVoicePresetInputDto): CustomVoicePresetDto =
         api.createCustomVoicePreset(input)
@@ -47,5 +48,5 @@ class VoiceRepository @Inject constructor(
     suspend fun testPreset(id: String, text: String): ResponseBody = api.testPreset(id, TestVoiceRequestDto(text))
 
     suspend fun testVoiceDesign(instruct: String, text: String, seed: Int? = null): ResponseBody =
-        api.testVoiceDesign(TestVoiceDesignRequestDto(instruct, text, seed))
+        api.testVoiceDesign(TestVoiceDesignRequestDto(instruct = instruct, text = text, seed = seed))
 }

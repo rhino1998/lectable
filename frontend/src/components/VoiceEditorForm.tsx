@@ -1,11 +1,9 @@
 import type { CSSProperties } from 'react'
 import {
   CLONE_MODELS,
-  CLONE_MODEL_LABELS,
   CLONE_MODEL_TEMPERATURE_DEFAULTS,
   DESIGN_MODELS,
   DESIGN_MODEL_GUIDANCE_DEFAULTS,
-  DESIGN_MODEL_LABELS,
   DESIGN_MODEL_TEMPERATURE_DEFAULTS,
   DEFAULT_DESIGN_MODEL,
   type CloneModel,
@@ -208,8 +206,8 @@ export function VoiceEditorForm({
         Design model
         <select value={designModel || DEFAULT_DESIGN_MODEL} onChange={(e) => onDesignModelChange(e.target.value)}>
           {DESIGN_MODELS.map((b) => (
-            <option key={b} value={b}>
-              {DESIGN_MODEL_LABELS[b]}
+            <option key={b.id} value={b.id}>
+              {b.label}
             </option>
           ))}
         </select>
@@ -260,8 +258,8 @@ export function VoiceEditorForm({
             Preview cloning model
             <select value={test.cloneModel.value} onChange={(e) => test.cloneModel?.onChange(e.target.value)}>
               {CLONE_MODELS.map((m) => (
-                <option key={m} value={m}>
-                  {CLONE_MODEL_LABELS[m]}
+                <option key={m.id} value={m.id}>
+                  {m.label}
                 </option>
               ))}
             </select>

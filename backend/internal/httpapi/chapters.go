@@ -106,12 +106,12 @@ func pronunciationMarksFor(p store.Paragraph) []pronunciationMarkDTO {
 }
 
 type paragraphDTO struct {
-	Idx             int     `json:"idx"`
-	Text            string  `json:"text"`
-	AudioStatus     string  `json:"audioStatus"`
-	AudioError      string  `json:"audioError,omitempty"`
-	DurationSeconds float64 `json:"durationSeconds,omitempty"`
-	AudioURL        string  `json:"audioUrl,omitempty"`
+	Idx             int         `json:"idx"`
+	Text            string      `json:"text"`
+	AudioStatus     audioStatus `json:"audioStatus"`
+	AudioError      string      `json:"audioError,omitempty"`
+	DurationSeconds float64     `json:"durationSeconds,omitempty"`
+	AudioURL        string      `json:"audioUrl,omitempty"`
 	// AudioPointerSeconds is set only when this paragraph is a scare-quote
 	// merge group pointer (store.AudioState.PointerOffset > 0): the time,
 	// in seconds within AudioURL's own shared clip, where this paragraph's
@@ -123,7 +123,7 @@ type paragraphDTO struct {
 	// highlighting/position-reporting purposes only. Omitted (0) for a
 	// paragraph with its own real file, which always begins at the very
 	// start of AudioURL's clip.
-	AudioPointerSeconds float64 `json:"audioPointerSeconds,omitempty"`
+	AudioPointerSeconds float64 `json:"audioPointerSeconds,omitempty" kttype:"Double = 0.0"`
 	// Speaker is "" (never attributed) or "Narrator", or a character name -
 	// see store.Paragraph.Speaker. Only actually changes this paragraph's
 	// narration voice when the book has MultiVoice on (see
@@ -175,13 +175,13 @@ type paragraphDTO struct {
 	// alignment has run - always present (unlike the websocket push's
 	// Words, which is omitted for updates that aren't about alignment)
 	// since this is a full paragraph snapshot, not a patch.
-	Words json.RawMessage `json:"words"`
+	Words json.RawMessage `json:"words" tstype:"WordTiming[]" kttype:"List<WordTimingDto>"`
 	// SFX* mirror store.Paragraph's own sound-effect test fields - see
 	// its doc comments. SFXAudioURL is set only once SFXStatus ==
 	// store.AudioReady, the same "URL only when actually fetchable"
 	// convention AudioURL follows.
 	SFXPrompt          string  `json:"sfxPrompt,omitempty"`
-	SFXStatus          string  `json:"sfxStatus,omitempty"`
+	SFXStatus          string  `json:"sfxStatus,omitempty" tstype:"'' | 'generating' | 'ready' | 'error'"`
 	SFXError           string  `json:"sfxError,omitempty"`
 	SFXAudioURL        string  `json:"sfxAudioUrl,omitempty"`
 	SFXDurationSeconds float64 `json:"sfxDurationSeconds,omitempty"`
@@ -237,10 +237,36 @@ func (s *Server) audioVersion(bookID, chapterID, voiceID string, idx int) string
 	return "?v=" + strconv.FormatInt(fi.ModTime().UnixNano(), 36)
 }
 
+// audioStatus is a generated clip's state on the wire - store's Audio*
+// values.
+type audioStatus string
+
+// The wire values, read by cmd/apigen.
+const (
+	audioPending    audioStatus = store.AudioPending    //nolint:unused // see above
+	audioGenerating audioStatus = store.AudioGenerating //nolint:unused // see above
+	audioReady      audioStatus = store.AudioReady      //nolint:unused // see above
+	audioError      audioStatus = store.AudioError      //nolint:unused // see above
+)
+
+// wordTimingDTO is one element of paragraphDTO.Words, which is passed
+// through as raw JSON from the stored forced alignment rather than
+// decoded; this documents that shape for cmd/apigen. start/end are
+// seconds within the paragraph's own clip. No confidence field: the
+// aligner hardcodes it to 0 upstream.
+type wordTimingDTO struct { //nolint:unused // read by cmd/apigen, never constructed
+	Text  string  `json:"text"`
+	Start float64 `json:"start"`
+	End   float64 `json:"end"`
+}
+
 // contentItemDTO gives the frontend chapter content in original document
 // order (text interleaved with images). Text items point back into
 // `paragraphs` by index rather than duplicating its fields, since
 // `paragraphs` is also what playback/position logic indexes into directly.
+//
+// apigen:ts-hand - the frontend models this as a discriminated union on
+// Kind instead.
 type contentItemDTO struct {
 	Kind string `json:"kind"` // "text" | "image" | "break"
 	// No omitempty: 0 is a valid, common paragraphIdx (the first paragraph
@@ -259,7 +285,7 @@ type chapterDetailDTO struct {
 	Title      string           `json:"title"`
 	Generating bool             `json:"generating"`
 	Paragraphs []paragraphDTO   `json:"paragraphs"`
-	Content    []contentItemDTO `json:"content"`
+	Content    []contentItemDTO `json:"content" tstype:"ContentItem[]"`
 	// Hash is this chapter's node in the offline-sync hash tree - see
 	// chapterHash.
 	Hash string `json:"hash"`
@@ -271,38 +297,39 @@ func (s *Server) handleGetChapter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid chapter index")
 		return
 	}
-	writeBuilt(w)(s.buildChapter(r.PathValue("id"), idx))
+	v, err := s.buildChapter(r.PathValue("id"), idx)
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildChapter(bookID string, idx int) (any, error) {
+func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) {
 
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if book == nil {
-		return nil, httpError(http.StatusNotFound, "book not found")
+		return chapterDetailDTO{}, httpError(http.StatusNotFound, "book not found")
 	}
 
 	ch, err := s.Store.GetChapterByIdx(bookID, idx)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if ch == nil {
-		return nil, httpError(http.StatusNotFound, "chapter not found")
+		return chapterDetailDTO{}, httpError(http.StatusNotFound, "chapter not found")
 	}
 
 	paragraphs, err := s.Store.ListParagraphsRaw(ch.ID)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	images, err := s.Store.ListImages(ch.ID)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	breaks, err := s.Store.ListBreaks(ch.ID)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	// Resolve each paragraph's own effective voice (a character's assigned
@@ -312,11 +339,11 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 	// necessarily share one voice the way a single JOIN could assume.
 	bookVoice, err := s.Narration.BookVoice(book)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	characters, err := s.Store.ListCharacters(store.SeriesScope(book))
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	charByName := make(map[string]store.Character, len(characters))
 	characterIDs := make([]string, len(characters))
@@ -330,7 +357,7 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 	effectiveCloneModel := narration.EffectiveCloneModel(bookVoice)
 	presetIDByChar, err := s.Store.CharacterVoicesForModel(characterIDs, effectiveCloneModel)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	resolvedVoiceCache := map[string]narration.ResolvedVoice{} // character id -> resolved, avoids repeat lookups
 	idsByVoice := map[string][]string{}
@@ -346,7 +373,7 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 				if cached, ok := resolvedVoiceCache[c.ID]; ok {
 					v = cached
 				} else if resolved, err := s.Narration.ResolveCharacterVoice(book, bookVoice, c, effectiveCloneModel, presetIDByChar[c.ID]); err != nil {
-					return nil, httpError(http.StatusInternalServerError, err.Error())
+					return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 				} else {
 					resolvedVoiceCache[c.ID] = resolved
 					v = resolved
@@ -362,7 +389,7 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 	for vid, ids := range idsByVoice {
 		states, err := s.Store.ParagraphAudioStatuses(ids, vid)
 		if err != nil {
-			return nil, httpError(http.StatusInternalServerError, err.Error())
+			return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 		}
 		for id, st := range states {
 			audioStates[id] = st
@@ -377,7 +404,7 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 	}
 	sfxStates, err := s.Store.ParagraphSFXStates(paragraphIDs)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	dto := chapterDetailDTO{Idx: ch.Idx, Title: ch.Title, Generating: s.Jobs.IsGenerating(ch.ID)}
@@ -400,7 +427,7 @@ func (s *Server) buildChapter(bookID string, idx int) (any, error) {
 			Emotion:             p.EffectiveEmotion(),
 			DirectionMarks:      directionMarksFor(p, cloneModelByParagraph[p.ID]),
 			PronunciationMarks:  pronunciationMarksFor(p),
-			AudioStatus:         state.Status,
+			AudioStatus:         audioStatus(state.Status),
 			AudioError:          state.Error,
 			DurationSeconds:     state.DurationSeconds,
 			Words:               json.RawMessage(state.WordTimings),
@@ -478,7 +505,7 @@ func (s *Server) handleGenerateChapter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Jobs.EnqueueChapter(bookID, ch.ID, ch.Idx)
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handleRegenerateParagraph re-renders one already-generated paragraph
@@ -528,7 +555,7 @@ func (s *Server) handleRegenerateParagraph(w http.ResponseWriter, r *http.Reques
 	}
 
 	s.Jobs.EnqueueParagraphRegenerate(bookID, ch.ID, ch.Idx, *p)
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // paragraphByChapterIdx is the shared bookID+chapterIdx+paragraphIdx ->
@@ -619,7 +646,7 @@ func (s *Server) handleSetParagraphSFXPrompt(w http.ResponseWriter, r *http.Requ
 			return
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 // handleGenerateParagraphSFX renders (or re-renders) one paragraph's sound
@@ -649,10 +676,7 @@ func (s *Server) handleGenerateParagraphSFX(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid paragraph index")
 		return
 	}
-	var req struct {
-		Prompt          string   `json:"prompt"`
-		DurationSeconds *float64 `json:"durationSeconds"`
-	}
+	var req generateParagraphSFXRequest
 	// Body is optional - a caller that already saved a prompt via
 	// handleSetParagraphSFXPrompt can just POST with no body.
 	if r.Body != nil {
@@ -718,7 +742,7 @@ func (s *Server) handleGenerateParagraphSFX(w http.ResponseWriter, r *http.Reque
 		return s.Store.SetParagraphSFXReady(p.ID, dur.Seconds())
 	})
 
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handleGetParagraphSFXAudio serves a ready sound-effect clip -
@@ -863,7 +887,7 @@ func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 type setParagraphDescriptionRequest struct {
@@ -975,7 +999,7 @@ func (s *Server) handleSetParagraphDescription(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 type setParagraphScareQuoteRequest struct {
@@ -1057,7 +1081,7 @@ func (s *Server) handleSetParagraphEmotion(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if req.Emotion == p.Emotion {
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		writeNoContent(w)
 		return
 	}
 
@@ -1071,7 +1095,7 @@ func (s *Server) handleSetParagraphEmotion(w http.ResponseWriter, r *http.Reques
 		s.invalidateParagraphAudio(book, []store.Paragraph{*p})
 		s.Jobs.EnqueueParagraphRegenerate(bookID, ch.ID, ch.Idx, *p)
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 // handleSetParagraphScareQuote lets a reader directly mark (or unmark) one
@@ -1168,7 +1192,7 @@ func (s *Server) handleSetParagraphScareQuote(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if req.ScareQuote == p.ScareQuote {
-		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		writeNoContent(w)
 		return
 	}
 
@@ -1182,7 +1206,7 @@ func (s *Server) handleSetParagraphScareQuote(w http.ResponseWriter, r *http.Req
 	for _, member := range inlineSet {
 		s.Jobs.EnqueueParagraphRegenerate(bookID, ch.ID, ch.Idx, member)
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 type lookaheadRequest struct {
@@ -1207,7 +1231,7 @@ func (s *Server) handleLookahead(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.Jobs.EnqueueLookahead(bookID, req.ChapterIdx, req.ParagraphIdx, req.ParagraphCount)
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 func (s *Server) handleGetAudio(w http.ResponseWriter, r *http.Request) {

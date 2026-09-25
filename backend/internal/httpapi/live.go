@@ -85,7 +85,7 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("characterAppearances", characterTopic("characterAppearances", narrationDeps, 2*time.Second, s.buildCharacterAppearances))
 	h.Register("characterDescriptions", characterTopic("characterDescriptions", narrationDeps, 2*time.Second, s.buildCharacterDescriptions))
 	h.Register("bookmarks", bookTopic("bookmarks", dbDeps("bookmarks", "books", "chapters", "paragraphs"), 0, s.buildBookmarks))
-	h.Register("jobs", noParams("jobs", withDeps(dbDeps("books", "chapters"), DepJobs), 250*time.Millisecond, func() (any, error) {
+	h.Register("jobs", noParams("jobs", withDeps(dbDeps("books", "chapters"), DepJobs), 250*time.Millisecond, func() (jobsSnapshotDTO, error) {
 		return s.buildJobsSnapshot(), nil
 	}))
 	// Built-in presets are compiled in, so nothing ever invalidates this -
@@ -97,14 +97,28 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 
 // handleEvents is GET /api/events - the live-state WebSocket (package
 // live's protocol, topics per registerLiveTopics).
+//
+// apigen:skip - a WebSocket, not a REST route; see the LiveTopics output.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	s.Live.ServeWS(w, r, wsAcceptOptions(s.AllowOrigin))
 }
 
-func noParams(kind string, deps []string, minInterval time.Duration, build func() (any, error)) live.Resolver {
+// The topic wrappers below are generic over their value type so cmd/apigen
+// can read each topic's data type off its Register call; the
+// "apigen:topic-params" line lists the params each takes on the wire.
+
+// noParams is a topic with a single instance.
+//
+// apigen:topic-params
+func noParams[T any](kind string, deps []string, minInterval time.Duration, build func() (T, error)) live.Resolver {
 	return func(json.RawMessage) (*live.Topic, error) {
-		return &live.Topic{Key: kind, Deps: deps, MinInterval: minInterval, Build: build}, nil
+		return &live.Topic{Key: kind, Deps: deps, MinInterval: minInterval, Build: anyBuild(build)}, nil
 	}
+}
+
+// anyBuild adapts a typed builder to live.Topic's Build.
+func anyBuild[T any](build func() (T, error)) func() (any, error) {
+	return func() (any, error) { return build() }
 }
 
 type topicParams struct {
@@ -126,7 +140,10 @@ func parseTopicParams(raw json.RawMessage) (topicParams, error) {
 	return p, nil
 }
 
-func bookTopic(kind string, deps []string, minInterval time.Duration, build func(bookID string) (any, error)) live.Resolver {
+// bookTopic is a topic per book.
+//
+// apigen:topic-params bookId:string
+func bookTopic[T any](kind string, deps []string, minInterval time.Duration, build func(bookID string) (T, error)) live.Resolver {
 	return func(raw json.RawMessage) (*live.Topic, error) {
 		p, err := parseTopicParams(raw)
 		if err != nil {
@@ -139,7 +156,10 @@ func bookTopic(kind string, deps []string, minInterval time.Duration, build func
 	}
 }
 
-func chapterTopic(kind string, deps []string, minInterval time.Duration, build func(bookID string, idx int) (any, error)) live.Resolver {
+// chapterTopic is a topic per chapter.
+//
+// apigen:topic-params bookId:string chapterIdx:int
+func chapterTopic[T any](kind string, deps []string, minInterval time.Duration, build func(bookID string, idx int) (T, error)) live.Resolver {
 	return func(raw json.RawMessage) (*live.Topic, error) {
 		p, err := parseTopicParams(raw)
 		if err != nil {
@@ -156,7 +176,10 @@ func chapterTopic(kind string, deps []string, minInterval time.Duration, build f
 	}
 }
 
-func characterTopic(kind string, deps []string, minInterval time.Duration, build func(bookID, characterID string) (any, error)) live.Resolver {
+// characterTopic is a topic per character (in one book's context).
+//
+// apigen:topic-params bookId:string characterId:string
+func characterTopic[T any](kind string, deps []string, minInterval time.Duration, build func(bookID, characterID string) (T, error)) live.Resolver {
 	return func(raw json.RawMessage) (*live.Topic, error) {
 		p, err := parseTopicParams(raw)
 		if err != nil {

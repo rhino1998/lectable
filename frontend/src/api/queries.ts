@@ -15,14 +15,15 @@ import type {
   CustomVoicePreset,
   CustomVoicePresetInput,
   JobsSnapshot,
-  LLMTestOptions,
+  TestLLMRequest,
   Position,
   QueueTask,
-  SFXTestOptions,
+  GenerateSFXRequest,
   Speaker,
   SpeakerAppearance,
   VoicePresets,
   VoiceSettings,
+  VoiceSettingsUpdate,
 } from './types'
 
 // Server state lives in live topics (see ./live.ts and backend
@@ -264,7 +265,7 @@ export function useVoice(bookId: string): LiveResult<VoiceSettings> {
 }
 
 export function useUpdateVoice(bookId: string) {
-  return useMutation({ mutationFn: (settings: VoiceSettings) => api.updateVoice(bookId, settings) })
+  return useMutation({ mutationFn: (settings: VoiceSettingsUpdate) => api.updateVoice(bookId, settings) })
 }
 
 export function useSpeakers(bookId: string): LiveResult<Speaker[]> {
@@ -575,7 +576,7 @@ export function useDefaultVoice(): LiveResult<VoiceSettings> {
 }
 
 export function useUpdateDefaultVoice() {
-  return useMutation({ mutationFn: (settings: VoiceSettings) => api.updateDefaultVoice(settings) })
+  return useMutation({ mutationFn: (settings: VoiceSettingsUpdate) => api.updateDefaultVoice(settings) })
 }
 
 // Compiled into the backend, never changes - a plain one-off fetch.
@@ -644,13 +645,13 @@ export function useRegeneratePreset() {
 // Standalone SFX test page - see api.testSFX's own doc comment (stateless,
 // nothing persisted).
 export function useTestSFX() {
-  return useMutation({ mutationFn: (opts: SFXTestOptions) => api.testSFX(opts) })
+  return useMutation({ mutationFn: (opts: GenerateSFXRequest) => api.testSFX(opts) })
 }
 
 // Standalone LLM test page - see api.testLLM's own doc comment (stateless,
 // nothing persisted).
 export function useTestLLM() {
-  return useMutation({ mutationFn: (opts: LLMTestOptions) => api.testLLM(opts) })
+  return useMutation({ mutationFn: (opts: TestLLMRequest) => api.testLLM(opts) })
 }
 
 export function useTestVoiceDesign() {

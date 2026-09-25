@@ -1,38 +1,55 @@
 import type { IconType } from 'react-icons'
 import {
   RiChatPrivateLine,
+  RiEmotion2Line,
   RiEmotionLaughLine,
   RiEmotionLine,
   RiEmotionSadLine,
+  RiEmotionUnhappyLine,
   RiFireLine,
+  RiFirstAidKitLine,
   RiGhostLine,
+  RiHandHeartLine,
   RiHeart3Line,
   RiMegaphoneLine,
   RiSnowflakeLine,
   RiZzzLine,
 } from 'react-icons/ri'
+import { EMOTIONS as GENERATED_EMOTIONS, type Emotion } from '../api/types'
 
-// The fixed emotion set a dialogue line can carry - mirrors backend
-// internal/emotions.All (ids are the stored/wire values; keep the two in
-// the same order). An emotion isn't a TTS control token: each voice gets
-// one extra reference clip per emotion its lines use, and an emotional
-// line clones from that variant instead of the base clip.
-// icon is the annotations view's inline per-line marker (ChapterSection's
-// EmotionIcon) and the reader's emotion override menu.
-export const EMOTIONS: { id: string; label: string; icon: IconType }[] = [
-  { id: 'warm', label: 'Warm', icon: RiHeart3Line },
-  { id: 'excited', label: 'Excited', icon: RiEmotionLaughLine },
-  { id: 'sad', label: 'Sad', icon: RiEmotionSadLine },
-  { id: 'angry', label: 'Angry', icon: RiFireLine },
-  { id: 'afraid', label: 'Afraid', icon: RiGhostLine },
-  { id: 'cold', label: 'Cold', icon: RiSnowflakeLine },
-  { id: 'whisper', label: 'Whisper', icon: RiChatPrivateLine },
-  { id: 'shout', label: 'Shout', icon: RiMegaphoneLine },
-  { id: 'weary', label: 'Weary', icon: RiZzzLine },
-]
+// The fixed emotion set a dialogue line can carry comes from the backend
+// (generated EMOTIONS - ids are the stored/wire values, in display order).
+// An emotion isn't a TTS control token: each voice gets one extra
+// reference clip per emotion its lines use, and an emotional line clones
+// from that variant instead of the base clip.
+// The icon is the annotations view's inline per-line marker
+// (ChapterSection's EmotionIcon) and the reader's emotion override menu.
+// Keyed by the generated Emotion union, so a new backend emotion fails to
+// compile here until it gets an icon.
+const EMOTION_ICONS: Record<Emotion, IconType> = {
+  warm: RiHeart3Line,
+  excited: RiEmotionLaughLine,
+  teasing: RiEmotion2Line,
+  sad: RiEmotionSadLine,
+  pleading: RiHandHeartLine,
+  angry: RiFireLine,
+  afraid: RiGhostLine,
+  nervous: RiEmotionUnhappyLine,
+  cold: RiSnowflakeLine,
+  whisper: RiChatPrivateLine,
+  shout: RiMegaphoneLine,
+  weary: RiZzzLine,
+  pained: RiFirstAidKitLine,
+}
 
-const LABELS = new Map(EMOTIONS.map((e) => [e.id, e.label]))
-const ICONS = new Map(EMOTIONS.map((e) => [e.id, e.icon]))
+export const EMOTIONS: { id: Emotion; label: string; icon: IconType }[] = GENERATED_EMOTIONS.map((e) => ({
+  id: e.id,
+  label: e.label,
+  icon: EMOTION_ICONS[e.id],
+}))
+
+const LABELS = new Map<string, string>(EMOTIONS.map((e) => [e.id, e.label]))
+const ICONS = new Map<string, IconType>(EMOTIONS.map((e) => [e.id, e.icon]))
 
 // Display label for an emotion id - the id itself for one this list
 // doesn't know (a newer backend), rather than hiding it.

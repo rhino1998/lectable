@@ -45,7 +45,7 @@ func TestCharacterAliasesEndpointAndMerge(t *testing.T) {
 	// Merging Albert into Bert keeps "Albert" as one of Bert's names.
 	resp := doJSON(t, http.MethodPost, base+"/characters/"+albert.ID+"/merge", map[string]string{"targetName": "Bert"}, nil)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("merge: %d", resp.StatusCode)
 	}
 	if got, _ := s.GetCharacter(bert.ID); got == nil || len(got.Aliases) != 1 || got.Aliases[0] != "Albert" {
@@ -56,7 +56,7 @@ func TestCharacterAliasesEndpointAndMerge(t *testing.T) {
 	// a group is refused.
 	resp = doJSON(t, http.MethodPut, base+"/chapters/0/paragraphs/0/speaker", map[string]string{"speaker": "albert"}, nil)
 	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("set speaker by alias: %d", resp.StatusCode)
 	}
 	ch, _ := s.GetChapterByIdx(bookID, 0)

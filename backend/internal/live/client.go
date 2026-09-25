@@ -228,12 +228,7 @@ func (c *Client) sendPatch(id string, ops []byte) {
 }
 
 func (c *Client) sendError(id string, status int, message string) {
-	msg, _ := json.Marshal(struct {
-		Type   string `json:"type"`
-		ID     string `json:"id"`
-		Status int    `json:"status"`
-		Error  string `json:"error"`
-	}{"error", id, status, message})
+	msg, _ := json.Marshal(ErrorMessage{Type: "error", ID: id, Status: status, Error: message})
 	c.send(msg)
 }
 

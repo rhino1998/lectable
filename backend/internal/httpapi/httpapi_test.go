@@ -160,13 +160,13 @@ func TestVoiceSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("expected a default preset id, got empty")
 	}
 
-	update := voiceSettingsDTO{PresetID: "", Instruct: "speak like a robot", Language: "English", CharacterVoiceMode: string(store.CharacterVoiceModeAssigned)}
+	update := voiceSettingsUpdate{PresetID: "", Instruct: "speak like a robot", Language: "English", CharacterVoiceMode: store.CharacterVoiceModeAssigned}
 	var updated voiceSettingsDTO
 	resp = doJSON(t, http.MethodPut, ts.URL+"/api/books/"+bookID+"/voice", update, &updated)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT voice: status %d", resp.StatusCode)
 	}
-	if updated.Instruct != "speak like a robot" || updated.CharacterVoiceMode != string(store.CharacterVoiceModeAssigned) {
+	if updated.Instruct != "speak like a robot" || updated.CharacterVoiceMode != store.CharacterVoiceModeAssigned {
 		t.Fatalf("update didn't apply: %+v", updated)
 	}
 
@@ -335,10 +335,9 @@ func TestSetJobTier(t *testing.T) {
 	// see manager_test.go's own TestPauseStopsNewDispatchButNotInFlight)
 	// can't drain the queue out from under this test before it gets a
 	// chance to look up a still-queued task's own id.
-	var pauseResult map[string]bool
-	resp := doJSON(t, http.MethodPost, ts.URL+"/api/jobs/pause", nil, &pauseResult)
-	if resp.StatusCode != http.StatusOK || !pauseResult["paused"] {
-		t.Fatalf("POST /api/jobs/pause: status %d body %v", resp.StatusCode, pauseResult)
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/jobs/pause", nil, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST /api/jobs/pause: status %d", resp.StatusCode)
 	}
 
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/books/"+bookID+"/chapters/0/generate", nil, nil)
@@ -371,10 +370,9 @@ func TestSetJobTier(t *testing.T) {
 		t.Fatalf("expected a freshly enqueued task to start at background tier, got %q", all[0].Tier)
 	}
 
-	var promoteResult map[string]bool
-	resp = doJSON(t, http.MethodPut, ts.URL+"/api/jobs/"+id+"/tier", map[string]string{"tier": "urgent"}, &promoteResult)
-	if resp.StatusCode != http.StatusOK || !promoteResult["promoted"] {
-		t.Fatalf("PUT /api/jobs/%s/tier: status %d body %v", id, resp.StatusCode, promoteResult)
+	resp = doJSON(t, http.MethodPut, ts.URL+"/api/jobs/"+id+"/tier", map[string]string{"tier": "urgent"}, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT /api/jobs/%s/tier: status %d", id, resp.StatusCode)
 	}
 
 	resp = doJSON(t, http.MethodGet, ts.URL+"/api/jobs", nil, &snap)
@@ -427,10 +425,9 @@ func TestJobsPauseAndResume(t *testing.T) {
 		t.Fatalf("expected the queue not to start paused")
 	}
 
-	var pauseResult map[string]bool
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/jobs/pause", nil, &pauseResult)
-	if resp.StatusCode != http.StatusOK || !pauseResult["paused"] {
-		t.Fatalf("POST /api/jobs/pause: status %d body %v", resp.StatusCode, pauseResult)
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/jobs/pause", nil, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST /api/jobs/pause: status %d", resp.StatusCode)
 	}
 
 	resp = doJSON(t, http.MethodGet, ts.URL+"/api/jobs", nil, &snap)
@@ -438,10 +435,9 @@ func TestJobsPauseAndResume(t *testing.T) {
 		t.Fatalf("expected GET /api/jobs to report paused=true after pausing, got %+v", snap)
 	}
 
-	var resumeResult map[string]bool
-	resp = doJSON(t, http.MethodPost, ts.URL+"/api/jobs/resume", nil, &resumeResult)
-	if resp.StatusCode != http.StatusOK || resumeResult["paused"] {
-		t.Fatalf("POST /api/jobs/resume: status %d body %v", resp.StatusCode, resumeResult)
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/jobs/resume", nil, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST /api/jobs/resume: status %d", resp.StatusCode)
 	}
 
 	resp = doJSON(t, http.MethodGet, ts.URL+"/api/jobs", nil, &snap)
@@ -476,7 +472,7 @@ func TestVoicePresetsAndLanguages(t *testing.T) {
 func TestCustomVoicePresetCreateAndDelete(t *testing.T) {
 	_, _, fake, ts := newTestServer(t)
 
-	create := customVoicePresetRequest{Name: "My Voice", Instruct: "speak warmly", RefText: "a reference line"}
+	create := customVoicePresetInputDTO{Name: "My Voice", Instruct: "speak warmly", RefText: "a reference line"}
 	var created customVoicePresetDTO
 	resp := doJSON(t, http.MethodPost, ts.URL+"/api/voices/custom-presets", create, &created)
 	if resp.StatusCode != http.StatusCreated {
@@ -541,7 +537,7 @@ func TestUpdateCustomVoicePresetSyncsCharacterSummary(t *testing.T) {
 		return c.Summary, c.RefLine
 	}
 
-	update := customVoicePresetRequest{Name: "Alice", Instruct: "new prompt", RefText: "old line"}
+	update := customVoicePresetInputDTO{Name: "Alice", Instruct: "new prompt", RefText: "old line"}
 	if resp := doJSON(t, http.MethodPut, ts.URL+"/api/voices/custom-presets/"+preset.ID, update, nil); resp.StatusCode != http.StatusOK {
 		t.Fatalf("PUT custom preset: status %d", resp.StatusCode)
 	}
@@ -621,7 +617,7 @@ func TestUpdateCustomVoicePresetInvalidatesStaleAudio(t *testing.T) {
 		}
 		return status == store.AudioReady
 	}
-	put := func(req customVoicePresetRequest) {
+	put := func(req customVoicePresetInputDTO) {
 		t.Helper()
 		var got struct {
 			RefError string `json:"refError"`
@@ -635,13 +631,13 @@ func TestUpdateCustomVoicePresetInvalidatesStaleAudio(t *testing.T) {
 	}
 
 	narrate()
-	put(customVoicePresetRequest{Name: "Alice (renamed)", Instruct: "a prompt", RefText: "a line"})
+	put(customVoicePresetInputDTO{Name: "Alice (renamed)", Instruct: "a prompt", RefText: "a line"})
 	if !ready() {
 		t.Fatal("a name-only edit dropped audio its unchanged recipe still matches")
 	}
 
 	seed := 2
-	put(customVoicePresetRequest{Name: "Alice (renamed)", Instruct: "a prompt", RefText: "a line", Seed: &seed})
+	put(customVoicePresetInputDTO{Name: "Alice (renamed)", Instruct: "a prompt", RefText: "a line", Seed: &seed})
 	if ready() {
 		t.Fatal("audio cloned from the old reference clip survived a seed change")
 	}
@@ -1150,7 +1146,7 @@ func TestSetParagraphEmotion(t *testing.T) {
 		return ch.Paragraphs[pidx].Emotion
 	}
 
-	if resp := doJSON(t, http.MethodPut, url(0), map[string]string{"emotion": "shout"}, nil); resp.StatusCode != http.StatusOK {
+	if resp := doJSON(t, http.MethodPut, url(0), map[string]string{"emotion": "shout"}, nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("set dialogue emotion: status %d", resp.StatusCode)
 	}
 	if got := emotionOf(0); got != "shout" {
@@ -1162,7 +1158,7 @@ func TestSetParagraphEmotion(t *testing.T) {
 	if resp := doJSON(t, http.MethodPut, url(1), map[string]string{"emotion": "angry"}, nil); resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("narration emotion: status %d, want 400", resp.StatusCode)
 	}
-	if resp := doJSON(t, http.MethodPut, url(0), map[string]string{"emotion": ""}, nil); resp.StatusCode != http.StatusOK {
+	if resp := doJSON(t, http.MethodPut, url(0), map[string]string{"emotion": ""}, nil); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("clear emotion: status %d", resp.StatusCode)
 	}
 	if got := emotionOf(0); got != "" {

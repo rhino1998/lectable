@@ -104,7 +104,7 @@ func paragraphAudioHash(p paragraphDTO, voiceID string) string {
 		AudioURL        string
 		DurationSeconds float64
 		PointerSeconds  float64
-	}{voiceID, p.Emotion, p.AudioStatus, p.AudioURL, p.DurationSeconds, p.AudioPointerSeconds})
+	}{voiceID, p.Emotion, string(p.AudioStatus), p.AudioURL, p.DurationSeconds, p.AudioPointerSeconds})
 }
 
 // chapterHash is a chapter's node: its own title and content order plus
@@ -220,10 +220,10 @@ func (s *Server) handleBookManifest(w http.ResponseWriter, r *http.Request) {
 		}
 		ch, err := s.buildChapter(bookID, idx)
 		if err != nil {
-			writeBuilt(w)(nil, err)
+			writeBuildError(w, err)
 			return
 		}
-		hashes[idx] = ch.(chapterDetailDTO).Hash
+		hashes[idx] = ch.Hash
 		built = append(built, idx)
 	}
 	if len(built) > 0 {

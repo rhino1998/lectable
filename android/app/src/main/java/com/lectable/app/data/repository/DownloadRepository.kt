@@ -1,6 +1,7 @@
 package com.lectable.app.data.repository
 
 import android.content.Context
+import android.system.Os
 import com.lectable.app.data.download.DownloadStatus
 import com.lectable.app.data.download.DownloadedBook
 import com.lectable.app.data.download.DownloadedBookDao
@@ -12,8 +13,9 @@ import com.lectable.app.data.download.PendingPosition
 import com.lectable.app.data.download.PendingPositionDao
 import com.lectable.app.data.remote.BackendIdentityRepository
 import com.lectable.app.data.remote.LectableApi
+import com.lectable.app.data.remote.MediaApi
 import com.lectable.app.data.live.LiveStore
-import com.lectable.app.data.remote.dto.AudioStatus
+import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterSummaryDto
@@ -72,6 +74,7 @@ data class ChapterDownloadState(val status: String, val readyParagraphs: Int, va
 class DownloadRepository @Inject constructor(
     @ApplicationContext private val context: Context,
     private val api: LectableApi,
+    private val mediaApi: MediaApi,
     private val dao: DownloadedChapterDao,
     private val bookDao: DownloadedBookDao,
     private val positionDao: PendingPositionDao,
@@ -187,7 +190,7 @@ class DownloadRepository @Inject constructor(
             ParagraphDto(
                 idx = p.idx,
                 text = p.text,
-                audioStatus = AudioStatus.READY,
+                audioStatus = AudioStatuses.READY,
                 durationSeconds = p.durationSeconds,
                 speaker = p.speaker,
                 inline = p.inline,
@@ -277,7 +280,7 @@ class DownloadRepository @Inject constructor(
             runCatching {
                 val dir = bookDir(libraryId, bookId).apply { mkdirs() }
                 val file = File(dir, "cover")
-                api.downloadFile(coverUrl).use { body -> file.outputStream().use { out -> body.byteStream().copyTo(out) } }
+                mediaApi.downloadFile(coverUrl).use { body -> file.outputStream().use { out -> body.byteStream().copyTo(out) } }
                 localCoverPath = file.path
             }
         }
@@ -377,6 +380,10 @@ class DownloadRepository @Inject constructor(
             // Paragraphs a regenerate has already been requested for, this attempt - guards
             // against asking again on every live update while it's re-generating.
             val regeneratedIdx = mutableSetOf<Int>()
+            // The local file already holding each clip fetched this attempt, by audioUrl. A
+            // scare-quote merge group's members all point at their anchor's one clip, so without
+            // this every member downloaded the same file again.
+            val clipFiles = mutableMapOf<String, File>()
             var fetchedBytes = 0L
             var lastChapter: ChapterDetailDto? = null
             // The chapter's live topic (see LiveStore) delivers a fresh value every time one of
@@ -394,7 +401,7 @@ class DownloadRepository @Inject constructor(
                         if (f.hasAudioOf(p)) continue
                         fetched.remove(p.idx)
                     }
-                    if (p.audioStatus == AudioStatus.ERROR) {
+                    if (p.audioStatus == AudioStatuses.ERROR) {
                         // A paragraph that failed generation isn't given up on - request it be
                         // regenerated (same mechanism ReaderViewModel.regenerateParagraph uses)
                         // and keep polling like any other not-yet-ready paragraph, rather than
@@ -405,10 +412,17 @@ class DownloadRepository @Inject constructor(
                         continue
                     }
                     val url = p.audioUrl ?: continue
-                    if (p.audioStatus != AudioStatus.READY) continue
-                    fetchedBytes += api.downloadFile(url).use { body ->
-                        stagedFile(dir, p.idx).outputStream().use { out -> body.byteStream().copyTo(out) }
+                    if (p.audioStatus != AudioStatuses.READY) continue
+                    val target = stagedFile(dir, p.idx)
+                    val sameClip = clipFiles[url]?.takeIf { it.exists() }
+                    if (sameClip != null) {
+                        reuseClip(sameClip, target)
+                    } else {
+                        fetchedBytes += mediaApi.downloadFile(url).use { body ->
+                            target.outputStream().use { out -> body.byteStream().copyTo(out) }
+                        }
                     }
+                    clipFiles[url] = target
                     fetched[p.idx] = OfflineParagraph(
                         idx = p.idx,
                         text = p.text,
@@ -461,7 +475,7 @@ class DownloadRepository @Inject constructor(
                 val file = File(imgDir, id)
                 if (file.exists()) continue
                 runCatching {
-                    api.downloadFile(url).use { body -> file.outputStream().use { out -> body.byteStream().copyTo(out) } }
+                    mediaApi.downloadFile(url).use { body -> file.outputStream().use { out -> body.byteStream().copyTo(out) } }
                 }
             }
 
@@ -532,6 +546,14 @@ class DownloadRepository @Inject constructor(
             }
             throw e
         }
+    }
+
+    /** Gives [target] the same contents as [source] - a hard link (no extra space; both stay
+     *  valid when one is later renamed or deleted), falling back to a copy. */
+    private fun reuseClip(source: File, target: File) {
+        target.delete()
+        runCatching { Os.link(source.path, target.path) }
+            .onFailure { source.copyTo(target, overwrite = true) }
     }
 
     private fun audioFile(dir: File, idx: Int): File = File(dir, "%05d.wav".format(idx))

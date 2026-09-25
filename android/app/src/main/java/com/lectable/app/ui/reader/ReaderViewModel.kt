@@ -10,11 +10,10 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.MediaUrlResolver
-import com.lectable.app.data.remote.dto.AudioStatus
+import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.BookmarkDto
-import com.lectable.app.data.remote.dto.CHARACTER_VOICE_MODE_ASSIGNED
-import com.lectable.app.data.remote.dto.CHARACTER_VOICE_MODE_NARRATOR
+import com.lectable.app.data.remote.dto.CharacterVoiceModes
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
@@ -415,7 +414,7 @@ class ReaderViewModel @Inject constructor(
         currentVoice = voice
         _uiState.update {
             it.copy(
-                multiVoice = voice.characterVoiceMode != CHARACTER_VOICE_MODE_NARRATOR,
+                multiVoice = voice.characterVoiceMode != CharacterVoiceModes.NARRATOR,
                 musicEnabled = voice.musicEnabled,
                 voiceLanguage = voice.language.takeIf { lang -> lang.isNotBlank() } ?: "Auto",
             )
@@ -527,7 +526,7 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun ensureGenerating(chapter: ChapterDetailDto) {
-        val hasPending = chapter.paragraphs.any { it.audioStatus == AudioStatus.PENDING }
+        val hasPending = chapter.paragraphs.any { it.audioStatus == AudioStatuses.PENDING }
         if (!hasPending || chapter.generating) return
         val now = SystemClock.elapsedRealtime()
         if (now - (lastGenerateRequestAtMs[chapter.idx] ?: 0L) < GENERATE_RETRIGGER_MS) return
@@ -736,7 +735,7 @@ class ReaderViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         voicePresetName = name,
-                        multiVoice = updated.characterVoiceMode != CHARACTER_VOICE_MODE_NARRATOR,
+                        multiVoice = updated.characterVoiceMode != CharacterVoiceModes.NARRATOR,
                         voiceLanguage = language,
                     )
                 }
@@ -754,14 +753,14 @@ class ReaderViewModel @Inject constructor(
      *  doc comment. */
     fun setMultiVoice(enabled: Boolean) {
         val voice = currentVoice ?: return
-        val newMode = if (enabled) CHARACTER_VOICE_MODE_ASSIGNED else CHARACTER_VOICE_MODE_NARRATOR
+        val newMode = if (enabled) CharacterVoiceModes.ASSIGNED else CharacterVoiceModes.NARRATOR
         if (voice.characterVoiceMode == newMode) return
         viewModelScope.launch {
             runCatching {
                 voiceRepository.updateVoice(bookId, voice.copy(characterVoiceMode = newMode))
             }.onSuccess { updated ->
                 currentVoice = updated
-                _uiState.update { it.copy(multiVoice = updated.characterVoiceMode != CHARACTER_VOICE_MODE_NARRATOR) }
+                _uiState.update { it.copy(multiVoice = updated.characterVoiceMode != CharacterVoiceModes.NARRATOR) }
             }.onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }

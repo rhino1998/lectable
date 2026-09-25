@@ -60,5 +60,5 @@ func (s *Server) handleTestLLM(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"text": text})
+	writeJSON(w, http.StatusOK, llmTestResponse{Text: text})
 }

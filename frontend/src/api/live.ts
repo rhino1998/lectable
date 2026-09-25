@@ -1,4 +1,13 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react'
+import type {
+  ErrorMessage,
+  LiveOp,
+  LiveTopics,
+  PatchMessage,
+  SnapshotMessage,
+  SubscribeMessage,
+  UnsubscribeMessage,
+} from './types'
 
 // Client for the backend's live-state WebSocket (GET /api/events - see
 // backend internal/live and httpapi.registerLiveTopics). Every piece of
@@ -34,18 +43,9 @@ export interface LiveResult<T> {
 
 type LiveParams = Record<string, string | number>
 
-// Patch ops - mirrors backend live.Op.
-type Path = (string | number)[]
-type ArrItem = [number, number] | { v: unknown }
-type Op =
-  | { op: 'set'; path: Path; value: unknown }
-  | { op: 'del'; path: Path }
-  | { op: 'arr'; path: Path; items: ArrItem[] }
-
-type ServerMessage =
-  | { type: 'snapshot'; id: string; data: unknown }
-  | { type: 'patch'; id: string; ops: Op[] }
-  | { type: 'error'; id: string; status: number; error: string }
+type Op = LiveOp
+type ServerMessage = SnapshotMessage | PatchMessage | ErrorMessage
+type ClientMessage = SubscribeMessage | UnsubscribeMessage
 
 interface Entry {
   topic: string
@@ -250,7 +250,7 @@ class LiveClient {
     this.send({ type: 'subscribe', id: key, topic: entry.topic, params: entry.params })
   }
 
-  private send(msg: unknown) {
+  private send(msg: ClientMessage) {
     if (this.open && this.socket) this.socket.send(JSON.stringify(msg))
     // Otherwise onopen (re)sends every entry's subscribe itself.
   }
@@ -261,7 +261,12 @@ export const liveClient = new LiveClient()
 // Subscribes to one topic for as long as the calling component is mounted.
 // params === null disables the subscription (TanStack's `enabled: false`) -
 // the result is then empty and not loading.
-export function useLive<T>(topic: string, params: LiveParams | null): LiveResult<T> {
+// Typed by the backend's topic table (generated LiveTopics): the topic
+// name fixes both the params it takes and the value it yields.
+export function useLive<K extends keyof LiveTopics>(
+  topic: K,
+  params: LiveTopics[K]['params'] | null,
+): LiveResult<LiveTopics[K]['data']> {
   const key = params ? keyOf(topic, params) : null
   const subscribe = useCallback(
     (listener: () => void) => (params ? liveClient.retain(topic, params, listener) : () => {}),
@@ -275,13 +280,16 @@ export function useLive<T>(topic: string, params: LiveParams | null): LiveResult
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [key],
   )
-  return useSyncExternalStore(subscribe, getSnapshot) as LiveResult<T>
+  return useSyncExternalStore(subscribe, getSnapshot) as LiveResult<LiveTopics[K]['data']>
 }
 
 // useLive over a list of instances of one topic (e.g. every chapter in the
 // reader's scroll window). The returned array keeps its identity until one
 // of its elements actually changes, so it's safe as a memo dependency.
-export function useLiveMany<T>(topic: string, paramsList: LiveParams[]): LiveResult<T>[] {
+export function useLiveMany<K extends keyof LiveTopics>(
+  topic: K,
+  paramsList: LiveTopics[K]['params'][],
+): LiveResult<LiveTopics[K]['data']>[] {
   const keys = paramsList.map((p) => keyOf(topic, p)).join('\n')
   const cache = useRef<LiveResult<unknown>[]>([])
   const subscribe = useCallback(
@@ -303,5 +311,5 @@ export function useLiveMany<T>(topic: string, paramsList: LiveParams[]): LiveRes
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [keys],
   )
-  return useSyncExternalStore(subscribe, getSnapshot) as LiveResult<T>[]
+  return useSyncExternalStore(subscribe, getSnapshot) as LiveResult<LiveTopics[K]['data']>[]
 }

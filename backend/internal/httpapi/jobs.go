@@ -43,8 +43,8 @@ type queueTaskDTO struct {
 	// paragraph-scoped; for "music_live_generation" it's the first
 	// paragraph of the task's one music region - the frontend should key its display on Kind
 	// rather than assuming every task has a paragraph.
-	ParagraphIdx int    `json:"paragraphIdx"`
-	Tier         string `json:"tier"` // "urgent" | "lookahead" | "normal" | "background"
+	ParagraphIdx int     `json:"paragraphIdx"`
+	Tier         jobTier `json:"tier"`
 	// PresetID/Instruct are "" for a "speaker_attribution" task, and for a
 	// "voice_design" task PresetID alone is "" (a pure custom instruct with
 	// no preset backing it) - the frontend resolves PresetID to a friendly
@@ -111,14 +111,14 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 	}
 
 	toDTO := func(t jobs.QueueTask) queueTaskDTO {
-		tier := "background"
+		tier := tierBackground
 		switch t.Tier {
 		case jobs.TierUrgent:
-			tier = "urgent"
+			tier = tierUrgent
 		case jobs.TierLookahead:
-			tier = "lookahead"
+			tier = tierLookahead
 		case jobs.TierNormal:
-			tier = "normal"
+			tier = tierNormal
 		}
 		return queueTaskDTO{
 			ID:           t.ID,
@@ -164,7 +164,7 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "job not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"canceled": true})
+	writeNoContent(w)
 }
 
 // jobTierRequest is PUT /api/jobs/{id}/tier's own request body - the same
@@ -172,20 +172,31 @@ func (s *Server) handleCancelJob(w http.ResponseWriter, r *http.Request) {
 // own toDTO), so the frontend can round-trip a row's Tier field straight
 // back as a request without a separate encoding to keep in sync.
 type jobTierRequest struct {
-	Tier string `json:"tier"` // "urgent" | "lookahead" | "normal" | "background"
+	Tier jobTier `json:"tier"`
 }
+
+// jobTier is a job-queue priority tier on the wire - jobs.Tier*'s names,
+// most urgent first.
+type jobTier string
+
+const (
+	tierUrgent     jobTier = "urgent"
+	tierLookahead  jobTier = "lookahead"
+	tierNormal     jobTier = "normal"
+	tierBackground jobTier = "background"
+)
 
 // parseTier maps a tier DTO string to its jobs.Tier* int constant - the
 // decode-side counterpart of toDTO's own encode-side switch.
-func parseTier(s string) (int, bool) {
+func parseTier(s jobTier) (int, bool) {
 	switch s {
-	case "urgent":
+	case tierUrgent:
 		return jobs.TierUrgent, true
-	case "lookahead":
+	case tierLookahead:
 		return jobs.TierLookahead, true
-	case "normal":
+	case tierNormal:
 		return jobs.TierNormal, true
-	case "background":
+	case tierBackground:
 		return jobs.TierBackground, true
 	default:
 		return 0, false
@@ -216,7 +227,7 @@ func (s *Server) handleSetJobTier(w http.ResponseWriter, r *http.Request) {
 	err := s.Jobs.PromoteTier(id, tier)
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, map[string]bool{"promoted": true})
+		writeNoContent(w)
 	case errors.Is(err, jobs.ErrTaskNotFound):
 		writeError(w, http.StatusNotFound, "job not found")
 	case errors.Is(err, jobs.ErrTierNotMoreUrgent):
@@ -231,7 +242,7 @@ func (s *Server) handleSetJobTier(w http.ResponseWriter, r *http.Request) {
 // doc comment for what the returned count actually reflects.
 func (s *Server) handleCancelAllJobs(w http.ResponseWriter, r *http.Request) {
 	n := s.Jobs.CancelAll()
-	writeJSON(w, http.StatusOK, map[string]int{"canceled": n})
+	writeJSON(w, http.StatusOK, canceledCountResponse{Canceled: n})
 }
 
 // handlePauseJobs stops the queue from dispatching any *new* task - the
@@ -240,13 +251,13 @@ func (s *Server) handleCancelAllJobs(w http.ResponseWriter, r *http.Request) {
 // this is not a cancel, and reverses cleanly via handleResumeJobs.
 func (s *Server) handlePauseJobs(w http.ResponseWriter, r *http.Request) {
 	s.Jobs.Pause()
-	writeJSON(w, http.StatusOK, map[string]bool{"paused": true})
+	writeNoContent(w)
 }
 
 // handleResumeJobs undoes handlePauseJobs.
 func (s *Server) handleResumeJobs(w http.ResponseWriter, r *http.Request) {
 	s.Jobs.Resume()
-	writeJSON(w, http.StatusOK, map[string]bool{"paused": false})
+	writeNoContent(w)
 }
 
 // handleRestartWorker forces an immediate ttsworker restart - the Jobs
@@ -264,5 +275,5 @@ func (s *Server) handleRestartWorker(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"restarted": true})
+	writeNoContent(w)
 }

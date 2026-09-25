@@ -142,7 +142,8 @@ private const val INSTRUCT_PREVIEW_LENGTH = 40
 fun voiceName(t: QueueTaskDto, presetNames: Map<String, String>): String {
     if (t.presetId.isNotEmpty()) {
         val name = presetNames[t.presetId] ?: t.presetId
-        return if (t.emotion.isNotEmpty()) "$name (${formatEmotion(t.emotion)})" else name
+        val emotion = t.emotion
+        return if (!emotion.isNullOrEmpty()) "$name (${formatEmotion(emotion)})" else name
     }
     if (t.instruct.isEmpty()) return "—"
     return if (t.instruct.length > INSTRUCT_PREVIEW_LENGTH) t.instruct.take(INSTRUCT_PREVIEW_LENGTH) + "…" else t.instruct

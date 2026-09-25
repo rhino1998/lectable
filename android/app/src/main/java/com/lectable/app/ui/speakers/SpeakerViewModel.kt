@@ -8,8 +8,7 @@ import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.VoicePresetsDto
-import com.lectable.app.data.remote.dto.CHARACTER_VOICE_MODE_ASSIGNED
-import com.lectable.app.data.remote.dto.CHARACTER_VOICE_MODE_NARRATOR
+import com.lectable.app.data.remote.dto.CharacterVoiceModes
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.SpeakerAppearanceDto
 import com.lectable.app.data.remote.dto.SpeakerDto
@@ -154,7 +153,7 @@ class SpeakerViewModel @Inject constructor(
                     state.copy(
                         bookTitle = book.data?.title ?: state.bookTitle,
                         bookVoiceName = v?.let { vs -> builtinList.find { it.id == vs.presetId }?.name ?: customList.find { it.id == vs.presetId }?.name },
-                        multiVoice = v?.let { it.characterVoiceMode != CHARACTER_VOICE_MODE_NARRATOR } ?: state.multiVoice,
+                        multiVoice = v?.let { it.characterVoiceMode != CharacterVoiceModes.NARRATOR } ?: state.multiVoice,
                         preprocessing = book.data?.preprocessing ?: state.preprocessing,
                         speakers = speakers.data ?: state.speakers,
                         builtinPresets = builtinList,
@@ -176,10 +175,10 @@ class SpeakerViewModel @Inject constructor(
                 // stale in-memory copy here could clobber a preset/instruct/language change made
                 // elsewhere (the reader's own VoicePickerSheet) since this screen was last opened.
                 val voice = voiceRepository.getVoice(bookId)
-                val newMode = if (enabled) CHARACTER_VOICE_MODE_ASSIGNED else CHARACTER_VOICE_MODE_NARRATOR
+                val newMode = if (enabled) CharacterVoiceModes.ASSIGNED else CharacterVoiceModes.NARRATOR
                 voiceRepository.updateVoice(bookId, voice.copy(characterVoiceMode = newMode))
             }
-                .onSuccess { updated -> _uiState.update { it.copy(multiVoice = updated.characterVoiceMode != CHARACTER_VOICE_MODE_NARRATOR) } }
+                .onSuccess { updated -> _uiState.update { it.copy(multiVoice = updated.characterVoiceMode != CharacterVoiceModes.NARRATOR) } }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }

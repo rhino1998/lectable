@@ -32,13 +32,17 @@ import androidx.compose.material.icons.outlined.AcUnit
 import androidx.compose.material.icons.outlined.Air
 import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.outlined.Campaign
+import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.Healing
 import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.Mood
+import androidx.compose.material.icons.outlined.MoodBad
 import androidx.compose.material.icons.outlined.SentimentDissatisfied
 import androidx.compose.material.icons.outlined.SentimentNeutral
 import androidx.compose.material.icons.outlined.SentimentVeryDissatisfied
 import androidx.compose.material.icons.outlined.SentimentVerySatisfied
+import androidx.compose.material.icons.outlined.VolunteerActivism
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
@@ -140,7 +144,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.lectable.app.data.download.DownloadStatus
-import com.lectable.app.data.remote.dto.AudioStatus
+import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.BookmarkDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterSummaryDto
@@ -441,10 +445,10 @@ fun ReaderScreen(
             // frontend's PlayerBar.tsx bufferedAheadPercent exactly.
             var bufferedAheadCount = 0
             for (i in currentParagraphIdx + 1 until chapterParagraphs.size) {
-                if (chapterParagraphs[i].audioStatus != AudioStatus.READY) break
+                if (chapterParagraphs[i].audioStatus != AudioStatuses.READY) break
                 bufferedAheadCount++
             }
-            val currentIsReady = chapterParagraphs.getOrNull(currentParagraphIdx)?.audioStatus == AudioStatus.READY
+            val currentIsReady = chapterParagraphs.getOrNull(currentParagraphIdx)?.audioStatus == AudioStatuses.READY
             val bufferedAheadUnits = bufferedAheadCount + if (currentIsReady) (1 - currentParagraphRatio) else 0.0
             val bufferedAheadEnd = if (chapterParagraphs.isNotEmpty()) {
                 (chapterProgress + (bufferedAheadUnits / chapterParagraphs.size)).coerceIn(0.0, 1.0).toFloat()
@@ -1006,17 +1010,17 @@ private fun MusicRegionBoundaryRow(
     onPreview: () -> Unit,
 ) {
     val statusLabel = when (region.status) {
-        AudioStatus.PENDING -> "not generated yet"
-        AudioStatus.GENERATING -> "generating…"
-        AudioStatus.ERROR -> "generation failed"
-        AudioStatus.READY -> null
+        AudioStatuses.PENDING -> "not generated yet"
+        AudioStatuses.GENERATING -> "generating…"
+        AudioStatuses.ERROR -> "generation failed"
+        else -> null
     }
-    val durationLabel = if (region.status == AudioStatus.READY && region.durationSeconds > 0) {
+    val durationLabel = if (region.status == AudioStatuses.READY && region.durationSeconds > 0) {
         formatMusicDuration(region.durationSeconds)
     } else {
         null
     }
-    val busy = region.status == AudioStatus.GENERATING
+    val busy = region.status == AudioStatuses.GENERATING
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -1069,7 +1073,7 @@ private fun MusicRegionBoundaryRow(
                 }
             }
         }
-        if (region.status == AudioStatus.READY && region.audioUrl != null) {
+        if (region.status == AudioStatuses.READY && region.audioUrl != null) {
             IconButton(onClick = onPreview) {
                 Icon(if (previewing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Preview this region's music")
             }
@@ -1077,7 +1081,7 @@ private fun MusicRegionBoundaryRow(
         IconButton(onClick = onRegenerate, enabled = !busy) {
             Icon(
                 Icons.Default.Refresh,
-                contentDescription = if (region.status == AudioStatus.READY) "Regenerate this region's music" else "Generate this region's music",
+                contentDescription = if (region.status == AudioStatuses.READY) "Regenerate this region's music" else "Generate this region's music",
             )
         }
     }
@@ -1205,7 +1209,7 @@ private fun ParagraphRow(
                 // it's generated (see ParagraphPlayer.playParagraph's not-ready branch), so the tap
                 // visibly registered - but word-level highlighting needs real elapsed playback time
                 // to mean anything, which a paragraph with no audio yet doesn't have.
-                activeSegmentIdx = if (isActive && segments[activeSegmentIdx].audioStatus == AudioStatus.READY) activeSegmentIdx else -1,
+                activeSegmentIdx = if (isActive && segments[activeSegmentIdx].audioStatus == AudioStatuses.READY) activeSegmentIdx else -1,
                 playbackSeconds = playbackSeconds,
                 fontSizeSp = fontSizeSp,
                 fontFamily = fontFamily,
@@ -1328,7 +1332,7 @@ private fun ParagraphRow(
             }
         }
         segments.forEach { segment ->
-            if (segment.audioStatus == AudioStatus.ERROR) {
+            if (segment.audioStatus == AudioStatuses.ERROR) {
                 Text(
                     text = "Narration failed: ${segment.audioError ?: "unknown error"}",
                     style = MaterialTheme.typography.labelSmall,
@@ -1473,7 +1477,7 @@ private fun ParagraphBodyText(
         buildAnnotatedString {
             append(baseText)
             segments.forEachIndexed { i, segment ->
-                if (segment.audioStatus != AudioStatus.READY) {
+                if (segment.audioStatus != AudioStatuses.READY) {
                     val span = spans[i]
                     val end = (span.textOffset + segment.text.length).coerceAtMost(combinedText.length)
                     addStyle(SpanStyle(color = dimColor), span.textOffset, end)
@@ -1987,7 +1991,10 @@ private fun wordCount(text: String): Int {
 
 // Every emotion id a dialogue line can be set to, in display order - mirrors backend
 // internal/emotions.All and frontend's utils/emotions.ts EMOTIONS.
-internal val EMOTION_IDS = listOf("warm", "excited", "sad", "angry", "afraid", "cold", "whisper", "shout", "weary")
+internal val EMOTION_IDS = listOf(
+    "warm", "excited", "teasing", "sad", "pleading", "angry", "afraid", "nervous", "cold", "whisper", "shout",
+    "weary", "pained",
+)
 
 // An emotion id ("angry", "whisper") as a display label ("Angry") - mirrors frontend's
 // utils/emotions.ts emotionLabel, where every label is just the capitalized id.
@@ -2002,13 +2009,17 @@ internal fun emotionIcon(id: String): ImageVector = when (id) {
     "" -> Icons.Outlined.SentimentNeutral
     "warm" -> Icons.Outlined.FavoriteBorder
     "excited" -> Icons.Outlined.SentimentVerySatisfied
+    "teasing" -> Icons.Outlined.EmojiEmotions
     "sad" -> Icons.Outlined.SentimentDissatisfied
+    "pleading" -> Icons.Outlined.VolunteerActivism
     "angry" -> Icons.Outlined.LocalFireDepartment
     "afraid" -> Icons.Outlined.SentimentVeryDissatisfied
+    "nervous" -> Icons.Outlined.MoodBad
     "cold" -> Icons.Outlined.AcUnit
     "whisper" -> Icons.AutoMirrored.Outlined.VolumeDown
     "shout" -> Icons.Outlined.Campaign
     "weary" -> Icons.Outlined.Bedtime
+    "pained" -> Icons.Outlined.Healing
     else -> Icons.Outlined.Mood
 }
 

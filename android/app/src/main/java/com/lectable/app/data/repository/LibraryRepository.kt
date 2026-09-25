@@ -18,7 +18,7 @@ import com.lectable.app.data.remote.dto.SetParagraphEmotionRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphScareQuoteRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphSpeakerRequestDto
 import com.lectable.app.data.remote.dto.SpeakerDto
-import com.lectable.app.data.remote.dto.UpdateBookmarkNoteRequestDto
+import com.lectable.app.data.remote.dto.UpdateBookmarkRequestDto
 import javax.inject.Inject
 import javax.inject.Singleton
 import okhttp3.MediaType.Companion.toMediaType
@@ -60,13 +60,13 @@ class LibraryRepository @Inject constructor(
     }
 
     /** [LectableApi.preprocessBook] - see its own doc comment. */
-    suspend fun preprocessBook(id: String): Boolean = api.preprocessBook(id).queued
+    suspend fun preprocessBook(id: String): Boolean = api.preprocessBook(id).queued > 0
 
     /** [LectableApi.generateBook] - see its own doc comment. */
-    suspend fun generateBook(id: String): Boolean = api.generateBook(id).queued
+    suspend fun generateBook(id: String): Boolean = api.generateBook(id).queued > 0
 
     /** [LectableApi.generateBookRemaining] - see its own doc comment. */
-    suspend fun generateBookRemaining(id: String): Boolean = api.generateBookRemaining(id).queued
+    suspend fun generateBookRemaining(id: String): Boolean = api.generateRemaining(id).queued > 0
 
     /** Wipes every generated audio file for bookId (any voice) - reclaims disk space or forces
      *  a full regenerate, without touching the book's text/chapters/voice settings. */
@@ -81,30 +81,30 @@ class LibraryRepository @Inject constructor(
 
     suspend fun getChapter(bookId: String, idx: Int): ChapterDetailDto = api.getChapter(bookId, idx)
 
-    suspend fun generateChapter(bookId: String, idx: Int): Boolean = api.generateChapter(bookId, idx).queued
+    suspend fun generateChapter(bookId: String, idx: Int): Boolean = api.generateChapter(bookId, idx).queued > 0
 
     /** [LectableApi.attributeSpeakers] - see its own doc comment. */
-    suspend fun attributeSpeakers(bookId: String, idx: Int): Boolean = api.attributeSpeakers(bookId, idx).queued
+    suspend fun attributeSpeakers(bookId: String, idx: Int): Boolean = api.attributeSpeakers(bookId, idx).queued > 0
 
     /** [LectableApi.retagDescriptions] - see its own doc comment. */
-    suspend fun retagDescriptions(bookId: String, idx: Int): Boolean = api.retagDescriptions(bookId, idx).queued
+    suspend fun retagDescriptions(bookId: String, idx: Int): Boolean = api.retagDescriptions(bookId, idx).queued > 0
 
     /** [LectableApi.retagScareQuotes] - see its own doc comment. */
-    suspend fun retagScareQuotes(bookId: String, idx: Int): Boolean = api.retagScareQuotes(bookId, idx).queued
+    suspend fun retagScareQuotes(bookId: String, idx: Int): Boolean = api.retagScareQuotes(bookId, idx).queued > 0
 
     /** [LectableApi.tagDirections] - see its own doc comment. */
-    suspend fun tagDirections(bookId: String, idx: Int): Boolean = api.tagDirections(bookId, idx).queued
+    suspend fun tagDirections(bookId: String, idx: Int): Boolean = api.tagDirections(bookId, idx).queued > 0
 
     /** [LectableApi.resolvePronunciation] - see its own doc comment. */
-    suspend fun resolvePronunciation(bookId: String, idx: Int): Boolean = api.resolvePronunciation(bookId, idx).queued
+    suspend fun resolvePronunciation(bookId: String, idx: Int): Boolean = api.resolvePronunciation(bookId, idx).queued > 0
 
     suspend fun lookahead(bookId: String, chapterIdx: Int, paragraphIdx: Int, paragraphCount: Int? = null): Boolean =
-        api.lookahead(bookId, LookaheadRequestDto(chapterIdx, paragraphIdx, paragraphCount)).queued
+        api.lookahead(bookId, LookaheadRequestDto(chapterIdx = chapterIdx, paragraphIdx = paragraphIdx, paragraphCount = paragraphCount ?: 0)).queued > 0
 
     /** Forces one already-generated paragraph to be reset and re-rendered - see
      *  [com.lectable.app.data.remote.LectableApi.regenerateParagraph]. */
     suspend fun regenerateParagraph(bookId: String, chapterIdx: Int, paragraphIdx: Int): Boolean =
-        api.regenerateParagraph(bookId, chapterIdx, paragraphIdx).queued
+        api.regenerateParagraph(bookId, chapterIdx, paragraphIdx).queued > 0
 
     suspend fun getPosition(bookId: String): PositionDto = api.getPosition(bookId)
 
@@ -141,18 +141,17 @@ class LibraryRepository @Inject constructor(
      *  neutral); the backend regenerates its audio when the effective emotion changes. Throws
      *  on a non-2xx response so the caller can surface it. */
     suspend fun setParagraphEmotion(bookId: String, chapterIdx: Int, paragraphIdx: Int, emotion: String) {
-        val response = api.setParagraphEmotion(bookId, chapterIdx, paragraphIdx, SetParagraphEmotionRequestDto(emotion))
-        check(response.isSuccessful) { "Could not set this line's emotion (HTTP ${response.code()})" }
+        api.setParagraphEmotion(bookId, chapterIdx, paragraphIdx, SetParagraphEmotionRequestDto(emotion))
     }
 
     /** [LectableApi.getChapterMusic] - this chapter's own background-music regions. */
     suspend fun getChapterMusic(bookId: String, chapterIdx: Int): ChapterMusicDto = api.getChapterMusic(bookId, chapterIdx)
 
     /** [LectableApi.scoreChapterMusic] - see its own doc comment. */
-    suspend fun scoreChapterMusic(bookId: String, chapterIdx: Int): Boolean = api.scoreChapterMusic(bookId, chapterIdx).queued
+    suspend fun scoreChapterMusic(bookId: String, chapterIdx: Int): Boolean = api.scoreChapterMusic(bookId, chapterIdx).queued > 0
 
     /** [LectableApi.regenerateMusicRegion] - see its own doc comment. */
-    suspend fun regenerateMusicRegion(regionId: String): Boolean = api.regenerateMusicRegion(regionId).queued
+    suspend fun regenerateMusicRegion(regionId: String): Boolean = api.regenerateMusicRegion(regionId).queued > 0
 
     suspend fun listBookmarks(bookId: String): List<BookmarkDto> = api.listBookmarks(bookId)
 
@@ -160,7 +159,7 @@ class LibraryRepository @Inject constructor(
         api.createBookmark(bookId, CreateBookmarkRequestDto(chapterIdx, paragraphIdx)).id
 
     suspend fun updateBookmarkNote(id: String, note: String) {
-        api.updateBookmarkNote(id, UpdateBookmarkNoteRequestDto(note))
+        api.updateBookmark(id, UpdateBookmarkRequestDto(note))
     }
 
     suspend fun deleteBookmark(id: String) {

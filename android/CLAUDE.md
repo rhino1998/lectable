@@ -85,16 +85,35 @@ compiled-in default in place if nothing answers in time.
 
 ## Layout
 
-- `data/remote/dto/` - hand-written `@Serializable` DTOs mirroring the Go
-  backend's JSON exactly (see `../backend/internal/httpapi/*.go`,
-  cross-checked against `../frontend/src/api/types.ts`). Keep in sync by
-  hand if a backend DTO changes shape. Note the inconsistent casing:
-  `VoicePresetDto` has `ref_text`/`speed_multiplier` (curated built-in
-  presets, proxied as-is from `backend/internal/voices`), while
-  `CustomVoicePresetDto` has `refText`/`speedMultiplier` (backend's own
-  DTO for user-created voices).
-- `data/remote/LectableApi.kt` - Retrofit interface, one method per
-  endpoint, paths relative (host attached per "Server address" above).
+- `data/remote/` - the backend API, mostly **generated** from
+  `../backend/internal/httpapi` by `backend/cmd/apigen` (never edit the
+  generated files: change the Go side and run `make generate` from
+  `backend/`; a backend test fails while they're stale):
+  - `dto/ApiTypes.kt` - every `@Serializable` DTO, the backend's enums (a
+    `String` typealias plus a constants object, e.g. `AudioStatus` /
+    `AudioStatuses.READY` - strings rather than enum classes so a new
+    server value never breaks decoding; `when` over one needs an `else`),
+    and `ApiCatalog` (clone/design models, emotions, defaults). Fields
+    default to Go's zero value; `omitempty` strings/numbers are nullable
+    (absent = none). Prefer named constructor arguments: field order
+    follows the Go struct, and same-typed positional args would swap
+    silently.
+  - `LectableApi.kt` - the Retrofit interface, one method per route, named
+    after its Go handler (`handleGetBook` -> `getBook`), paths relative
+    (host attached per "Server address" above). A 204 route returns
+    `Unit` and throws `HttpException` on a non-2xx like every other
+    method.
+  - `LiveTopics.kt` - one `LiveTopic` descriptor per live topic (wire
+    name, params, deserializer); `data/live/LiveStore` subscribes through
+    these.
+  - Hand-written: `dto/ApiExtras.kt` (`BookDetailDto.toSummary()`,
+    `VoiceSettingsDto.toUpdate()`), `MediaApi.kt` (`downloadFile(@Url)`,
+    for DTO media URLs), and the live/URL plumbing below. Note the
+    inconsistent casing: `VoicePresetDto` has `ref_text`/
+    `speed_multiplier` (curated built-in presets, proxied as-is from
+    `backend/internal/voices`), while `CustomVoicePresetDto` has
+    `refText`/`speedMultiplier` (backend's own DTO for user-created
+    voices).
 - `data/remote/MediaUrlResolver.kt` - resolves relative `coverUrl`/
   `audioUrl` DTO paths into absolute URLs for Coil/ExoPlayer.
 - `data/repository/` - `LibraryRepository` (books/chapters/position/search)

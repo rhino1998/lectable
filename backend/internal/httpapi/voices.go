@@ -32,10 +32,11 @@ type voicePresetDTOOut struct {
 }
 
 func (s *Server) handleVoicePresets(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildVoicePresets())
+	v, err := s.buildVoicePresets()
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildVoicePresets() (any, error) {
+func (s *Server) buildVoicePresets() (voicePresetsDTO, error) {
 	out := make([]voicePresetDTOOut, len(voices.Presets))
 	for i, p := range voices.Presets {
 		out[i] = voicePresetDTOOut{
@@ -45,19 +46,28 @@ func (s *Server) buildVoicePresets() (any, error) {
 			AudioURL:        "/api/voices/presets/" + p.ID + "/audio",
 		}
 	}
-	return map[string]any{"default": voices.DefaultPresetID, "presets": out}, nil
+	return voicePresetsDTO{Default: voices.DefaultPresetID, Presets: out}, nil
 }
 
 func (s *Server) handleVoiceLanguages(w http.ResponseWriter, r *http.Request) {
 	langs := append([]string{"Auto"}, voices.DisplayLanguages...)
-	writeJSON(w, http.StatusOK, map[string]any{"languages": langs})
+	writeJSON(w, http.StatusOK, languagesResponse{Languages: langs})
 }
 
+// voiceSettingsDTO is a book's (or the default) voice: what the client
+// sets, plus the seed the server derives from the preset.
 type voiceSettingsDTO struct {
+	voiceSettingsUpdate
+	Seed int `json:"seed"`
+}
+
+// voiceSettingsUpdate is the PUT body for a book's/the default voice -
+// every voiceSettingsDTO field the client controls (seed is derived from
+// the preset server-side). A full replace, except cloneModel.
+type voiceSettingsUpdate struct {
 	PresetID string `json:"presetId"`
 	Instruct string `json:"instruct"`
 	Language string `json:"language"`
-	Seed     int    `json:"seed"`
 	// CloneModel is which clone model narrates the book - every voice in
 	// it, narrator and characters alike (store.Book.CloneModel) - or, for
 	// the default voice, the clone model a newly created book starts with.
@@ -73,7 +83,7 @@ type voiceSettingsDTO struct {
 	// generation. The two instruct_* modes only actually change anything
 	// for a book whose clone model is breeze_tts - a no-op
 	// otherwise (same as "assigned" for that character).
-	CharacterVoiceMode string `json:"characterVoiceMode"`
+	CharacterVoiceMode store.CharacterVoiceMode `json:"characterVoiceMode"`
 	// SpeechDirection opts this book into waiting for speech-direction
 	// tagging (store.Passes.Direction) before generating a chapter's
 	// audio - see store.Book.SpeechDirection and jobs.Manager's
@@ -88,26 +98,29 @@ type voiceSettingsDTO struct {
 }
 
 func (s *Server) handleGetVoice(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildVoice(r.PathValue("id")))
+	v, err := s.buildVoice(r.PathValue("id"))
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildVoice(id string) (any, error) {
+func (s *Server) buildVoice(id string) (voiceSettingsDTO, error) {
 	b, err := s.Store.GetBook(id)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return voiceSettingsDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if b == nil {
-		return nil, httpError(http.StatusNotFound, "book not found")
+		return voiceSettingsDTO{}, httpError(http.StatusNotFound, "book not found")
 	}
 	return voiceSettingsDTO{
-		PresetID:           b.VoicePresetID,
-		Instruct:           b.VoiceInstruct,
-		Language:           b.VoiceLanguage,
-		Seed:               b.VoiceSeed,
-		CloneModel:         narration.BookCloneModel(b),
-		CharacterVoiceMode: string(b.CharacterVoiceMode),
-		SpeechDirection:    b.SpeechDirection,
-		MusicEnabled:       b.MusicEnabled,
+		Seed: b.VoiceSeed,
+		voiceSettingsUpdate: voiceSettingsUpdate{
+			PresetID:           b.VoicePresetID,
+			Instruct:           b.VoiceInstruct,
+			Language:           b.VoiceLanguage,
+			CloneModel:         narration.BookCloneModel(b),
+			CharacterVoiceMode: b.CharacterVoiceMode,
+			SpeechDirection:    b.SpeechDirection,
+			MusicEnabled:       b.MusicEnabled,
+		},
 	}, nil
 }
 
@@ -181,14 +194,14 @@ type testCloneInstructRequest struct {
 	// Instruct alongside a reference clip - see audioworker.cloneFamily.
 	// instructOption). "" defers to previewCloneModel's default, same as
 	// testVoiceRequest.CloneModel.
-	CloneModel string `json:"cloneModel"`
+	CloneModel string `json:"cloneModel,omitempty"`
 	// GuidanceScale, when set, overrides the breeze_tts clone family's own
 	// configured instruct-time guidance_scale (LECTABLE_AUDIOCPP_BREEZE_CLONE_GUIDANCE_SCALE,
 	// audioworker.breezeCloneGuidanceScale) for this one preview call - lets
 	// the editor's own "guidance scale" test field experiment with values
 	// live, without a server restart/env var change. "" defers to that
 	// configured default, same as every other caller of Worker.Generate.
-	GuidanceScale string `json:"guidanceScale"`
+	GuidanceScale string `json:"guidanceScale,omitempty"`
 }
 
 // handleTestCloneInstruct previews "instructed voice cloning" -
@@ -255,7 +268,7 @@ func (s *Server) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req voiceSettingsDTO
+	var req voiceSettingsUpdate
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -327,22 +340,25 @@ func (s *Server) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
 			log.Printf("httpapi: %s for book %s: remove audio dir: %v", invalidateReason, id, err)
 		}
 	}
-	req.Seed = seed
 	req.CloneModel = cloneModel
-	writeJSON(w, http.StatusOK, req)
+	writeJSON(w, http.StatusOK, voiceSettingsDTO{voiceSettingsUpdate: req, Seed: seed})
 }
 
 // handleGetDefaultVoice reports the voice new books are created with.
 func (s *Server) handleGetDefaultVoice(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildDefaultVoice())
+	v, err := s.buildDefaultVoice()
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildDefaultVoice() (any, error) {
+func (s *Server) buildDefaultVoice() (voiceSettingsDTO, error) {
 	v, err := s.Store.GetDefaultVoice()
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return voiceSettingsDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
-	return voiceSettingsDTO{PresetID: v.PresetID, Instruct: v.Instruct, Language: v.Language, Seed: v.Seed, CloneModel: v.CloneModel}, nil
+	return voiceSettingsDTO{
+		voiceSettingsUpdate: voiceSettingsUpdate{PresetID: v.PresetID, Instruct: v.Instruct, Language: v.Language, CloneModel: v.CloneModel},
+		Seed:                v.Seed,
+	}, nil
 }
 
 // handleUpdateDefaultVoice sets the voice and clone model new books are
@@ -350,7 +366,7 @@ func (s *Server) buildDefaultVoice() (any, error) {
 // on the Voices page. Existing books are unaffected; this only changes
 // what a freshly uploaded book starts with.
 func (s *Server) handleUpdateDefaultVoice(w http.ResponseWriter, r *http.Request) {
-	var req voiceSettingsDTO
+	var req voiceSettingsUpdate
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -378,8 +394,7 @@ func (s *Server) handleUpdateDefaultVoice(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	req.Seed = seed
-	writeJSON(w, http.StatusOK, req)
+	writeJSON(w, http.StatusOK, voiceSettingsDTO{voiceSettingsUpdate: req, Seed: seed})
 }
 
 type customVoicePresetDTO struct {
@@ -421,10 +436,11 @@ func voicePresetDTO(p store.VoicePreset, refErr error) customVoicePresetDTO {
 }
 
 func (s *Server) handleListCustomVoicePresets(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildCustomVoicePresets())
+	v, err := s.buildCustomVoicePresets()
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildCustomVoicePresets() (any, error) {
+func (s *Server) buildCustomVoicePresets() ([]customVoicePresetDTO, error) {
 	presets, err := s.Store.ListVoicePresets()
 	if err != nil {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
@@ -525,7 +541,7 @@ func (s *Server) renderWithSeedBump(presetID string, seed, attempt int, render f
 	return result, nil
 }
 
-type customVoicePresetRequest struct {
+type customVoicePresetInputDTO struct {
 	Name            string   `json:"name"`
 	Instruct        string   `json:"instruct"`
 	RefText         string   `json:"refText"`
@@ -539,7 +555,7 @@ type customVoicePresetRequest struct {
 }
 
 func (s *Server) handleCreateCustomVoicePreset(w http.ResponseWriter, r *http.Request) {
-	var req customVoicePresetRequest
+	var req customVoicePresetInputDTO
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -638,7 +654,7 @@ func (s *Server) handleUpdateCustomVoicePreset(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var req customVoicePresetRequest
+	var req customVoicePresetInputDTO
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -812,7 +828,7 @@ func (s *Server) handleDeleteCustomVoicePreset(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeNoContent(w)
 }
 
 type testVoiceRequest struct {
@@ -820,7 +836,7 @@ type testVoiceRequest struct {
 	// CloneModel is which clone model to preview the voice through - a
 	// preset has none of its own (that's each book's choice). "" defers to
 	// previewCloneModel's default.
-	CloneModel string `json:"cloneModel"`
+	CloneModel string `json:"cloneModel,omitempty"`
 	// Temperature, when set, overrides the clone model's own sampling
 	// temperature for this one test (nil for the model's default).
 	Temperature *float64 `json:"temperature"`
@@ -878,7 +894,7 @@ type testVoiceDesignRequest struct {
 	// DesignModel previews a specific VoiceDesign engine before saving -
 	// "" defers to the worker's own process-wide default, same as an
 	// unset preset field.
-	DesignModel string `json:"designModel"`
+	DesignModel string `json:"designModel,omitempty"`
 	// GuidanceScale, when set, overrides the design engine's own guidance
 	// strength for this one preview (nil for the engine's default). A
 	// preview rendered this way is never cached for reuse on save - a saved

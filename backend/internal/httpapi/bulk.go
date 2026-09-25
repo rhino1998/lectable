@@ -15,11 +15,48 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
 
-// Bulk scopes (the ?scope= query param of POST .../bulk/{action}): "rest"
+// bulkScope is the ?scope= query param of POST .../bulk/{action}: "rest"
 // only touches items not done yet, "all" re-runs every one.
+type bulkScope string
+
 const (
-	bulkScopeRest = "rest"
-	bulkScopeAll  = "all"
+	bulkScopeRest bulkScope = "rest"
+	bulkScopeAll  bulkScope = "all"
+)
+
+// bulkAction is a Speakers-page whole-book action (POST
+// /api/books/{id}/bulk/{action}), in the page's display order. "generate"
+// queues the same "pipeline_generate_book" row as the library page's
+// Generate: All.
+type bulkAction string
+
+const (
+	bulkAttribution      bulkAction = "attribution"
+	bulkDescription      bulkAction = "description"
+	bulkScareQuote       bulkAction = "scare_quote"
+	bulkDirection        bulkAction = "direction"
+	bulkPronunciation    bulkAction = "pronunciation"
+	bulkMusicScoring     bulkAction = "music_scoring"
+	bulkMusicGeneration  bulkAction = "music_generation"
+	bulkGenerate         bulkAction = "generate"
+	bulkCharacterization bulkAction = "characterization"
+	bulkVoices           bulkAction = "voices"
+)
+
+// resetPass is a pass the Speakers page can reset across a whole book
+// (POST /api/books/{id}/reset/{pass}) - every bulkAction except the
+// character-scoped ones.
+type resetPass string
+
+const (
+	resetAttribution     = resetPass(bulkAttribution)
+	resetDescription     = resetPass(bulkDescription)
+	resetScareQuote      = resetPass(bulkScareQuote)
+	resetDirection       = resetPass(bulkDirection)
+	resetPronunciation   = resetPass(bulkPronunciation)
+	resetMusicScoring    = resetPass(bulkMusicScoring)
+	resetMusicGeneration = resetPass(bulkMusicGeneration)
+	resetGenerate        = resetPass(bulkGenerate)
 )
 
 // chapterBulkPass is one per-chapter pass the Speakers page can run across
@@ -33,8 +70,8 @@ type chapterBulkPass struct {
 	run  func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error
 }
 
-var chapterBulkPasses = map[string]chapterBulkPass{
-	"attribution": {
+var chapterBulkPasses = map[bulkAction]chapterBulkPass{
+	bulkAttribution: {
 		kind: jobs.KindSpeakerAttribution,
 		done: func(p store.Passes) bool { return p.Attribution },
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
@@ -44,7 +81,7 @@ var chapterBulkPasses = map[string]chapterBulkPass{
 			return err
 		},
 	},
-	"description": {
+	bulkDescription: {
 		kind: jobs.KindDescription,
 		done: func(p store.Passes) bool { return p.Description },
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
@@ -54,7 +91,7 @@ var chapterBulkPasses = map[string]chapterBulkPass{
 			return err
 		},
 	},
-	"scare_quote": {
+	bulkScareQuote: {
 		kind: jobs.KindScareQuote,
 		done: func(p store.Passes) bool { return p.ScareQuote },
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
@@ -64,7 +101,7 @@ var chapterBulkPasses = map[string]chapterBulkPass{
 			return err
 		},
 	},
-	"direction": {
+	bulkDirection: {
 		kind: jobs.KindSpeechDirection,
 		done: func(p store.Passes) bool { return p.Direction },
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
@@ -74,7 +111,7 @@ var chapterBulkPasses = map[string]chapterBulkPass{
 			return err
 		},
 	},
-	"pronunciation": {
+	bulkPronunciation: {
 		kind: jobs.KindPronunciation,
 		done: func(p store.Passes) bool { return p.Pronunciation },
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
@@ -84,7 +121,7 @@ var chapterBulkPasses = map[string]chapterBulkPass{
 			return err
 		},
 	},
-	"music_scoring": {
+	bulkMusicScoring: {
 		kind: jobs.KindMusicScoring,
 		done: func(p store.Passes) bool { return p.Music },
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
@@ -116,8 +153,8 @@ var chapterBulkPasses = map[string]chapterBulkPass{
 // with nothing enqueued, if there's nothing to do). A repeat click while the
 // same action+scope is still queued/in flight is a no-op.
 func (s *Server) handleBulkAction(w http.ResponseWriter, r *http.Request) {
-	action := r.PathValue("action")
-	scope := r.URL.Query().Get("scope")
+	action := bulkAction(r.PathValue("action"))
+	scope := bulkScope(r.URL.Query().Get("scope"))
 	if scope == "" {
 		scope = bulkScopeRest
 	}
@@ -136,13 +173,13 @@ func (s *Server) handleBulkAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch action {
-	case "generate":
+	case bulkGenerate:
 		s.Jobs.EnqueueBookGenerate(book.ID)
-		writeJSON(w, http.StatusAccepted, map[string]int{"queued": 1})
+		writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 		return
-	case "music_generation":
+	case bulkMusicGeneration:
 		s.Jobs.EnqueueBookMusicGeneration(book.ID)
-		writeJSON(w, http.StatusAccepted, map[string]int{"queued": 1})
+		writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 		return
 	}
 
@@ -152,7 +189,7 @@ func (s *Server) handleBulkAction(w http.ResponseWriter, r *http.Request) {
 	}
 	group := jobs.BulkGroup{
 		Kind: jobs.Kind("pipeline_bulk_" + action),
-		Key:  "bulk:" + action + ":" + scope,
+		Key:  "bulk:" + string(action) + ":" + string(scope),
 		Tier: jobs.TierBackground,
 	}
 
@@ -169,7 +206,7 @@ func (s *Server) handleBulkAction(w http.ResponseWriter, r *http.Request) {
 		queued, run, err = s.chapterBulkRun(book, scope, action, pass)
 	} else {
 		switch action {
-		case "characterization":
+		case bulkCharacterization:
 			group.Label = "All characters"
 			group.Children = &jobs.ChildFilter{Kinds: []jobs.Kind{jobs.KindSpeakerCharacterization}}
 			queued, run, err = s.characterBulkRun(book, action, func(char store.Character) (bool, error) { return true, nil },
@@ -182,11 +219,11 @@ func (s *Server) handleBulkAction(w http.ResponseWriter, r *http.Request) {
 						return err
 					})
 				})
-		case "voices":
+		case bulkVoices:
 			group.Children = &jobs.ChildFilter{Kinds: []jobs.Kind{jobs.KindVoiceProvision}}
 			queued, run, err = s.voicesBulkRun(book, scope, &group)
 		default:
-			writeError(w, http.StatusNotFound, "unknown bulk action "+action)
+			writeError(w, http.StatusNotFound, "unknown bulk action "+string(action))
 			return
 		}
 	}
@@ -197,7 +234,7 @@ func (s *Server) handleBulkAction(w http.ResponseWriter, r *http.Request) {
 	if queued > 0 {
 		s.Jobs.EnqueueBulk(book.ID, group, run)
 	}
-	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
 }
 
 // chapterBulkRun picks the chapters a chapter pass covers under scope (read
@@ -206,7 +243,7 @@ func (s *Server) handleBulkAction(w http.ResponseWriter, r *http.Request) {
 // group's run: every chapter dispatched at once, joined, best-effort. Same
 // shape as a preprocessing phase (chapterPhase); per-chapter ordering, where
 // it matters, is enforced by jobs (e.g. attributionOrderDependency).
-func (s *Server) chapterBulkRun(book *store.Book, scope, action string, pass chapterBulkPass) (int, jobs.PipelinePhaseFunc, error) {
+func (s *Server) chapterBulkRun(book *store.Book, scope bulkScope, action bulkAction, pass chapterBulkPass) (int, jobs.PipelinePhaseFunc, error) {
 	summaries, err := s.Store.ListChapterSummaries(book.ID, "", nil)
 	if err != nil {
 		return 0, nil, err
@@ -235,7 +272,7 @@ func (s *Server) chapterBulkRun(book *store.Book, scope, action string, pass cha
 // characterBulkRun is chapterBulkRun's counterpart over the book's series
 // roster (store.SeriesScope), skipping characters marked invalid - see
 // store.Character.Invalid - and any include rejects.
-func (s *Server) characterBulkRun(book *store.Book, action string, include func(store.Character) (bool, error), run func(ctx context.Context, tier int, char store.Character) error) (int, jobs.PipelinePhaseFunc, error) {
+func (s *Server) characterBulkRun(book *store.Book, action bulkAction, include func(store.Character) (bool, error), run func(ctx context.Context, tier int, char store.Character) error) (int, jobs.PipelinePhaseFunc, error) {
 	all, err := s.Store.ListCharacters(store.SeriesScope(book))
 	if err != nil {
 		return 0, nil, err
@@ -271,7 +308,7 @@ func (s *Server) characterBulkRun(book *store.Book, action string, include func(
 // voice for every character that has none yet for the book's clone model
 // (the same check preprocessVoiceProvisionPhase makes); under bulkScopeAll,
 // force-regenerate every character's voice.
-func (s *Server) voicesBulkRun(book *store.Book, scope string, group *jobs.BulkGroup) (int, jobs.PipelinePhaseFunc, error) {
+func (s *Server) voicesBulkRun(book *store.Book, scope bulkScope, group *jobs.BulkGroup) (int, jobs.PipelinePhaseFunc, error) {
 	bookVoice, err := s.Narration.BookVoice(book)
 	if err != nil {
 		return 0, nil, err
@@ -279,7 +316,7 @@ func (s *Server) voicesBulkRun(book *store.Book, scope string, group *jobs.BulkG
 	cloneModel := narration.EffectiveCloneModel(bookVoice)
 	if scope == bulkScopeAll {
 		group.Label = "All characters"
-		return s.characterBulkRun(book, "voices", func(store.Character) (bool, error) { return true, nil },
+		return s.characterBulkRun(book, bulkVoices, func(store.Character) (bool, error) { return true, nil },
 			func(ctx context.Context, tier int, char store.Character) error {
 				_, err := s.Jobs.RunVoiceProvisionAt(ctx, tier, book.ID, char.ID, "regenerate", char.Name, func(ctx context.Context, attempt int) (string, error) {
 					return s.regenerateCharacterVoice(ctx, book.ID, char, cloneModel, attempt)
@@ -288,7 +325,7 @@ func (s *Server) voicesBulkRun(book *store.Book, scope string, group *jobs.BulkG
 			})
 	}
 	group.Label = "Unvoiced characters"
-	return s.characterBulkRun(book, "voices",
+	return s.characterBulkRun(book, bulkVoices,
 		func(char store.Character) (bool, error) {
 			presetID, err := s.Store.CharacterVoiceForModel(char.ID, cloneModel)
 			return presetID == "", err
@@ -323,7 +360,7 @@ func (s *Server) voicesBulkRun(book *store.Book, scope string, group *jobs.BulkG
 // pass is running. 200 {"invalidated": n}, n = paragraphs whose audio was
 // deleted (0 for the music/generate resets).
 func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
-	pass := r.PathValue("pass")
+	pass := resetPass(r.PathValue("pass"))
 	book, err := s.Store.GetBook(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -348,7 +385,7 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 
 	fromIdx := 0
 	if v := r.URL.Query().Get("fromChapter"); v != "" {
-		if _, ok := store.PassResets[pass]; !ok {
+		if _, ok := store.PassResets[string(pass)]; !ok {
 			writeError(w, http.StatusBadRequest, "fromChapter is only supported for paragraph passes")
 			return
 		}
@@ -360,7 +397,7 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 
 	invalidated := 0
 	switch pass {
-	case "generate":
+	case resetGenerate:
 		err = s.Store.DeleteBookAudio(book.ID)
 		if err == nil {
 			err = s.Store.ResetAllChapterMusicAudioForBook(book.ID)
@@ -368,23 +405,23 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s", s.DataDir, book.ID))
 		}
-	case "music_generation":
+	case resetMusicGeneration:
 		err = s.Store.ResetAllChapterMusicAudioForBook(book.ID)
 		if err == nil {
 			err = removeMusicDirs()
 		}
-	case "music_scoring":
+	case resetMusicScoring:
 		err = s.Store.ClearBookMusicRegions(book.ID)
 		if err == nil {
 			err = removeMusicDirs()
 		}
 	default:
-		if _, ok := store.PassResets[pass]; !ok {
-			writeError(w, http.StatusNotFound, "unknown pass "+pass)
+		if _, ok := store.PassResets[string(pass)]; !ok {
+			writeError(w, http.StatusNotFound, "unknown pass "+string(pass))
 			return
 		}
 		var affected map[string][]int
-		affected, err = s.Store.ResetBookPass(book.ID, pass, fromIdx)
+		affected, err = s.Store.ResetBookPass(book.ID, string(pass), fromIdx)
 		for chapterID, idxs := range affected {
 			refs, derr := s.Store.DeleteParagraphAudioForIdxs(book.ID, chapterID, idxs)
 			if derr != nil {
@@ -402,5 +439,5 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]int{"invalidated": invalidated})
+	writeJSON(w, http.StatusOK, invalidatedResponse{Invalidated: invalidated})
 }

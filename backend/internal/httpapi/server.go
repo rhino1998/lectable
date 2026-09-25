@@ -3,6 +3,8 @@
 // audio/cover file serving.
 package httpapi
 
+//go:generate go run ../../cmd/apigen -dir ../..
+
 import (
 	"encoding/json"
 	"errors"
@@ -247,7 +249,7 @@ func withCORS(allowOrigin string, next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 		}
 		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+			writeNoContent(w)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -271,14 +273,14 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 }
 
 func writeError(w http.ResponseWriter, status int, message string) {
-	writeJSON(w, status, map[string]string{"error": message})
+	writeJSON(w, status, errorResponse{Error: message})
 }
 
 // writeErrorCode is writeError plus a machine-readable "code" the client
 // can branch on (e.g. handleReimportChapter's "no_source_epub"), for an
 // error it's expected to recover from rather than just display.
-func writeErrorCode(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, map[string]string{"error": message, "code": code})
+func writeErrorCode(w http.ResponseWriter, status int, code errorCode, message string) {
+	writeJSON(w, status, errorResponse{Error: message, Code: code})
 }
 
 // httpError is how a build* function (the shared core of a GET handler and
@@ -289,20 +291,24 @@ func httpError(status int, message string) error {
 }
 
 // writeBuilt writes a build* function's (value, error) result as a GET
-// response - usage: writeBuilt(w)(s.buildBook(id)).
-func writeBuilt(w http.ResponseWriter) func(any, error) {
-	return func(v any, err error) {
-		if err != nil {
-			var le *live.Error
-			if errors.As(err, &le) {
-				writeError(w, le.Status, le.Message)
-			} else {
-				writeError(w, http.StatusInternalServerError, err.Error())
-			}
-			return
-		}
-		writeJSON(w, http.StatusOK, v)
+// response - usage: v, err := s.buildBook(id); writeBuilt(w, v, err).
+func writeBuilt[T any](w http.ResponseWriter, v T, err error) {
+	if err != nil {
+		writeBuildError(w, err)
+		return
 	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// writeBuildError writes a build* function's error: its own status when
+// it's a *live.Error (see httpError), 500 otherwise.
+func writeBuildError(w http.ResponseWriter, err error) {
+	var le *live.Error
+	if errors.As(err, &le) {
+		writeError(w, le.Status, le.Message)
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
 }
 
 func writeLoggedWarning(r *http.Request, format string, args ...any) {

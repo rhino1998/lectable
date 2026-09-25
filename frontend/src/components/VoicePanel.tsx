@@ -12,10 +12,8 @@ import {
 import { ApiError } from '../api/client'
 import {
   CLONE_MODELS,
-  CLONE_MODEL_LABELS,
   DEFAULT_CHARACTER_VOICE_MODE,
   DEFAULT_CLONE_MODEL,
-  type CloneModel,
 } from '../api/types'
 
 // Voice *selection* for one book - a dropdown of built-in and custom voices,
@@ -146,10 +144,10 @@ export function VoicePanel({ bookId }: { bookId: string }) {
             setCloneModel(e.target.value)
           }}
         >
-          {!CLONE_MODELS.includes(cloneModel as CloneModel) && <option value={cloneModel}>{cloneModel}</option>}
+          {!CLONE_MODELS.some((m) => m.id === cloneModel) && <option value={cloneModel}>{cloneModel}</option>}
           {CLONE_MODELS.map((m) => (
-            <option key={m} value={m}>
-              {CLONE_MODEL_LABELS[m]}
+            <option key={m.id} value={m.id}>
+              {m.label}
             </option>
           ))}
         </select>

@@ -40,7 +40,7 @@ const maxCharacterizeQuotes = 20
 // fetch more rows than will ever be used.
 const maxCharacterizeDescriptions = 10
 
-// speakerRowDTO is one row of a book's speaker table (GET
+// speakerDTO is one row of a book's speaker table (GET
 // .../speakers): every speaker actually attributed in the book so far,
 // including a synthesized "Narrator" row for unattributed/narration
 // paragraphs, with how much of their dialogue has generated audio. ID is
@@ -52,8 +52,8 @@ const maxCharacterizeDescriptions = 10
 // hiding it). Previewing actual generated dialogue lives in
 // .../appearances now (one attempt per real paragraph, not a single
 // aggregate sample here), not this row.
-type speakerRowDTO struct {
-	ID            string `json:"id,omitempty"`
+type speakerDTO struct {
+	ID            string `json:"id"` // "" for the Narrator row
 	Name          string `json:"name"`
 	VoicePresetID string `json:"voicePresetId,omitempty"`
 	// Summary is the LLM's characterization of how this speaker sounds -
@@ -97,7 +97,7 @@ type speakerRowDTO struct {
 }
 
 // speakerEmotionDTO is one emotion a speaker uses - see
-// speakerRowDTO.Emotions.
+// speakerDTO.Emotions.
 type speakerEmotionDTO struct {
 	Emotion string `json:"emotion"`
 	Label   string `json:"label"`
@@ -106,11 +106,11 @@ type speakerEmotionDTO struct {
 	// "pending" (not rendered yet: it renders lazily the first time one of
 	// these lines generates), or "failed" (couldn't be rendered; these
 	// lines clone from the base clip instead).
-	Status   string `json:"status"`
+	Status   string `json:"status" tstype:"'ready' | 'pending' | 'failed'"`
 	AudioURL string `json:"audioUrl,omitempty"`
 }
 
-// speakerEmotions builds a speakerRowDTO.Emotions list from counts
+// speakerEmotions builds a speakerDTO.Emotions list from counts
 // (emotion id -> line count) for lines generating under presetID.
 func (s *Server) speakerEmotions(presetID string, counts map[string]int) []speakerEmotionDTO {
 	if presetID == "" || len(counts) == 0 {
@@ -157,10 +157,11 @@ func presetAudioURL(presetID string) string {
 // assignment work the same regardless of book.MultiVoice; this table just
 // reports what would narrate if it's on (see internal/narration.Resolver).
 func (s *Server) handleListSpeakers(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildSpeakers(r.PathValue("id")))
+	v, err := s.buildSpeakers(r.PathValue("id"))
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildSpeakers(bookID string) (any, error) {
+func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
@@ -251,10 +252,10 @@ func (s *Server) buildSpeakers(bookID string) (any, error) {
 		}
 	}
 
-	rows := make([]speakerRowDTO, 0, len(order))
+	rows := make([]speakerDTO, 0, len(order))
 	for _, name := range order {
 		ids := idsBySpeaker[name]
-		row := speakerRowDTO{Name: name, ParagraphCount: len(ids)}
+		row := speakerDTO{Name: name, ParagraphCount: len(ids)}
 		if c, ok := charByName[name]; ok {
 			row.ID = c.ID
 			row.VoicePresetID = presetIDByChar[c.ID]
@@ -359,7 +360,7 @@ func (s *Server) handleDeleteBookSpeakerData(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 // handleDeleteCharacter removes one character entirely - a scalpel next
@@ -407,7 +408,7 @@ func (s *Server) handleDeleteCharacter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 // deleteCharacterIdentity removes char's own identity/voice for their
@@ -535,7 +536,7 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 type reattributeSpeakerRequest struct {
@@ -703,7 +704,7 @@ func (s *Server) handleReattributeSpeaker(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(targets)})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(targets)})
 }
 
 type setCharacterAliasesRequest struct {
@@ -769,7 +770,7 @@ func (s *Server) handleSetCharacterAliases(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "aliases saved but could not be reloaded")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"aliases": updated.Aliases})
+	writeJSON(w, http.StatusOK, aliasesResponse{Aliases: updated.Aliases})
 }
 
 type setCharacterInvalidRequest struct {
@@ -803,7 +804,7 @@ func (s *Server) handleSetCharacterInvalid(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 type setCharacterVoiceRequest struct {
@@ -845,7 +846,7 @@ func (s *Server) handleSetCharacterVoice(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 // booksInScope returns every book sharing book's narration-voice scope
@@ -946,10 +947,11 @@ type speakerAppearanceDTO struct {
 // route); the character's own scope, not that one book, decides which
 // books are actually searched.
 func (s *Server) handleCharacterAppearances(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildCharacterAppearances(r.PathValue("id"), r.PathValue("characterId")))
+	v, err := s.buildCharacterAppearances(r.PathValue("id"), r.PathValue("characterId"))
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildCharacterAppearances(bookID, characterID string) (any, error) {
+func (s *Server) buildCharacterAppearances(bookID, characterID string) ([]speakerAppearanceDTO, error) {
 
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
@@ -1040,10 +1042,11 @@ func (s *Server) resolveAppearanceAudioURL(paragraphID, voiceID string) string {
 // own char.Name: it's previewing the narration itself, not this character's
 // own (nonexistent, for a paragraph they don't speak) dialogue.
 func (s *Server) handleCharacterDescriptions(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildCharacterDescriptions(r.PathValue("id"), r.PathValue("characterId")))
+	v, err := s.buildCharacterDescriptions(r.PathValue("id"), r.PathValue("characterId"))
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildCharacterDescriptions(bookID, characterID string) (any, error) {
+func (s *Server) buildCharacterDescriptions(bookID, characterID string) ([]speakerAppearanceDTO, error) {
 
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
@@ -2425,7 +2428,7 @@ func (s *Server) handleGenerateCharacterVoice(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusConflict, "not enough dialogue attributed to this character yet to characterize a voice")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"voicePresetId": presetID, "audioUrl": presetAudioURL(presetID)})
+	writeJSON(w, http.StatusOK, generateVoiceResponse{VoicePresetID: presetID, AudioURL: presetAudioURL(presetID)})
 }
 
 // handleGenerateCharacterVoices batch-provisions a voice for every given
@@ -2478,9 +2481,7 @@ func (s *Server) handleGenerateCharacterVoices(w http.ResponseWriter, r *http.Re
 	}
 	cloneModel := narration.EffectiveCloneModel(bookVoice)
 
-	var body struct {
-		CharacterIDs []string `json:"characterIds"`
-	}
+	var body characterIDsRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -2505,7 +2506,7 @@ func (s *Server) handleGenerateCharacterVoices(w http.ResponseWriter, r *http.Re
 		queued++
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]any{"queued": queued})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
 }
 
 // handleRegenerateCharacterVoices batch-forces a fresh reference-clip
@@ -2543,9 +2544,7 @@ func (s *Server) handleRegenerateCharacterVoices(w http.ResponseWriter, r *http.
 	}
 	cloneModel := narration.EffectiveCloneModel(bookVoice)
 
-	var body struct {
-		CharacterIDs []string `json:"characterIds"`
-	}
+	var body characterIDsRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -2570,7 +2569,7 @@ func (s *Server) handleRegenerateCharacterVoices(w http.ResponseWriter, r *http.
 		queued++
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]any{"queued": queued})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
 }
 
 // handleAttributeSpeakers enqueues speaker attribution for one chapter,
@@ -2619,7 +2618,7 @@ func (s *Server) handleAttributeSpeakers(w http.ResponseWriter, r *http.Request)
 	s.Jobs.EnqueueAttribution(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
 		return s.attributeChapter(ctx, book, ch, false)
 	})
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handleTagDirections enqueues speech-direction tagging for one chapter,
@@ -2665,7 +2664,7 @@ func (s *Server) handleTagDirections(w http.ResponseWriter, r *http.Request) {
 	s.Jobs.EnqueueDirection(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
 		return s.directChapter(ctx, book, ch, nil)
 	})
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handleRetagDescriptions queues a KindDescription task for one chapter -
@@ -2682,7 +2681,7 @@ func (s *Server) handleRetagDescriptions(w http.ResponseWriter, r *http.Request)
 	s.Jobs.EnqueueDescription(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
 		return s.describeChapterForJob(ctx, book, ch)
 	})
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handleRetagScareQuotes queues a KindScareQuote task for one chapter -
@@ -2696,7 +2695,7 @@ func (s *Server) handleRetagScareQuotes(w http.ResponseWriter, r *http.Request) 
 	s.Jobs.EnqueueScareQuote(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
 		return s.scareQuoteChapterForJob(ctx, book, ch)
 	})
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handleResolvePronunciation queues a KindPronunciation task for one
@@ -2710,7 +2709,7 @@ func (s *Server) handleResolvePronunciation(w http.ResponseWriter, r *http.Reque
 	s.Jobs.EnqueuePronunciation(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
 		return s.pronounceChapter(ctx, book, ch, nil)
 	})
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // chapterLLMTarget resolves handleRetagDescriptions/handleRetagScareQuotes/
@@ -2821,7 +2820,7 @@ func (s *Server) handleCharacterizeSpeaker(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"summary": summary, "voiceInvalidated": invalidated})
+	writeJSON(w, http.StatusOK, characterizeResponse{Summary: summary, VoiceInvalidated: invalidated})
 }
 
 // recharacterizeAndInvalidate runs runFn (a CharacterizationFunc closing
@@ -2987,9 +2986,7 @@ func (s *Server) handleCharacterizeSpeakers(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	var body struct {
-		CharacterIDs []string `json:"characterIds"`
-	}
+	var body characterIDsRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
@@ -3018,7 +3015,7 @@ func (s *Server) handleCharacterizeSpeakers(w http.ResponseWriter, r *http.Reque
 		queued++
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]any{"queued": queued})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
 }
 
 // handleVariantAudio serves one emotion variant of a voice preset's
@@ -3114,7 +3111,7 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 		SpeedMultiplier: voice.SpeedMultiplier,
 		DesignModel:     voice.DesignModel,
 	}, req.Emotion)
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // rosterResolver builds a speakerattr.SpeakerNameResolver over roster's

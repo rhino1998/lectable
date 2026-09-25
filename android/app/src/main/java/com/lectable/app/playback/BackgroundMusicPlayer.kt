@@ -9,7 +9,7 @@ import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import com.lectable.app.data.remote.MediaUrlResolver
-import com.lectable.app.data.remote.dto.AudioStatus
+import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.MusicRegionDto
 import com.lectable.app.data.settings.DEFAULT_MUSIC_VOLUME
@@ -252,7 +252,7 @@ class BackgroundMusicPlayer @Inject constructor(
 
         val regions = chapterMusic[chapterIdx]?.regions.orEmpty()
         var region = regions.firstOrNull {
-            paragraphIdx in it.startIdx..it.endIdx && it.status == AudioStatus.READY && it.audioUrl != null
+            paragraphIdx in it.startIdx..it.endIdx && it.status == AudioStatuses.READY && it.audioUrl != null
         }
 
         // Pre-roll: switch into the *next* paragraph's own region once the current paragraph has
@@ -265,10 +265,10 @@ class BackgroundMusicPlayer @Inject constructor(
         if (!isJump) {
             val chapterParagraphCount = chapterParagraphCounts[chapterIdx] ?: 0
             val isLastParagraphOfChapter = chapterParagraphCount > 0 && paragraphIdx == chapterParagraphCount - 1
-            val upcoming = regions.firstOrNull { it.startIdx == paragraphIdx + 1 && it.status == AudioStatus.READY && it.audioUrl != null }
+            val upcoming = regions.firstOrNull { it.startIdx == paragraphIdx + 1 && it.status == AudioStatuses.READY && it.audioUrl != null }
                 ?: if (isLastParagraphOfChapter) {
                     chapterMusic[chapterIdx + 1]?.regions.orEmpty()
-                        .firstOrNull { it.startIdx == 0 && it.status == AudioStatus.READY && it.audioUrl != null }
+                        .firstOrNull { it.startIdx == 0 && it.status == AudioStatuses.READY && it.audioUrl != null }
                 } else {
                     null
                 }

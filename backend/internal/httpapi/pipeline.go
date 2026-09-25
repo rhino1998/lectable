@@ -49,7 +49,7 @@ func (s *Server) handleGenerateBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Jobs.EnqueueBookGenerate(bookID)
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handleGenerateRemaining enqueues background TTS generation for every
@@ -74,7 +74,7 @@ func (s *Server) handleGenerateRemaining(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.Jobs.EnqueueRemaining(bookID)
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handlePreprocessBook kicks off the preprocessing pipeline for the whole
@@ -138,7 +138,7 @@ func (s *Server) handlePreprocessBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // preprocessScareQuotePhase is the scare-quote tagging phase - the root of

@@ -1,6 +1,8 @@
 package com.lectable.app.data.live
 
 import com.lectable.app.data.remote.LiveClient
+import com.lectable.app.data.remote.LiveTopic
+import com.lectable.app.data.remote.LiveTopics
 import com.lectable.app.data.remote.LiveResult
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.BookSummaryDto
@@ -30,7 +32,6 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.runningFold
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.transformLatest
-import kotlinx.serialization.serializer
 
 // How long a topic's upstream subscription outlives its last reader - long enough to ride out a
 // configuration change or quick back-and-forth navigation.
@@ -79,47 +80,48 @@ class LiveStore @Inject constructor(
     }
 
     fun books(): StateFlow<LiveResult<List<BookSummaryDto>>> =
-        topic("books", emptyMap(), eager = true) { offlineCache.onBooks(it) }
+        topic(LiveTopics.books(), eager = true) { offlineCache.onBooks(it) }
 
-    fun voicePresets(): StateFlow<LiveResult<VoicePresetsDto>> = topic("voicePresets", emptyMap(), eager = true)
+    fun voicePresets(): StateFlow<LiveResult<VoicePresetsDto>> = topic(LiveTopics.voicePresets(), eager = true)
 
-    fun customVoicePresets(): StateFlow<LiveResult<List<CustomVoicePresetDto>>> = topic("customVoicePresets", emptyMap(), eager = true)
+    fun customVoicePresets(): StateFlow<LiveResult<List<CustomVoicePresetDto>>> = topic(LiveTopics.customVoicePresets(), eager = true)
 
-    fun defaultVoice(): StateFlow<LiveResult<VoiceSettingsDto>> = topic("defaultVoice", emptyMap(), eager = true)
+    fun defaultVoice(): StateFlow<LiveResult<VoiceSettingsDto>> = topic(LiveTopics.defaultVoice(), eager = true)
 
-    fun jobs(): StateFlow<LiveResult<JobsSnapshotDto>> = topic("jobs", emptyMap())
+    fun jobs(): StateFlow<LiveResult<JobsSnapshotDto>> = topic(LiveTopics.jobs())
 
-    fun book(bookId: String): StateFlow<LiveResult<BookDetailDto>> = topic("book", mapOf("bookId" to bookId))
+    fun book(bookId: String): StateFlow<LiveResult<BookDetailDto>> = topic(LiveTopics.book(bookId))
 
-    fun voice(bookId: String): StateFlow<LiveResult<VoiceSettingsDto>> = topic("voice", mapOf("bookId" to bookId))
+    fun voice(bookId: String): StateFlow<LiveResult<VoiceSettingsDto>> = topic(LiveTopics.voice(bookId))
 
-    fun speakers(bookId: String): StateFlow<LiveResult<List<SpeakerDto>>> = topic("speakers", mapOf("bookId" to bookId))
+    fun speakers(bookId: String): StateFlow<LiveResult<List<SpeakerDto>>> = topic(LiveTopics.speakers(bookId))
 
-    fun bookmarks(bookId: String): StateFlow<LiveResult<List<BookmarkDto>>> = topic("bookmarks", mapOf("bookId" to bookId))
+    fun bookmarks(bookId: String): StateFlow<LiveResult<List<BookmarkDto>>> = topic(LiveTopics.bookmarks(bookId))
 
     fun chapter(bookId: String, chapterIdx: Int): StateFlow<LiveResult<ChapterDetailDto>> =
-        topic("chapter", mapOf("bookId" to bookId, "chapterIdx" to chapterIdx)) { offlineCache.onChapter(bookId, it) }
+        topic(LiveTopics.chapter(bookId, chapterIdx)) { offlineCache.onChapter(bookId, it) }
 
     fun chapterMusic(bookId: String, chapterIdx: Int): StateFlow<LiveResult<ChapterMusicDto>> =
-        topic("chapterMusic", mapOf("bookId" to bookId, "chapterIdx" to chapterIdx))
+        topic(LiveTopics.chapterMusic(bookId, chapterIdx))
 
     fun characterAppearances(bookId: String, characterId: String): StateFlow<LiveResult<List<SpeakerAppearanceDto>>> =
-        topic("characterAppearances", mapOf("bookId" to bookId, "characterId" to characterId))
+        topic(LiveTopics.characterAppearances(bookId, characterId))
 
     fun characterDescriptions(bookId: String, characterId: String): StateFlow<LiveResult<List<SpeakerAppearanceDto>>> =
-        topic("characterDescriptions", mapOf("bookId" to bookId, "characterId" to characterId))
+        topic(LiveTopics.characterDescriptions(bookId, characterId))
 
+    /** One topic instance's shared flow - [LiveTopics] (generated from the backend's topic table)
+     *  fixes its wire name, params, and value type together. */
     @Suppress("UNCHECKED_CAST")
-    private inline fun <reified T> topic(
-        name: String,
-        params: Map<String, Any>,
+    private fun <T> topic(
+        t: LiveTopic<T>,
         eager: Boolean = false,
-        noinline onValue: (suspend (T) -> Unit)? = null,
+        onValue: (suspend (T) -> Unit)? = null,
     ): StateFlow<LiveResult<T>> {
-        val key = "$name:${params.toSortedMap()}"
+        val key = "${t.name}:${t.params.toSortedMap()}"
         synchronized(lock) {
             (pinned[key] ?: cached[key])?.let { return it as StateFlow<LiveResult<T>> }
-            val flow = build(name, params, eager, serializer<T>(), onValue)
+            val flow = build(t.name, t.params, eager, t.deserializer, onValue)
             if (eager) pinned[key] = flow else cached[key] = flow
             return flow
         }

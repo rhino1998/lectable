@@ -2,6 +2,7 @@ package com.lectable.app.di
 
 import com.lectable.app.data.remote.DynamicBaseUrlInterceptor
 import com.lectable.app.data.remote.LectableApi
+import com.lectable.app.data.remote.MediaApi
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -64,4 +65,8 @@ object NetworkModule {
     @Provides
     @Singleton
     fun provideLectableApi(retrofit: Retrofit): LectableApi = retrofit.create(LectableApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideMediaApi(retrofit: Retrofit): MediaApi = retrofit.create(MediaApi::class.java)
 }

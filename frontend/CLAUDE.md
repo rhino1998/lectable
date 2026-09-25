@@ -15,12 +15,27 @@ export PATH=/home/rhino/node-toolchains/v24.21.0/bin:$PATH
 
 ## Layout
 
-- `src/api/types.ts` — hand-written types mirroring the Go backend's JSON
-  DTOs exactly (see `../backend/internal/httpapi/*.go`). Keep these in
-  sync by hand if a backend DTO changes shape.
-- `src/api/client.ts` — thin `fetch` wrappers for mutations and the few
-  plain request/response reads (search, voice languages). Server *state*
-  is not fetched here - see `live.ts`.
+- `src/api/generated.ts` — **generated** from the backend by
+  `backend/cmd/apigen` (never edit it: change the Go side and run
+  `make generate` from `backend/`; a backend test fails while it's
+  stale). Holds every wire type, the backend's enums (`JOB_TIERS`/
+  `JobTier`, `BULK_ACTIONS`, `CHARACTER_VOICE_MODES`, ...), the catalog
+  (`CLONE_MODELS`, `DESIGN_MODELS`, `EMOTIONS`, `DEFAULT_CLONE_MODEL`,
+  ...), the `LiveTopics` table (each topic's params and value type), and
+  the `Routes` table (each `"<METHOD> <path>"` route's path/query params,
+  body, response, and error codes) plus `ROUTE_RESPONSE_KINDS`.
+- `src/api/types.ts` — re-exports `generated.ts` plus the frontend-only
+  pieces: UI copy keyed by the generated unions (`SFX_ENGINE_LABELS`,
+  `CHARACTER_VOICE_MODE_LABELS`, ... - `Record<Union, ...>`, so a new
+  backend value is a compile error until it gets a label), lookup tables
+  derived from the catalog (`CLONE_MODEL_LABELS`, temperature/guidance
+  defaults), the `ContentItem` discriminated union, and `LiveOp`.
+- `src/api/client.ts` — `call(route, { path, query, body })`, a `fetch`
+  wrapper typed end to end by the generated `Routes` table (the route key
+  fixes the params, body, and response type; 204s resolve to `undefined`,
+  file routes to a `Blob`; non-2xx throws `ApiError` with the typed
+  `ErrorCode`), and the `api` object's named mutations built on it.
+  Server *state* is not fetched here - see `live.ts`.
 - `src/api/live.ts` — the client for the backend's live-state WebSocket
   (`GET /api/events`, backend `internal/live`). All displayed server state
   (books, a book, each chapter, chapter music, voice settings, speakers,
@@ -33,7 +48,8 @@ export PATH=/home/rhino/node-toolchains/v24.21.0/bin:$PATH
   linger 5s after the last unmount, and are all resent on reconnect.
   `useLive(topic, params | null)` / `useLiveMany(topic, paramsList)` return
   `{data, error, isLoading, isError}` (the subset of TanStack's result
-  shape pages read). There is no polling and no cache invalidation
+  shape pages read), typed by the generated `LiveTopics` table - the
+  topic name fixes its params and value type. There is no polling and no cache invalidation
   anywhere - a mutation's write is itself what produces the update.
 - `src/api/queries.ts` — hooks over both: `useBooks`/`useChapter`/
   `useChapterRange`/... are thin `useLive` wrappers (`useChapterRange`

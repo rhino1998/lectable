@@ -4,6 +4,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
 func TestFireRedTTS3Language(t *testing.T) {
@@ -84,6 +86,49 @@ func TestMossLanguage(t *testing.T) {
 	} {
 		if got := mossLanguage(tc.lang, ""); got != tc.want {
 			t.Errorf("mossLanguage(%q) = %q, want %q", tc.lang, got, tc.want)
+		}
+	}
+}
+
+// TestCatalogMatchesModelTables keeps voices' user-facing model catalog
+// (what the clients offer) in step with the models this package can
+// actually load, including which ones read temperature/guidance options.
+func TestCatalogMatchesModelTables(t *testing.T) {
+	listed := map[string]bool{}
+	for _, m := range voices.CloneModels {
+		listed[m.ID] = true
+		key, ok := cloneModelFamilies[m.ID]
+		if !ok {
+			t.Errorf("catalog clone model %q isn't in cloneModelFamilies", m.ID)
+			continue
+		}
+		if got, want := m.DefaultTemperature != nil, cloneFamilies[key].temperature; got != want {
+			t.Errorf("clone model %q: catalog has a default temperature = %v, family reads temperature = %v", m.ID, got, want)
+		}
+	}
+	for id := range cloneModelFamilies {
+		if !listed[id] && id != voices.SopranoCloneModel {
+			t.Errorf("clone model %q is loadable but missing from voices.CloneModels", id)
+		}
+	}
+	listed = map[string]bool{}
+	for _, m := range voices.DesignModels {
+		listed[m.ID] = true
+		e, ok := designEngines[m.ID]
+		if !ok {
+			t.Errorf("catalog design model %q isn't in designEngines", m.ID)
+			continue
+		}
+		if got := m.DefaultTemperature != nil; got != e.temperature {
+			t.Errorf("design model %q: catalog default temperature = %v, engine reads temperature = %v", m.ID, got, e.temperature)
+		}
+		if got := m.DefaultGuidanceScale != nil; got != e.guidanceScale {
+			t.Errorf("design model %q: catalog default guidance = %v, engine reads guidance = %v", m.ID, got, e.guidanceScale)
+		}
+	}
+	for id := range designEngines {
+		if !listed[id] {
+			t.Errorf("design engine %q is missing from voices.DesignModels", id)
 		}
 	}
 }

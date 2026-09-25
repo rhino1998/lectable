@@ -10,5 +10,5 @@ import "net/http"
 // juggling multiple backends has something human-readable to show, distinct
 // from id (never meant to be read by a person).
 func (s *Server) handleGetInstance(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"id": s.InstanceID, "name": s.LibraryName})
+	writeJSON(w, http.StatusOK, instanceDTO{ID: s.InstanceID, Name: s.LibraryName})
 }

@@ -45,6 +45,6 @@ class SpeakerRepository @Inject constructor(
 
     /** "Delete speaker data" - see [com.lectable.app.data.remote.LectableApi.deleteSpeakerData]. */
     suspend fun deleteSpeakerData(bookId: String) {
-        api.deleteSpeakerData(bookId)
+        api.deleteBookSpeakerData(bookId)
     }
 }

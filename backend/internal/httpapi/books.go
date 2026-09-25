@@ -426,7 +426,7 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 	}
 	src, err = os.Open(audiopath.SourceEpubFile(s.DataDir, bookID))
 	if errors.Is(err, os.ErrNotExist) {
-		writeErrorCode(w, http.StatusConflict, "no_source_epub", "no source epub is stored for this book - upload it with this request")
+		writeErrorCode(w, http.StatusConflict, errNoSourceEpub, "no source epub is stored for this book - upload it with this request")
 		return
 	}
 	if err != nil {
@@ -456,7 +456,7 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 	}
 	fresh := parsed.Chapters[idx]
 	if fresh.Title != ch.Title && r.URL.Query().Get("force") != "true" {
-		writeErrorCode(w, http.StatusConflict, "title_mismatch", fmt.Sprintf("chapter %d is titled %q in the epub but %q in the library", idx, fresh.Title, ch.Title))
+		writeErrorCode(w, http.StatusConflict, errTitleMismatch, fmt.Sprintf("chapter %d is titled %q in the epub but %q in the library", idx, fresh.Title, ch.Title))
 		return
 	}
 
@@ -494,7 +494,7 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 			paragraphs++
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "title": fresh.Title, "paragraphs": paragraphs})
+	writeJSON(w, http.StatusOK, reimportChapterResponse{Title: fresh.Title, Paragraphs: paragraphs})
 }
 
 func extensionForMediaType(mt string) string {
@@ -522,10 +522,11 @@ func extensionForMediaType(mt string) string {
 // page loaded, stalling every other concurrent request behind whichever
 // scan was running.
 func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildBooks())
+	v, err := s.buildBooks()
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildBooks() (any, error) {
+func (s *Server) buildBooks() ([]bookSummaryDTO, error) {
 	books, err := s.Store.ListBooks()
 	if err != nil {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
@@ -595,25 +596,26 @@ type bookDetailDTO struct {
 }
 
 func (s *Server) handleGetBook(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildBook(r.PathValue("id")))
+	v, err := s.buildBook(r.PathValue("id"))
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildBook(id string) (any, error) {
+func (s *Server) buildBook(id string) (bookDetailDTO, error) {
 	b, err := s.Store.GetBook(id)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return bookDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if b == nil {
-		return nil, httpError(http.StatusNotFound, "book not found")
+		return bookDetailDTO{}, httpError(http.StatusNotFound, "book not found")
 	}
 	summary, chapters, err := s.buildBookSummary(*b)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return bookDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	musicCounts, err := s.Store.MusicRegionCounts(b.ID)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return bookDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	dto := bookDetailDTO{bookSummaryDTO: summary}
@@ -655,7 +657,7 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(audiopath.CoverFile(s.DataDir, id, b.CoverExt))
 	}
 	_ = os.Remove(audiopath.SourceEpubFile(s.DataDir, id))
-	w.WriteHeader(http.StatusNoContent)
+	writeNoContent(w)
 }
 
 // handleDeleteBookAudio deletes every generated audio file for book - the
@@ -697,7 +699,7 @@ func (s *Server) handleDeleteBookAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s", s.DataDir, id))
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 // handleDeleteChapterAudio is handleDeleteBookAudio's single-chapter
@@ -734,7 +736,7 @@ func (s *Server) handleDeleteChapterAudio(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s/%s", s.DataDir, bookID, ch.ID))
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 func (s *Server) handleGetCover(w http.ResponseWriter, r *http.Request) {

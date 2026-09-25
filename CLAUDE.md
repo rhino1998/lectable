@@ -137,6 +137,13 @@ client, not a browser.)
   shared root `.golangci.yml`, oxlint for `frontend`, AGP's built-in lint
   for `android`. All three should stay at zero errors.
 
+- The API clients are generated, not hand-mirrored: `backend/internal/httpapi`
+  is the source of truth for wire types, enums, the model catalog, live
+  topics, and the route table, and `make -C backend generate` rewrites
+  `frontend/src/api/generated.ts` plus Android's `ApiTypes.kt`,
+  `LectableApi.kt`, and `LiveTopics.kt` (see `backend/CLAUDE.md`'s
+  `internal/httpapi` entry for what it reads and the response conventions).
+
 - No auth, no multi-user support — this is a single-user local app.
 - All persistent state lives under the backend's `DATA_DIR` (default
   `./data`): `library.duckdb`,

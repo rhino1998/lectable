@@ -9,6 +9,17 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
 
+// SFXEngine picks which generation engine a standalone SFX/music test
+// render (POST /api/sfx/generate) runs, in the test page's display order.
+type SFXEngine string
+
+const (
+	sfxACEStep           SFXEngine = "ace_step"
+	sfxStableAudioMusic  SFXEngine = "stable_audio_music"
+	sfxStableAudioMedium SFXEngine = "stable_audio_medium"
+	sfxStableAudioSFX    SFXEngine = "stable_audio_sfx"
+)
+
 // generateSFXRequest is POST /api/sfx/generate's body - the standalone
 // test surface for every generation-only "gen task" engine this app
 // wires in (ACE-Step, Stable Audio Music/SFX/Medium), one shared request
@@ -19,16 +30,15 @@ import (
 // StableAudioMedium's own doc comments for which knobs each engine
 // actually reads and what each defaults to when left zero.
 type generateSFXRequest struct {
-	// Engine is "ace_step", "stable_audio_music" (the default),
-	// "stable_audio_sfx", or "stable_audio_medium".
-	Engine            string  `json:"engine,omitempty"`
-	Prompt            string  `json:"prompt"`
-	Lyrics            string  `json:"lyrics,omitempty"`
-	NegativePrompt    string  `json:"negativePrompt,omitempty"`
-	DurationSeconds   float64 `json:"durationSeconds,omitempty"`
-	NumInferenceSteps int     `json:"numInferenceSteps,omitempty"`
-	GuidanceScale     float64 `json:"guidanceScale,omitempty"`
-	Seed              *int64  `json:"seed,omitempty"`
+	// Engine defaults to stable_audio_music.
+	Engine            SFXEngine `json:"engine,omitempty"`
+	Prompt            string    `json:"prompt"`
+	Lyrics            string    `json:"lyrics,omitempty"`
+	NegativePrompt    string    `json:"negativePrompt,omitempty"`
+	DurationSeconds   float64   `json:"durationSeconds,omitempty"`
+	NumInferenceSteps int       `json:"numInferenceSteps,omitempty"`
+	GuidanceScale     float64   `json:"guidanceScale,omitempty"`
+	Seed              *int64    `json:"seed,omitempty"`
 }
 
 // handleGenerateSFX is the standalone SFX/music test page's own backend
@@ -65,14 +75,14 @@ func (s *Server) handleGenerateSFX(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	engine := strings.TrimSpace(req.Engine)
+	engine := SFXEngine(strings.TrimSpace(string(req.Engine)))
 	if engine == "" {
-		engine = "stable_audio_music"
+		engine = sfxStableAudioMusic
 	}
 
 	var run func(ctx context.Context) ([]byte, error)
 	switch engine {
-	case "ace_step":
+	case sfxACEStep:
 		run = func(ctx context.Context) ([]byte, error) {
 			return s.TTS.Music(ctx, ttsproto.MusicRequest{
 				Prompt:            prompt,
@@ -84,7 +94,7 @@ func (s *Server) handleGenerateSFX(w http.ResponseWriter, r *http.Request) {
 				Seed:              req.Seed,
 			})
 		}
-	case "stable_audio_music":
+	case sfxStableAudioMusic:
 		run = func(ctx context.Context) ([]byte, error) {
 			return s.TTS.StableAudioMusic(ctx, ttsproto.StableAudioRequest{
 				Prompt:            prompt,
@@ -95,7 +105,7 @@ func (s *Server) handleGenerateSFX(w http.ResponseWriter, r *http.Request) {
 				Seed:              req.Seed,
 			})
 		}
-	case "stable_audio_sfx":
+	case sfxStableAudioSFX:
 		run = func(ctx context.Context) ([]byte, error) {
 			return s.TTS.StableAudioSFX(ctx, ttsproto.StableAudioRequest{
 				Prompt:            prompt,
@@ -106,7 +116,7 @@ func (s *Server) handleGenerateSFX(w http.ResponseWriter, r *http.Request) {
 				Seed:              req.Seed,
 			})
 		}
-	case "stable_audio_medium":
+	case sfxStableAudioMedium:
 		run = func(ctx context.Context) ([]byte, error) {
 			return s.TTS.StableAudioMedium(ctx, ttsproto.StableAudioRequest{
 				Prompt:            prompt,
@@ -118,11 +128,11 @@ func (s *Server) handleGenerateSFX(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	default:
-		writeError(w, http.StatusBadRequest, "unknown engine "+engine)
+		writeError(w, http.StatusBadRequest, "unknown engine "+string(engine))
 		return
 	}
 
-	wavBytes, err := s.Jobs.RunSFXPreview(r.Context(), engine, prompt, run)
+	wavBytes, err := s.Jobs.RunSFXPreview(r.Context(), string(engine), prompt, run)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return

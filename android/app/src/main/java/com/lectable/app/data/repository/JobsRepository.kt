@@ -22,9 +22,9 @@ class JobsRepository @Inject constructor(
     /** Returns how many tasks were actually canceled, for the confirming snackbar. */
     suspend fun cancelAllJobs(): Int = api.cancelAllJobs().canceled
 
-    suspend fun pauseJobs(): Boolean = api.pauseJobs().paused
+    suspend fun pauseJobs() = api.pauseJobs()
 
-    suspend fun resumeJobs(): Boolean = api.resumeJobs().paused
+    suspend fun resumeJobs() = api.resumeJobs()
 
-    suspend fun restartWorker(): Boolean = api.restartWorker().restarted
+    suspend fun restartWorker() = api.restartWorker()
 }

@@ -26,7 +26,6 @@ import {
 import { ApiError } from '../api/client'
 import {
   CLONE_MODELS,
-  CLONE_MODEL_LABELS,
   DEFAULT_CHARACTER_VOICE_MODE,
   DEFAULT_CLONE_MODEL,
   DEFAULT_DESIGN_MODEL,
@@ -455,8 +454,8 @@ export function VoicesPage() {
               disabled={!defaultVoiceQuery.data || updateDefaultVoice.isPending}
             >
               {CLONE_MODELS.map((m) => (
-                <option key={m} value={m}>
-                  {CLONE_MODEL_LABELS[m]}
+                <option key={m.id} value={m.id}>
+                  {m.label}
                 </option>
               ))}
             </select>

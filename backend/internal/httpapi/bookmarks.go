@@ -16,10 +16,11 @@ type bookmarkDTO struct {
 }
 
 func (s *Server) handleListBookmarks(w http.ResponseWriter, r *http.Request) {
-	writeBuilt(w)(s.buildBookmarks(r.PathValue("id")))
+	v, err := s.buildBookmarks(r.PathValue("id"))
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildBookmarks(bookID string) (any, error) {
+func (s *Server) buildBookmarks(bookID string) ([]bookmarkDTO, error) {
 
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
@@ -88,7 +89,7 @@ func (s *Server) handleCreateBookmark(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"id": id})
+	writeJSON(w, http.StatusCreated, idResponse{ID: id})
 }
 
 type updateBookmarkRequest struct {
@@ -108,7 +109,7 @@ func (s *Server) handleUpdateBookmark(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeNoContent(w)
 }
 
 func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
@@ -117,5 +118,5 @@ func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	writeNoContent(w)
 }

@@ -14,7 +14,7 @@ export function LLMPage() {
   const [systemPrompt, setSystemPrompt] = useState('')
   const [userPrompt, setUserPrompt] = useState('')
   // Text, not number - an empty string is exactly "unset, defer to the
-  // backend's own default" (see LLMTestOptions), which a bare `0` can't
+  // backend's own default" (see TestLLMRequest), which a bare `0` can't
   // distinguish from "the reader typed zero".
   const [temp, setTemp] = useState('')
   const [maxTokens, setMaxTokens] = useState('')

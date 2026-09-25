@@ -22,7 +22,7 @@ export function SFXPage() {
   const [negativePrompt, setNegativePrompt] = useState('')
   // Text, not number, for the optional numeric knobs below - an empty
   // string is exactly "unset, defer to this engine's own default" (see
-  // SFXTestOptions), which a bare `0` can't distinguish from "the reader
+  // GenerateSFXRequest), which a bare `0` can't distinguish from "the reader
   // typed zero".
   const [durationSeconds, setDurationSeconds] = useState('')
   const [numInferenceSteps, setNumInferenceSteps] = useState('')

@@ -6,6 +6,7 @@ import com.lectable.app.data.download.OfflineParagraph
 import com.lectable.app.data.download.hasAudioOf
 import com.lectable.app.data.download.mergedWith
 import com.lectable.app.data.remote.dto.AudioStatus
+import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ContentItemDto
 import com.lectable.app.data.remote.dto.ParagraphDto
@@ -20,7 +21,7 @@ class OfflineMergeTest {
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    private fun live(idx: Int, text: String = "p$idx", audioHash: String = "a$idx", status: AudioStatus = AudioStatus.READY) =
+    private fun live(idx: Int, text: String = "p$idx", audioHash: String = "a$idx", status: AudioStatus = AudioStatuses.READY) =
         ParagraphDto(idx = idx, text = text, audioStatus = status, durationSeconds = 2.0, contentHash = "c$text", audioHash = audioHash)
 
     private fun stored(idx: Int, audioHash: String = "a$idx") =
@@ -53,7 +54,7 @@ class OfflineMergeTest {
     fun `hasAudioOf compares audio hashes`() {
         assertTrue(stored(0).hasAudioOf(live(0)))
         assertFalse(stored(0).hasAudioOf(live(0, audioHash = "regenerated")))
-        assertFalse(stored(0).hasAudioOf(live(0, status = AudioStatus.PENDING)))
+        assertFalse(stored(0).hasAudioOf(live(0, status = AudioStatuses.PENDING)))
     }
 
     @Test

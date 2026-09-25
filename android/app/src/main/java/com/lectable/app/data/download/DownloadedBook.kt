@@ -2,7 +2,7 @@ package com.lectable.app.data.download
 
 import androidx.room.ColumnInfo
 import androidx.room.Entity
-import com.lectable.app.data.remote.dto.AudioStatus
+import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.DirectionMarkDto
 import com.lectable.app.data.remote.dto.ParagraphDto
 import com.lectable.app.data.remote.dto.PronunciationMarkDto
@@ -79,7 +79,7 @@ data class OfflineParagraph(
  *  duration/pointer heuristic that predates them. Never true for a live paragraph whose audio
  *  isn't ready. */
 fun OfflineParagraph.hasAudioOf(live: ParagraphDto): Boolean {
-    if (live.audioStatus != AudioStatus.READY) return false
+    if (live.audioStatus != AudioStatuses.READY) return false
     if (audioHash.isNotEmpty() && live.audioHash.isNotEmpty()) return audioHash == live.audioHash
     return durationSeconds == (live.durationSeconds ?: 0.0) && audioPointerSeconds == live.audioPointerSeconds
 }

@@ -1,39 +1,71 @@
-import type {
-  BookSummary,
-  BulkAction,
-  BulkScope,
-  ResetPass,
-  CustomVoicePreset,
-  CustomVoicePresetInput,
-  LLMTestOptions,
-  Position,
-  QueueTask,
-  SearchResult,
-  SFXTestOptions,
-  VoicePreset,
-  VoiceSettings,
+import {
+  ROUTE_RESPONSE_KINDS,
+  type BulkAction,
+  type BulkScope,
+  type CustomVoicePresetInput,
+  type ErrorCode,
+  type GenerateSFXRequest,
+  type JobTier,
+  type Position,
+  type ResetPass,
+  type Routes,
+  type TestLLMRequest,
+  type VoiceSettingsUpdate,
 } from './types'
 
 class ApiError extends Error {
   status: number
   // Machine-readable error code, when the backend sends one (see
   // httpapi.writeErrorCode) - for errors the UI can recover from.
-  code?: string
-  constructor(status: number, message: string, code?: string) {
+  code?: ErrorCode
+  constructor(status: number, message: string, code?: ErrorCode) {
     super(message)
     this.status = status
     this.code = code
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type RouteKey = keyof Routes
+
+// One route's arguments, from the generated route table: path params when
+// it has any, optional query params, and its body when it takes one.
+export type CallArgs<K extends RouteKey> = ([keyof Routes[K]['path']] extends [never]
+  ? { path?: undefined }
+  : { path: Routes[K]['path'] }) &
+  ([keyof Routes[K]['query']] extends [never] ? { query?: undefined } : { query?: Routes[K]['query'] }) &
+  ([Routes[K]['body']] extends [never] ? { body?: undefined } : { body: Routes[K]['body'] })
+
+type CallRest<K extends RouteKey> = Record<never, never> extends CallArgs<K> ? [args?: CallArgs<K>] : [args: CallArgs<K>]
+
+// Calls one backend route, typed end to end by the generated route table
+// (Routes): the "<METHOD> <path>" key picks the params, body, and
+// response type, and ROUTE_RESPONSE_KINDS how the body is read (JSON,
+// nothing for a 204, or a Blob for a file).
+export async function call<K extends RouteKey>(route: K, ...[args]: CallRest<K>): Promise<Routes[K]['response']> {
+  const [method, template] = route.split(' ') as [string, string]
+  const a = (args ?? {}) as {
+    path?: Record<string, string | number>
+    query?: Record<string, string | number | boolean | undefined>
+    body?: unknown
+  }
+  let url = template.replace(/\{(\w+)\}/g, (_, name: string) => encodeURIComponent(String(a.path?.[name])))
+  const qs = new URLSearchParams()
+  for (const [k, v] of Object.entries(a.query ?? {})) if (v !== undefined) qs.set(k, String(v))
+  if (qs.size > 0) url += `?${qs}`
   // Belt-and-suspenders alongside the backend's own Cache-Control:
   // no-store (see httpapi.writeJSON) - a browser serving a cached response
   // instead of actually asking the network would return stale state.
-  const res = await fetch(path, { cache: 'no-store', ...init })
+  const init: RequestInit = { method, cache: 'no-store' }
+  if (a.body instanceof FormData) {
+    init.body = a.body
+  } else if (a.body !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' }
+    init.body = JSON.stringify(a.body)
+  }
+  const res = await fetch(url, init)
   if (!res.ok) {
     let message = `HTTP ${res.status}`
-    let code: string | undefined
+    let code: ErrorCode | undefined
     try {
       const body = await res.json()
       if (body?.error) message = body.error
@@ -43,41 +75,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new ApiError(res.status, message, code)
   }
-  if (res.status === 204) return undefined as T
-  return res.json() as Promise<T>
-}
-
-function json(method: string, body: unknown): RequestInit {
-  return {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+  switch (ROUTE_RESPONSE_KINDS[route]) {
+    case 'none':
+      return undefined as Routes[K]['response']
+    case 'binary':
+      return (await res.blob()) as Routes[K]['response']
+    default:
+      return (await res.json()) as Routes[K]['response']
   }
-}
-
-async function requestBlob(path: string, init: RequestInit): Promise<Blob> {
-  const res = await fetch(path, init)
-  if (!res.ok) {
-    let message = `HTTP ${res.status}`
-    try {
-      const body = await res.json()
-      if (body?.error) message = body.error
-    } catch {
-      // ignore non-JSON error bodies
-    }
-    throw new ApiError(res.status, message)
-  }
-  return res.blob()
 }
 
 export const api = {
-  uploadBook: async (file: File): Promise<BookSummary> => {
-    const form = new FormData()
-    form.append('file', file)
-    return request<BookSummary>('/api/books', { method: 'POST', body: form })
+  uploadBook: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return call('POST /api/books', { body })
   },
 
-  deleteBook: (id: string) => request<void>(`/api/books/${id}`, { method: 'DELETE' }),
+  deleteBook: (id: string) => call('DELETE /api/books/{id}', { path: { id } }),
 
   // Deletes every generated audio file for this book (and the DB's own
   // bookkeeping about them, across every voice it's ever been generated
@@ -85,41 +100,35 @@ export const api = {
   // chapters, speaker attribution, or voice settings - see
   // httpapi.handleDeleteBookAudio. Every paragraph reports pending again
   // afterward, so reopening the book/regenerating starts completely fresh.
-  deleteBookAudio: (id: string) => request<{ ok: boolean }>(`/api/books/${id}/audio`, { method: 'DELETE' }),
+  deleteBookAudio: (id: string) => call('DELETE /api/books/{id}/audio', { path: { id } }),
 
   // Chapter-header "Clear generation" - deleteBookAudio's single-chapter
   // counterpart, see httpapi.handleDeleteChapterAudio/store.DeleteChapterAudio.
   deleteChapterAudio: (bookId: string, chapterIdx: number) =>
-    request<{ ok: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/audio`, { method: 'DELETE' }),
+    call('DELETE /api/books/{id}/chapters/{idx}/audio', { path: { id: bookId, idx: chapterIdx } }),
 
   // Chapter-header "Re-import" - re-parses one chapter from the book's
   // stored source epub and replaces its content (httpapi.
   // handleReimportChapter). file uploads the epub too (and keeps it as the
   // stored copy); force skips the chapter-title check.
   reimportChapter: (bookId: string, chapterIdx: number, opts: { file?: File; force?: boolean } = {}) => {
-    let body: FormData | undefined
-    if (opts.file) {
-      body = new FormData()
-      body.append('file', opts.file)
-    }
-    const query = opts.force ? '?force=true' : ''
-    return request<{ ok: boolean; title: string; paragraphs: number }>(
-      `/api/books/${bookId}/chapters/${chapterIdx}/reimport${query}`,
-      { method: 'POST', body },
-    )
+    const body = new FormData()
+    if (opts.file) body.append('file', opts.file)
+    return call('POST /api/books/{id}/chapters/{idx}/reimport', {
+      path: { id: bookId, idx: chapterIdx },
+      query: { force: opts.force ? true : undefined },
+      body,
+    })
   },
 
   generateChapter: (bookId: string, idx: number) =>
-    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${idx}/generate`, { method: 'POST' }),
+    call('POST /api/books/{id}/chapters/{idx}/generate', { path: { id: bookId, idx } }),
 
   // Re-renders one already-generated paragraph from scratch (the reader
   // didn't like how it came out), not the "hasn't been generated yet"
   // path generateChapter covers.
   regenerateParagraph: (bookId: string, chapterIdx: number, paragraphIdx: number) =>
-    request<{ queued: boolean }>(
-      `/api/books/${bookId}/chapters/${chapterIdx}/paragraphs/${paragraphIdx}/regenerate`,
-      { method: 'POST' },
-    ),
+    call('POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/regenerate', { path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx } }),
 
   // Corrects one paragraph's speaker attribution directly - the per-line
   // counterpart of mergeCharacter's whole-character reassignment, used by
@@ -129,10 +138,7 @@ export const api = {
   // character"; any other name is registered as a real character if it
   // wasn't one already.
   setParagraphSpeaker: (bookId: string, chapterIdx: number, paragraphIdx: number, speaker: string) =>
-    request<{ ok: boolean }>(
-      `/api/books/${bookId}/chapters/${chapterIdx}/paragraphs/${paragraphIdx}/speaker`,
-      json('PUT', { speaker }),
-    ),
+    call('PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker', { path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx }, body: { speaker } }),
 
   // setParagraphSpeaker's own counterpart for a *description* line (a
   // narration paragraph the Describe pass tagged as describing a
@@ -144,10 +150,7 @@ export const api = {
   // `to` both mean "describes no one now"; any other name is registered as
   // a real character if it wasn't one already.
   setParagraphDescription: (bookId: string, chapterIdx: number, paragraphIdx: number, from: string, to: string) =>
-    request<{ ok: boolean }>(
-      `/api/books/${bookId}/chapters/${chapterIdx}/paragraphs/${paragraphIdx}/description`,
-      json('PUT', { from, to }),
-    ),
+    call('PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description', { path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx }, body: { from, to } }),
 
   // Marks (or unmarks) one quoted paragraph as a scare quote live - a
   // reader's own manual correction of speakerattr's ScareQuoteChapter pass.
@@ -156,30 +159,21 @@ export const api = {
   // (see httpapi.handleSetParagraphScareQuote), so it re-generates -
   // merged with its narration neighbors, if any - next time it's needed.
   setParagraphScareQuote: (bookId: string, chapterIdx: number, paragraphIdx: number, scareQuote: boolean) =>
-    request<{ ok: boolean }>(
-      `/api/books/${bookId}/chapters/${chapterIdx}/paragraphs/${paragraphIdx}/scare-quote`,
-      json('PUT', { scareQuote }),
-    ),
+    call('PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/scare-quote', { path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx }, body: { scareQuote } }),
 
   // Manually overrides one dialogue line's emotion (an id from
   // utils/emotions.ts, or '' for neutral) - see
   // httpapi.handleSetParagraphEmotion. The line's audio regenerates
   // server-side when its effective emotion changes. 400 for narration.
   setParagraphEmotion: (bookId: string, chapterIdx: number, paragraphIdx: number, emotion: string) =>
-    request<{ ok: boolean }>(
-      `/api/books/${bookId}/chapters/${chapterIdx}/paragraphs/${paragraphIdx}/emotion`,
-      json('PUT', { emotion }),
-    ),
+    call('PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion', { path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx }, body: { emotion } }),
 
   // Re-renders the emotion variant `speaker`'s lines clone from, resetting
   // this book's audio for their lines in that emotion - see
   // httpapi.handleRegenerateVariant. Fire-and-forget; the speakers topic
   // reports the new status once it renders.
   regenerateVariant: (bookId: string, speaker: string, emotion: string) =>
-    request<{ queued: boolean }>(
-      `/api/books/${bookId}/speakers/variants/regenerate`,
-      json('POST', { speaker, emotion }),
-    ),
+    call('POST /api/books/{id}/speakers/variants/regenerate', { path: { id: bookId }, body: { speaker, emotion } }),
 
   // Sound-effect (Stable Audio SFX) test surface (see backend/CLAUDE.md's
   // "SFX sound effects" section) - saves a paragraph's own text-to-audio
@@ -191,10 +185,7 @@ export const api = {
     prompt: string,
     triggerWord?: number,
   ) =>
-    request<{ ok: boolean }>(
-      `/api/books/${bookId}/chapters/${chapterIdx}/paragraphs/${paragraphIdx}/sfx-prompt`,
-      json('PUT', { prompt, triggerWord }),
-    ),
+    call('PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/sfx-prompt', { path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx }, body: { prompt, triggerWord } }),
 
   // Renders (or re-renders) one paragraph's sound effect - prompt, if
   // given, is saved first (same as calling setParagraphSFXPrompt just
@@ -211,24 +202,21 @@ export const api = {
     prompt?: string,
     durationSeconds?: number,
   ) =>
-    request<{ queued: boolean }>(
-      `/api/books/${bookId}/chapters/${chapterIdx}/paragraphs/${paragraphIdx}/generate-sfx`,
-      json('POST', { prompt, durationSeconds }),
-    ),
+    call('POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/generate-sfx', {
+      path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx },
+      body: { prompt: prompt ?? '', durationSeconds },
+    }),
 
   // Speakers page's "Retag scare quotes" - enqueues a scare-quote tagging
   // job for one chapter (fire-and-forget, 202), mirroring
   // retagDescriptions below.
   retagScareQuotes: (bookId: string, chapterIdx: number) =>
-    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/retag-scare-quotes`, { method: 'POST' }),
+    call('POST /api/books/{id}/chapters/{idx}/retag-scare-quotes', { path: { id: bookId, idx: chapterIdx } }),
 
   // Keeps some runway of generated audio ahead of (chapterIdx, paragraphIdx),
   // spanning into later chapters as needed - see jobs.Manager.EnqueueLookahead.
   lookahead: (bookId: string, chapterIdx: number, paragraphIdx: number) =>
-    request<{ queued: boolean }>(
-      `/api/books/${bookId}/lookahead`,
-      json('POST', { chapterIdx, paragraphIdx }),
-    ),
+    call('POST /api/books/{id}/lookahead', { path: { id: bookId }, body: { chapterIdx, paragraphIdx } }),
 
   // Triggers background-music tone-region scoring for one chapter -
   // attributeSpeakers/tagDirections' own exact fire-and-forget shape, see
@@ -236,7 +224,7 @@ export const api = {
   // regardless of the book-wide musicEnabled toggle (VoiceSettings) - that
   // only gates whether a scored region actually goes on to generate.
   scoreChapterMusic: (bookId: string, chapterIdx: number) =>
-    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/score-music`, { method: 'POST' }),
+    call('POST /api/books/{id}/chapters/{idx}/score-music', { path: { id: bookId, idx: chapterIdx } }),
 
   // Generates every music region in one chapter that doesn't have a clip
   // yet, retrying failed ones - see backend httpapi.handleGenerateChapterMusic.
@@ -244,23 +232,23 @@ export const api = {
   // regions went out (0 if all already have music); 409 if the chapter
   // isn't scored or its narration isn't fully generated yet.
   generateChapterMusic: (bookId: string, chapterIdx: number) =>
-    request<{ queued: number }>(`/api/books/${bookId}/chapters/${chapterIdx}/generate-music`, { method: 'POST' }),
+    call('POST /api/books/{id}/chapters/{idx}/generate-music', { path: { id: bookId, idx: chapterIdx } }),
 
   // Generates (or re-generates) one music region's own clip - the
   // annotations-view boundary marker's own "Generate"/"Regenerate"
   // button, see backend httpapi.handleRegenerateMusicRegion. Always
   // allowed regardless of the region's current status.
   regenerateMusicRegion: (regionId: string) =>
-    request<{ queued: boolean }>(`/api/music-regions/${regionId}/regenerate`, { method: 'POST' }),
+    call('POST /api/music-regions/{id}/regenerate', { path: { id: regionId } }),
 
-  updateVoice: (bookId: string, settings: VoiceSettings) =>
-    request<VoiceSettings>(`/api/books/${bookId}/voice`, json('PUT', settings)),
+  updateVoice: (bookId: string, settings: VoiceSettingsUpdate) =>
+    call('PUT /api/books/{id}/voice', { path: { id: bookId }, body: settings }),
 
   // Clears this book's own paragraph attribution and deletes the whole
   // series scope's character roster - identity, voice assignments, and
   // auto-created voice presets + cached clips - see
   // httpapi.handleDeleteBookSpeakerData.
-  deleteSpeakerData: (bookId: string) => request<{ ok: boolean }>(`/api/books/${bookId}/speakers`, { method: 'DELETE' }),
+  deleteSpeakerData: (bookId: string) => call('DELETE /api/books/{id}/speakers', { path: { id: bookId } }),
 
   // Enqueues LLM speaker attribution for one chapter (503 if the backend
   // has no SPEAKER_LLM_MODEL_PATH configured) - registers any
@@ -273,18 +261,14 @@ export const api = {
   // Progress/completion is observed via useAttributingChapters (the live
   // jobs topic), not this call's own response.
   attributeSpeakers: (bookId: string, chapterIdx: number) =>
-    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/attribute-speakers`, {
-      method: 'POST',
-    }),
+    call('POST /api/books/{id}/chapters/{idx}/attribute-speakers', { path: { id: bookId, idx: chapterIdx } }),
 
   // Enqueues a description-tagging job for one chapter (503 if the backend
   // has no SPEAKER_LLM_MODEL_PATH configured) - fire-and-forget like
   // attributeSpeakers; the job waits on the chapter's scare-quote tagging
   // first. See httpapi.handleRetagDescriptions.
   retagDescriptions: (bookId: string, chapterIdx: number) =>
-    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/retag-descriptions`, {
-      method: 'POST',
-    }),
+    call('POST /api/books/{id}/chapters/{idx}/retag-descriptions', { path: { id: bookId, idx: chapterIdx } }),
 
   // Enqueues emotion labeling (each dialogue line gets an emotion from
   // utils/emotions.ts, or stays neutral) for one chapter - fire-and-forget,
@@ -294,18 +278,14 @@ export const api = {
   // configured - see httpapi.handleTagDirections. Progress/completion is observed the same
   // way attribution's is (GET /api/jobs), not this call's own response.
   tagDirections: (bookId: string, chapterIdx: number) =>
-    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/tag-directions`, {
-      method: 'POST',
-    }),
+    call('POST /api/books/{id}/chapters/{idx}/tag-directions', { path: { id: bookId, idx: chapterIdx } }),
 
   // Enqueues pronunciation resolution (ambiguous abbreviations like "Dr." ->
   // "Doctor") for one chapter - fire-and-forget, same {queued} shape as
   // tagDirections. 503 without SPEAKER_LLM_MODEL_PATH - see
   // httpapi.handleResolvePronunciation.
   resolvePronunciation: (bookId: string, chapterIdx: number) =>
-    request<{ queued: boolean }>(`/api/books/${bookId}/chapters/${chapterIdx}/resolve-pronunciation`, {
-      method: 'POST',
-    }),
+    call('POST /api/books/{id}/chapters/{idx}/resolve-pronunciation', { path: { id: bookId, idx: chapterIdx } }),
 
   // Kicks off the whole-book meta-task: attribution, then characterization,
   // then voice provisioning, then direction-tagging, for every chapter/
@@ -317,8 +297,7 @@ export const api = {
   // httpapi.handlePreprocessBook. Progress is observable via
   // BookSummary.preprocessing (the books topic) and the jobs topic, same
   // as the individual buttons.
-  preprocessBook: (bookId: string) =>
-    request<{ queued: boolean }>(`/api/books/${bookId}/preprocess`, { method: 'POST' }),
+  preprocessBook: (bookId: string) => call('POST /api/books/{id}/preprocess', { path: { id: bookId } }),
 
   // Enqueues background TTS generation for every chapter in the book at
   // once - the library page's hover "Generate audio" button. Fire-and-
@@ -326,7 +305,7 @@ export const api = {
   // httpapi.handleGenerateBook. Idempotent: safe to call again while a
   // previous call is still generating, or on a book that's already fully
   // generated (each chapter's own enqueue is a no-op once ready).
-  generateBook: (bookId: string) => request<{ queued: boolean }>(`/api/books/${bookId}/generate`, { method: 'POST' }),
+  generateBook: (bookId: string) => call('POST /api/books/{id}/generate', { path: { id: bookId } }),
 
   // "Remaining" option alongside generateBook's "All": enqueues background
   // TTS generation for every paragraph from the book's current stored
@@ -334,8 +313,7 @@ export const api = {
   // chapter 0 - see httpapi.handleGenerateRemaining. Same fire-and-forget
   // {queued} shape; no body needed, position is read server-side from the
   // book itself.
-  generateRemaining: (bookId: string) =>
-    request<{ queued: boolean }>(`/api/books/${bookId}/generate-remaining`, { method: 'POST' }),
+  generateRemaining: (bookId: string) => call('POST /api/books/{id}/generate-remaining', { path: { id: bookId } }),
 
   // One whole-book Speakers-page action, queued server-side as a single
   // cancelable Jobs row ("pipeline_bulk_<action>") wrapping every
@@ -343,30 +321,30 @@ export const api = {
   // httpapi.handleBulkAction. scope "rest" skips what's already done, "all"
   // re-runs everything. queued is how many chapters/characters it covers.
   bulkAction: (bookId: string, action: BulkAction, scope: BulkScope) =>
-    request<{ queued: number }>(`/api/books/${bookId}/bulk/${action}?scope=${scope}`, { method: 'POST' }),
+    call('POST /api/books/{id}/bulk/{action}', { path: { id: bookId, action }, query: { scope } }),
 
   // Clears one pass across the whole book as though it never ran, deleting
   // whatever generated audio it made stale - see httpapi.handleResetPass.
   // pass uses bulkAction's names ("generate" = every narration clip).
   resetPass: (bookId: string, pass: ResetPass) =>
-    request<{ invalidated: number }>(`/api/books/${bookId}/reset/${pass}`, { method: 'POST' }),
+    call('POST /api/books/{id}/reset/{pass}', { path: { id: bookId, pass } }),
 
   // Assigns (or, with "", clears) a character's own narration voice.
   setCharacterVoice: (bookId: string, characterId: string, voicePresetId: string) =>
-    request<{ ok: boolean }>(`/api/books/${bookId}/characters/${characterId}/voice`, json('PUT', { voicePresetId })),
+    call('PUT /api/books/{id}/characters/{characterId}/voice', { path: { id: bookId, characterId }, body: { voicePresetId } }),
 
   // Marks (or unmarks) a character as not a real speaker, so attribution
   // stops creating/assigning the name - non-destructive: their current
   // lines, summary, and voice stay as they are. Auto Split sets this too.
   // See httpapi.handleSetCharacterInvalid.
   setCharacterInvalid: (bookId: string, characterId: string, invalid: boolean) =>
-    request<{ ok: boolean }>(`/api/books/${bookId}/characters/${characterId}/invalid`, json('PUT', { invalid })),
+    call('PUT /api/books/{id}/characters/{characterId}/invalid', { path: { id: bookId, characterId }, body: { invalid } }),
 
   // Replaces one character's aliases - see Speaker.aliases. 400 for a
   // group ("Bert and Sid") or non-name, 409 for another character's name
   // or alias (merge them instead).
   setCharacterAliases: (bookId: string, characterId: string, aliases: string[]) =>
-    request<{ aliases: string[] }>(`/api/books/${bookId}/characters/${characterId}/aliases`, json('PUT', { aliases })),
+    call('PUT /api/books/{id}/characters/{characterId}/aliases', { path: { id: bookId, characterId }, body: { aliases } }),
 
   // Removes one character entirely - this book's own paragraphs
   // attributed to them revert to Unknown (still real dialogue, just no
@@ -375,14 +353,14 @@ export const api = {
   // voice presets are deleted for their whole series scope - see
   // httpapi.handleDeleteCharacter.
   deleteCharacter: (bookId: string, characterId: string) =>
-    request<{ ok: boolean }>(`/api/books/${bookId}/characters/${characterId}`, { method: 'DELETE' }),
+    call('DELETE /api/books/{id}/characters/{characterId}', { path: { id: bookId, characterId } }),
 
   // Folds one character into another (or into "Narrator") - this book's
   // own paragraphs attributed to them are reattributed to targetName
   // instead of blanked, and their own identity/voice/presets are deleted
   // for their whole series scope - see httpapi.handleMergeCharacter.
   mergeCharacter: (bookId: string, characterId: string, targetName: string) =>
-    request<{ ok: boolean }>(`/api/books/${bookId}/characters/${characterId}/merge`, json('POST', { targetName })),
+    call('POST /api/books/{id}/characters/{characterId}/merge', { path: { id: bookId, characterId }, body: { targetName } }),
 
   // "Auto Split": for a speaker believed not to be a real, distinct
   // individual (a false-positive character attribution, or the literal
@@ -404,27 +382,21 @@ export const api = {
   // empty - a reader can follow up with deleteCharacter once they see
   // the row is actually empty.
   reattributeSpeaker: (bookId: string, name: string) =>
-    request<{ queued: number }>(`/api/books/${bookId}/speakers/reattribute`, json('POST', { name })),
+    call('POST /api/books/{id}/speakers/reattribute', { path: { id: bookId }, body: { name } }),
 
   // Force-provisions a voice for one character right now instead of
   // waiting for the lazy path to trigger it at generation time - see
   // httpapi.handleGenerateCharacterVoice. 409 if there still isn't enough
   // attributed dialogue to characterize them from yet.
   generateCharacterVoice: (bookId: string, characterId: string) =>
-    request<{ voicePresetId: string; audioUrl: string }>(
-      `/api/books/${bookId}/characters/${characterId}/generate-voice`,
-      { method: 'POST' },
-    ),
+    call('POST /api/books/{id}/characters/{characterId}/generate-voice', { path: { id: bookId, characterId } }),
 
   // Batch-forces a fresh reference-clip render for every given character
   // id in one request - fire-and-forget (202, no per-character result) via
   // httpapi.handleRegenerateCharacterVoices, regardless of whether a
   // character already has a cached voice.
   regenerateCharacterVoices: (bookId: string, characterIds: string[]) =>
-    request<{ queued: number }>(
-      `/api/books/${bookId}/characters/regenerate-voice`,
-      json('POST', { characterIds }),
-    ),
+    call('POST /api/books/{id}/characters/regenerate-voice', { path: { id: bookId }, body: { characterIds } }),
 
   // Force re-runs characterization for one character (503 if the backend
   // has no SPEAKER_LLM_MODEL_PATH configured), even if it's already been
@@ -433,35 +405,32 @@ export const api = {
   // book's own resolved clone model's assigned voice preset for the
   // character, if any - see httpapi.handleCharacterizeSpeaker.
   characterizeSpeaker: (bookId: string, characterId: string) =>
-    request<{ summary: string; voiceInvalidated: boolean }>(
-      `/api/books/${bookId}/characters/${characterId}/characterize`,
-      { method: 'POST' },
-    ),
+    call('POST /api/books/{id}/characters/{characterId}/characterize', { path: { id: bookId, characterId } }),
 
-  getPosition: (bookId: string) => request<Position>(`/api/books/${bookId}/position`),
+  getPosition: (bookId: string) => call('GET /api/books/{id}/position', { path: { id: bookId } }),
 
   updatePosition: (bookId: string, position: Position) =>
-    request<void>(`/api/books/${bookId}/position`, json('PUT', position)),
+    call('PUT /api/books/{id}/position', { path: { id: bookId }, body: position }),
 
   searchBook: (bookId: string, q: string) =>
-    request<SearchResult[]>(`/api/books/${bookId}/search?q=${encodeURIComponent(q)}`),
+    call('GET /api/books/{id}/search', { path: { id: bookId }, query: { q } }),
 
   // Flags (chapterIdx, paragraphIdx) as bookmarked, or updates its note if
   // it already is - see backend Store.UpsertBookmark.
   createBookmark: (bookId: string, chapterIdx: number, paragraphIdx: number, note = '') =>
-    request<{ id: string }>(`/api/books/${bookId}/bookmarks`, json('POST', { chapterIdx, paragraphIdx, note })),
+    call('POST /api/books/{id}/bookmarks', { path: { id: bookId }, body: { chapterIdx, paragraphIdx, note } }),
 
   updateBookmarkNote: (id: string, note: string) =>
-    request<{ ok: boolean }>(`/api/bookmarks/${id}`, json('PUT', { note })),
+    call('PUT /api/bookmarks/{id}', { path: { id }, body: { note } }),
 
-  deleteBookmark: (id: string) => request<void>(`/api/bookmarks/${id}`, { method: 'DELETE' }),
+  deleteBookmark: (id: string) => call('DELETE /api/bookmarks/{id}', { path: { id } }),
 
   // Cancels one job-queue task by id (QueueTask.id) - see
   // httpapi.handleCancelJob. encodeURIComponent since an LLM-kind task's id
   // carries a ":" (e.g. "attr:<chapterId>") - harmless unescaped in a path
   // segment, but escaping it is the correct general habit regardless of
   // which ids happen to need it today.
-  cancelJob: (id: string) => request<{ canceled: boolean }>(`/api/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  cancelJob: (id: string) => call('DELETE /api/jobs/{id}', { path: { id } }),
 
   // Raises one job-queue task's own priority tier - see
   // httpapi.handleSetJobTier/jobs.Manager.PromoteTier. Upgrade only: the
@@ -470,45 +439,42 @@ export const api = {
   // the Jobs dashboard's own priority menu only ever offers tiers more
   // urgent than a row's current one for exactly that reason (see
   // JobsPage's own TIER_ORDER/upgradeOptions).
-  setJobTier: (id: string, tier: QueueTask['tier']) =>
-    request<{ promoted: boolean }>(`/api/jobs/${encodeURIComponent(id)}/tier`, json('PUT', { tier })),
+  setJobTier: (id: string, tier: JobTier) =>
+    call('PUT /api/jobs/{id}/tier', { path: { id }, body: { tier } }),
 
   // Cancels every queued and in-flight task at once - see
   // httpapi.handleCancelAllJobs.
-  cancelAllJobs: () => request<{ canceled: number }>('/api/jobs', { method: 'DELETE' }),
+  cancelAllJobs: () => call('DELETE /api/jobs'),
 
   // Stops the queue from dispatching any *new* task - see
   // httpapi.handlePauseJobs. Not a cancel: whatever's already in flight
   // keeps running to completion.
-  pauseJobs: () => request<{ paused: boolean }>('/api/jobs/pause', { method: 'POST' }),
+  pauseJobs: () => call('POST /api/jobs/pause'),
 
   // Undoes pauseJobs - see httpapi.handleResumeJobs.
-  resumeJobs: () => request<{ paused: boolean }>('/api/jobs/resume', { method: 'POST' }),
+  resumeJobs: () => call('POST /api/jobs/resume'),
 
   // Forces an immediate ttsworker restart - see httpapi.handleRestartWorker.
   // Blocks until the new worker is confirmed healthy, so this can take a
   // few seconds.
-  restartWorker: () => request<{ restarted: boolean }>('/api/jobs/restart-worker', { method: 'POST' }),
+  restartWorker: () => call('POST /api/jobs/restart-worker'),
 
-  voiceLanguages: () => request<{ languages: string[] }>('/api/voices/languages'),
+  voiceLanguages: () => call('GET /api/voices/languages'),
 
-  updateDefaultVoice: (settings: VoiceSettings) => request<VoiceSettings>('/api/voices/default', json('PUT', settings)),
+  updateDefaultVoice: (settings: VoiceSettingsUpdate) => call('PUT /api/voices/default', { body: settings }),
 
-  createCustomVoicePreset: (input: CustomVoicePresetInput) =>
-    request<CustomVoicePreset>('/api/voices/custom-presets', json('POST', input)),
+  createCustomVoicePreset: (input: CustomVoicePresetInput) => call('POST /api/voices/custom-presets', { body: input }),
 
   updateCustomVoicePreset: (id: string, input: CustomVoicePresetInput) =>
-    request<CustomVoicePreset>(`/api/voices/custom-presets/${id}`, json('PUT', input)),
+    call('PUT /api/voices/custom-presets/{id}', { path: { id }, body: input }),
 
-  deleteCustomVoicePreset: (id: string) =>
-    request<void>(`/api/voices/custom-presets/${id}`, { method: 'DELETE' }),
+  deleteCustomVoicePreset: (id: string) => call('DELETE /api/voices/custom-presets/{id}', { path: { id } }),
 
   // Force re-renders a preset's reference clip from its currently-saved
   // recipe, without changing any saved fields - see
   // httpapi.handleRegenerateCustomVoicePreset. Useful to retry after a
   // refError, or just to pick up a fresh render.
-  regenerateCustomVoicePreset: (id: string) =>
-    request<CustomVoicePreset>(`/api/voices/custom-presets/${id}/regenerate`, { method: 'POST' }),
+  regenerateCustomVoicePreset: (id: string) => call('POST /api/voices/custom-presets/{id}/regenerate', { path: { id } }),
 
   // Synthesizes arbitrary text with an existing custom preset's actual
   // saved voice, for previewing in the editor. Returns a playable blob
@@ -516,15 +482,15 @@ export const api = {
   // is which clone model to preview through (a voice has none of its own);
   // omitted, the backend uses the default clone model new books get.
   testCustomVoicePreset: (id: string, text: string, cloneModel?: string, temperature?: number) =>
-    requestBlob(`/api/voices/custom-presets/${id}/test`, json('POST', { text, cloneModel, temperature })),
+    call('POST /api/voices/custom-presets/{id}/test', { path: { id }, body: { text, cloneModel, temperature } }),
 
   // Same, for a curated built-in preset.
   testPreset: (id: string, text: string, cloneModel?: string, temperature?: number) =>
-    requestBlob(`/api/voices/presets/${id}/test`, json('POST', { text, cloneModel, temperature })),
+    call('POST /api/voices/presets/{id}/test', { path: { id }, body: { text, cloneModel, temperature } }),
 
   // Force re-renders a built-in preset's reference clip from its fixed,
   // compiled-in recipe - see httpapi.handleRegeneratePreset.
-  regeneratePreset: (id: string) => request<VoicePreset>(`/api/voices/presets/${id}/regenerate`, { method: 'POST' }),
+  regeneratePreset: (id: string) => call('POST /api/voices/presets/{id}/regenerate', { path: { id } }),
 
   // Previews a voice design directly (no preset id at all) - the only way
   // to hear an instruct before it's been saved. Passing seed lets the
@@ -542,7 +508,7 @@ export const api = {
     guidanceScale?: number,
     temperature?: number,
   ) =>
-    requestBlob('/api/voices/design-test', json('POST', { instruct, text, seed, designModel, guidanceScale, temperature })),
+    call('POST /api/voices/design-test', { body: { instruct, text, seed, designModel, guidanceScale, temperature } }),
 
   // Standalone sound-effect/music test (the SFX page) - stateless, not
   // attached to any book/paragraph; one endpoint for every generation-only
@@ -550,12 +516,12 @@ export const api = {
   // if omitted) - see httpapi.handleGenerateSFX. Every field but prompt is
   // optional and defers to that engine's own built-in default when
   // omitted.
-  testSFX: (opts: SFXTestOptions) => requestBlob('/api/sfx/generate', json('POST', opts)),
+  testSFX: (opts: GenerateSFXRequest) => call('POST /api/sfx/generate', { body: opts }),
 
   // Standalone raw system+user prompt test against this app's own
   // embedded speaker-attribution GGUF model - stateless, no
   // speakerattr-specific framing; see httpapi.handleTestLLM.
-  testLLM: (opts: LLMTestOptions) => request<{ text: string }>('/api/llm/test', json('POST', opts)),
+  testLLM: (opts: TestLLMRequest) => call('POST /api/llm/test', { body: opts }),
 
   // Previews "instructed voice cloning" - clones baseId's own already-
   // rendered reference clip while applying instruct as a clone-time style
@@ -569,7 +535,7 @@ export const api = {
   // one preview call, letting a reader experiment with adherence strength
   // live - see httpapi.handleTestCloneInstruct.
   testCloneInstruct: (baseId: string, instruct: string, text: string, cloneModel?: string, guidanceScale?: string) =>
-    requestBlob('/api/voices/clone-instruct-test', json('POST', { baseId, instruct, text, cloneModel, guidanceScale })),
+    call('POST /api/voices/clone-instruct-test', { body: { baseId, instruct, text, cloneModel, guidanceScale } }),
 }
 
 export { ApiError }

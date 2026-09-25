@@ -116,7 +116,7 @@ class OfflineReconciler @Inject constructor(
         val rows = chapterDao.forBook(libraryId, bookId).filter { it.status == DownloadStatus.COMPLETE }
         if (rows.isEmpty()) return
         val manifest = try {
-            api.getBookManifest(bookId, rows.joinToString(",") { it.chapterIdx.toString() })
+            api.bookManifest(bookId, rows.joinToString(",") { it.chapterIdx.toString() })
         } catch (e: HttpException) {
             // Never deletes on a 404 here - listBooks above is the only authority on a book
             // being gone (next pass catches one deleted just now), and a backend too old to

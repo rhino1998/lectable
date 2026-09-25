@@ -32,12 +32,12 @@ type musicRegionDTO struct {
 	Prompt string `json:"prompt"`
 	// Ambience is the region's ambient-soundscape prompt
 	// (store.MusicRegion.Ambience), mixed under the music - "" for none.
-	Ambience        string  `json:"ambience,omitempty"`
-	Transition      string  `json:"transition"` // "cut" or "continuation" - see store.MusicTransition
-	Status          string  `json:"status"`
-	Error           string  `json:"error,omitempty"`
-	DurationSeconds float64 `json:"durationSeconds"`
-	AudioURL        string  `json:"audioUrl,omitempty"`
+	Ambience        string      `json:"ambience,omitempty"`
+	Transition      string      `json:"transition" tstype:"'cut' | 'continuation'"` // "cut" or "continuation" - see store.MusicTransition
+	Status          audioStatus `json:"status"`
+	Error           string      `json:"error,omitempty"`
+	DurationSeconds float64     `json:"durationSeconds"`
+	AudioURL        string      `json:"audioUrl,omitempty"`
 }
 
 type chapterMusicDTO struct {
@@ -55,7 +55,7 @@ func musicRegionDTOFrom(r store.MusicRegion) musicRegionDTO {
 		Prompt:          r.Prompt,
 		Ambience:        r.Ambience,
 		Transition:      string(r.Transition),
-		Status:          r.Status,
+		Status:          audioStatus(r.Status),
 		Error:           r.Error,
 		DurationSeconds: r.DurationSeconds,
 	}
@@ -77,27 +77,28 @@ func (s *Server) handleGetChapterMusic(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid chapter index")
 		return
 	}
-	writeBuilt(w)(s.buildChapterMusic(r.PathValue("id"), idx))
+	v, err := s.buildChapterMusic(r.PathValue("id"), idx)
+	writeBuilt(w, v, err)
 }
 
-func (s *Server) buildChapterMusic(bookID string, chapterIdx int) (any, error) {
+func (s *Server) buildChapterMusic(bookID string, chapterIdx int) (chapterMusicDTO, error) {
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterMusicDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if book == nil {
-		return nil, httpError(http.StatusNotFound, "book not found")
+		return chapterMusicDTO{}, httpError(http.StatusNotFound, "book not found")
 	}
 	ch, err := s.Store.GetChapterByIdx(bookID, chapterIdx)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterMusicDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	if ch == nil {
-		return nil, httpError(http.StatusNotFound, "chapter not found")
+		return chapterMusicDTO{}, httpError(http.StatusNotFound, "chapter not found")
 	}
 	regions, err := s.Store.ListMusicRegions(ch.ID)
 	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
+		return chapterMusicDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	dto := chapterMusicDTO{Enabled: book.MusicEnabled, Scored: ch.Passes.Music, Regions: make([]musicRegionDTO, len(regions))}
 	for i, region := range regions {
@@ -161,7 +162,7 @@ func (s *Server) handleScoreChapterMusic(w http.ResponseWriter, r *http.Request)
 	s.Jobs.EnqueueMusicScoring(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
 		return s.scoreChapterMusic(ctx, book, ch)
 	})
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handleGenerateChapterMusic queues the whole-chapter music run for one
@@ -198,7 +199,7 @@ func (s *Server) handleGenerateChapterMusic(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]int{"queued": queued})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
 }
 
 // musicTransitionFromString maps a speakerattr.MusicRegionResult's own
@@ -471,5 +472,5 @@ func (s *Server) handleRegenerateMusicRegion(w http.ResponseWriter, r *http.Requ
 
 	s.Jobs.MaybeAdvanceChapterMusic(ch.BookID, ch.ID)
 	_ = s.Jobs.PromoteTier("music_gen:"+ch.ID, jobs.TierUrgent) // best-effort - a no-op if not queued yet
-	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }

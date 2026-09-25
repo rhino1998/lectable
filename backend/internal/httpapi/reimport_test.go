@@ -64,7 +64,7 @@ func postEpub(t *testing.T, url string, epub []byte) *http.Response {
 	return resp
 }
 
-func errorCode(t *testing.T, resp *http.Response) string {
+func respErrorCode(t *testing.T, resp *http.Response) string {
 	t.Helper()
 	defer resp.Body.Close()
 	var body struct{ Code string }
@@ -147,7 +147,7 @@ func TestReimportChapter(t *testing.T) {
 
 	retitled := testEpub(t, `<h1>One</h1><p>a</p>`, `<h1>Deux</h1><p>b</p>`)
 	resp = postEpub(t, ts.URL+"/api/books/"+book.ID+"/chapters/1/reimport", retitled)
-	if resp.StatusCode != http.StatusConflict || errorCode(t, resp) != "title_mismatch" {
+	if resp.StatusCode != http.StatusConflict || respErrorCode(t, resp) != "title_mismatch" {
 		t.Fatalf("want 409 title_mismatch, got %d", resp.StatusCode)
 	}
 	resp, _ = http.Post(ts.URL+"/api/books/"+book.ID+"/chapters/1/reimport?force=true", "", nil)
@@ -161,7 +161,7 @@ func TestReimportChapter(t *testing.T) {
 
 	os.Remove(audiopath.SourceEpubFile(srv.DataDir, book.ID))
 	resp, _ = http.Post(ts.URL+"/api/books/"+book.ID+"/chapters/1/reimport", "", nil)
-	if resp.StatusCode != http.StatusConflict || errorCode(t, resp) != "no_source_epub" {
+	if resp.StatusCode != http.StatusConflict || respErrorCode(t, resp) != "no_source_epub" {
 		t.Fatalf("want 409 no_source_epub, got %d", resp.StatusCode)
 	}
 }
