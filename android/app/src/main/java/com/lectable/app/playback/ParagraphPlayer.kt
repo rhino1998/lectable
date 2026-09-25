@@ -55,8 +55,11 @@ data class SleepTimerState(
     val remainingSeconds: Int = 0,
 )
 
-/** How many upcoming paragraph clips [ParagraphPlayer] keeps queued behind the current one. */
-private const val QUEUED_CLIPS = 3
+/** How much upcoming audio (media seconds) [ParagraphPlayer] keeps queued behind the current clip. */
+private const val QUEUE_AHEAD_SECONDS = 30.0
+
+/** Cap on queued clips, whatever their durations. */
+private const val MAX_QUEUED_CLIPS = 20
 
 /**
  * Owns one ExoPlayer instance and advances through a book's paragraphs one
@@ -464,7 +467,7 @@ class ParagraphPlayer @Inject constructor(
     }
 
     /**
-     * Queues the next [QUEUED_CLIPS] paragraphs' clips behind the current one, so ExoPlayer opens
+     * Queues the next [QUEUE_AHEAD_SECONDS] of paragraph clips behind the current one, so ExoPlayer opens
      * and buffers them while the current one plays and moves straight on at each boundary.
      * Loading each clip only once the previous one had ended left an audible gap at every
      * paragraph - an Ogg Opus clip takes several round trips to open (headers, then a seek to the
@@ -472,6 +475,8 @@ class ParagraphPlayer @Inject constructor(
      * is read to its end by the audio renderer within milliseconds of becoming current - before
      * [onQueuedClipStarted] could queue its successor - and a renderer that hits the end of the
      * playlist has to tear down and rebuild its AudioTrack, clipping the next clip's start.
+     * Measured in audio rather than a clip count because the renderer reads as far ahead as the
+     * AudioTrack buffer holds, which at 5x is several seconds of media - three short clips.
      * Idempotent: keeps whatever prefix of the queue is already correct.
      */
     private fun queueNextClip() {
@@ -479,11 +484,14 @@ class ParagraphPlayer @Inject constructor(
         val wanted = mutableListOf<MediaItem>()
         var from = loadedTarget
         var url = loadedAudioUrl
-        while (from != null && url != null && wanted.size < QUEUED_CLIPS) {
+        var queuedSeconds = 0.0
+        while (from != null && url != null && queuedSeconds < QUEUE_AHEAD_SECONDS && wanted.size < MAX_QUEUED_CLIPS) {
             val next = clipStartAfter(from, url) ?: break
             wanted += mediaItemFor(next.first, next.second) ?: break
+            val paragraph = chapters[next.first]?.paragraphs?.getOrNull(next.second)
+            queuedSeconds += paragraph?.durationSeconds ?: 0.0
             from = next
-            url = chapters[next.first]?.paragraphs?.getOrNull(next.second)?.audioUrl
+            url = paragraph?.audioUrl
         }
         val firstQueued = player.currentMediaItemIndex + 1
         var keep = 0
