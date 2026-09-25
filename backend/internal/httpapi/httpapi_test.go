@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
@@ -558,6 +560,90 @@ func TestUpdateCustomVoicePresetSyncsCharacterSummary(t *testing.T) {
 	}
 	if summary, refLine := summaryOf(); summary != "llm prompt" || refLine != "llm line" {
 		t.Fatalf("expected a name-only edit to leave summary/refLine alone, got %q / %q", summary, refLine)
+	}
+}
+
+// TestUpdateCustomVoicePresetInvalidatesStaleAudio: saving a preset re-renders
+// its reference clip, so audio cloned from the old clip is dropped - but only
+// when a field feeding the clip changed. A seed-only edit keeps the voice_id
+// (instruct unchanged), so without this the stale lines kept playing.
+func TestUpdateCustomVoicePresetInvalidatesStaleAudio(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	bookID := createTestBook(t, s, "", 0, "Alice said hello.")
+	book, err := s.GetBook(bookID)
+	if err != nil || book == nil {
+		t.Fatalf("GetBook: %v", err)
+	}
+	char, _, err := s.UpsertCharacter(store.SeriesScope(book), "Alice", false)
+	if err != nil {
+		t.Fatalf("UpsertCharacter: %v", err)
+	}
+	preset, err := s.CreateVoicePreset("Alice", "a prompt", "a line", 1, 1.0, "")
+	if err != nil {
+		t.Fatalf("CreateVoicePreset: %v", err)
+	}
+	if err := s.SetCharacterVoice(char.ID, book.CloneModel, preset.ID); err != nil {
+		t.Fatalf("SetCharacterVoice: %v", err)
+	}
+	chapters, err := s.ListChapterSummaries(bookID, "", nil)
+	if err != nil || len(chapters) == 0 {
+		t.Fatalf("ListChapterSummaries: %v", err)
+	}
+	chapterID := chapters[0].ID
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil || len(paragraphs) == 0 {
+		t.Fatalf("ListParagraphsRaw: %v", err)
+	}
+	para := paragraphs[0]
+	voiceID := store.VoiceID(preset.ID, preset.Instruct, book.VoiceLanguage)
+	clip := audiopath.ParagraphFile(srv.DataDir, bookID, chapterID, voiceID, para.Idx)
+	narrate := func() {
+		t.Helper()
+		if err := audiopath.EnsureVoiceDir(srv.DataDir, bookID, chapterID, voiceID); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(clip, []byte("clip"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetParagraphReady(para.ID, voiceID, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ready := func() bool {
+		t.Helper()
+		status, err := s.GetParagraphAudioStatus(para.ID, voiceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, statErr := os.Stat(clip)
+		if (status == store.AudioReady) != (statErr == nil) {
+			t.Fatalf("row status %q and file (stat err %v) disagree", status, statErr)
+		}
+		return status == store.AudioReady
+	}
+	put := func(req customVoicePresetRequest) {
+		t.Helper()
+		var got struct {
+			RefError string `json:"refError"`
+		}
+		if resp := doJSON(t, http.MethodPut, ts.URL+"/api/voices/custom-presets/"+preset.ID, req, &got); resp.StatusCode != http.StatusOK {
+			t.Fatalf("PUT custom preset: status %d", resp.StatusCode)
+		}
+		if got.RefError != "" {
+			t.Fatalf("reference clip render failed: %s", got.RefError)
+		}
+	}
+
+	narrate()
+	put(customVoicePresetRequest{Name: "Alice (renamed)", Instruct: "a prompt", RefText: "a line"})
+	if !ready() {
+		t.Fatal("a name-only edit dropped audio its unchanged recipe still matches")
+	}
+
+	seed := 2
+	put(customVoicePresetRequest{Name: "Alice (renamed)", Instruct: "a prompt", RefText: "a line", Seed: &seed})
+	if ready() {
+		t.Fatal("audio cloned from the old reference clip survived a seed change")
 	}
 }
 

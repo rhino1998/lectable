@@ -684,6 +684,18 @@ func (s *Server) handleUpdateCustomVoicePreset(w http.ResponseWriter, r *http.Re
 	// "Regenerate" click for the same preset correctly join into one queued
 	// render instead of racing.
 	_, refErr := s.regenerateVoiceRef(r.Context(), p.ID, p.Name, p.Instruct, p.Seed, p.RefText, p.SpeedMultiplier, p.DesignModel)
+	// Audio cloned from the old clip is stale once a new one exists - drop
+	// it, as handleRegenerateCustomVoicePreset does. It's keyed by the old
+	// recipe's voice_id: with the instruct unchanged (a seed, refText,
+	// speed or design-model edit) that's the same voice_id paragraphs
+	// still resolve to, so without this it would keep playing; with it
+	// changed, the old audio is merely orphaned. A name-only edit renders
+	// the same recipe, so its audio stays.
+	clipChanged := req.Instruct != existing.Instruct || req.RefText != existing.RefText ||
+		seedVal != existing.Seed || speedVal != existing.SpeedMultiplier || designModelVal != existing.DesignModel
+	if refErr == nil && clipChanged {
+		s.invalidateAudioForVoicePreset(*existing)
+	}
 	writeJSON(w, http.StatusOK, voicePresetDTO(p, refErr))
 }
 
