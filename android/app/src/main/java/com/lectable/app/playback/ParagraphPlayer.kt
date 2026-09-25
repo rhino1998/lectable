@@ -16,7 +16,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import com.lectable.app.data.remote.MediaUrlResolver
-import com.lectable.app.data.remote.dto.AudioStatus
+import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.repository.DownloadRepository
 import com.lectable.app.data.settings.PlaybackSettingsRepository
@@ -173,6 +173,10 @@ class ParagraphPlayer @Inject constructor(
                 if (playbackState == Player.STATE_ENDED) advanceToNext()
             }
 
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && mediaItem != null) onQueuedClipStarted(mediaItem)
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _state.update { it.copy(isPlaying = isPlaying) }
                 // Promotes PlaybackService to a foreground service the moment audio actually
@@ -236,6 +240,8 @@ class ParagraphPlayer @Inject constructor(
         val target = pendingTarget
         if (target != null && target.first == chapter.idx) {
             playParagraph(target.first, target.second)
+        } else if (loadedTarget != null) {
+            queueNextClip()
         }
     }
 
@@ -244,6 +250,10 @@ class ParagraphPlayer @Inject constructor(
         pendingTarget = null
         loadedTarget = null
         loadedAudioUrl = null
+        // A clip queued behind the current one belongs to the data just dropped.
+        if (player.mediaItemCount > player.currentMediaItemIndex + 1) {
+            player.removeMediaItems(player.currentMediaItemIndex + 1, player.mediaItemCount)
+        }
     }
 
     fun playFrom(chapterIdx: Int, paragraphIdx: Int, startSeconds: Double = 0.0) {
@@ -324,7 +334,7 @@ class ParagraphPlayer @Inject constructor(
             onNeedChapter?.invoke(chapterIdx)
             return
         }
-        if (paragraph.audioStatus != AudioStatus.READY || paragraph.audioUrl == null) {
+        if (paragraph.audioStatus != AudioStatuses.READY || paragraph.audioUrl == null) {
             // Not generated yet - park here; setChapter() re-attempts once fresh data reports
             // this paragraph ready. [chapters] is this app-scoped singleton's own cache, decoupled
             // from whichever ReaderViewModel is currently alive: a chapter can sit in here stale
@@ -384,10 +394,36 @@ class ParagraphPlayer @Inject constructor(
         // voice and still matches this paragraph's current audio - the whole point of offline downloads (see DownloadRepository). ExoPlayer
         // accepts a file:// Uri identically to an http:// one, so this is the only call site
         // that needs to know about local downloads at all.
+        val mediaItem = mediaItemFor(chapterIdx, paragraphIdx) ?: return
+        player.setMediaItem(mediaItem)
+        player.playbackParameters = PlaybackParameters(_state.value.playbackSpeed)
+        player.prepare()
+        if (seekTarget > 0) player.seekTo((seekTarget * 1000).toLong())
+        player.playWhenReady = true
+        loadedTarget = chapterIdx to paragraphIdx
+        loadedAudioUrl = paragraph.audioUrl
+        _state.update { it.copy(chapterIdx = chapterIdx, paragraphIdx = paragraphIdx) }
+        queueNextClip()
+    }
+
+    /**
+     * The player item for one paragraph's clip, or null if it has none to play. [MediaItem.mediaId]
+     * records which paragraph and clip it is ("<chapterIdx>:<paragraphIdx>:<audioUrl>") so
+     * [onQueuedClipStarted] can tell whether a clip queued ahead of time is still current.
+     */
+    private fun mediaItemFor(chapterIdx: Int, paragraphIdx: Int): MediaItem? {
+        val chapter = chapters[chapterIdx] ?: return null
+        val paragraph = chapter.paragraphs.getOrNull(paragraphIdx) ?: return null
+        val audioUrl = paragraph.audioUrl ?: return null
+        // Prefer a downloaded local copy over streaming, if one exists for the book's current
+        // voice and still matches this paragraph's current audio - the whole point of offline downloads (see DownloadRepository). ExoPlayer
+        // accepts a file:// Uri identically to an http:// one, so this is the only call site
+        // that needs to know about local downloads at all.
         val localFile = bookId?.let { id -> voiceKey?.let { key -> downloadRepository.localAudioFile(id, chapterIdx, key, paragraph) } }
-        val uri = localFile?.let(Uri::fromFile) ?: mediaUrlResolver.resolve(paragraph.audioUrl)?.let(Uri::parse) ?: return
-        val mediaItem = MediaItem.Builder()
+        val uri = localFile?.let(Uri::fromFile) ?: mediaUrlResolver.resolve(audioUrl)?.let(Uri::parse) ?: return null
+        return MediaItem.Builder()
             .setUri(uri)
+            .setMediaId("$chapterIdx:$paragraphIdx:$audioUrl")
             // Book title/author/cover, not the current chapter or paragraph text - that's
             // what identifies *what's playing* on a lock-screen/notification media control,
             // same as any audiobook app (chapter is more like a "track position" within it).
@@ -399,14 +435,68 @@ class ParagraphPlayer @Inject constructor(
                     .build(),
             )
             .build()
-        player.setMediaItem(mediaItem)
-        player.playbackParameters = PlaybackParameters(_state.value.playbackSpeed)
-        player.prepare()
-        if (seekTarget > 0) player.seekTo((seekTarget * 1000).toLong())
-        player.playWhenReady = true
+    }
+
+    /**
+     * The paragraph whose clip plays after the loaded one: the first paragraph past the loaded
+     * clip's scare-quote merge group (whose members all share one clip), crossing into the next
+     * chapter when that's already cached. Null when it isn't ready yet or doesn't start its own
+     * clip - [advanceToNext] handles those the old way once the current clip ends.
+     */
+    private fun nextClipStart(): Pair<Int, Int>? {
+        var (chapterIdx, paragraphIdx) = loadedTarget ?: return null
+        val url = loadedAudioUrl ?: return null
+        while (true) {
+            val chapter = chapters[chapterIdx] ?: return null
+            paragraphIdx++
+            if (paragraphIdx >= chapter.paragraphs.size) {
+                chapterIdx++
+                paragraphIdx = -1
+                continue
+            }
+            val p = chapter.paragraphs[paragraphIdx]
+            if (p.audioStatus != AudioStatuses.READY || p.audioUrl == null) return null
+            if (p.audioUrl == url) continue
+            return if (p.audioPointerSeconds == 0.0) chapterIdx to paragraphIdx else null
+        }
+    }
+
+    /**
+     * Queues the next paragraph's clip behind the current one, so ExoPlayer opens and buffers it
+     * while the current one plays and moves straight on at the boundary. Loading each clip only
+     * once the previous one had ended left an audible gap at every paragraph - an Ogg Opus clip
+     * takes several round trips to open (headers, then a seek to the end for its duration).
+     * Idempotent: leaves an already-correct queue alone.
+     */
+    private fun queueNextClip() {
+        if (player.mediaItemCount == 0) return
+        val current = player.currentMediaItemIndex
+        val wanted = nextClipStart()?.let { (c, p) -> mediaItemFor(c, p) }
+        val queued = if (player.mediaItemCount > current + 1) player.getMediaItemAt(current + 1) else null
+        if (queued?.mediaId == wanted?.mediaId) return
+        if (queued != null) player.removeMediaItems(current + 1, player.mediaItemCount)
+        if (wanted != null) player.addMediaItem(wanted)
+    }
+
+    /** The player moved on to a clip [queueNextClip] queued: make it the current paragraph. */
+    private fun onQueuedClipStarted(item: MediaItem) {
+        val parts = item.mediaId.split(":", limit = 3)
+        val chapterIdx = parts.getOrNull(0)?.toIntOrNull() ?: return
+        val paragraphIdx = parts.getOrNull(1)?.toIntOrNull() ?: return
+        val audioUrl = parts.getOrNull(2)
+        player.removeMediaItems(0, player.currentMediaItemIndex)
+        val paragraph = chapters[chapterIdx]?.paragraphs?.getOrNull(paragraphIdx)
+        if (paragraph == null || paragraph.audioStatus != AudioStatuses.READY || paragraph.audioUrl != audioUrl) {
+            // Regenerated/changed since it was queued - load what's there now instead.
+            loadedTarget = null
+            loadedAudioUrl = null
+            playParagraph(chapterIdx, paragraphIdx)
+            return
+        }
         loadedTarget = chapterIdx to paragraphIdx
-        loadedAudioUrl = paragraph.audioUrl
+        loadedAudioUrl = audioUrl
         _state.update { it.copy(chapterIdx = chapterIdx, paragraphIdx = paragraphIdx) }
+        queueNextClip()
     }
 
     private fun advanceToNext() {
@@ -456,9 +546,9 @@ class ParagraphPlayer @Inject constructor(
             if (cur.chapterIdx < 0) return
             val chapter = chapters[cur.chapterIdx] ?: return
             val current = chapter.paragraphs.getOrNull(cur.paragraphIdx) ?: return
-            if (current.audioStatus != AudioStatus.READY || current.audioUrl == null) return
+            if (current.audioStatus != AudioStatuses.READY || current.audioUrl == null) return
             val next = chapter.paragraphs.getOrNull(cur.paragraphIdx + 1) ?: return
-            if (next.audioStatus != AudioStatus.READY || next.audioUrl != current.audioUrl) return
+            if (next.audioStatus != AudioStatuses.READY || next.audioUrl != current.audioUrl) return
             if (atPositionMs < (next.audioPointerSeconds * 1000).toLong()) return
             loadedTarget = cur.chapterIdx to (cur.paragraphIdx + 1)
             _state.update { it.copy(paragraphIdx = cur.paragraphIdx + 1) }

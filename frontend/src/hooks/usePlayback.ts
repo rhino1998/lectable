@@ -110,6 +110,38 @@ function advanceMergeGroup(chapter: ChapterDetail | undefined, fromIdx: number, 
   }
 }
 
+// The clip that plays after paragraph (chapterIdx, paragraphIdx)'s own: the
+// first paragraph past its scare-quote merge group (whose members all share
+// one clip - see advanceMergeGroup), crossing into the next loaded chapter.
+// Preloading paragraphIdx + 1 instead re-fetched the clip already playing
+// while inside a group, and only reached the real next clip once playback
+// got to the group's last member - often a single word, too late to buffer,
+// so the swap in handleEnded fell back to a cold load. Undefined when that
+// paragraph isn't ready, or doesn't start its own clip.
+function resolveNextClipUrl(
+  chapters: Map<number, ChapterDetail>,
+  chapterIdx: number,
+  paragraphIdx: number,
+): string | undefined {
+  const current = chapters.get(chapterIdx)?.paragraphs[paragraphIdx]
+  const currentUrl = current?.audioStatus === 'ready' ? current.audioUrl : undefined
+  let ci = chapterIdx
+  let pi = paragraphIdx + 1
+  for (;;) {
+    const chapter = chapters.get(ci)
+    if (!chapter) return undefined
+    if (pi >= chapter.paragraphs.length) {
+      ci += 1
+      pi = 0
+      continue
+    }
+    const p = chapter.paragraphs[pi]
+    if (p.audioStatus !== 'ready' || !p.audioUrl) return undefined
+    if (p.audioUrl !== currentUrl) return (p.audioPointerSeconds ?? 0) === 0 ? p.audioUrl : undefined
+    pi += 1
+  }
+}
+
 // Resolves paragraph (chapterIdx, paragraphIdx)'s ready audio URL, crossing
 // into the next loaded chapter for paragraphIdx one past the current
 // chapter's end - same "what comes next" logic 'ended' uses to advance.
@@ -212,7 +244,7 @@ export function usePlayback({
       ? currentParagraph.durationSeconds
       : duration
   const nextReadyAudioUrl = useMemo(
-    () => resolveReadyUrl(chapters, chapterIdx, paragraphIdx + 1),
+    () => resolveNextClipUrl(chapters, chapterIdx, paragraphIdx),
     [chapters, chapterIdx, paragraphIdx],
   )
 
