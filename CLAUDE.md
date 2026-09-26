@@ -42,6 +42,12 @@ Qwen3-TTS/Higgs Audio models. Independent components, each with its own
   concurrent generations share one loaded model via one batched decode
   call per round instead of queueing behind each other or each paying for
   their own loaded copy. See `llamacpp-go/CLAUDE.md`.
+- `lac/` (Go, pure) — **rejected experiment**, kept for reference only: a
+  lossless 16-bit PCM codec, 3-11% smaller than FLAC -8 on this app's
+  audio, which wasn't enough to justify a private, frozen format. Don't
+  wire it into `backend`; see `lac/CLAUDE.md` and
+  `lac/mastering-format-report.md`. (`lac/latent-storage-report.md`, in
+  the same directory, is unaffected and still current.)
 - `frontend/` (React + TypeScript + TanStack) — the web UI. See
   `frontend/CLAUDE.md`.
 - `android/` (Kotlin + Jetpack Compose) — the Android client. Builds and

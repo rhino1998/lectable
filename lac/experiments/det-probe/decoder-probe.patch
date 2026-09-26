@@ -1,0 +1,205 @@
+--- src/models/breeze_tts/speech_decoder.cpp	2026-09-16 21:15:11.632984130 -0400
++++ src/models/breeze_tts/speech_decoder.cpp	2026-09-26 01:03:53.501956880 -0400
+@@ -1,3 +1,7 @@
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <string>
+ #include "engine/models/breeze_tts/speech_decoder.h"
+ 
+ #include "engine/framework/assets/tensor_source.h"
+@@ -1130,7 +1134,44 @@
+         decoded.begin() + static_cast<std::ptrdiff_t>(valid_samples));
+ }
+ 
+-runtime::AudioBuffer BreezeSpeechDecoderRuntime::decode(const BreezeSpeechCodes & codec_codes) const {
++runtime::AudioBuffer BreezeSpeechDecoderRuntime::decode(const BreezeSpeechCodes & codec_codes_in) const {
++    // LECTABLE determinism probe: optionally load/dump codes, decode
++    // LECTABLE_REPEAT extra times, dump each output's float samples.
++    static thread_local bool lectable_inner = false;
++    if (!lectable_inner) {
++        BreezeSpeechCodes cc = codec_codes_in;
++        if (const char * lp = std::getenv("LECTABLE_CODES_LOAD")) {
++            std::FILE * f = std::fopen(lp, "rb");
++            std::fread(&cc.frames, 8, 1, f); std::fread(&cc.code_groups, 8, 1, f);
++            cc.codes.resize(static_cast<size_t>(cc.frames * cc.code_groups));
++            std::fread(cc.codes.data(), 4, cc.codes.size(), f); std::fclose(f);
++        }
++        if (const char * dp = std::getenv("LECTABLE_CODES_DUMP")) {
++            std::FILE * f = std::fopen(dp, "wb");
++            std::fwrite(&cc.frames, 8, 1, f); std::fwrite(&cc.code_groups, 8, 1, f);
++            std::fwrite(cc.codes.data(), 4, cc.codes.size(), f); std::fclose(f);
++        }
++        const char * rp = std::getenv("LECTABLE_REPEAT");
++        const int rep = rp ? std::atoi(rp) : 0;
++        const char * ap = std::getenv("LECTABLE_AUDIO_DUMP");
++        lectable_inner = true;
++        const auto lt00 = std::chrono::steady_clock::now();
++        runtime::AudioBuffer out = decode(cc);
++        std::fprintf(stderr, "LECTABLE decode 0 (cold): %.1f ms\n", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lt00).count());
++        for (int i = 0; i <= rep; ++i) {
++            const auto lt0 = std::chrono::steady_clock::now();
++            runtime::AudioBuffer o = i == 0 ? out : decode(cc);
++            if (i > 0) std::fprintf(stderr, "LECTABLE decode %d: %.1f ms for %.2f s audio\n", i, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lt0).count(), o.samples.size() / 24000.0);
++            if (ap) {
++                std::string path = std::string(ap) + "." + std::to_string(i);
++                std::FILE * f = std::fopen(path.c_str(), "wb");
++                std::fwrite(o.samples.data(), 4, o.samples.size(), f); std::fclose(f);
++            }
++        }
++        lectable_inner = false;
++        return out;
++    }
++    const auto & codec_codes = codec_codes_in;
+     const auto total_start = Clock::now();
+     if (codec_codes.frames <= 0 || codec_codes.code_groups != weights_->config.num_quantizers) {
+         throw std::runtime_error("Breeze speech decoder received invalid codec shape");
+--- src/models/stable_audio/session.cpp	2026-09-16 21:15:11.672296907 -0400
++++ src/models/stable_audio/session.cpp	2026-09-26 01:51:59.417569034 -0400
+@@ -1,3 +1,5 @@
++#include <cstdio>
++#include <cstdlib>
+ #include "engine/models/stable_audio/session.h"
+ 
+ #include "engine/framework/runtime/options.h"
+@@ -311,11 +313,17 @@
+         const auto mask = make_inpaint_mask(parsed, sampling, assets_->config);
+         std::vector<float> inpaint_latents(static_cast<size_t>(assets_->config.latent_dim * sampling.latent_sample_size), 0.0F);
+         if (parsed.inpaint_audio.has_value()) {
++            const auto le0 = Clock::now();
+             inpaint_latents = same_->encode(
+                 *parsed.inpaint_audio,
+                 sampling.audio_sample_size,
+                 parsed.seed,
+                 rng_offset_blocks);
++            std::fprintf(stderr, "LECTABLE encode: %.1f ms, %zu latents (T=%lld)\n", std::chrono::duration<double, std::milli>(Clock::now() - le0).count(), inpaint_latents.size(), static_cast<long long>(sampling.latent_sample_size));
++            if (const char * dp = std::getenv("LECTABLE_ENCLAT_DUMP")) {
++                std::FILE * f = std::fopen(dp, "wb");
++                std::fwrite(inpaint_latents.data(), 4, inpaint_latents.size(), f); std::fclose(f);
++            }
+         }
+         apply_inpaint_conditioning(sampling, inpaint_latents, mask, assets_->config);
+     }
+@@ -352,13 +360,38 @@
+             engine::debug::elapsed_ms(release_start, Clock::now()));
+     }
+     const auto same_start = Clock::now();
+-    auto audio_outputs = same_->decode(
+-        latents,
+-        sampling.batch,
+-        sampling.latent_sample_size,
+-        parsed.seed,
+-        rng_offset_blocks,
+-        parsed.chunked_decode);
++    // LECTABLE determinism probe (see breeze speech_decoder.cpp).
++    std::vector<float> lat = latents;
++    uint64_t lat_seed = parsed.seed;
++    uint64_t lat_off = rng_offset_blocks;
++    if (const char * lp = std::getenv("LECTABLE_LATENTS_LOAD")) {
++        std::FILE * f = std::fopen(lp, "rb");
++        uint64_t n = 0;
++        std::fread(&lat_seed, 8, 1, f); std::fread(&lat_off, 8, 1, f); std::fread(&n, 8, 1, f);
++        lat.resize(n); std::fread(lat.data(), 4, n, f); std::fclose(f);
++    }
++    if (const char * dp = std::getenv("LECTABLE_LATENTS_DUMP")) {
++        std::FILE * f = std::fopen(dp, "wb");
++        uint64_t n = lat.size();
++        std::fwrite(&lat_seed, 8, 1, f); std::fwrite(&lat_off, 8, 1, f); std::fwrite(&n, 8, 1, f);
++        std::fwrite(lat.data(), 4, n, f); std::fclose(f);
++    }
++    const char * lrp = std::getenv("LECTABLE_REPEAT");
++    const int lrep = lrp ? std::atoi(lrp) : 0;
++    const char * lap = std::getenv("LECTABLE_AUDIO_DUMP");
++    std::vector<runtime::AudioBuffer> audio_outputs;
++    for (int li = 0; li <= lrep; ++li) {
++        uint64_t off = lat_off;
++        const auto lt0 = Clock::now();
++        auto o = same_->decode(lat, sampling.batch, sampling.latent_sample_size, lat_seed, off, parsed.chunked_decode);
++        std::fprintf(stderr, "LECTABLE decode %d: %.1f ms for %.2f s audio\n", li, std::chrono::duration<double, std::milli>(Clock::now() - lt0).count(), o[0].samples.size() / 2 / 44100.0);
++        if (lap) {
++            std::string path = std::string(lap) + "." + std::to_string(li);
++            std::FILE * f = std::fopen(path.c_str(), "wb");
++            std::fwrite(o[0].samples.data(), 4, o[0].samples.size(), f); std::fclose(f);
++        }
++        if (li == 0) { audio_outputs = std::move(o); rng_offset_blocks = off; }
++    }
+     engine::debug::timing_log_scalar(
+         "stable_audio.same_decode_ms",
+         engine::debug::elapsed_ms(same_start, Clock::now()));
+--- src/models/higgs_audio_tts/codec.cpp	2026-09-16 21:15:11.648219627 -0400
++++ src/models/higgs_audio_tts/codec.cpp	2026-09-26 01:21:44.707653692 -0400
+@@ -1,3 +1,7 @@
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <string>
+ #include "engine/models/higgs_audio_tts/codec.h"
+ 
+ #include "engine/framework/audio/conversion.h"
+@@ -1543,9 +1547,44 @@
+     return encode_graph_->run(acoustic_24k, semantic_16k, frames);
+ }
+ 
+-HiggsCodecDecodeOutput HiggsCodecRuntime::decode_codes(const std::vector<int32_t> & codes,
+-                                                       int64_t frames,
++HiggsCodecDecodeOutput HiggsCodecRuntime::decode_codes(const std::vector<int32_t> & codes_in,
++                                                       int64_t frames_in,
+                                                        int64_t codebooks) const {
++    // LECTABLE determinism probe (see breeze speech_decoder.cpp).
++    static thread_local bool lectable_inner = false;
++    if (!lectable_inner) {
++        std::vector<int32_t> cc = codes_in;
++        int64_t fr = frames_in, cb = codebooks;
++        if (const char * lp = std::getenv("LECTABLE_CODES_LOAD")) {
++            std::FILE * f = std::fopen(lp, "rb");
++            std::fread(&fr, 8, 1, f); std::fread(&cb, 8, 1, f);
++            cc.resize(static_cast<size_t>(fr * cb)); std::fread(cc.data(), 4, cc.size(), f); std::fclose(f);
++        }
++        if (const char * dp = std::getenv("LECTABLE_CODES_DUMP")) {
++            std::FILE * f = std::fopen(dp, "wb");
++            std::fwrite(&fr, 8, 1, f); std::fwrite(&cb, 8, 1, f); std::fwrite(cc.data(), 4, cc.size(), f); std::fclose(f);
++        }
++        const char * rp = std::getenv("LECTABLE_REPEAT");
++        const int rep = rp ? std::atoi(rp) : 0;
++        const char * ap = std::getenv("LECTABLE_AUDIO_DUMP");
++        lectable_inner = true;
++        HiggsCodecDecodeOutput out;
++        for (int i = 0; i <= rep; ++i) {
++            const auto t0 = std::chrono::steady_clock::now();
++            auto o = decode_codes(cc, fr, cb);
++            std::fprintf(stderr, "LECTABLE decode %d: %.1f ms for %.2f s audio\n", i, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), o.values.size() / 24000.0);
++            if (ap) {
++                std::string path = std::string(ap) + "." + std::to_string(i);
++                std::FILE * f = std::fopen(path.c_str(), "wb");
++                std::fwrite(o.values.data(), 4, o.values.size(), f); std::fclose(f);
++            }
++            if (i == 0) out = std::move(o);
++        }
++        lectable_inner = false;
++        return out;
++    }
++    const auto & codes = codes_in;
++    const int64_t frames = frames_in;
+     if (frames <= 0) {
+         throw std::runtime_error("Higgs TTS codec decode requires positive frame count");
+     }
+--- src/models/higgs_audio_tts/session.cpp	2026-09-24 19:21:13.354098863 -0400
++++ src/models/higgs_audio_tts/session.cpp	2026-09-26 01:42:02.015983602 -0400
+@@ -1,3 +1,5 @@
++#include <cstdio>
++#include <cstdlib>
+ #include "engine/models/higgs_audio_tts/session.h"
+ 
+ #include "engine/framework/core/attention_fallback.h"
+@@ -529,6 +531,11 @@
+     const auto encode_start = Clock::now();
+     ReferenceCacheEntry entry;
+     entry.codes = codec_->encode_reference(audio);
++    if (const char * dp = std::getenv("LECTABLE_REFCODES_DUMP")) {
++        std::FILE * f = std::fopen(dp, "wb");
++        std::fwrite(&entry.codes.frames, 8, 1, f); std::fwrite(&entry.codes.codebooks, 8, 1, f);
++        std::fwrite(entry.codes.codes.data(), 4, entry.codes.codes.size(), f); std::fclose(f);
++    }
+     codec_->release_encode_graph();
+     debug::trace_log_scalar("higgs_audio_tts.reference_codes.frames", entry.codes.frames);
+     debug::trace_log_scalar("higgs_audio_tts.reference_codes.codebooks", entry.codes.codebooks);

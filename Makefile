@@ -6,7 +6,7 @@
 # (from backend/, so the module's newer Go toolchain builds it). Config is the
 # shared root .golangci.yml.
 
-GO_MODULES := backend audiocpp-go llamacpp-go
+GO_MODULES := backend audiocpp-go llamacpp-go lac
 GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || echo $(shell go env GOPATH)/bin/golangci-lint)
 ANDROID_SDK_ROOT ?= /home/rhino/android-sdk-toolchains
 
