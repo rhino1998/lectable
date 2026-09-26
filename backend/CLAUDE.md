@@ -202,6 +202,29 @@ existing artifact API.
     0.986 to the generator's own latents: the same space.
   - `resolve_pocket_tts_graph_capacity_config` is now a free function, so
     codec decodes use generation's exact decoder settings.
+  - `return_reference_latents=true` attaches a clone reference's
+    normalized Mimi latents (`"reference_latents"`). Passed back as an
+    input artifact, they replace reference audio, skipping the Mimi
+    encoder (`VoiceConditioner::prepare` -> `MimiEncoder::project_latents`,
+    just `speaker_proj`). The audio path goes through the same
+    normalize/denormalize round trip, so both condition bit-identically
+    (`TestPocketTTSReferenceLatents`, CPU and HIP). A 10 s reference:
+    ~180 -> ~95 ms on HIP, ~1.5 -> ~0.35 s on CPU (the flow LM prefill
+    remains). Two framework changes carry this: latents artifacts take an
+    id (`make_latents_artifact(l, id)`, `find_latents_input(artifacts,
+    id)`), and `SessionPreparationRequest.input_artifacts` (PocketTTS
+    conditions in `prepare()`, which the C API calls before every run).
+    The session voice-state LRU keeps the latents, so a cache hit can
+    still return them.
+    (This change and the BreezeTTS one below alone:
+    `/home/rhino/audio.cpp/lectable-reference-encodings.diff`, on top of
+    the rest; also in the full `lectable-local-patches.diff`.)
+- **BreezeTTS** (codes only, no codec task): `return_reference_codes=true`
+  attaches the cloning reference's speech codes (16 x 2048-entry
+  codebooks, 12.5 fps), and a `"reference_codes"` input replaces reference
+  audio (`BreezeTTSSession::request_reference_codes`). The GGUF's embedded
+  spec predates the option, so `validate_request_options` strips it before
+  contract validation (like `stream_*`).
 - **Exact decode for all three families:** decoding returned latents/codes
   reproduces the generated audio bit for bit on HIP (`audiocpp-go` tests).
 - **An upstream bug fix:** `StableAudioSameRuntime::encode` wrote before
@@ -250,14 +273,18 @@ Latents}`):
     `stable_audio_medium_codec`: the SAME autoencoder only). It runs only
     after 20 s of worker idleness (`Manager.Idle`), since loading the codec
     evicts generation models.
-- **Higgs reference-code cache** (`Config.RefCodesDir` =
-  `voice-refs/cache/refcodes/`).
+- **Reference-encoding cache** (`Config.RefCodesDir` =
+  `voice-refs/cache/refcodes/`): Higgs and BreezeTTS codes, PocketTTS
+  latents (`audioworker.referenceArtifactID`). Per reference, as `.lat`:
+  Higgs `u10` ~250 B/s, BreezeTTS packed codes ~290 B/s, PocketTTS f32
+  ~1.6 KB/s (a 12.5 s reference: 3.6 KB Breeze, 20 KB PocketTTS, vs
+  600 KB WAV). Only paragraph generation
+  (`GenerateChunkedAudio`) uses it; emotion-variant renders don't.
   - Keyed by the content of (clone model, transcript, reference bytes).
   - Cached codes go out with the reference audio. The worker uses them
     only if their `codec_model` stamp (`audioworker.modelIdentity`)
     matches the loaded checkpoint; otherwise it re-encodes and the reply
     replaces the entry.
-  - PocketTTS has no equivalent input yet (task-backlog 24).
 - **Worker wire changes** (`ttsproto`):
   - `/generate` and `/stable-audio-medium` answer JSON
     (`GenerateResponse`/`StableAudioResponse`) only when `returnLatents`

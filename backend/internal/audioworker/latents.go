@@ -101,6 +101,54 @@ func codesFromWire(l *ttsproto.Latents) (*audiocpp.Codes, error) {
 	return out, nil
 }
 
+// referenceArtifactID names the artifact a family returns its cloning
+// reference's encoding as (with return_<id>=true) and takes it back as,
+// skipping the reference encode: Higgs/BreezeTTS codes, PocketTTS
+// normalized Mimi latents. "" for a family without one.
+func referenceArtifactID(family string) string {
+	switch family {
+	case "higgs_audio_tts", "breeze_tts":
+		return "reference_codes"
+	case "pocket_tts":
+		return "reference_latents"
+	}
+	return ""
+}
+
+// readReferenceEncoding is the reference encoding a run returned as
+// artifact id (see referenceArtifactID), or nil if it returned none.
+func readReferenceEncoding(result *audiocpp.Result, id, codecModel string) (*ttsproto.Latents, error) {
+	if id == "reference_latents" {
+		lats, err := result.LatentsAs(id)
+		if err != nil || len(lats) != 1 {
+			return nil, err
+		}
+		return wireFromLatents(lats[0], codecModel), nil
+	}
+	codes, err := result.Codes(id)
+	if err != nil || codes == nil {
+		return nil, err
+	}
+	return wireFromCodes(codes, codecModel), nil
+}
+
+// addReferenceEncoding attaches a cached reference encoding (see
+// referenceArtifactID) to request, as codes or latents by its kind.
+func addReferenceEncoding(request *audiocpp.Request, l *ttsproto.Latents, id string) error {
+	if l.Kind == latents.KindCodes {
+		codes, err := codesFromWire(l)
+		if err != nil {
+			return err
+		}
+		return request.AddCodes(codes, id)
+	}
+	lat, err := latentsFromWire(l)
+	if err != nil {
+		return err
+	}
+	return request.AddLatentsAs(lat, id)
+}
+
 var modelIdentities sync.Map // path -> string
 
 // modelIdentity names the checkpoint at path well enough to notice it

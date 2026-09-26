@@ -179,9 +179,6 @@ const (
 	// vocabulary speech direction (httpapi's direction tagging,
 	// store.Book.SpeechDirection) targets.
 	HiggsCloneModel = "audiocpp-higgs-4b"
-	// SopranoCloneModel is a single fixed built-in voice with no cloning
-	// at all - the worker ignores any reference clip sent with it.
-	SopranoCloneModel = "audiocpp-soprano"
 )
 
 // FastCloneModel is what EnqueueLengthEstimate's throwaway sample clones

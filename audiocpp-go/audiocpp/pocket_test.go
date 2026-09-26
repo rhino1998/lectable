@@ -119,3 +119,104 @@ func TestPocketTTSCodec(t *testing.T) {
 		t.Errorf("encode+decode gave %d frames, want %d", back.Frames(), genAudio.Frames())
 	}
 }
+
+// TestPocketTTSReferenceLatents checks that a clone reference's latents
+// (return_reference_latents) passed back as "reference_latents" condition
+// exactly like the audio they were encoded from. Same env as
+// TestPocketTTSCodec.
+func TestPocketTTSReferenceLatents(t *testing.T) {
+	modelPath := os.Getenv("AUDIOCPP_POCKET_TTS_MODEL")
+	if modelPath == "" {
+		t.Skip("AUDIOCPP_POCKET_TTS_MODEL not set")
+	}
+	backend := audiocpp.BackendConfig{Backend: os.Getenv("AUDIOCPP_TEST_BACKEND"), Threads: 8}
+	if backend.Backend == "" {
+		backend.Backend = "cpu"
+	}
+	registry, err := audiocpp.NewRegistry("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	model, err := registry.LoadModel(modelPath, audiocpp.ModelConfig{FamilyHint: "pocket_tts"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer model.Close()
+	// Each run gets a fresh session, so nothing comes from its voice-state
+	// cache.
+	run := func(build func(*audiocpp.Request)) *audiocpp.Result {
+		t.Helper()
+		session, err := model.Session("tts", "offline", backend, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer session.Close()
+		req := audiocpp.NewRequest()
+		defer req.Close()
+		build(req)
+		if err := req.Err(); err != nil {
+			t.Fatal(err)
+		}
+		res, err := session.Run(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(res.Close)
+		return res
+	}
+	audioOf := func(res *audiocpp.Result) *audiocpp.AudioBuffer {
+		t.Helper()
+		a, err := res.Audio()
+		if err != nil || a == nil {
+			t.Fatalf("audio = %v, %v", a, err)
+		}
+		return a
+	}
+
+	ref := audioOf(run(func(r *audiocpp.Request) {
+		r.SetText("The lantern flickered as she stepped into the hall, listening for footsteps.", "")
+		r.SetVoiceID("alba")
+	}))
+	const text = "Nobody answered, so she climbed the stairs alone."
+	clone := func(r *audiocpp.Request) {
+		r.SetText(text, "")
+		r.SetOption("seed", "7")
+	}
+	fromAudio := run(func(r *audiocpp.Request) {
+		clone(r)
+		r.SetVoiceAudio(ref.Samples, ref.SampleRate, ref.Channels)
+		r.SetOption("return_reference_latents", "true")
+	})
+	refLats, err := fromAudio.LatentsAs("reference_latents")
+	if err != nil || len(refLats) != 1 {
+		t.Fatalf("reference_latents = %d, %v; want 1", len(refLats), err)
+	}
+	refLat := refLats[0]
+	if refLat.Dim != 32 || refLat.Family != "pocket_tts" || refLat.Meta["normalized"] != "true" {
+		t.Fatalf("unexpected reference latents header: dim=%d family=%q meta=%v", refLat.Dim, refLat.Family, refLat.Meta)
+	}
+	if want := ref.Frames() / refLat.HopSamples; refLat.Frames < want || refLat.Frames > want+1 {
+		t.Errorf("reference latents have %d frames for %d samples (hop %d)", refLat.Frames, ref.Frames(), refLat.HopSamples)
+	}
+	if lats, _ := fromAudio.Latents(); len(lats) != 0 {
+		t.Errorf("got %d \"latents\" artifacts without return_latents", len(lats))
+	}
+	want := audioOf(fromAudio)
+
+	for _, withAudio := range []bool{true, false} {
+		got := audioOf(run(func(r *audiocpp.Request) {
+			clone(r)
+			if withAudio {
+				r.SetVoiceAudio(ref.Samples, ref.SampleRate, ref.Channels)
+			}
+			if err := r.AddLatentsAs(refLat, "reference_latents"); err != nil {
+				t.Fatal(err)
+			}
+		}))
+		if !reflect.DeepEqual(got.Samples, want.Samples) {
+			t.Errorf("withAudio=%v: audio from reference_latents differs from audio from the reference clip (%d vs %d samples)",
+				withAudio, len(got.Samples), len(want.Samples))
+		}
+	}
+}

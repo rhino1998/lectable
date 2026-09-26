@@ -87,7 +87,7 @@ type GenerateRequest struct {
 	// instructed-character-voices path) sends nothing extra, same as
 	// before this field existed. Silently ignored for any family with no
 	// instructOption of its own, the same "caller may resend something
-	// this family can't use" shape noReference already has for RefSamples.
+	// this family can't use".
 	Instruct string
 	// GuidanceScale, when non-empty, overrides fam.instructGuidanceScale
 	// for this one call - lets a caller (httpapi.handleTestCloneInstruct,
@@ -110,12 +110,13 @@ type GenerateRequest struct {
 	TextChunkSize int
 	// ReturnLatents asks for the decoder input alongside the audio
 	// (GenerateResult.Latents; nil for families without one - see
-	// familyHasLatents) and, for Higgs, the reference's encoding
+	// familyHasLatents) and, for Higgs/PocketTTS, the reference's encoding
 	// (GenerateResult.ReferenceCodes).
 	ReturnLatents bool
-	// ReferenceCodes, when its codec_model matches the loaded Higgs
-	// checkpoint, is used instead of encoding RefSamples (which are still
-	// sent, as the fallback when it doesn't match).
+	// ReferenceCodes (Higgs codes, PocketTTS normalized Mimi latents), when
+	// its codec_model matches the loaded checkpoint, is used instead of
+	// encoding RefSamples (which are still sent, as the fallback when it
+	// doesn't match).
 	ReferenceCodes *ttsproto.Latents
 }
 
@@ -177,25 +178,16 @@ func (w *Worker) GenerateFull(req GenerateRequest) (GenerateResult, error) {
 	request := audiocpp.NewRequest()
 	defer request.Close()
 	request.SetText(text, lang)
-	if fam.noReference {
-		// No voice-cloning capability at all (a single fixed built-in
-		// voice) - skip SetVoiceAudio/refTextOption entirely rather than
-		// sending a reference clip this family has no request option to
-		// accept in the first place. Whatever refAudio/refText the caller
-		// resent for this clone_model (same as every other family - see
-		// GenerateRequest's own doc comment) is simply ignored.
-	} else {
-		refTextOption := fam.refTextOption
-		if refTextOption == "" {
-			refTextOption = "reference_text"
-		}
-		request.SetVoiceAudio(req.RefSamples, req.RefSampleRate, req.RefChannels)
-		if fam.refAsPromptAudio && strings.TrimSpace(req.RefText) != "" {
-			request.SetAudio(req.RefSamples, req.RefSampleRate, req.RefChannels)
-		}
-		if !fam.noRefText {
-			request.SetOption(refTextOption, req.RefText)
-		}
+	refTextOption := fam.refTextOption
+	if refTextOption == "" {
+		refTextOption = "reference_text"
+	}
+	request.SetVoiceAudio(req.RefSamples, req.RefSampleRate, req.RefChannels)
+	if fam.refAsPromptAudio && strings.TrimSpace(req.RefText) != "" {
+		request.SetAudio(req.RefSamples, req.RefSampleRate, req.RefChannels)
+	}
+	if !fam.noRefText {
+		request.SetOption(refTextOption, req.RefText)
 	}
 	if fam.estimateDuration {
 		request.SetOption("duration_sec", formatSeconds(estimateCloneDuration(req)))
@@ -229,26 +221,23 @@ func (w *Worker) GenerateFull(req GenerateRequest) (GenerateResult, error) {
 		request.SetOption("temperature", strconv.FormatFloat(*req.Temperature, 'f', -1, 64))
 	}
 	wantLatents := req.ReturnLatents && familyHasLatents(fam.family)
+	refArtifact := referenceArtifactID(fam.family)
 	codecModel := ""
-	injectedRef := false
-	if familyHasLatents(fam.family) {
+	if familyHasLatents(fam.family) || refArtifact != "" {
 		codecModel = modelIdentity(fam.modelPath)
 	}
 	if wantLatents {
 		request.SetOption("return_latents", "true")
 	}
-	if fam.family == "higgs_audio_tts" && !fam.noReference {
+	wantRef := false
+	if refArtifact != "" {
 		if rc := req.ReferenceCodes; rc != nil && sameModel(rc.Meta["codec_model"], codecModel) {
-			codes, err := codesFromWire(rc)
-			if err != nil {
-				return GenerateResult{}, fmt.Errorf("reference codes: %w", err)
+			if err := addReferenceEncoding(request, rc, refArtifact); err != nil {
+				return GenerateResult{}, fmt.Errorf("reference encoding: %w", err)
 			}
-			if err := request.AddCodes(codes, "reference_codes"); err != nil {
-				return GenerateResult{}, fmt.Errorf("reference codes: %w", err)
-			}
-			injectedRef = true
-		} else if wantLatents {
-			request.SetOption("return_reference_codes", "true")
+		} else if req.ReturnLatents {
+			request.SetOption("return_"+refArtifact, "true")
+			wantRef = true
 		}
 	}
 	if err := request.Err(); err != nil {
@@ -300,15 +289,6 @@ func (w *Worker) GenerateFull(req GenerateRequest) (GenerateResult, error) {
 			if codes != nil {
 				out.Latents = wireFromCodes(codes, codecModel)
 			}
-			if !injectedRef {
-				ref, err := result.Codes("reference_codes")
-				if err != nil {
-					return GenerateResult{}, fmt.Errorf("read reference codes: %w", err)
-				}
-				if ref != nil {
-					out.ReferenceCodes = wireFromCodes(ref, codecModel)
-				}
-			}
 		default:
 			lats, err := result.Latents()
 			if err != nil {
@@ -317,6 +297,11 @@ func (w *Worker) GenerateFull(req GenerateRequest) (GenerateResult, error) {
 			if len(lats) == 1 {
 				out.Latents = wireFromLatents(lats[0], codecModel)
 			}
+		}
+	}
+	if wantRef {
+		if out.ReferenceCodes, err = readReferenceEncoding(result, refArtifact, codecModel); err != nil {
+			return GenerateResult{}, fmt.Errorf("read reference encoding: %w", err)
 		}
 	}
 	return out, nil

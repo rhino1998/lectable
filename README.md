@@ -57,7 +57,7 @@ The design engine can be switched between `breeze_tts`, `qwen3_tts`,
 `omnivoice`, `fireredtts3`, `firered_audio`, `auk`, and `auk_flash` with
 `LECTABLE_AUDIOCPP_DESIGN_ENGINE`. These optional narration models can
 also be picked per voice preset: Qwen3-TTS 12Hz 0.6B Base, OmniVoice,
-Soprano 1.1 80M, FireRedTTS3 Instruct (`LECTABLE_AUDIOCPP_FIREREDTTS3_MODEL_PATH`),
+FireRedTTS3 Instruct (`LECTABLE_AUDIOCPP_FIREREDTTS3_MODEL_PATH`),
 FireRedAudio (`LECTABLE_AUDIOCPP_FIRERED_AUDIO_MODEL_PATH`), and AuK /
 AuK-Flash (`LECTABLE_AUDIOCPP_AUK_MODEL_DIR`, a directory - audio.cpp
 currently runs AuK on CUDA only, not HIP). FireRedTTS3, FireRedAudio, and

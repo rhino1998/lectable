@@ -42,20 +42,6 @@ type cloneFamily struct {
 	// skips languageOption entirely rather than passing it through
 	// audiocpp.Request.SetText.
 	noLanguageOption bool
-	// noReference: true for a family with no voice-cloning/reference-audio
-	// capability at all (its own model_specs "tasks" list has no "clone" -
-	// soprano_tts today) - a single fixed built-in voice, every call
-	// rendering identically regardless of caller. Generate skips
-	// SetVoiceAudio/refTextOption entirely rather than sending a reference
-	// clip the family has no request option to accept at all. The caller
-	// (jobs.Manager.generate, via voicerefs) still resends whatever
-	// reference-clip bytes it has on hand for this clone_model, same as
-	// every other family - they're simply ignored here. See
-	// backend/internal/voices' own NoCloneModels for the cmd/server-side
-	// half of this (voicerefs.Regenerate skips VoiceDesign for these
-	// clone_models, since there's no design-capable engine to render a
-	// meaningful reference clip from in the first place).
-	noReference bool
 	// instructOption is the request-option key this family reads a
 	// clone-time style instruction from, alongside a reference clip in the
 	// very same call - "instruction" for breeze_tts, which is the only
@@ -69,8 +55,7 @@ type cloneFamily struct {
 	// checkpoint has no instruct option at all; its own VoiceDesign
 	// checkpoint takes an instruct but no reference). Empty (every family
 	// but breeze) means Generate never sends GenerateRequest.Instruct for
-	// this family at all, even if a caller sets one - mirrors noReference's
-	// own "caller may resend something this family can't use" shape.
+	// this family at all, even if a caller sets one.
 	instructOption string
 	// instructGuidanceScale, when non-empty, is a "guidance_scale" request
 	// option applied only alongside instructOption - i.e. only on a call
@@ -405,7 +390,6 @@ var cloneModelFamilies = map[string]string{
 	"audiocpp-pocket-100m": "audiocpp-pocket",
 	"audiocpp-breeze-tts":  "audiocpp-breeze",
 	"audiocpp-omnivoice":   "audiocpp-omnivoice",
-	"audiocpp-soprano":     "audiocpp-soprano",
 	"audiocpp-fireredtts3": "audiocpp-fireredtts3",
 	"audiocpp-firered":     "audiocpp-firered",
 	"audiocpp-auk":         "audiocpp-auk",
@@ -678,30 +662,6 @@ var cloneFamilies = map[string]cloneFamily{
 			modelPath("OmniVoice-GGUF/omnivoice-q8_0.gguf"),
 		),
 		poolSizeOverride: omnivoiceClonePoolSize,
-	},
-	// SopranoTTS (WalkingCat/Soprano-1.1-80M-GGUF, audio.cpp's "soprano_tts"
-	// family) - an ultra-lightweight (~80M) English-only engine with a
-	// single fixed built-in voice: no clone/design capability at all (its
-	// own model_specs/soprano_tts.json "tasks" list is just ["tts"]), so
-	// every call renders identically regardless of caller - see noReference
-	// below. Benchmarked (audiocpp_cli --metrics, hip backend, RX 7900 XTX)
-	// at RTF 0.10 (~10x realtime) on a 168-char sentence - slower than
-	// audiocpp-pocket's RTF 0.07 (~15x) but still well clear of
-	// audiocpp-higgs's RTF 0.27 (~3.7x). Rejects a "language" request
-	// option outright ("unknown Soprano request option: language",
-	// confirmed live) despite being single-language anyway - noLanguageOption
-	// set for the same reason as breeze_tts above. No dedicated
-	// *_cache_slots session option (see soprano_tts.json's own "options" -
-	// nothing to widen here, same as omnivoice above).
-	"audiocpp-soprano": {
-		temperature: true,
-		family:      "soprano_tts",
-		modelPath: envOr(
-			"LECTABLE_AUDIOCPP_SOPRANO_MODEL_PATH",
-			modelPath("Soprano-1.1-80M-GGUF/soprano-1.1-80m-q8_0.gguf"),
-		),
-		noLanguageOption: true,
-		noReference:      true,
 	},
 	// FireRedTTS3 (FireRedTeam, Apache-2.0) - the Instruct package, which
 	// clones via template_name=instruct_tts on a plain "tts" session (see

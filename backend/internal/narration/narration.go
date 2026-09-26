@@ -46,9 +46,7 @@ type ResolvedVoice struct {
 	// produces) means nothing extra is sent, today's unchanged behavior.
 	// Only ever honored by a clone model whose family accepts an
 	// instruction alongside a reference clip in the same call
-	// (voices.InstructedCloneModel today) - silently ignored by any other,
-	// same as an ignored RefSamples/RefText resend already is for a
-	// noReference family.
+	// (voices.InstructedCloneModel today) - silently ignored by any other.
 	CloneInstruct string
 }
 

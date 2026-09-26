@@ -107,7 +107,7 @@ func TestCatalogMatchesModelTables(t *testing.T) {
 		}
 	}
 	for id := range cloneModelFamilies {
-		if !listed[id] && id != voices.SopranoCloneModel {
+		if !listed[id] {
 			t.Errorf("clone model %q is loadable but missing from voices.CloneModels", id)
 		}
 	}

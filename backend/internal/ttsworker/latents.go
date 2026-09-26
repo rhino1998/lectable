@@ -27,11 +27,11 @@ type Audio struct {
 
 // GenerateChunkedAudio is GenerateChunked returning the clip's latents too,
 // and the path that uses the reference-code cache (Config.RefCodesDir): a
-// Higgs reference's encoding is cached by content (clone model, transcript,
-// reference bytes) and sent back instead of being re-encoded. The
-// reference audio always goes too - the worker falls back to it when the
-// cached codes came from a different checkpoint, and replies with fresh
-// ones, which replace the stale entry.
+// reference's encoding (Higgs/BreezeTTS codes, PocketTTS latents) is cached
+// by content (clone model, transcript, reference bytes) and sent back
+// instead of being re-encoded. The reference audio always goes too - the
+// worker falls back to it when the cached encoding came from a different
+// checkpoint, and replies with a fresh one, which replaces the stale entry.
 func (m *Manager) GenerateChunkedAudio(ctx context.Context, text, cloneModel string, refAudio []byte, refText, language, instruct string, textChunkSize int) (Audio, error) {
 	m.restartGate.RLock()
 	defer m.restartGate.RUnlock()

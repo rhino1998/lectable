@@ -32,9 +32,6 @@ type DesignModelInfo struct {
 func f64(v float64) *float64 { return &v }
 
 // CloneModels is every user-selectable clone model, in display order.
-// SopranoCloneModel is deliberately absent: it has one fixed built-in
-// voice and ignores the reference clip, so it isn't a way to narrate a
-// voice preset.
 var CloneModels = []CloneModelInfo{
 	{ID: "audiocpp-qwen3-0.6b", Label: "Qwen3-TTS (audio.cpp)", DefaultTemperature: f64(0.9)},
 	{ID: HiggsCloneModel, Label: "Higgs Audio v3 TTS 4B (audio.cpp)", DefaultTemperature: f64(0.8)},

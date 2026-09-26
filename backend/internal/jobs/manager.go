@@ -783,9 +783,7 @@ type task struct {
 	// design-time instruction only ever used to render a preset's own
 	// standalone reference clip from scratch. Only honored by a family
 	// with its own instructOption (breeze_tts - see audioworker.
-	// cloneFamily.instructOption), silently ignored otherwise, same as
-	// instruct/refText are already resent-but-ignored for a noReference
-	// family.
+	// cloneFamily.instructOption), silently ignored otherwise.
 	cloneInstruct string
 
 	// KindSpeakerAttribution/KindSpeakerCharacterization only (the two LLM

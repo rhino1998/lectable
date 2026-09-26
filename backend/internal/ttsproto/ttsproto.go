@@ -48,8 +48,8 @@ type GenerateRequest struct {
 	// audio (Higgs codes, PocketTTS latents; nil for families without one):
 	// the reply is then a GenerateResponse (JSON) instead of raw WAV.
 	ReturnLatents bool `json:"returnLatents,omitempty"`
-	// ReferenceCodes is a cached encoding of RefAudioBase64 (Higgs; see
-	// GenerateResponse.ReferenceCodes). The worker uses it instead of
+	// ReferenceCodes is a cached encoding of RefAudioBase64 (Higgs/BreezeTTS
+	// codes, PocketTTS latents; see GenerateResponse.ReferenceCodes). The worker uses it instead of
 	// re-encoding the reference when its Meta["codec_model"] matches the
 	// loaded model, and otherwise falls back to RefAudioBase64 - so callers
 	// still send the audio.
@@ -63,8 +63,9 @@ type GenerateResponse struct {
 	// Latents is the generated audio's decoder input, nil when the family
 	// has none. Decoding it reproduces WAV exactly on the same backend.
 	Latents *Latents `json:"latents,omitempty"`
-	// ReferenceCodes is the reference clip's encoding (Higgs), for the
-	// caller to cache and send back as GenerateRequest.ReferenceCodes.
+	// ReferenceCodes is the reference clip's encoding (Higgs/BreezeTTS
+	// codes, PocketTTS latents), for the caller to cache and send back as
+	// GenerateRequest.ReferenceCodes.
 	ReferenceCodes *Latents `json:"referenceCodes,omitempty"`
 }
 

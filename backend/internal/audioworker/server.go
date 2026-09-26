@@ -36,12 +36,8 @@ func (w *Worker) HandleGenerate(rw http.ResponseWriter, r *http.Request) {
 		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
 		return
 	}
-	// A noReference family (see families.go's own doc comment) ignores
-	// RefSamples/RefText entirely, so a caller sending an empty
-	// RefAudioBase64 for one (voicerefs.Regenerate does, for exactly this
-	// reason) is expected, not an error - skip WAV-decoding a payload
-	// that's never going to be used rather than failing on an empty/
-	// invalid WAV before Worker.Generate ever gets a chance to ignore it.
+	// An empty RefAudioBase64 sends no reference clip at all (not decoded
+	// as an empty/invalid WAV); the family decides what that means.
 	clip := &wavClip{}
 	if req.RefAudioBase64 != "" {
 		raw, err := base64.StdEncoding.DecodeString(req.RefAudioBase64)

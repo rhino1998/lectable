@@ -32,11 +32,12 @@ out of the main, always-up backend binary entirely).
 These are thin typed layers over the artifact API for this repo's local
 audio.cpp latents/codec patch (`backend/CLAUDE.md`, "Latents/codec patch"):
 - **`audiocpp/latents.go`:** `Latents` (continuous: Stable Audio,
-  PocketTTS; f32, time-major, `Slice`), `Result.Latents()`,
-  `Request.AddLatents()`.
-- **`audiocpp/codes.go`:** `Codes` (discrete: Higgs; int32, time-major),
-  `Result.Codes(id)`, `Request.AddCodes(c, id)`. The id is `"codes"` or
-  `"reference_codes"`.
+  PocketTTS; f32, time-major, `Slice`), `Result.Latents()`/`LatentsAs(id)`,
+  `Request.AddLatents()`/`AddLatentsAs(l, id)`. The id is `"latents"` or
+  `"reference_latents"`.
+- **`audiocpp/codes.go`:** `Codes` (discrete: Higgs, BreezeTTS; int32,
+  time-major), `Result.Codes(id)`, `Request.AddCodes(c, id)`. The id is
+  `"codes"` or `"reference_codes"`.
 
 A `"codec"` session encodes audio to latents/codes, or decodes them to
 audio, loading only the family's codec/autoencoder. The request option
@@ -47,14 +48,20 @@ backend.
 
 Family extras:
 - **Stable Audio:** accepts latents in place of `init_audio`/`inpaint_audio`.
-- **Higgs:** `return_reference_codes=true` returns a clone's reference
-  codes, and `AddCodes(c, "reference_codes")` reuses them instead of
-  reference audio.
+- **Higgs, BreezeTTS:** `return_reference_codes=true` returns a clone's
+  reference codes, and `AddCodes(c, "reference_codes")` reuses them instead
+  of reference audio.
+- **PocketTTS:** `return_reference_latents=true` returns a clone's
+  reference as normalized Mimi latents, and
+  `AddLatentsAs(l, "reference_latents")` reuses them (reference audio then
+  optional). Conditioning from them is bit-identical to conditioning from
+  the audio.
 
 Model-gated tests (each skips unless its env var is set):
 - `TestStableAudioCodec`: `AUDIOCPP_STABLE_AUDIO_MODEL`.
 - `TestHiggsCodec`: `AUDIOCPP_HIGGS_MODEL` (the .gguf).
-- `TestPocketTTSCodec`: `AUDIOCPP_POCKET_TTS_MODEL` (package dir).
+- `TestPocketTTSCodec`, `TestPocketTTSReferenceLatents`:
+  `AUDIOCPP_POCKET_TTS_MODEL` (package dir).
 
 They take an optional `AUDIOCPP_TEST_BACKEND` (default `cpu`; use `hip`
 here, since Stable Audio and Higgs generation on CPU need `-timeout 30m`).

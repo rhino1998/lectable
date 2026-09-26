@@ -19,6 +19,8 @@
 4. Optimize everything: Too many adhoc/small DB reads
     - `9d75217`: in-memory read cache behind the `store.Store` interface, invalidated by write notifications; coalesced lookahead; paragraph lists reused instead of reloaded.
 
+24. Voice-ref caching for PocketTTS (and BreezeTTS)
+    - audio.cpp patch: PocketTTS `return_reference_latents`/`reference_latents` (normalized Mimi latents, bit-identical conditioning), BreezeTTS `return_reference_codes`/`reference_codes`; the backend's refcodes cache now covers Higgs, BreezeTTS, and PocketTTS. Soprano dropped (no cloning).
 ---------------------
 
 5. Consider switching to sqlite
@@ -35,7 +37,6 @@
 21. Music seam crossfade: inpainting re-renders the kept seed window (~20 dB off the real seed), so every seeded splice in `musicgen` is slightly imperfect - most visible within a region (4-5x spectral jump at in-region chunk joins in the A/B). Add a short crossfade at the splice or clamp the seed frames during sampling. See `lac/latent-storage-report.md` "Seam A/B".
 22. Latents over the wire: send Higgs codes (~2 kbps) / PocketTTS latents (~0.8 KB/s f16) to Android instead of Opus and decode on-device (audio.cpp/ggml via NDK + JNI, decoder weights ~20-45 MB per family). Per-clip format negotiation (latents when a `.lat` sidecar exists and the app has a matching `codec_model` decoder, Opus otherwise), chunk-aware decode/seeking (`chunk_frames`). Music stays Opus (SA3 latents aren't smaller). Measure phone decode speed/battery first.
 23. Lightweight lectable->lectable export using latents instead of audio: narration ~66-420 MB and seeds ~170 MB vs ~16 GB today; importer decodes on its GPU (~15-25 min narration, ~1-2 h music for a book) and re-encodes Opus. Needs matching checkpoints (`codec_model` stamps; Opus fallback), a music recipe (chunk + ambience-loop latents, loop crossfade + mix params, rebuilt in Go), and mixed latents/Opus exports since only clips rendered after dual-write have sidecars.
-24. Voice-ref caching for PocketTTS: Higgs reference codes are cached (`voice-refs/cache/refcodes/`), but audio.cpp's PocketTTS has no input to pass a precomputed voice state/encoding back in, so it re-encodes the reference after each worker restart. Needs an audio.cpp patch like Higgs' `reference_codes`.
 25. Compress the remaining WAVs: ambience loops (~5.8 GB for Spire's Spite) with FLAC (lac was rejected); voice refs can stay WAV (676 MB total; see `lac/mastering-format-report.md`).
 26. Upstream candidates in the local audio.cpp patch set: the SAME encode out-of-bounds fix for windows under 128 latent frames (a real upstream bug), and the latents/codec artifact API (`lectable-latents-codec.diff`).
 27. Reference-code cache GC: `voice-refs/cache/refcodes/` is content-addressed and never pruned (~5 KB per voice x reference); sweep entries for references no preset uses anymore.

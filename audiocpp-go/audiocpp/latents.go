@@ -17,6 +17,11 @@ import (
 // They go back in via Request.AddLatents: a "codec" session decodes them to
 // audio, and a family that accepts latents in place of audio input (Stable
 // Audio's init_audio/inpaint_audio) uses them without re-encoding.
+//
+// The artifact ID says what the latents are, as for Codes: "latents" for
+// generated or encoded audio, "reference_latents" for a cloning reference
+// (PocketTTS returns one with return_reference_latents=true and takes it
+// back via AddLatentsAs(l, "reference_latents") to skip re-encoding).
 type Latents struct {
 	Frames int
 	Dim    int
@@ -120,16 +125,22 @@ func (a Artifact) Latents() (*Latents, error) {
 	return l, nil
 }
 
-// Latents returns every latents artifact the task produced, in order (one
+// Latents returns every "latents" artifact the task produced, in order (one
 // per batch item for generation).
 func (res *Result) Latents() ([]*Latents, error) {
+	return res.LatentsAs("latents")
+}
+
+// LatentsAs returns every latents artifact with this ID the task produced,
+// in order.
+func (res *Result) LatentsAs(id string) ([]*Latents, error) {
 	arts, err := res.Artifacts()
 	if err != nil {
 		return nil, err
 	}
 	var out []*Latents
 	for _, a := range arts {
-		if a.Kind != ArtifactLatents {
+		if a.Kind != ArtifactLatents || a.ID != id {
 			continue
 		}
 		l, err := a.Latents()
@@ -141,8 +152,13 @@ func (res *Result) Latents() ([]*Latents, error) {
 	return out, nil
 }
 
-// Artifact encodes l as an ArtifactLatents artifact.
+// Artifact encodes l as an ArtifactLatents artifact with ID "latents".
 func (l *Latents) Artifact() (Artifact, error) {
+	return l.ArtifactAs("latents")
+}
+
+// ArtifactAs encodes l as an ArtifactLatents artifact with the given ID.
+func (l *Latents) ArtifactAs(id string) (Artifact, error) {
 	if l.Dim <= 0 || l.Frames < 0 || len(l.Data) != l.Frames*l.Dim {
 		return Artifact{}, fmt.Errorf("audiocpp: latents has %d values, want %d frames x %d dim", len(l.Data), l.Frames, l.Dim)
 	}
@@ -164,12 +180,18 @@ func (l *Latents) Artifact() (Artifact, error) {
 			meta[k] = v
 		}
 	}
-	return Artifact{Kind: ArtifactLatents, ID: "latents", Payload: payload, Meta: meta}, nil
+	return Artifact{Kind: ArtifactLatents, ID: id, Payload: payload, Meta: meta}, nil
 }
 
-// AddLatents attaches l to the request as a latents input artifact.
+// AddLatents attaches l to the request as a "latents" input artifact.
 func (r *Request) AddLatents(l *Latents) error {
-	a, err := l.Artifact()
+	return r.AddLatentsAs(l, "latents")
+}
+
+// AddLatentsAs attaches l to the request as a latents input artifact with
+// the given ID ("reference_latents" as a cloning reference).
+func (r *Request) AddLatentsAs(l *Latents, id string) error {
+	a, err := l.ArtifactAs(id)
 	if err != nil {
 		return err
 	}

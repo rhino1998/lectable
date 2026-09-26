@@ -174,7 +174,7 @@ client, not a browser.)
   restores the book into another library when uploaded there, see
   `backend/CLAUDE.md`'s `internal/bookexport`), `voice-refs/<presetID>.wav`,
   `voice-refs/variants/<presetID>/<emotion>.wav`,
-  `voice-refs/cache/refcodes/<hash>.lat` (cached Higgs reference
+  `voice-refs/cache/refcodes/<hash>.lat` (cached Higgs/BreezeTTS/PocketTTS reference
   encodings). Nothing is stored
   in `ttsworker` or `frontend` - the worker is intentionally stateless
   aside from which model checkpoints happen to be loaded in VRAM.

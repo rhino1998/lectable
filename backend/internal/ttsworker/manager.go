@@ -64,7 +64,8 @@ type Config struct {
 	// different restart path than the RSS/process-died triggers above.
 	StuckJobTimeout time.Duration
 
-	// RefCodesDir, when set, caches Higgs reference encodings there - see
+	// RefCodesDir, when set, caches reference encodings (Higgs/BreezeTTS
+	// codes, PocketTTS latents) there - see
 	// GenerateChunkedAudio. Content-addressed, so a changed reference clip
 	// simply misses; nothing is ever invalidated in place.
 	RefCodesDir string
