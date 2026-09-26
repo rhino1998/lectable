@@ -110,7 +110,24 @@ typealias ErrorCode = String
 object ErrorCodes {
     const val NO_SOURCE_EPUB: ErrorCode = "no_source_epub"
     const val TITLE_MISMATCH: ErrorCode = "title_mismatch"
-    val VALUES: List<ErrorCode> = listOf(NO_SOURCE_EPUB, TITLE_MISMATCH)
+    const val BOOK_EXISTS: ErrorCode = "book_exists"
+    val VALUES: List<ErrorCode> = listOf(NO_SOURCE_EPUB, TITLE_MISMATCH, BOOK_EXISTS)
+}
+
+/**
+ * exportFormat is an export file format on the wire - bookexport.Format.
+ *
+ *
+ * Values: see [ExportFormats].
+ */
+typealias ExportFormat = String
+
+/**
+ * [ExportFormat]'s wire values, in declaration order.
+ */
+object ExportFormats {
+    const val EPUB: ExportFormat = "epub"
+    val VALUES: List<ExportFormat> = listOf(EPUB)
 }
 
 /**
@@ -299,6 +316,78 @@ data class BookDetailDto(
      */
     val musicEnabled: Boolean = false,
     val chapters: List<ChapterSummaryDto> = emptyList(),
+)
+
+/**
+ * bookExportDTO is one export of a book: a built file, a build in
+ * progress, or a failed one - an existing file stays downloadable while
+ * it's rebuilt.
+ */
+@Serializable
+data class BookExportDto(
+    val id: String = "",
+    val format: ExportFormat = "",
+    val wordLevel: Boolean = false,
+    val phraseSeconds: Double = 0.0,
+    val excludeMusic: Boolean = false,
+    /**
+     * Latents marks a latent-only lectable transfer (createExportRequest.
+     * Latents).
+     */
+    val latents: Boolean = false,
+    /**
+     * Chapters is the included chapter indexes; empty for the whole book.
+     */
+    val chapters: List<Int> = emptyList(),
+    /**
+     * ChapterLabel describes Chapters for people ("Chapters 1–40"), ""
+     * for the whole book.
+     */
+    val chapterLabel: String = "",
+    /**
+     * Full is true for a whole-book export, which carries lectable's own
+     * data and can be imported into another library.
+     */
+    val full: Boolean = false,
+    /**
+     * Ready means there's a built file to download (DownloadURL).
+     */
+    val ready: Boolean = false,
+    /**
+     * Stale means the book changed since the file was built.
+     */
+    val stale: Boolean = false,
+    /**
+     * Queued means its job is waiting in the job queue.
+     */
+    val queued: Boolean = false,
+    /**
+     * Rendering means its job is generating the chapters' missing audio
+     * first.
+     */
+    val rendering: Boolean = false,
+    val building: Boolean = false,
+    /**
+     * Progress is a running build's fraction done, 0-1.
+     */
+    val progress: Double = 0.0,
+    /**
+     * Error is the last build's failure.
+     */
+    val error: String? = null,
+    val fileName: String? = null,
+    val sizeBytes: Long? = null,
+    /**
+     * unix ms
+     */
+    val createdAt: Long? = null,
+    val durationSeconds: Double? = null,
+    /**
+     * MissingAudio is how many paragraphs had no narration when built -
+     * text-only in the file.
+     */
+    val missingAudio: Int? = null,
+    val downloadUrl: String? = null,
 )
 
 @Serializable
@@ -521,6 +610,49 @@ data class CreateBookmarkRequestDto(
     val chapterIdx: Int = 0,
     val paragraphIdx: Int = 0,
     val note: String = "",
+)
+
+@Serializable
+data class CreateExportRequestDto(
+    /**
+     * Format defaults to epub when empty.
+     */
+    val format: ExportFormat = "",
+    /**
+     * WordLevel highlights word by word (where the alignment matches the
+     * text) instead of paragraph by paragraph.
+     */
+    val wordLevel: Boolean = false,
+    /**
+     * PhraseSeconds (word-level only) groups words into phrases at least
+     * this long, so readers that track playback coarsely stay in sync at
+     * high speeds - see bookexport.Options.PhraseSeconds. 0 is per word.
+     */
+    val phraseSeconds: Double = 0.0,
+    /**
+     * ExcludeMusic (whole-book only) leaves background music out - most of
+     * a scored book's size; see bookexport.Options.ExcludeMusic.
+     */
+    val excludeMusic: Boolean = false,
+    /**
+     * Chapters is the chapter indexes to include; empty (or every
+     * chapter) is the whole book - the only kind another library can
+     * import.
+     */
+    val chapters: List<Int> = emptyList(),
+    /**
+     * AsIs skips rendering: by default the export first generates every
+     * paragraph of its chapters that has no audio yet and waits for it
+     * (failing if some can't be), while AsIs builds right away with
+     * whatever audio exists, the rest text-only.
+     */
+    val asIs: Boolean = false,
+    /**
+     * Latents builds a latent-only lectable transfer - see
+     * bookexport.Options.Latents. Always as-is; with Chapters it imports as
+     * a standalone book of just those chapters.
+     */
+    val latents: Boolean = false,
 )
 
 @Serializable

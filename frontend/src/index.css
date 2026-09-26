@@ -7,6 +7,7 @@
   --accent: #7c3aed;
   --accent-hover: #6d28d9;
   --error: #dc2626;
+  --warning: #b45309;
   /* Annotations view (ReaderPage) - narrator/speaker/description
      highlight colors, deliberately distinct from --accent (the
      currently-playing-paragraph highlight), so the two can coexist on
@@ -63,6 +64,7 @@
     --accent: #a78bfa;
     --accent-hover: #c4b5fd;
     --error: #f87171;
+    --warning: #fbbf24;
     --annotation-narrator: #9ca3af;
     --annotation-speaker: #60a5fa;
     --annotation-description: #fbbf24;
@@ -84,6 +86,7 @@
   --accent: #a78bfa;
   --accent-hover: #c4b5fd;
   --error: #f87171;
+  --warning: #fbbf24;
   --annotation-narrator: #9ca3af;
   --annotation-speaker: #60a5fa;
   --annotation-description: #fbbf24;
@@ -411,6 +414,9 @@ label {
 }
 .icon-button-preprocess {
   top: 3.7rem;
+}
+.icon-button-export {
+  top: 7rem;
 }
 .icon-button-preprocess:disabled {
   opacity: 0.4;
@@ -2463,4 +2469,112 @@ label {
   align-items: center;
   gap: 0.4rem;
   font-size: 0.8rem;
+}
+
+/* Export page (per-book export settings and built exports) */
+
+.export-page section {
+  margin-bottom: 1.75rem;
+}
+.export-page h2 {
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+}
+.export-table td {
+  vertical-align: top;
+}
+.export-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: color-mix(in srgb, var(--text) 70%, transparent);
+}
+.export-note {
+  font-size: 0.8rem;
+  margin-top: 0.15rem;
+}
+.export-stale {
+  color: var(--warning);
+}
+.export-spinner {
+  margin-right: 0.3rem;
+  vertical-align: -2px;
+}
+.export-progress {
+  margin-top: 0.3rem;
+  height: 4px;
+  width: 8rem;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+.export-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.export-actions {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+.export-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+.export-form select {
+  max-width: 22rem;
+}
+.export-indent {
+  margin-left: 1.6rem;
+}
+.export-chapters {
+  margin-bottom: 0.8rem;
+}
+.export-chapter-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 0.4rem;
+}
+.export-chapter-list {
+  max-height: 22rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.6rem;
+}
+.export-chapter {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.15rem 0;
+  font-size: 0.9rem;
+}
+.export-chapter-idx {
+  min-width: 2.5rem;
+  text-align: right;
+  color: color-mix(in srgb, var(--text) 60%, transparent);
+}
+.export-chapter-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.export-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+.export-parts {
+  width: 4rem;
 }

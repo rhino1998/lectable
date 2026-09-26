@@ -173,6 +173,7 @@ fun kindLabel(kind: String): String = when (kind) {
     "pipeline_bulk_music_scoring" -> "Bulk: Music Scoring"
     "pipeline_bulk_music_generation" -> "Bulk: Music Generation"
     "pipeline_bulk_characterization" -> "Bulk: Characterization"
+    "pipeline_export" -> "Export"
     "pipeline_bulk_voices" -> "Bulk: Voices"
     else -> kind
 }

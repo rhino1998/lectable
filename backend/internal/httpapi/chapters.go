@@ -337,29 +337,10 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 	// internal/narration.Resolver) and batch-fetch audio status grouped by
 	// the resulting voice_id, since a chapter's paragraphs no longer
 	// necessarily share one voice the way a single JOIN could assume.
-	bookVoice, err := s.Narration.BookVoice(book)
+	voices, err := s.Narration.BookVoices(book)
 	if err != nil {
 		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
-	characters, err := s.Store.ListCharacters(store.SeriesScope(book))
-	if err != nil {
-		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
-	}
-	charByName := make(map[string]store.Character, len(characters))
-	characterIDs := make([]string, len(characters))
-	for i, c := range characters {
-		charByName[c.Name] = c
-		characterIDs[i] = c.ID
-	}
-	// A character's assigned voice is per clone model (see
-	// store.Character's doc comment) - resolve against whichever model this
-	// book's own voice currently narrates through.
-	effectiveCloneModel := narration.EffectiveCloneModel(bookVoice)
-	presetIDByChar, err := s.Store.CharacterVoicesForModel(characterIDs, effectiveCloneModel)
-	if err != nil {
-		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
-	}
-	resolvedVoiceCache := map[string]narration.ResolvedVoice{} // character id -> resolved, avoids repeat lookups
 	idsByVoice := map[string][]string{}
 	voiceIDByParagraph := make(map[string]string, len(paragraphs))
 	// cloneModelByParagraph mirrors voiceIDByParagraph, one step further -
@@ -367,18 +348,9 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 	// active for it right now (see paragraphDTO.DirectionTag below).
 	cloneModelByParagraph := make(map[string]string, len(paragraphs))
 	for _, p := range paragraphs {
-		v := bookVoice
-		if book.MultiVoice() && p.Speaker != "" && p.Speaker != "Narrator" {
-			if c, ok := charByName[p.Speaker]; ok {
-				if cached, ok := resolvedVoiceCache[c.ID]; ok {
-					v = cached
-				} else if resolved, err := s.Narration.ResolveCharacterVoice(book, bookVoice, c, effectiveCloneModel, presetIDByChar[c.ID]); err != nil {
-					return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
-				} else {
-					resolvedVoiceCache[c.ID] = resolved
-					v = resolved
-				}
-			}
+		v, err := voices.ForSpeaker(p.Speaker)
+		if err != nil {
+			return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 		}
 		vid := v.VoiceID()
 		voiceIDByParagraph[p.ID] = vid

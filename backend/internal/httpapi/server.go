@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/bookexport"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/live"
 	"github.com/rhino1998/lectable/backend/internal/narration"
@@ -33,6 +34,10 @@ type Server struct {
 	// frontend keeps its state in sync through (see package live and
 	// registerLiveTopics). nil leaves the route unregistered.
 	Live *live.Hub
+	// Exports builds and keeps downloadable book exports (see
+	// internal/bookexport). nil leaves deleting a book's exports to
+	// nobody - tests that don't touch exports leave it unset.
+	Exports *bookexport.Manager
 	// Narration resolves a paragraph's effective narration voice (a
 	// character's assigned voice, when book.MultiVoice is on, overriding
 	// the book's own) - see internal/narration.
@@ -140,6 +145,11 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("DELETE /api/books/{id}/audio", s.handleDeleteBookAudio)
 	mux.HandleFunc("GET /api/books/{id}/cover", s.handleGetCover)
 	mux.HandleFunc("GET /api/books/{id}/manifest", s.handleBookManifest)
+
+	mux.HandleFunc("GET /api/books/{id}/exports", s.handleListExports)
+	mux.HandleFunc("POST /api/books/{id}/exports", s.handleCreateExport)
+	mux.HandleFunc("GET /api/books/{id}/exports/{exportId}/file", s.handleGetExportFile)
+	mux.HandleFunc("DELETE /api/books/{id}/exports/{exportId}", s.handleDeleteExport)
 
 	mux.HandleFunc("GET /api/books/{id}/voice", s.handleGetVoice)
 	mux.HandleFunc("PUT /api/books/{id}/voice", s.handleUpdateVoice)

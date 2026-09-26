@@ -65,6 +65,9 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pipeline_bulk_music_generation: 'Bulk: Music Generation',
   pipeline_bulk_characterization: 'Bulk: Characterization',
   pipeline_bulk_voices: 'Bulk: Voices',
+  // A book export (see ExportPage) - renders its chapters' missing audio
+  // first unless queued as-is, then builds the file.
+  pipeline_export: 'Export',
   sfx_generation: 'SFX',
   sfx_preview: 'SFX/Music Preview',
   llm_preview: 'LLM Preview',

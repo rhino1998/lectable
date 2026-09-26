@@ -580,6 +580,49 @@ func (m *Manager) EnqueueBulk(bookID string, g BulkGroup, run PipelinePhaseFunc)
 	m.notifyChanged()
 }
 
+// BulkID is the task id (QueueTask.ID - what Cancel and PromoteTier take)
+// of bookID's bulk group with BulkGroup.Key key.
+func BulkID(bookID, key string) string { return "pipeline:" + bookID + ":" + key }
+
+// BulkState reports whether bookID's bulk group with BulkGroup.Key key is
+// queued or running.
+func (m *Manager) BulkState(bookID, key string) (queued, running bool) {
+	id := BulkID(bookID, key)
+	if m.pipelineQueue.InFlight(id) {
+		return false, true
+	}
+	_, queued = m.pipelineQueue.Find(func(t taskqueue.Task) bool { return t.Key() == id })
+	return queued, false
+}
+
+// RenderChapters queues generation for every paragraph of bookID's
+// chapters (by index, in order) whose audio isn't ready - failed ones
+// included - and blocks until none of those chapters' audio is queued or
+// in flight: the "fully rendered" dependency of work that needs finished
+// chapters (a book export). Canceling ctx removes their still-queued audio,
+// the same as canceling a "generate" row (see waitForChapterAudio). A
+// paragraph whose generation fails for good is left failed - callers
+// check the result themselves.
+func (m *Manager) RenderChapters(ctx context.Context, bookID string, chapterIdxs []int) error {
+	pushed := map[string]bool{}
+	defer func() { m.waitForChapterAudio(ctx, pushed) }()
+	for _, idx := range chapterIdxs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		ch, err := m.store.GetChapterByIdx(bookID, idx)
+		if err != nil {
+			return err
+		}
+		if ch == nil {
+			return fmt.Errorf("chapter %d not found", idx)
+		}
+		m.enqueueChapter(ctx, bookID, ch.ID, idx, 0)
+		pushed[ch.ID] = true
+	}
+	return nil
+}
+
 // EnqueueChapter enqueues background TTS generation for every not-yet-
 // generated paragraph in one chapter, as a bulk group (Kind
 // "pipeline_generate_chapter") that stays in flight until that audio

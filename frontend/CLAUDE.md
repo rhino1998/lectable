@@ -87,6 +87,12 @@ export PATH=/home/rhino/node-toolchains/v24.21.0/bin:$PATH
   necessary because IntersectionObserver only reports *changes* in
   visibility, and a short chapter on a tall screen might not actually
   leave the viewport between one expansion and the next.
+- `src/pages/ExportPage.tsx` (`/books/$bookId/export`, from the library
+  card's download icon) — book exports: builds (whole book or selected
+  chapters, optionally split into N parts; paragraph or word/phrase sync
+  tuned for a top playback speed; render missing audio first or export
+  as-is) queue as Jobs-page tasks, and the list downloads, rebuilds or
+  deletes each export (`bookExports` live topic).
 - `src/routes.tsx` — code-based TanStack Router route tree (not
   file-based routing / no router-plugin codegen — deliberate, to keep
   the build simple for a two-page app). Add new routes here directly.

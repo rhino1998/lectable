@@ -162,8 +162,18 @@ client, not a browser.)
   plus `sfx/` and `music/` beside the voice dirs - are Ogg Opus; model inputs
   like `music/<regionID>.seed.wav` and `audio/<bookID>/ambience/*.wav` stay
   WAV; see `backend/CLAUDE.md`'s `internal/audiomaint`),
+  latents sidecars beside clips whose model has them
+  (`<idx>.lat`: Higgs codes/PocketTTS latents, exact - see
+  `backend/CLAUDE.md`'s "Latents in the backend") and music seeds as
+  `music/<regionID>.seed.lat` (Stable Audio latents; legacy `.seed.wav` is
+  migrated in the background),
   `covers/<bookID>.<ext>`, `epubs/<bookID>.epub` (the source epub, kept for
-  single-chapter re-import), `voice-refs/<presetID>.wav`,
-  `voice-refs/variants/<presetID>/<emotion>.wav`. Nothing is stored
+  single-chapter re-import), `exports/<bookID>/<exportID>.epub` + `.json`
+  (built book exports - EPUB 3 with read-aloud; a whole-book one also
+  restores the book into another library when uploaded there, see
+  `backend/CLAUDE.md`'s `internal/bookexport`), `voice-refs/<presetID>.wav`,
+  `voice-refs/variants/<presetID>/<emotion>.wav`,
+  `voice-refs/cache/refcodes/<hash>.lat` (cached Higgs reference
+  encodings). Nothing is stored
   in `ttsworker` or `frontend` - the worker is intentionally stateless
   aside from which model checkpoints happen to be loaded in VRAM.

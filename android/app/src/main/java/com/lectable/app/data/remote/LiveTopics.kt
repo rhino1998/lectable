@@ -44,6 +44,9 @@ object LiveTopics {
     fun bookmarks(bookId: String): LiveTopic<List<BookmarkDto>> =
         LiveTopic("bookmarks", mapOf("bookId" to bookId), serializer<List<BookmarkDto>>())
 
+    fun bookExports(bookId: String): LiveTopic<List<BookExportDto>> =
+        LiveTopic("bookExports", mapOf("bookId" to bookId), serializer<List<BookExportDto>>())
+
     fun jobs(): LiveTopic<JobsSnapshotDto> =
         LiveTopic("jobs", emptyMap(), serializer<JobsSnapshotDto>())
 

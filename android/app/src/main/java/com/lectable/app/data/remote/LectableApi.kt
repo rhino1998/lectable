@@ -757,6 +757,40 @@ interface LectableApi {
         @Path("id") id: String,
     ): ResponseBody
 
+    @GET("api/books/{id}/exports")
+    suspend fun listExports(
+        @Path("id") id: String,
+    ): List<BookExportDto>
+
+    /**
+     * handleCreateExport queues an export as a job-queue task (a Jobs-page
+     * row, Kind "pipeline_export") - rebuilding it if one with the same
+     * settings already exists. Unless AsIs, the task first renders the
+     * chapters' missing audio (jobs.Manager.RenderChapters) and waits for it.
+     * Progress and the result show up on the bookExports live topic.
+     */
+    @POST("api/books/{id}/exports")
+    suspend fun createExport(
+        @Path("id") id: String,
+        @Body body: CreateExportRequestDto,
+    ): QueuedResponseDto
+
+    /**
+     * handleDeleteExport removes an export's file, or cancels its task.
+     */
+    @DELETE("api/books/{id}/exports/{exportId}")
+    suspend fun deleteExport(
+        @Path("id") id: String,
+        @Path("exportId") exportId: String,
+    ): Unit
+
+    @Streaming
+    @GET("api/books/{id}/exports/{exportId}/file")
+    suspend fun getExportFile(
+        @Path("id") id: String,
+        @Path("exportId") exportId: String,
+    ): ResponseBody
+
     /**
      * handleGenerateBook enqueues background TTS generation for every chapter
      * in a book at once - the library page's own "Generate audio" -> "All"

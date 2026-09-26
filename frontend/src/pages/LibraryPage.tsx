@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { RiDeleteBinLine, RiHeadphoneLine, RiLoader4Line, RiMagicLine, RiUploadLine, RiUserVoiceLine } from 'react-icons/ri'
+import { RiDeleteBinLine, RiDownload2Line, RiHeadphoneLine, RiLoader4Line, RiMagicLine, RiUploadLine, RiUserVoiceLine } from 'react-icons/ri'
 import { useBooks, useDeleteBook, useGenerateBook, useGenerateRemaining, usePreprocessBook, useUploadBook } from '../api/queries'
 import { useClickOutside } from '../hooks/useClickOutside'
 import { ApiError } from '../api/client'
@@ -161,6 +161,14 @@ function BookCard({
           </div>
         )}
       </div>
+      <Link
+        to="/books/$bookId/export"
+        params={{ bookId: book.id }}
+        className="icon-button icon-button-export"
+        title="Export"
+      >
+        <RiDownload2Line />
+      </Link>
       <button className="icon-button" title="Delete book" onClick={onDelete}>
         <RiDeleteBinLine />
       </button>
@@ -210,6 +218,7 @@ export function LibraryPage() {
         <h1>Your books</h1>
         <button
           className="primary-button"
+          title="Upload an .epub - or a Lectable export, which restores the book with its audio"
           onClick={() => fileInputRef.current?.click()}
           disabled={uploadBook.isPending}
         >

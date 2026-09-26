@@ -1198,6 +1198,71 @@ building/running `ttsworker` does, since both now link into that binary.
   regions that no longer exist, ambience loops no region's prompt maps to,
   and stale `.tmp-` files. Names it doesn't know (e.g. a leftover `foley/`)
   are left alone.
+- `internal/bookexport/` — book exports and imports. `Source.Collect`
+  reads a book into a format-neutral `Book` (per chapter: display content
+  plus a playback timeline of `Segment`s - a `[Begin, End)` range of a
+  narration `Clip` with its word timings, under each paragraph's
+  *currently resolved* voice via `narration.BookVoices`, so clips cached
+  under other voices stay behind; a scare-quote merge group's members are
+  consecutive ranges of the anchor's clip). `WriteEPUB` lays that out as an
+  EPUB 3 with Media Overlays (generated XHTML with a `<span id="p-<paragraph
+  id>">` per row, one SMIL per chapter, clips copied as-is since Ogg Opus is
+  an EPUB 3.3 core type, legacy WAV clips transcoded, mtimes kept);
+  `Options.WordLevel` adds per-word (or, with `PhraseSeconds`, per-phrase)
+  overlay entries where the alignment matches the text word for word.
+  Phrases exist because browser-engine readers (Thorium) see the audio
+  clock only ~every 250ms: a unit shorter than 250ms x playback rate drifts,
+  so the Export page's "synced up to N x" picks `PhraseSeconds = 0.3 x N`.
+  The timeline is meant to feed an Opus .m4b writer too - `manager.go`'s
+  `write` is the one place a format plugs in. A **full-book** export also
+  carries lectable's own data under `META-INF/lectable/` (readers ignore
+  it): `manifest.json` (maps every archive entry to its DATA_DIR path + mtime),
+  `db/<table>.jsonl` (`store.ExportBookRows` - DuckDB `to_json` of each row,
+  paragraph_audio trimmed to the exported clips), and `data/...` (source
+  epub, voice refs + emotion variants for every preset in play, SFX, music
+  clips/seeds, ambience loops). `Source.Import` restores that into another
+  library under the original ids (`store.ImportBookRows`: `read_json` into
+  the intersection of export/current columns; shared rows - presets, series
+  characters - kept if present, characters matched by (scope, name) and
+  `character_voices` remapped), then files (only under the book's own dirs
+  or `voice-refs/`, which is never overwritten); `409 book_exists` if the
+  book is already there. Uploading a full export through `POST /api/books`
+  imports it; a chapter-subset export is imported as a plain new book.
+  `Manager` keeps built exports at `DATA_DIR/exports/<book>/<id>.epub` +
+  `<id>.json` (id = `Options.ID()`, so rebuilding the same selection
+  replaces it) and tracks requested ones; staleness is computed on read
+  from `store.ExportFingerprints` (SyncFingerprints widened to SFX, music
+  regions, bookmarks and word timings), never invalidated on write.
+  Measured on Spire's Spite (244 chapters, 73h): collect 12s, write 60s,
+  16GB - of which narration is 1.5GB and background music ~14GB (ambience
+  WAV loops 5.5GB, music seed WAVs 4.7GB, music clips 4GB); import 31s.
+  `Options.ExcludeMusic` (full exports only) leaves those three out and
+  exports the music regions back as `pending` (scoring kept), so an
+  importing library re-renders the music instead of shipping it.
+  `Options.Latents` is the **latent-only transfer** mode, for moving books
+  between Lectable instances.
+  - The EPUB part is text-only.
+  - Each narration clip travels as its `.lat` sidecar where it has one,
+    else as its audio; ambience loops likewise (their `.lat` beside the
+    WAV); seeds as `.seed.lat`.
+  - Always as-is: an in-progress book moves with whatever it has, and the
+    rest stays pending.
+  - The receiving library decodes a clip the first time it's served
+    (`httpapi.serveMaterializedClip`, via the worker's `/codec-decode`) and
+    rebuilds a loop the first time a region needs it (`jobs.ambienceLoop`).
+  - With `Chapters` set, it imports as a standalone book of just those
+    chapters (`collector.standalone`, `standalone.go`):
+    - rows filtered to them;
+    - every book-local id replaced with one derived (sha256) from the
+      source id and the chapter set, so it can sit beside a full copy of
+      the same book, and re-importing is refused like any existing book;
+    - chapters renumbered from 0;
+    - titled "Title (chapters a–b)";
+    - reading position reset;
+    - data paths rewritten to the new ids;
+    - source epub dropped.
+  - `Manifest.Latents` marks it, and import accepts a partial export only
+    when it's set.
 - `internal/wav/` — a minimal RIFF/WAVE codec: `Duration` (header-only, for
   reporting chunk length to the frontend) plus `Decode`/`Encode` (full
   16-bit PCM in-memory codec, shared by `internal/voicerefs` and
@@ -1408,10 +1473,11 @@ build does, since both now link into that one binary.
 
 ## API surface
 
-- `POST /api/books` (multipart `file`) / `GET /api/books` / `GET|DELETE /api/books/{id}`
+- `POST /api/books` (multipart `file` - an epub, or a Lectable export - a whole-book one, or a latent-only transfer of some chapters (restored as its own book) - which restores that book: `409 book_exists` if it's already here) / `GET /api/books` / `GET|DELETE /api/books/{id}`
 - `GET /api/books/{id}/cover`
 - `POST /api/books/{id}/chapters/{idx}/reimport[?force=true]` — re-parses one chapter from the book's source epub and replaces its content (`store.ReplaceChapterContent`), keeping every other chapter's attribution, fixes, and audio. The source is the copy kept at upload (`data/epubs/<bookID>.epub`, `audiopath.SourceEpubFile`), or an optional multipart `file`, which also replaces the kept copy. Cancels the chapter's queued/in-flight jobs first (`jobs.Manager.CancelChapter`). Resets the chapter's paragraphs, audio, SFX, music regions, images, breaks, and pass flags; bookmarks are re-pointed by idx. `409` with `code` `no_source_epub` (upload the file) or `title_mismatch` (retry with `force=true`), or plain `409` if the epub's chapter count differs or a job is still running
 - `GET /api/books/{id}/manifest?chapters=0,3` — the root of the book's offline-sync hash tree (`httpapi/manifest.go`), for clients reconciling an offline copy (Android downloads) against the backend, which always wins: `hash` covers the book's title/author/cover (file size+mtime)/chapter count plus each listed chapter's `hash` (all chapters if `chapters` is omitted), returned in `chapters`. Built chapter hashes are stored in `sync_tree_nodes` (`Store.PutSyncTreeNodes`/`SyncTreeNodes`) tagged with a fingerprint of the rows they came from (`Store.SyncFingerprints`: one aggregate query per book over whole-row DuckDB hashes of the book row minus position/estimate, its chapters/paragraphs/paragraph_audio minus `word_timings`/images/breaks, plus the whole character/voice tables) and with `syncTreeVersion` - a sha256 of the running `server` executable, since fingerprints can't see code (hash fields, DTO shapes, compiled-in voice presets) and Go builds are reproducible; nodes from other builds are pruned on the first manifest request. Only chapters whose rows moved get rebuilt. Validated by value on each request rather than invalidated by writes, since `OnChange` only knows tables, not rows: over-covering inputs can only cause a needless rebuild, never a stale hash. No PRIMARY KEY/index on the table (update-then-insert in one transaction instead) - see this DB's index-corruption history. Measured on the real library: a 244-chapter book's manifest goes from ~11.5s on first build to ~40ms afterwards, including after a restart; a new build of `server` rebuilds each book once. Every chapter value (REST and the live `chapter` topic) carries its own `hash` plus per-paragraph `contentHash` (text/annotations an offline copy stores) and `audioHash` (resolved voice id, status, backing clip, duration, pointer) - so a client can tell "refresh metadata" from "re-download this .wav". Reading position is returned alongside but kept outside the tree
+- `GET|POST /api/books/{id}/exports`, `GET /api/books/{id}/exports/{exportId}/file`, `DELETE /api/books/{id}/exports/{exportId}` — book exports (`internal/bookexport`, live topic `bookExports`). POST `{"format", "wordLevel", "phraseSeconds", "excludeMusic", "chapters", "asIs"}` queues a `jobs.BulkGroup` (Kind `pipeline_export`, key `export:<id>`, `202`): unless `asIs`, it first renders every not-ready paragraph of the chosen chapters (`jobs.Manager.RenderChapters`, failed ones retried) and waits, then builds - failing with "not fully rendered" if some paragraph still has no audio; `asIs` builds right away, missing audio text-only. Promoting the row promotes the audio it waits on. DELETE cancels the task and/or removes the file. The list overlays the job's queued/running state (`jobs.Manager.BulkState`) on the Manager's own.
 - `GET|PUT /api/books/{id}/voice` — `cloneModel` is the book's own clone model (every voice in it clones through it; voice presets carry none - `""` on PUT leaves it unchanged, and changing it deletes the book's generated audio); changing voice resets that book's paragraph audio to `pending`; `multiVoice` toggles whether character voice assignments (see below) override this book's own voice at all (default off)
 - `GET|PUT /api/books/{id}/position`
 - `GET /api/books/{id}/chapters/{idx}` — paragraphs with `audioStatus`/`audioUrl`/`speaker`/`inline`/`emotion`

@@ -6,12 +6,14 @@ import type { LiveResult } from './live'
 import type {
   Bookmark,
   BookDetail,
+  BookExport,
   BookSummary,
   BulkAction,
   BulkScope,
   ResetPass,
   ChapterDetail,
   ChapterMusic,
+  CreateExportRequest,
   CustomVoicePreset,
   CustomVoicePresetInput,
   JobsSnapshot,
@@ -50,6 +52,20 @@ export function useUploadBook() {
 
 export function useDeleteBook() {
   return useMutation({ mutationFn: (bookId: string) => api.deleteBook(bookId) })
+}
+
+// Every export of a book - built files, builds in progress, failures (see
+// backend httpapi.buildExports).
+export function useBookExports(bookId: string): LiveResult<BookExport[]> {
+  return useLive('bookExports', { bookId })
+}
+
+export function useCreateExport(bookId: string) {
+  return useMutation({ mutationFn: (req: CreateExportRequest) => api.createExport(bookId, req) })
+}
+
+export function useDeleteExport(bookId: string) {
+  return useMutation({ mutationFn: (exportId: string) => api.deleteExport(bookId, exportId) })
 }
 
 // VoicePanel's "Delete generated audio" - wipes every paragraph's audio

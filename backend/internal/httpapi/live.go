@@ -60,6 +60,7 @@ func withDeps(base []string, extra ...string) []string {
 //	characterAppearances  {bookId, characterId}
 //	characterDescriptions {bookId, characterId}
 //	bookmarks      {bookId}               GET /api/books/{id}/bookmarks
+//	bookExports    {bookId}               GET /api/books/{id}/exports
 //	jobs                                  GET /api/jobs
 //	voicePresets                          GET /api/voices/presets
 //	customVoicePresets                    GET /api/voices/custom-presets
@@ -85,6 +86,10 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("characterAppearances", characterTopic("characterAppearances", narrationDeps, 2*time.Second, s.buildCharacterAppearances))
 	h.Register("characterDescriptions", characterTopic("characterDescriptions", narrationDeps, 2*time.Second, s.buildCharacterDescriptions))
 	h.Register("bookmarks", bookTopic("bookmarks", dbDeps("bookmarks", "books", "chapters", "paragraphs"), 0, s.buildBookmarks))
+	// Staleness is a whole-book fingerprint query, so this is rate-limited
+	// like the other whole-book topics; a build's progress still lands
+	// every couple of seconds.
+	h.Register("bookExports", bookTopic("bookExports", exportDeps, 2*time.Second, s.buildExports))
 	h.Register("jobs", noParams("jobs", withDeps(dbDeps("books", "chapters"), DepJobs), 250*time.Millisecond, func() (jobsSnapshotDTO, error) {
 		return s.buildJobsSnapshot(), nil
 	}))

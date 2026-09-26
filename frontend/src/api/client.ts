@@ -2,6 +2,7 @@ import {
   ROUTE_RESPONSE_KINDS,
   type BulkAction,
   type BulkScope,
+  type CreateExportRequest,
   type CustomVoicePresetInput,
   type ErrorCode,
   type GenerateSFXRequest,
@@ -93,6 +94,16 @@ export const api = {
   },
 
   deleteBook: (id: string) => call('DELETE /api/books/{id}', { path: { id } }),
+
+  // Queues building (or rebuilding - same settings, same export) a book
+  // export in the background; its progress and file show up on the
+  // bookExports topic. See httpapi.handleCreateExport.
+  createExport: (bookId: string, req: CreateExportRequest) =>
+    call('POST /api/books/{id}/exports', { path: { id: bookId }, body: req }),
+
+  // Deletes an export's file, or cancels its build.
+  deleteExport: (bookId: string, exportId: string) =>
+    call('DELETE /api/books/{id}/exports/{exportId}', { path: { id: bookId, exportId } }),
 
   // Deletes every generated audio file for this book (and the DB's own
   // bookkeeping about them, across every voice it's ever been generated

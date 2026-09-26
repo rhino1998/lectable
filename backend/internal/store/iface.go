@@ -1,6 +1,10 @@
 package store
 
-import "github.com/rhino1998/lectable/backend/internal/pronounce"
+import (
+	"encoding/json"
+
+	"github.com/rhino1998/lectable/backend/internal/pronounce"
+)
 
 // Store is the library's data access: every read and write the rest of the
 // backend makes goes through it. DuckStore is the DuckDB implementation;
@@ -36,6 +40,8 @@ type Store interface {
 	DeleteParagraphAudioForSpeaker(bookIDs []string, name string) ([]SpeakerAudioRef, error)
 	DeleteVoicePreset(id string) error
 	DescriptionsForBooks(bookIDs []string, characterName string, limit int) ([]DescriptionContext, error)
+	ExportBookRows(bookID, characterScope string) (map[string][]json.RawMessage, error)
+	ExportFingerprints(bookID, characterScope string) (book string, chapters map[int]string, err error)
 	GetBook(id string) (*Book, error)
 	GetChapterByID(id string) (*Chapter, error)
 	GetChapterByIdx(bookID string, idx int) (*Chapter, error)
@@ -49,6 +55,7 @@ type Store interface {
 	GetParagraphIDByIdx(chapterID string, idx int) (string, error)
 	GetParagraphSFXState(paragraphID string) (SFXState, error)
 	GetVoicePreset(id string) (*VoicePreset, error)
+	ImportBookRows(rows map[string][]json.RawMessage) error
 	ListBookmarks(bookID string) ([]Bookmark, error)
 	ListBooks() ([]Book, error)
 	ListBreaks(chapterID string) ([]Break, error)

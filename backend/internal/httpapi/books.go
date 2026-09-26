@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/bookexport"
 	"github.com/rhino1998/lectable/backend/internal/epub"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -239,6 +240,16 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A whole-book Lectable export restores the book it came from, with
+	// its audio and everything else, and a latent-only transfer of some
+	// chapters restores as a standalone book of them (bookexport.Options.
+	// Latents); any other epub (an ordinary chapter-subset export
+	// included) is imported as a new book from its text.
+	if m, err := bookexport.ReadManifest(tmp, size); err == nil && (m.Full || m.Latents) {
+		s.handleImportExport(w, tmp, size, m.Title)
+		return
+	}
+
 	book, err := epub.Parse(tmp, size)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not parse epub: "+err.Error())
@@ -322,6 +333,33 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 		s.Jobs.EnqueueLengthEstimate(bookID, chapters[0].ID, 300)
 	}
 
+	writeJSON(w, http.StatusCreated, summary)
+}
+
+// handleImportExport restores an uploaded whole-book export (see
+// bookexport.Source.Import) and answers like a fresh upload does. Nothing
+// is queued: the book arrives with its audio already rendered.
+func (s *Server) handleImportExport(w http.ResponseWriter, r io.ReaderAt, size int64, title string) {
+	src := bookexport.Source{Store: s.Store, Voices: s.Narration, DataDir: s.DataDir}
+	m, err := src.Import(r, size)
+	if errors.Is(err, bookexport.ErrBookExists) {
+		writeErrorCode(w, http.StatusConflict, errBookExists, "\""+title+"\" is already in the library - delete it first to replace it with this export")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "could not import export: "+err.Error())
+		return
+	}
+	b, err := s.Store.GetBook(m.BookID)
+	if err != nil || b == nil {
+		writeError(w, http.StatusInternalServerError, "book imported but could not be reloaded")
+		return
+	}
+	summary, _, err := s.buildBookSummary(*b)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeJSON(w, http.StatusCreated, summary)
 }
 
@@ -657,6 +695,9 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(audiopath.CoverFile(s.DataDir, id, b.CoverExt))
 	}
 	_ = os.Remove(audiopath.SourceEpubFile(s.DataDir, id))
+	if s.Exports != nil {
+		_ = s.Exports.DeleteBook(id)
+	}
 	writeNoContent(w)
 }
 

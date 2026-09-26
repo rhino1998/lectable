@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rhino1998/lectable/backend/internal/audiomaint"
+	"github.com/rhino1998/lectable/backend/internal/bookexport"
 	"github.com/rhino1998/lectable/backend/internal/httpapi"
 	"github.com/rhino1998/lectable/backend/internal/instanceid"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
@@ -161,6 +162,13 @@ func main() {
 		defer speakerClient.Close()
 	}
 
+	narrationResolver := narration.NewResolver(st)
+	// Book exports build in the background and are kept under
+	// DATA_DIR/exports; build state changes reach clients via the
+	// bookExports live topic.
+	exports := bookexport.NewManager(bookexport.Source{Store: st, Voices: narrationResolver, DataDir: dataDir},
+		func() { liveHub.Invalidate(httpapi.DepExports) })
+
 	server := &httpapi.Server{
 		Store:       st,
 		TTS:         ttsMgr,
@@ -168,7 +176,8 @@ func main() {
 		DataDir:     dataDir,
 		AllowOrigin: allowOrigin,
 		Live:        liveHub,
-		Narration:   narration.NewResolver(st),
+		Exports:     exports,
+		Narration:   narrationResolver,
 		Speaker:     speakerClient,
 		InstanceID:  instanceID,
 		LibraryName: libraryName,

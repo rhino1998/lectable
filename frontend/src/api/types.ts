@@ -11,6 +11,7 @@ import {
   type CharacterVoiceMode,
   type CloneModel,
   type DesignModel,
+  type ExportFormat,
   type SFXEngine,
 } from './generated'
 
@@ -27,6 +28,10 @@ export const SFX_ENGINE_LABELS: Record<SFXEngine, string> = {
   stable_audio_sfx: 'Stable Audio 3 (sound effects)',
   stable_audio_music: 'Stable Audio 3 Small (music)',
   stable_audio_medium: 'Stable Audio 3 Medium (music)',
+}
+
+export const EXPORT_FORMAT_LABELS: Record<ExportFormat, string> = {
+  epub: 'EPUB 3 with read-aloud (Media Overlays)',
 }
 
 // Which of the three broad narration roles a paragraph segment plays in

@@ -187,6 +187,71 @@ func (r *Resolver) ForParagraph(book *store.Book, speaker string) (ResolvedVoice
 	return r.ResolveCharacterVoice(book, bookVoice, *char, cloneModel, presetID)
 }
 
+// BookVoices resolves many paragraphs of one book at once - ForParagraph's
+// result for each, without its per-paragraph store round trips: the
+// series roster and every character's assigned preset (for the book's
+// clone model) are fetched once, and each character resolves once.
+type BookVoices struct {
+	r            *Resolver
+	book         *store.Book
+	Book         ResolvedVoice
+	cloneModel   string
+	charByName   map[string]store.Character
+	presetByChar map[string]string
+	resolved     map[string]ResolvedVoice // character id -> voice
+}
+
+// BookVoices prepares a BookVoices for book. The roster is only loaded
+// when book.MultiVoice() is on - otherwise every paragraph is the book's
+// own voice.
+func (r *Resolver) BookVoices(book *store.Book) (*BookVoices, error) {
+	bookVoice, err := r.BookVoice(book)
+	if err != nil {
+		return nil, err
+	}
+	bv := &BookVoices{r: r, book: book, Book: bookVoice, cloneModel: EffectiveCloneModel(bookVoice), resolved: map[string]ResolvedVoice{}}
+	if !book.MultiVoice() {
+		return bv, nil
+	}
+	characters, err := r.store.ListCharacters(store.SeriesScope(book))
+	if err != nil {
+		return nil, err
+	}
+	bv.charByName = make(map[string]store.Character, len(characters))
+	ids := make([]string, len(characters))
+	for i, c := range characters {
+		bv.charByName[c.Name] = c
+		ids[i] = c.ID
+	}
+	// A character's assigned voice is per clone model (see
+	// store.Character's doc comment) - resolved against whichever model
+	// the book's own voice narrates through.
+	if bv.presetByChar, err = r.store.CharacterVoicesForModel(ids, bv.cloneModel); err != nil {
+		return nil, err
+	}
+	return bv, nil
+}
+
+// ForSpeaker is ForParagraph for a paragraph attributed to speaker.
+func (bv *BookVoices) ForSpeaker(speaker string) (ResolvedVoice, error) {
+	if !bv.book.MultiVoice() || speaker == "" || speaker == "Narrator" {
+		return bv.Book, nil
+	}
+	c, ok := bv.charByName[speaker]
+	if !ok {
+		return bv.Book, nil
+	}
+	if v, ok := bv.resolved[c.ID]; ok {
+		return v, nil
+	}
+	v, err := bv.r.ResolveCharacterVoice(bv.book, bv.Book, c, bv.cloneModel, bv.presetByChar[c.ID])
+	if err != nil {
+		return ResolvedVoice{}, err
+	}
+	bv.resolved[c.ID] = v
+	return v, nil
+}
+
 // ResolveCharacterVoice is ForParagraph's own per-character resolution,
 // factored out so a bulk, whole-chapter caller that's already
 // batch-prefetched presetID via Store.CharacterVoicesForModel

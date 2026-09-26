@@ -38,6 +38,9 @@ const (
 	// errTitleMismatch: the epub's chapter title differs from the
 	// library's - retry with force=true if it's the right chapter.
 	errTitleMismatch errorCode = "title_mismatch"
+	// errBookExists: an uploaded lectable export is a book this library
+	// already has - delete it first to replace it.
+	errBookExists errorCode = "book_exists"
 )
 
 // queuedResponse is every 202 body: how many background tasks the request

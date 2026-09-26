@@ -39,8 +39,14 @@ export type CharacterVoiceMode = (typeof CHARACTER_VOICE_MODES)[number]
  * errorCode is a machine-readable error reason a client can branch on
  * (errorResponse.Code).
  */
-export const ERROR_CODES = ['no_source_epub', 'title_mismatch'] as const
+export const ERROR_CODES = ['no_source_epub', 'title_mismatch', 'book_exists'] as const
 export type ErrorCode = (typeof ERROR_CODES)[number]
+
+/**
+ * exportFormat is an export file format on the wire - bookexport.Format.
+ */
+export const EXPORT_FORMATS = ['epub'] as const
+export type ExportFormat = (typeof EXPORT_FORMATS)[number]
 
 /**
  * jobTier is a job-queue priority tier on the wire - jobs.Tier*'s names,
@@ -155,6 +161,77 @@ export interface AliasesResponse {
 
 export interface BookDetail extends BookSummary {
   chapters: ChapterSummary[]
+}
+
+/**
+ * bookExportDTO is one export of a book: a built file, a build in
+ * progress, or a failed one - an existing file stays downloadable while
+ * it's rebuilt.
+ */
+export interface BookExport {
+  id: string
+  format: ExportFormat
+  wordLevel: boolean
+  phraseSeconds: number
+  excludeMusic: boolean
+  /**
+   * Latents marks a latent-only lectable transfer (createExportRequest.
+   * Latents).
+   */
+  latents: boolean
+  /**
+   * Chapters is the included chapter indexes; empty for the whole book.
+   */
+  chapters: number[]
+  /**
+   * ChapterLabel describes Chapters for people ("Chapters 1–40"), ""
+   * for the whole book.
+   */
+  chapterLabel: string
+  /**
+   * Full is true for a whole-book export, which carries lectable's own
+   * data and can be imported into another library.
+   */
+  full: boolean
+  /**
+   * Ready means there's a built file to download (DownloadURL).
+   */
+  ready: boolean
+  /**
+   * Stale means the book changed since the file was built.
+   */
+  stale: boolean
+  /**
+   * Queued means its job is waiting in the job queue.
+   */
+  queued: boolean
+  /**
+   * Rendering means its job is generating the chapters' missing audio
+   * first.
+   */
+  rendering: boolean
+  building: boolean
+  /**
+   * Progress is a running build's fraction done, 0-1.
+   */
+  progress: number
+  /**
+   * Error is the last build's failure.
+   */
+  error?: string
+  fileName?: string
+  sizeBytes?: number
+  /**
+   * unix ms
+   */
+  createdAt?: number
+  durationSeconds?: number
+  /**
+   * MissingAudio is how many paragraphs had no narration when built -
+   * text-only in the file.
+   */
+  missingAudio?: number
+  downloadUrl?: string
 }
 
 export interface BookManifest {
@@ -334,6 +411,48 @@ export interface CreateBookmarkRequest {
   chapterIdx: number
   paragraphIdx: number
   note: string
+}
+
+export interface CreateExportRequest {
+  /**
+   * Format defaults to epub when empty.
+   */
+  format: ExportFormat
+  /**
+   * WordLevel highlights word by word (where the alignment matches the
+   * text) instead of paragraph by paragraph.
+   */
+  wordLevel: boolean
+  /**
+   * PhraseSeconds (word-level only) groups words into phrases at least
+   * this long, so readers that track playback coarsely stay in sync at
+   * high speeds - see bookexport.Options.PhraseSeconds. 0 is per word.
+   */
+  phraseSeconds: number
+  /**
+   * ExcludeMusic (whole-book only) leaves background music out - most of
+   * a scored book's size; see bookexport.Options.ExcludeMusic.
+   */
+  excludeMusic: boolean
+  /**
+   * Chapters is the chapter indexes to include; empty (or every
+   * chapter) is the whole book - the only kind another library can
+   * import.
+   */
+  chapters: number[]
+  /**
+   * AsIs skips rendering: by default the export first generates every
+   * paragraph of its chapters that has no audio yet and waits for it
+   * (failing if some can't be), while AsIs builds right away with
+   * whatever audio exists, the rest text-only.
+   */
+  asIs: boolean
+  /**
+   * Latents builds a latent-only lectable transfer - see
+   * bookexport.Options.Latents. Always as-is; with Chapters it imports as
+   * a standalone book of just those chapters.
+   */
+  latents: boolean
 }
 
 export interface CustomVoicePreset {
@@ -1345,6 +1464,7 @@ export interface LiveTopics {
   characterAppearances: { params: { bookId: string; characterId: string }; data: SpeakerAppearance[] }
   characterDescriptions: { params: { bookId: string; characterId: string }; data: SpeakerAppearance[] }
   bookmarks: { params: { bookId: string }; data: Bookmark[] }
+  bookExports: { params: { bookId: string }; data: BookExport[] }
   jobs: { params: Record<never, never>; data: JobsSnapshot }
   voicePresets: { params: Record<never, never>; data: VoicePresets }
   customVoicePresets: { params: Record<never, never>; data: CustomVoicePreset[] }
@@ -1376,7 +1496,7 @@ export interface Routes {
     query: Record<never, never>
     body: FormData
     response: BookSummary
-    errorCode: never
+    errorCode: 'book_exists'
   }
   /**
    * handleListBooks batch-fetches every book's chapter summaries and
@@ -2116,6 +2236,44 @@ export interface Routes {
   }
   'GET /api/books/{id}/cover': {
     path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: Blob
+    errorCode: never
+  }
+  'GET /api/books/{id}/exports': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: BookExport[]
+    errorCode: never
+  }
+  /**
+   * handleCreateExport queues an export as a job-queue task (a Jobs-page
+   * row, Kind "pipeline_export") - rebuilding it if one with the same
+   * settings already exists. Unless AsIs, the task first renders the
+   * chapters' missing audio (jobs.Manager.RenderChapters) and waits for it.
+   * Progress and the result show up on the bookExports live topic.
+   */
+  'POST /api/books/{id}/exports': {
+    path: { id: string }
+    query: Record<never, never>
+    body: CreateExportRequest
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleDeleteExport removes an export's file, or cancels its task.
+   */
+  'DELETE /api/books/{id}/exports/{exportId}': {
+    path: { id: string; exportId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
+  'GET /api/books/{id}/exports/{exportId}/file': {
+    path: { id: string; exportId: string }
     query: Record<never, never>
     body: never
     response: Blob
@@ -2906,6 +3064,10 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/characters/{characterId}/merge': 'none',
   'PUT /api/books/{id}/characters/{characterId}/voice': 'none',
   'GET /api/books/{id}/cover': 'binary',
+  'GET /api/books/{id}/exports': 'json',
+  'POST /api/books/{id}/exports': 'json',
+  'DELETE /api/books/{id}/exports/{exportId}': 'none',
+  'GET /api/books/{id}/exports/{exportId}/file': 'binary',
   'POST /api/books/{id}/generate': 'json',
   'POST /api/books/{id}/generate-remaining': 'json',
   'POST /api/books/{id}/lookahead': 'json',
