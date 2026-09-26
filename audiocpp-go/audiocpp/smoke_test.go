@@ -71,6 +71,9 @@ func TestTaskVocabularyMapsCloneAndDesign(t *testing.T) {
 	if !has("vdes") {
 		t.Error(`TaskNames() missing "vdes"`)
 	}
+	if !has("codec") {
+		t.Error(`TaskNames() missing "codec"`)
+	}
 	if got, ok := audiocpp.TaskFromSpecName("clone"); !ok || got != "clon" {
 		t.Errorf(`TaskFromSpecName("clone") = %q, %v; want "clon", true`, got, ok)
 	}

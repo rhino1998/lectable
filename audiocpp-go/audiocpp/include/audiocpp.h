@@ -133,8 +133,8 @@ AUDIOCPP_API audiocpp_status audiocpp_registry_family(const audiocpp_registry * 
  *
  * Model specs and this ABI use different spellings for the same kinds: a spec
  * says "music", "sfx", "edit" or "audio_generation" where this says "gen",
- * "clone" for "clon", "design" for "vdes", "speaker" for "spk". Nine of the
- * fourteen are identical, which is what makes comparing them directly appear
+ * "clone" for "clon", "design" for "vdes", "speaker" for "spk". Ten of the
+ * fifteen are identical, which is what makes comparing them directly appear
  * to work.
  */
 
@@ -180,7 +180,7 @@ AUDIOCPP_API const char * audiocpp_model_description(const audiocpp_model * mode
 
 /* Capability queries. `task` is one of the tokens audiocpp_task_name()
  * enumerates -- "vad", "asr", "diar", "sep", "gen", "tts", "clon", "vc",
- * "s2s", "align", "vdes", "spk", "svc", "midi" -- and `mode` is "offline" or
+ * "s2s", "align", "vdes", "spk", "svc", "midi", "codec" -- and `mode` is "offline" or
  * "streaming".
  *
  * Returns 1 when supported and 0 otherwise, which includes a task or mode this
@@ -352,7 +352,16 @@ typedef enum audiocpp_artifact_kind {
     AUDIOCPP_ARTIFACT_TRANSCRIPT_ALIGNMENT = 5,
     AUDIOCPP_ARTIFACT_DIARIZATION_STATE = 6,
     AUDIOCPP_ARTIFACT_VAD_STATE = 7,
-    AUDIOCPP_ARTIFACT_CUSTOM = 8
+    AUDIOCPP_ARTIFACT_CUSTOM = 8,
+    /* A model's continuous pre-decoder representation (e.g. VAE latents):
+     * little-endian float32, time-major [frames][dim], described by artifact
+     * meta "frames", "dim", "dtype" ("f32"), "layout" ("time_major"),
+     * "hop_samples", "sample_rate" and "family". Families may add more meta a
+     * decode needs to reproduce its generation output exactly. Produced by the
+     * "codec" task (encode) and by generation with request option
+     * return_latents=true; consumed by the "codec" task (decode) and wherever a
+     * family takes latents in place of audio input. */
+    AUDIOCPP_ARTIFACT_LATENTS = 9
 } audiocpp_artifact_kind;
 
 /* The payload is copied, so it need not outlive the call. out_index (optional)

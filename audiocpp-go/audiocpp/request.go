@@ -25,6 +25,9 @@ const (
 	ArtifactDiarizationState    ArtifactKind = 6
 	ArtifactVADState            ArtifactKind = 7
 	ArtifactCustom              ArtifactKind = 8
+	// ArtifactLatents is a model's continuous pre-decoder representation;
+	// see Latents.
+	ArtifactLatents ArtifactKind = 9
 )
 
 // Request wraps audiocpp_request. Setters return the Request so calls can be

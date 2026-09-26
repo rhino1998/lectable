@@ -39,7 +39,7 @@ func (m *Model) Description() string {
 
 // Supports reports whether the model supports the given task
 // ("vad", "asr", "diar", "sep", "gen", "tts", "clon", "vc", "s2s", "align",
-// "vdes", "spk", "svc", "midi" -- see TaskNames) in the given mode
+// "vdes", "spk", "svc", "midi", "codec" -- see TaskNames) in the given mode
 // ("offline" or "streaming"). An unrecognized task or mode also reports
 // false; validate against TaskNames first if that distinction matters.
 func (m *Model) Supports(task, mode string) bool {

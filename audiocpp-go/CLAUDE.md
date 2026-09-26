@@ -27,6 +27,40 @@ out of the main, always-up backend binary entirely).
   `AUDIOCPP_CHECKOUT` points at a local audio.cpp checkout with the C API
   built; see the package doc comment and README.md for the exact steps.
 
+## Latents, codes and the codec task
+
+These are thin typed layers over the artifact API for this repo's local
+audio.cpp latents/codec patch (`backend/CLAUDE.md`, "Latents/codec patch"):
+- **`audiocpp/latents.go`:** `Latents` (continuous: Stable Audio,
+  PocketTTS; f32, time-major, `Slice`), `Result.Latents()`,
+  `Request.AddLatents()`.
+- **`audiocpp/codes.go`:** `Codes` (discrete: Higgs; int32, time-major),
+  `Result.Codes(id)`, `Request.AddCodes(c, id)`. The id is `"codes"` or
+  `"reference_codes"`.
+
+A `"codec"` session encodes audio to latents/codes, or decodes them to
+audio, loading only the family's codec/autoencoder. The request option
+`return_latents=true` makes generation return its decoder input (latents or
+codes, with `chunk_frames` meta where text is chunked). Decoding that input
+in a codec session reproduces the generated audio exactly on the same
+backend.
+
+Family extras:
+- **Stable Audio:** accepts latents in place of `init_audio`/`inpaint_audio`.
+- **Higgs:** `return_reference_codes=true` returns a clone's reference
+  codes, and `AddCodes(c, "reference_codes")` reuses them instead of
+  reference audio.
+
+Model-gated tests (each skips unless its env var is set):
+- `TestStableAudioCodec`: `AUDIOCPP_STABLE_AUDIO_MODEL`.
+- `TestHiggsCodec`: `AUDIOCPP_HIGGS_MODEL` (the .gguf).
+- `TestPocketTTSCodec`: `AUDIOCPP_POCKET_TTS_MODEL` (package dir).
+
+They take an optional `AUDIOCPP_TEST_BACKEND` (default `cpu`; use `hip`
+here, since Stable Audio and Higgs generation on CPU need `-timeout 30m`).
+The vendored header comes from the *patched* local checkout, so re-copying
+it from an unpatched one would drop `AUDIOCPP_ARTIFACT_LATENTS`.
+
 ## What's vendored vs. external
 
 Only the header is vendored. audio.cpp's C++ source, its CMake build (which
