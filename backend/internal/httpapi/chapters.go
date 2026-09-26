@@ -1277,7 +1277,7 @@ func (s *Server) handleGetAudio(w http.ResponseWriter, r *http.Request) {
 	// a regenerated clip is written under the same path, so a heuristically
 	// cached copy would replay the old render.
 	w.Header().Set("Cache-Control", "no-cache")
-	serveClip(w, r, s.paragraphAudioPath(ch.BookID, ch.ID, voiceID, p.Idx))
+	s.serveMaterializedClip(w, r, s.paragraphAudioPath(ch.BookID, ch.ID, voiceID, p.Idx))
 }
 
 func (s *Server) handleGetImage(w http.ResponseWriter, r *http.Request) {

@@ -63,6 +63,11 @@ type Config struct {
 	// watchdogLoop's own doc comment for why this needs a genuinely
 	// different restart path than the RSS/process-died triggers above.
 	StuckJobTimeout time.Duration
+
+	// RefCodesDir, when set, caches Higgs reference encodings there - see
+	// GenerateChunkedAudio. Content-addressed, so a changed reference clip
+	// simply misses; nothing is ever invalidated in place.
+	RefCodesDir string
 }
 
 func (c Config) withDefaults() Config {
@@ -328,6 +333,15 @@ func (m *Manager) beginJob() int64 {
 	}
 	m.jobStarts[id] = time.Now()
 	return id
+}
+
+// Idle reports whether no worker request is in flight - for background
+// work (audiomaint's seed migration) that should only use the worker when
+// nothing else is.
+func (m *Manager) Idle() bool {
+	m.jobMu.Lock()
+	defer m.jobMu.Unlock()
+	return len(m.jobStarts) == 0
 }
 
 // endJob is beginJob's deferred counterpart, called exactly once per

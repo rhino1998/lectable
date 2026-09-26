@@ -74,8 +74,12 @@ type Server struct {
 	// Server value before the code under test calls it; not safe to
 	// mutate concurrently with an in-flight request.
 	OnGenerate func(ttsproto.GenerateRequest) ([]byte, error)
-	OnDesign   func(ttsproto.DesignRequest) ([]byte, error)
-	OnAlign    func(ttsproto.AlignRequest) ([]ttsproto.Word, error)
+	// OnGenerateLatents supplies the latents and reference codes a
+	// ReturnLatents request's reply carries (nil, nil by default - a
+	// family without latents).
+	OnGenerateLatents func(ttsproto.GenerateRequest) (latents, referenceCodes *ttsproto.Latents)
+	OnDesign          func(ttsproto.DesignRequest) ([]byte, error)
+	OnAlign           func(ttsproto.AlignRequest) ([]ttsproto.Word, error)
 	// OnTranscribe's default returns an empty transcript, which jobs'
 	// completeness check reads as "no extra words".
 	OnTranscribe  func(ttsproto.TranscribeRequest) (string, error)
@@ -113,6 +117,19 @@ func (s *Server) Manager() *ttsworker.Manager {
 		panic(err) // httptest.Server always listens on 127.0.0.1:<numeric port>
 	}
 	return ttsworker.New(ttsworker.Config{Port: port})
+}
+
+// ManagerWith is Manager with cfg's other fields (its Port is replaced by
+// this server's).
+func (s *Server) ManagerWith(cfg ttsworker.Config) *ttsworker.Manager {
+	u, err := url.Parse(s.Server.URL)
+	if err != nil {
+		panic(err)
+	}
+	if cfg.Port, err = strconv.Atoi(u.Port()); err != nil {
+		panic(err)
+	}
+	return ttsworker.New(cfg)
 }
 
 func synthesize(charCount int) []byte {
@@ -163,16 +180,26 @@ func (s *Server) handleGenerate(w http.ResponseWriter, r *http.Request) {
 	hook := s.OnGenerate
 	s.mu.Unlock()
 
+	data := synthesize(len(req.Text))
 	if hook != nil {
-		data, err := hook(req)
-		if err != nil {
+		var err error
+		if data, err = hook(req); err != nil {
 			writeErr(w, err)
 			return
 		}
+	}
+	if !req.ReturnLatents {
 		writeAudio(w, data)
 		return
 	}
-	writeAudio(w, synthesize(len(req.Text)))
+	// The latents-aware reply shape (ttsworker.Manager.GenerateChunkedAudio).
+	// OnGenerateLatents, when set, supplies latents/reference codes.
+	resp := ttsproto.GenerateResponse{WAV: data}
+	if s.OnGenerateLatents != nil {
+		resp.Latents, resp.ReferenceCodes = s.OnGenerateLatents(req)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func (s *Server) handleDesign(w http.ResponseWriter, r *http.Request) {

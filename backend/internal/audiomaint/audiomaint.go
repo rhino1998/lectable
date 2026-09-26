@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/latents"
 	"github.com/rhino1998/lectable/backend/internal/musicgen"
 	"github.com/rhino1998/lectable/backend/internal/oggopus"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -174,7 +175,7 @@ func prepareMusicDir(dir string) []string {
 	}
 	seedFrom := func(id, src string) {
 		seed := filepath.Join(dir, id+".seed.wav")
-		if has[id+".seed.wav"] {
+		if has[id+".seed.wav"] || has[id+".seed"+latents.Ext] {
 			return
 		}
 		data, err := os.ReadFile(src)
@@ -351,7 +352,9 @@ func sweepOrphans(ctx context.Context, dataDir string, refs store.AudioRefs, cut
 			case ch.Name() == "ambience":
 				keep := map[string]bool{}
 				for prompt := range refs.BookAmbience[book.Name()] {
-					keep[filepath.Base(audiopath.AmbienceLoopFile("", "", prompt))] = true
+					loop := audiopath.AmbienceLoopFile("", "", prompt)
+					keep[filepath.Base(loop)] = true
+					keep[filepath.Base(latents.Sidecar(loop))] = true
 				}
 				for _, f := range readDir(chDir) {
 					if !keep[f.Name()] {

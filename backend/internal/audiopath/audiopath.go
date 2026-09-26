@@ -16,11 +16,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/rhino1998/lectable/backend/internal/latents"
 	"github.com/rhino1998/lectable/backend/internal/oggopus"
+	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
 
 // ClipExt is the served-clip extension, and LegacyClipExt the one they
@@ -53,11 +56,11 @@ func Resolve(path string) string {
 	return path
 }
 
-// RemoveClip deletes clip path and its legacy WAV sibling; a missing file
-// is not an error.
+// RemoveClip deletes clip path, its legacy WAV sibling and its latents
+// sidecar; a missing file is not an error.
 func RemoveClip(path string) error {
 	var errs []error
-	for _, p := range []string{path, LegacyWAV(path)} {
+	for _, p := range []string{path, LegacyWAV(path), latents.Sidecar(path)} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			errs = append(errs, err)
 		}
@@ -77,6 +80,26 @@ func WriteClip(path string, wavBytes []byte) error {
 		return err
 	}
 	_ = os.Remove(LegacyWAV(path))
+	// Whatever latents sat beside the old clip describe the old audio.
+	_ = os.Remove(latents.Sidecar(path))
+	return nil
+}
+
+// WriteClipLatents is WriteClip plus the clip's latents sidecar
+// (latents.Sidecar(path)) when lat is non-nil: the generated audio's exact
+// decoder input, stored losslessly beside the lossy served clip. A failed
+// sidecar write leaves the clip without one rather than failing the clip.
+func WriteClipLatents(path string, wavBytes []byte, lat *ttsproto.Latents) error {
+	if err := WriteClip(path, wavBytes); err != nil {
+		return err
+	}
+	if lat == nil {
+		return nil
+	}
+	if err := latents.WriteFile(latents.Sidecar(path), lat, ""); err != nil {
+		log.Printf("audiopath: write latents for %s: %v", path, err)
+		_ = os.Remove(latents.Sidecar(path))
+	}
 	return nil
 }
 
@@ -195,6 +218,13 @@ func MusicRegionSeedFile(dataDir, bookID, chapterID, regionID string) string {
 	return filepath.Join(MusicDir(dataDir, bookID, chapterID), regionID+".seed.wav")
 }
 
+// MusicRegionSeedLatentsFile is MusicRegionSeedFile's successor: the same
+// tail as Stable Audio latents (f16), fed back in without re-encoding. A
+// region has one or the other.
+func MusicRegionSeedLatentsFile(dataDir, bookID, chapterID, regionID string) string {
+	return filepath.Join(MusicDir(dataDir, bookID, chapterID), regionID+".seed"+latents.Ext)
+}
+
 // LegacyMusicRegionStemFile is a region's full-length stem as written
 // before seeds were cut to their tail - "music" or "ambience" (from before
 // ambience became a shared loop). Only internal/audiomaint's conversion
@@ -209,6 +239,7 @@ func LegacyMusicRegionStemFile(dataDir, bookID, chapterID, regionID, stem string
 func RemoveMusicRegionFiles(dataDir, bookID, chapterID, regionID string) {
 	_ = RemoveClip(MusicRegionFile(dataDir, bookID, chapterID, regionID))
 	_ = os.Remove(MusicRegionSeedFile(dataDir, bookID, chapterID, regionID))
+	_ = os.Remove(MusicRegionSeedLatentsFile(dataDir, bookID, chapterID, regionID))
 	for _, stem := range []string{"music", "ambience"} {
 		_ = os.Remove(LegacyMusicRegionStemFile(dataDir, bookID, chapterID, regionID, stem))
 	}
@@ -277,4 +308,9 @@ func VoiceDesignCacheFile(dataDir, hash string) string {
 
 func EnsureVoiceDesignCacheDir(dataDir string) error {
 	return os.MkdirAll(filepath.Join(dataDir, "voice-refs", "cache"), 0o755)
+}
+
+// EnsureDir creates path's parent directory.
+func EnsureDir(path string) error {
+	return os.MkdirAll(filepath.Dir(path), 0o755)
 }

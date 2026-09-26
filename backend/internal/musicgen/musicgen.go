@@ -130,6 +130,9 @@ type Region struct {
 	// region's first chunk unseeded (a "cut" transition, or the chapter's
 	// first region) - see the package doc comment.
 	Seed []byte
+	// SeedLatents, when set, is the previous region's Result.SeedLatents,
+	// preferred over Seed with a LatentsBackend.
+	SeedLatents *ttsproto.Latents
 	// AmbiencePrompt, when set, also renders that setting's ambience loop
 	// (Result.AmbienceLoop). Leave empty when the loop is already cached.
 	AmbiencePrompt string
@@ -143,6 +146,13 @@ type Result struct {
 	// AmbienceLoop is the AmbienceLoopSeconds seamless ambience loop, nil
 	// unless Region.AmbiencePrompt was set.
 	AmbienceLoop []byte
+	// SeedLatents is the next continuation region's seed (the served
+	// clip's tail as Stable Audio latents) - only with a LatentsBackend.
+	SeedLatents *ttsproto.Latents
+	// AmbienceLoopLatents is AmbienceLoop's render as latents (the whole
+	// window, with decode meta): decode it and apply LoopFromDecoded to
+	// rebuild AmbienceLoop - only with a LatentsBackend.
+	AmbienceLoopLatents *ttsproto.Latents
 }
 
 // GenerateRegion renders one chapter tone region's full-duration
@@ -158,6 +168,9 @@ type Result struct {
 // only a couple of short paragraphs generates a correspondingly short
 // clip rather than being padded out to some "musically coherent" floor.
 func GenerateRegion(ctx context.Context, backend Backend, in Region) (Result, error) {
+	if lb, ok := backend.(LatentsBackend); ok {
+		return generateRegionLatents(ctx, lb, in)
+	}
 	served := in.TargetDurationSeconds + crossfadePaddingSeconds
 	renderTarget := served + loopCrossfadeSeconds
 

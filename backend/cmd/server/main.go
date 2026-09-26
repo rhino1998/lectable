@@ -23,6 +23,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
+	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 )
@@ -100,6 +101,7 @@ func main() {
 		Port:              ttsWorkerPort,
 		LibDir:            audiocppLibDir,
 		DefaultCloneModel: voices.DefaultCloneModel,
+		RefCodesDir:       filepath.Join(dataDir, "voice-refs", "cache", "refcodes"),
 	})
 	if err := ttsMgr.Start(ctx); err != nil {
 		log.Fatalf("start ttsworker: %v", err)
@@ -116,6 +118,9 @@ func main() {
 	// Converts clips from before the switch to Ogg Opus and deletes audio
 	// the library no longer refers to - once now, then sweeping daily.
 	go audiomaint.Run(ctx, dataDir, st)
+	go audiomaint.MigrateSeedLatents(ctx, dataDir, func(ctx context.Context, wav []byte) (*ttsproto.Latents, error) {
+		return ttsMgr.CodecEncode(ctx, "stable_audio_medium", wav)
+	}, ttsMgr.Idle)
 
 	// Live state push (GET /api/events): every committed store write and
 	// every job-queue change invalidates the topics depending on it - see

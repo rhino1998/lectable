@@ -800,6 +800,15 @@ func registerAuxEngines() map[string]*auxEngine {
 		{key: "stable_audio_music", family: "stable_audio", modelPath: stableAudioMusicModelPath, task: "gen", poolSize: stableAudioMusicPoolSize},
 		{key: "stable_audio_sfx", family: "stable_audio", modelPath: stableAudioSFXModelPath, task: "gen", poolSize: stableAudioSFXPoolSize},
 		{key: "stable_audio_medium", family: "stable_audio", modelPath: stableAudioMediumModelPath, task: "gen", poolSize: stableAudioMediumPoolSize},
+		// The Medium checkpoint's autoencoder alone (the "codec" task), for
+		// CodecEncode - a separate engine because a session's task is fixed
+		// at creation.
+		{key: "stable_audio_medium_codec", family: "stable_audio", modelPath: stableAudioMediumModelPath, task: "codec", poolSize: 1},
+		// Narration codecs, for decoding a clip's latents sidecar back to
+		// audio (latent-only book transfers, decoded on play): codec
+		// weights only, not the TTS models.
+		{key: "higgs_codec", family: "higgs_audio_tts", modelPath: cloneFamilies["audiocpp-higgs"].modelPath, task: "codec", poolSize: 1},
+		{key: "pocket_codec", family: "pocket_tts", modelPath: cloneFamilies["audiocpp-pocket"].modelPath, task: "codec", poolSize: 1},
 	}
 	out := make(map[string]*auxEngine, len(specs))
 	for _, e := range specs {

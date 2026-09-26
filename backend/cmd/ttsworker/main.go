@@ -121,6 +121,8 @@ func main() {
 	mux.HandleFunc("POST /stable-audio-music", audioWorker.HandleStableAudioMusic)
 	mux.HandleFunc("POST /stable-audio-sfx", audioWorker.HandleStableAudioSFX)
 	mux.HandleFunc("POST /stable-audio-medium", audioWorker.HandleStableAudioMedium)
+	mux.HandleFunc("POST /codec-encode", audioWorker.HandleCodecEncode)
+	mux.HandleFunc("POST /codec-decode", audioWorker.HandleCodecDecode)
 	mux.HandleFunc("POST /unload", audioWorker.HandleUnload)
 	mux.HandleFunc("POST /llm/generate", llmWorker.HandleGenerate)
 	mux.HandleFunc("POST /llm/unload", llmWorker.HandleUnload)

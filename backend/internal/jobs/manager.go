@@ -23,6 +23,7 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
+	"github.com/rhino1998/lectable/backend/internal/latents"
 	"github.com/rhino1998/lectable/backend/internal/musicgen"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -1154,6 +1155,9 @@ func (t *task) refKey() string {
 
 type taskResult struct {
 	audio []byte // KindVoiceClone/KindVoiceDesign/KindVoiceDesignPreview/KindSFXPreview only
+	// latents is audio's decoder input when the clone model has one (see
+	// ttsworker.Audio) - written beside the clip as its sidecar.
+	latents *ttsproto.Latents
 	// words is audio's own word timings when generate already aligned it
 	// for its completeness check (see generateCloneChecked) - nil
 	// otherwise, leaving alignment to saveParagraphAudio's own detached
@@ -1811,7 +1815,7 @@ func (m *Manager) estimateLength(bookID, chapterID string, wordLimit int) {
 		log.Printf("jobs: length estimate for book %s: generate: %v", bookID, err)
 		return
 	}
-	dur, err := wav.Duration(audio)
+	dur, err := wav.Duration(audio.WAV)
 	if err != nil || dur <= 0 {
 		log.Printf("jobs: length estimate for book %s: parse wav duration: %v", bookID, err)
 		return
@@ -4787,6 +4791,9 @@ func (m *Manager) generateMusicRegionWithRetry(ctx context.Context, bookID, chap
 // starts fresh. See musicRegionSeeds.
 type musicSeeds struct {
 	music []byte
+	// latents is the seed as Stable Audio latents (a .seed.lat), preferred
+	// over music - see musicgen.Region.SeedLatents.
+	latents *ttsproto.Latents
 }
 
 // musicRegionSeeds reads region's continuation seed from the region
@@ -4803,6 +4810,9 @@ func (m *Manager) musicRegionSeeds(bookID, chapterID string, region store.MusicR
 	if prevRegionID == "" || region.Transition != store.MusicTransitionContinuation {
 		return seeds
 	}
+	if l, err := latents.ReadFile(audiopath.MusicRegionSeedLatentsFile(m.dataDir, bookID, chapterID, prevRegionID)); err == nil {
+		seeds.latents = l
+	}
 	for _, path := range []string{
 		audiopath.MusicRegionSeedFile(m.dataDir, bookID, chapterID, prevRegionID),
 		audiopath.LegacyMusicRegionStemFile(m.dataDir, bookID, chapterID, prevRegionID, "music"),
@@ -4814,6 +4824,60 @@ func (m *Manager) musicRegionSeeds(bookID, chapterID string, region store.MusicR
 		}
 	}
 	return seeds
+}
+
+// ambienceLoop reads a setting's loop WAV, rebuilding it first from its
+// latents sidecar when only that exists (a book imported from a
+// latent-only export): one codec decode plus the loop recipe
+// (musicgen.LoopFromDecoded), cached as the WAV. An error means neither is
+// usable - the caller renders the loop afresh.
+func (m *Manager) ambienceLoop(ctx context.Context, loopPath string) ([]byte, error) {
+	data, err := os.ReadFile(loopPath)
+	if err == nil {
+		return data, nil
+	}
+	lat, lerr := latents.ReadFile(latents.Sidecar(loopPath))
+	if lerr != nil {
+		return nil, err
+	}
+	decoded, err := m.tts.CodecDecode(ctx, "stable_audio_medium", lat)
+	if err != nil {
+		log.Printf("jobs: rebuild ambience loop %s from latents: %v", loopPath, err)
+		return nil, err
+	}
+	loop, err := musicgen.LoopFromDecoded(decoded)
+	if err != nil {
+		return nil, err
+	}
+	if err := audiopath.WriteFileAtomic(loopPath, loop); err != nil {
+		log.Printf("jobs: cache rebuilt ambience loop %s: %v", loopPath, err)
+	}
+	return loop, nil
+}
+
+// saveMusicSeed keeps what a following continuation region seeds from:
+// the tail as latents (f16 - conditioning only, ~2e-4 off, far under the
+// ~17% a WAV re-encode loses) when musicgen produced them, else as WAV.
+// Either way it removes the other form, so a region never has both.
+func (m *Manager) saveMusicSeed(bookID, chapterID, regionID string, music []byte, seedLatents *ttsproto.Latents) error {
+	wavPath := audiopath.MusicRegionSeedFile(m.dataDir, bookID, chapterID, regionID)
+	latPath := audiopath.MusicRegionSeedLatentsFile(m.dataDir, bookID, chapterID, regionID)
+	if seedLatents != nil {
+		if err := latents.WriteFile(latPath, seedLatents, "f16"); err != nil {
+			return err
+		}
+		_ = os.Remove(wavPath)
+		return nil
+	}
+	seed, err := musicgen.SeedTail(music)
+	if err != nil {
+		return fmt.Errorf("cut music seed: %w", err)
+	}
+	if err := audiopath.WriteFileAtomic(wavPath, seed); err != nil {
+		return err
+	}
+	_ = os.Remove(latPath)
+	return nil
 }
 
 // lockAmbience serializes work on one book's ambience loop for prompt, so
@@ -4860,12 +4924,13 @@ func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID str
 		Prompt:                region.Prompt,
 		TargetDurationSeconds: targetDuration,
 		Seed:                  seeds.music,
+		SeedLatents:           seeds.latents,
 	}
 	var loop []byte
 	loopPath := audiopath.AmbienceLoopFile(m.dataDir, bookID, region.Ambience)
 	if region.Ambience != "" {
 		defer m.lockAmbience(bookID, region.Ambience)()
-		if data, err := os.ReadFile(loopPath); err == nil {
+		if data, err := m.ambienceLoop(ctx, loopPath); err == nil {
 			loop = data
 		} else {
 			in.AmbiencePrompt = region.Ambience
@@ -4883,6 +4948,13 @@ func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID str
 		if err := os.MkdirAll(audiopath.AmbienceDir(m.dataDir, bookID), 0o755); err == nil {
 			if err := os.WriteFile(loopPath, loop, 0o644); err != nil {
 				log.Printf("jobs: save ambience loop for region %s: %v", region.ID, err)
+			}
+			// The loop's latents, for latent-only exports (f16: a transfer
+			// decodes on other hardware anyway, so exactness buys nothing).
+			if res.AmbienceLoopLatents != nil {
+				if err := latents.WriteFile(latents.Sidecar(loopPath), res.AmbienceLoopLatents, "f16"); err != nil {
+					log.Printf("jobs: save ambience loop latents for region %s: %v", region.ID, err)
+				}
 			}
 		}
 	}
@@ -4902,12 +4974,7 @@ func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID str
 	for _, stem := range []string{"music", "ambience"} {
 		_ = os.Remove(audiopath.LegacyMusicRegionStemFile(m.dataDir, bookID, chapterID, region.ID, stem))
 	}
-	seed, err := musicgen.SeedTail(music)
-	if err != nil {
-		_ = m.store.SetMusicRegionError(region.ID, "failed to cut music seed: "+err.Error())
-		return err
-	}
-	if err := audiopath.WriteFileAtomic(audiopath.MusicRegionSeedFile(m.dataDir, bookID, chapterID, region.ID), seed); err != nil {
+	if err := m.saveMusicSeed(bookID, chapterID, region.ID, music, res.SeedLatents); err != nil {
 		_ = m.store.SetMusicRegionError(region.ID, "failed to save music seed: "+err.Error())
 		return err
 	}
@@ -5495,7 +5562,7 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 	if t.kind == KindLengthEstimate {
 		go func() {
 			audio, _, err := m.generate(ctx, t)
-			ch <- taskResult{audio: audio, err: err}
+			ch <- taskResult{audio: audio.WAV, err: err}
 		}()
 		return ch
 	}
@@ -5515,7 +5582,7 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 	}
 	go func() {
 		audio, words, err := m.generate(ctx, t)
-		ch <- taskResult{audio: audio, words: words, err: err}
+		ch <- taskResult{audio: audio.WAV, latents: audio.Latents, words: words, err: err}
 	}()
 	return ch
 }
@@ -5565,7 +5632,7 @@ func mergedGenerationText(members []store.Paragraph, cloneModel string) string {
 	return strings.Join(texts, " ")
 }
 
-func (m *Manager) generate(ctx context.Context, t *task) ([]byte, []ttsproto.Word, error) {
+func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []ttsproto.Word, error) {
 	if t.kind == KindVoiceDesign {
 		var seed *int64
 		// 0 means no seed anchor (see httpapi.resolveVoiceSeed) - leave nil
@@ -5580,7 +5647,7 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, []ttsproto.Wor
 			text = mergedGenerationText(t.mergeParagraphs, "")
 		}
 		audio, err := m.tts.Design(ctx, text, t.instruct, t.language, t.designModel, seed)
-		return audio, nil, err
+		return ttsworker.Audio{WAV: audio}, nil, err
 	}
 
 	cloneModel := t.cloneModel
@@ -5589,7 +5656,7 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, []ttsproto.Wor
 	}
 	refPath, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, t.presetID, t.instruct, t.seed, t.refText, t.speedMultiplier, t.designModel)
 	if err != nil {
-		return nil, nil, fmt.Errorf("ensure reference clip: %w", err)
+		return ttsworker.Audio{}, nil, fmt.Errorf("ensure reference clip: %w", err)
 	}
 	refText := t.refText
 	if path, line, ok := m.emotionVariant(t); ok {
@@ -5597,7 +5664,7 @@ func (m *Manager) generate(ctx context.Context, t *task) ([]byte, []ttsproto.Wor
 	}
 	refAudio, err := os.ReadFile(refPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("read reference clip: %w", err)
+		return ttsworker.Audio{}, nil, fmt.Errorf("read reference clip: %w", err)
 	}
 	// t.paragraph.ResolveGenerationText applies pronunciation/emphasis
 	// substitutions (and, for Higgs, pause tags) to t.paragraph.Text, or
@@ -5875,10 +5942,10 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		return
 	}
 	if len(t.mergeParagraphs) > 1 {
-		m.handleMergedResult(t, result.audio, result.words)
+		m.handleMergedResult(t, result.audio, result.latents, result.words)
 		return
 	}
-	m.saveParagraphAudio(t, t.paragraph, result.audio, result.words)
+	m.saveParagraphAudio(t, t.paragraph, result.audio, result.latents, result.words)
 }
 
 // refreshStaleGeneration re-reads t's paragraph(s) and reports whether any
@@ -5935,9 +6002,9 @@ func (m *Manager) failParagraph(t *task, paragraph store.Paragraph, err error) {
 // one write/publish/error-handling path. words, when non-nil, are audio's
 // own already-computed word timings (generateCloneChecked's), saved
 // directly instead of running alignParagraph.
-func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio []byte, words []ttsproto.Word) {
+func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio []byte, lat *ttsproto.Latents, words []ttsproto.Word) {
 	outPath := audiopath.ParagraphFile(m.dataDir, t.bookID, t.chapterID, t.voiceID, paragraph.Idx)
-	if err := audiopath.WriteClip(outPath, audio); err != nil {
+	if err := audiopath.WriteClipLatents(outPath, audio, lat); err != nil {
 		log.Printf("jobs: write audio file: %v", err)
 		_ = m.store.SetParagraphError(paragraph.ID, t.voiceID, "failed to save audio: "+err.Error())
 		return
@@ -6031,7 +6098,7 @@ func (m *Manager) saveWordTimings(t *task, paragraph store.Paragraph, words []tt
 // closely enough to locate every member's own boundary with confidence:
 // merging is an audio-quality optimization, never something a paragraph's
 // own audio correctness should depend on.
-func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, precomputed []ttsproto.Word) {
+func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, mergedLatents *ttsproto.Latents, precomputed []ttsproto.Word) {
 	cloneModel := t.cloneModel
 	if cloneModel == "" {
 		cloneModel = voices.DefaultCloneModel
@@ -6051,7 +6118,7 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, precomputed []
 
 	anchor := t.mergeParagraphs[0]
 	outPath := audiopath.ParagraphFile(m.dataDir, t.bookID, t.chapterID, t.voiceID, anchor.Idx)
-	if err := audiopath.WriteClip(outPath, mergedAudio); err != nil {
+	if err := audiopath.WriteClipLatents(outPath, mergedAudio, mergedLatents); err != nil {
 		log.Printf("jobs: write merged audio file: %v", err)
 		for _, p := range t.mergeParagraphs {
 			m.failParagraph(t, p, fmt.Errorf("failed to save audio: %w", err))
@@ -6174,7 +6241,7 @@ func (m *Manager) generateIndependently(t *task) {
 				m.failParagraph(t, p, err)
 				continue
 			}
-			m.saveParagraphAudio(t, p, audio, nil)
+			m.saveParagraphAudio(t, p, audio, nil, nil)
 		}
 		return
 	}
@@ -6199,7 +6266,7 @@ func (m *Manager) generateIndependently(t *task) {
 			m.failParagraph(t, p, err)
 			continue
 		}
-		m.saveParagraphAudio(t, p, audio, words)
+		m.saveParagraphAudio(t, p, audio.WAV, audio.Latents, words)
 	}
 }
 

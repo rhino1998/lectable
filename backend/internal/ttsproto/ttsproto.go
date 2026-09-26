@@ -43,6 +43,47 @@ type GenerateRequest struct {
 	// paragraph whose alignment shows missing words in smaller chunks. 0
 	// (every other caller) keeps the family's own default.
 	TextChunkSize int `json:"textChunkSize,omitempty"`
+
+	// ReturnLatents asks for the clone family's decoder input alongside the
+	// audio (Higgs codes, PocketTTS latents; nil for families without one):
+	// the reply is then a GenerateResponse (JSON) instead of raw WAV.
+	ReturnLatents bool `json:"returnLatents,omitempty"`
+	// ReferenceCodes is a cached encoding of RefAudioBase64 (Higgs; see
+	// GenerateResponse.ReferenceCodes). The worker uses it instead of
+	// re-encoding the reference when its Meta["codec_model"] matches the
+	// loaded model, and otherwise falls back to RefAudioBase64 - so callers
+	// still send the audio.
+	ReferenceCodes *Latents `json:"referenceCodes,omitempty"`
+}
+
+// GenerateResponse is /generate's reply when GenerateRequest.ReturnLatents
+// is set.
+type GenerateResponse struct {
+	WAV []byte `json:"wav"`
+	// Latents is the generated audio's decoder input, nil when the family
+	// has none. Decoding it reproduces WAV exactly on the same backend.
+	Latents *Latents `json:"latents,omitempty"`
+	// ReferenceCodes is the reference clip's encoding (Higgs), for the
+	// caller to cache and send back as GenerateRequest.ReferenceCodes.
+	ReferenceCodes *Latents `json:"referenceCodes,omitempty"`
+}
+
+// Latents is a model's pre-decoder representation as it crosses the worker
+// boundary: continuous latents (Kind "latents", little-endian float32) or
+// discrete codec codes (Kind "codes", little-endian int32), time-major
+// (Data[frame*Dim + i]). See internal/latents for storing and slicing it.
+type Latents struct {
+	Kind         string `json:"kind"`
+	Frames       int    `json:"frames"`
+	Dim          int    `json:"dim"` // latent width, or codebooks for codes
+	CodebookSize int    `json:"codebookSize,omitempty"`
+	HopSamples   int    `json:"hopSamples"`
+	SampleRate   int    `json:"sampleRate"`
+	Family       string `json:"family"`
+	Data         []byte `json:"data"`
+	// Meta carries family extras through untouched (chunk_frames,
+	// decode_seed, codec_model, ...).
+	Meta map[string]string `json:"meta,omitempty"`
 }
 
 // DesignRequest is POST /design's body: render a fresh reference clip via
@@ -142,6 +183,42 @@ type StableAudioRequest struct {
 	// end_seconds request options.
 	InpaintMaskStartSeconds float64 `json:"inpaintMaskStartSeconds,omitempty"`
 	InpaintMaskEndSeconds   float64 `json:"inpaintMaskEndSeconds,omitempty"`
+
+	// InitLatents, when set, stands in for InitAudioBase64 (with the same
+	// init/inpaint rules): latents from an earlier ReturnLatents reply,
+	// used without re-encoding. Placed from the window's first frame.
+	InitLatents *Latents `json:"initLatents,omitempty"`
+	// ReturnLatents makes the reply a StableAudioResponse (JSON) carrying
+	// the generated latents alongside the WAV.
+	ReturnLatents bool `json:"returnLatents,omitempty"`
+}
+
+// StableAudioResponse is a Stable Audio endpoint's reply when
+// StableAudioRequest.ReturnLatents is set. Latents covers the whole
+// generated window (every frame, including padding past the requested
+// duration), so meta decode_* reproduces WAV exactly.
+type StableAudioResponse struct {
+	WAV     []byte   `json:"wav"`
+	Latents *Latents `json:"latents,omitempty"`
+}
+
+// ErrLatentsModelMismatch is how a worker error reads when latents given as
+// input (StableAudioRequest.InitLatents) came from a different checkpoint
+// than the one loaded - a caller can fall back to generating without them.
+const ErrLatentsModelMismatch = "latents are from a different model checkpoint"
+
+// CodecDecodeRequest asks a family's codec to decode latents back to audio
+// (WAV reply). Family is "stable_audio_medium" today.
+type CodecDecodeRequest struct {
+	Family  string   `json:"family"`
+	Latents *Latents `json:"latents"`
+}
+
+// CodecEncodeRequest asks a family's codec to encode audio (the "codec"
+// task): Family is "stable_audio_medium" today.
+type CodecEncodeRequest struct {
+	Family      string `json:"family"`
+	AudioBase64 string `json:"audioBase64"`
 }
 
 // AlignRequest is POST /align's body: forced word-level alignment of Text

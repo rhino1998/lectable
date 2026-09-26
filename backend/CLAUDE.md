@@ -153,6 +153,118 @@ throughput RTF at batch 4 (0.094 at batch 8, the default). Each piece, all in
 - **Frame-budget floor** (`kMinimumFrameBudget` = 250 frames) - see
   `audioworker.higgsFrameBudgetMultiplier`.
 
+**Latents/codec patch, same local checkout, same caveats** (2026-09-26;
+this change alone is in `/home/rhino/audio.cpp/lectable-latents-codec.diff`,
+and it's in the full `lectable-local-patches.diff` too). Groundwork for
+storing music seeds as Stable Audio latents instead of WAV (see
+`lac/latent-storage-report.md`). It adds no C functions: latents ride the
+existing artifact API.
+- **`AUDIOCPP_ARTIFACT_LATENTS`**: appended to the artifact enum.
+  - Payload: f32, time-major `[frames][dim]`.
+  - Meta: `frames`/`dim`/`hop_samples`/`sample_rate`/`family`, plus family
+    extras.
+  - The shared helper is `engine/framework/runtime/latents.h`.
+- **A new framework task `codec`** (one row in `task_vocabulary.cpp`):
+  - audio in → latents artifact out (encode);
+  - latents artifact in → audio out (decode);
+  - it loads only the family's autoencoder.
+
+  Stable Audio 3 implements it (`StableAudioCodecSession`: SAME weights
+  only, no T5/DiT).
+- **Stable Audio `gen` changes:**
+  - Request option `return_latents=true` attaches each batch item's
+    full-window latents. The meta carries `decode_seed`/
+    `decode_rng_offset`/`chunked_decode`/`valid_frames`/
+    `duration_samples`, so a `codec` decode reproduces the generated audio
+    bit for bit on the same backend (batch 1; verified on HIP).
+  - A latents input artifact replaces the audio input for
+    `init_audio`/`inpaint_audio`, skipping the SAME encode.
+- **Higgs** (discrete codes, via the existing `ACOUSTIC_TOKENS` kind, same
+  conventions; helpers `runtime::Codes` in `latents.h`):
+  - A `codec` session (`HiggsCodecSession`) loads only the codec, not the
+    AR model.
+  - `return_latents=true` on TTS attaches the generated codes (`"codes"`,
+    with per-text-chunk `chunk_frames` meta) on both the single-stream and
+    batched (`decode_batch_size>1`) paths.
+  - `return_reference_codes=true` attaches the cloning reference's codes.
+    A `"reference_codes"` input artifact then replaces reference audio
+    entirely, skipping `encode_reference`. It hits the same
+    reference-prefix KV snapshots, which key on the codes' content.
+- **PocketTTS** (continuous, `LATENTS`):
+  - A `codec` session (`PocketTTSCodecSession`) loads only the Mimi
+    encoder and decoder (`load_pocket_tts_backend_weights(...,
+    include_flow=false)`).
+  - `return_latents=true` attaches the normalized latents with
+    `chunk_frames`.
+  - The encode path is Mimi's encoder stopped before `speaker_proj`
+    (`encode_prompt_embedding(..., project_to_flow=false)`), normalized
+    with `emb_mean`/`emb_std`. Encoding generated audio lands at cosine
+    0.986 to the generator's own latents: the same space.
+  - `resolve_pocket_tts_graph_capacity_config` is now a free function, so
+    codec decodes use generation's exact decoder settings.
+- **Exact decode for all three families:** decoding returned latents/codes
+  reproduces the generated audio bit for bit on HIP (`audiocpp-go` tests).
+- **An upstream bug fix:** `StableAudioSameRuntime::encode` wrote before
+  its output buffer (heap corruption) for any window under 128 latent
+  frames (~11.9 s). A short init/inpaint request, or a short codec encode,
+  hit it.
+- **Status (2026-09-26):** the live `libaudiocpp.so` is rebuilt with this
+  patch; the pre-patch build is kept as `bin/libaudiocpp.so.0.1.0.prev`.
+
+**Latents in the backend** (`internal/latents`: the `ttsproto.Latents`
+wire type's sidecar format, `Slice`/`Concat`; `ttsworker.Audio{WAV,
+Latents}`):
+- **Narration dual-write.**
+  - `jobs.generateClone*` return `ttsworker.Audio`, via
+    `Manager.GenerateChunkedAudio`, which sends `returnLatents`.
+  - `audiopath.WriteClipLatents` writes the `.opus`, then `<idx>.lat`
+    beside it: Higgs codes bit-packed at 10 bits (`u10`, ~2 kbps),
+    PocketTTS latents as f32 (~12.8 kbps). Both are exact, so decoding
+    reproduces the pre-Opus WAV.
+    - zstd/xz were measured and don't beat plain packing on codes (or help
+      f32 latents).
+    - Early sidecars stored as `i16` still read.
+  - Split halves concatenate their latents as separate chunks
+    (`concatCloneAudio`).
+  - Anything that changes samples must drop `Latents`.
+  - `WriteClip` and `RemoveClip` delete a stale sidecar, so a `.lat` never
+    outlives or mismatches its clip.
+  - Families without latents write no sidecar.
+- **Music seeds as latents.**
+  - `musicgen.GenerateRegion` takes a `LatentsBackend` path
+    (`generateRegionLatents`), which seeds continuations from Stable
+    Audio's own latents (`StableAudioRequest.InitLatents`) instead of
+    re-encoding WAV tails.
+  - Every non-final chunk is whole 4096-sample frames, so in-region seeds
+    end exactly where the next chunk starts.
+  - The cross-region seed (`Result.SeedLatents`, the served clip's last
+    ~10 s to the nearest frame, ≤46 ms off, covered by the client
+    crossfade) goes to `<region>.seed.lat` as f16 via
+    `jobs.saveMusicSeed`, which removes the WAV.
+  - `musicRegionSeeds` prefers `.seed.lat`, falling back to legacy
+    `.seed.wav`, which is trimmed to whole frames.
+  - Latents from another checkpoint fail with
+    `ttsproto.ErrLatentsModelMismatch`, and the region starts unseeded.
+  - `audiomaint.MigrateSeedLatents`, started from `cmd/server`, converts
+    legacy seed WAVs through the worker's `/codec-encode` (aux engine
+    `stable_audio_medium_codec`: the SAME autoencoder only). It runs only
+    after 20 s of worker idleness (`Manager.Idle`), since loading the codec
+    evicts generation models.
+- **Higgs reference-code cache** (`Config.RefCodesDir` =
+  `voice-refs/cache/refcodes/`).
+  - Keyed by the content of (clone model, transcript, reference bytes).
+  - Cached codes go out with the reference audio. The worker uses them
+    only if their `codec_model` stamp (`audioworker.modelIdentity`)
+    matches the loaded checkpoint; otherwise it re-encodes and the reply
+    replaces the entry.
+  - PocketTTS has no equivalent input yet (task-backlog 24).
+- **Worker wire changes** (`ttsproto`):
+  - `/generate` and `/stable-audio-medium` answer JSON
+    (`GenerateResponse`/`StableAudioResponse`) only when `returnLatents`
+    is set; raw WAV otherwise.
+  - New `/codec-encode` endpoint.
+  - The fake worker (`ttsworkertest`) mirrors this (`OnGenerateLatents`).
+
 Rather than let that leak eventually OOM-kill the whole backend, TTS
 generation is isolated into its own disposable process (kept in place as
 cheap insurance regardless of the patch above - it's unverified over a long

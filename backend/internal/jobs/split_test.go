@@ -88,7 +88,7 @@ func TestGenerateCloneSplitsOnTokenOverflow(t *testing.T) {
 
 	// The two successful halves (2s of audio each) must be concatenated,
 	// not just one of them returned.
-	dur, err := wav.Duration(audio)
+	dur, err := wav.Duration(audio.WAV)
 	if err != nil {
 		t.Fatalf("wav.Duration: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestGenerateCloneSplitsRecursivelyWhenOneHalfStillOverflows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generateClone: %v", err)
 	}
-	if len(audio) == 0 {
+	if len(audio.WAV) == 0 {
 		t.Fatalf("expected non-empty concatenated audio")
 	}
 }
@@ -213,7 +213,7 @@ func TestGenerateCloneCheckedRetriesTruncatedAudioWithSmallerChunks(t *testing.T
 	if len(chunkSizes) != 2 || chunkSizes[0] != 0 || chunkSizes[1] != retryChunkSizes(text)[0] {
 		t.Fatalf("expected a default attempt then one retry at %d, got %v", retryChunkSizes(text)[0], chunkSizes)
 	}
-	if dur, _ := wav.Duration(audio); dur < 3900*time.Millisecond {
+	if dur, _ := wav.Duration(audio.WAV); dur < 3900*time.Millisecond {
 		t.Fatalf("expected the complete 4s retry to be kept, got %v", dur)
 	}
 	if len(words) != 20 || missingWordCount(words, 4) != 0 {
@@ -275,7 +275,7 @@ func TestGenerateCloneCheckedRetriesExtraWords(t *testing.T) {
 	if n := len(fake.GenerateCalls()); n != 2 {
 		t.Fatalf("expected the default attempt plus one retry, got %d calls", n)
 	}
-	if dur, _ := wav.Duration(audio); dur > 4100*time.Millisecond {
+	if dur, _ := wav.Duration(audio.WAV); dur > 4100*time.Millisecond {
 		t.Fatalf("expected the clean 4s retry kept, got %v", dur)
 	}
 }
@@ -332,7 +332,7 @@ func TestGenerateCloneCheckedKeepsMostCompleteAttempt(t *testing.T) {
 	if n := len(fake.GenerateCalls()); n != 3 {
 		t.Fatalf("expected the default attempt plus both retries, got %d calls", n)
 	}
-	if dur, _ := wav.Duration(audio); dur < 14900*time.Millisecond || dur > 15100*time.Millisecond {
+	if dur, _ := wav.Duration(audio.WAV); dur < 14900*time.Millisecond || dur > 15100*time.Millisecond {
 		t.Fatalf("expected the 15s attempt kept, got %v", dur)
 	}
 }
@@ -350,5 +350,34 @@ func TestRetryChunkSizes(t *testing.T) {
 	}
 	if got := retryChunkSizes(strings.Repeat("a", 100)); len(got) != 1 || got[0] != minRetryChunkChars {
 		t.Fatalf("100 chars: expected a single retry at the floor, got %v", got)
+	}
+}
+
+// TestGenerateCloneSplitConcatenatesLatents: a paragraph generated in two
+// halves carries both halves' latents, as separate chunks, in order.
+func TestGenerateCloneSplitConcatenatesLatents(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	fake.OnGenerate = func(req ttsproto.GenerateRequest) ([]byte, error) {
+		if len(strings.Fields(req.Text)) > 40 {
+			return nil, errors.New(maxTokensOverflowMsg)
+		}
+		return syntheticRefWav(t, 1), nil
+	}
+	frames := 0
+	fake.OnGenerateLatents = func(req ttsproto.GenerateRequest) (*ttsproto.Latents, *ttsproto.Latents) {
+		frames++
+		return &ttsproto.Latents{Kind: "codes", Frames: frames, Dim: 1, Family: "higgs_audio_tts", Data: make([]byte, 4*frames)}, nil
+	}
+	mgr := newTestManager()
+	mgr.tts = fake.Manager()
+
+	audio, err := mgr.generateClone(t.Context(), "audiocpp-higgs-4b", syntheticRefWav(t, 8), wordsText(20), "en", sentencesText(6, 10), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The whole-paragraph call overflowed before returning anything; the
+	// halves got 1 and 2 frames.
+	if audio.Latents == nil || audio.Latents.Frames != 3 || audio.Latents.Meta["chunk_frames"] != "1,2" {
+		t.Fatalf("latents = %+v", audio.Latents)
 	}
 }

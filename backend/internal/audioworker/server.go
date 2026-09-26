@@ -56,24 +56,41 @@ func (w *Worker) HandleGenerate(rw http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	audio, err := w.Generate(GenerateRequest{
-		Text:          req.Text,
-		CloneModel:    req.CloneModel,
-		RefSamples:    clip.Samples,
-		RefSampleRate: clip.SampleRate,
-		RefChannels:   clip.Channels,
-		RefText:       req.RefText,
-		Language:      req.Language,
-		Instruct:      req.Instruct,
-		GuidanceScale: req.GuidanceScale,
-		Temperature:   req.Temperature,
-		TextChunkSize: req.TextChunkSize,
+	res, err := w.GenerateFull(GenerateRequest{
+		Text:           req.Text,
+		CloneModel:     req.CloneModel,
+		RefSamples:     clip.Samples,
+		RefSampleRate:  clip.SampleRate,
+		RefChannels:    clip.Channels,
+		RefText:        req.RefText,
+		Language:       req.Language,
+		Instruct:       req.Instruct,
+		GuidanceScale:  req.GuidanceScale,
+		Temperature:    req.Temperature,
+		TextChunkSize:  req.TextChunkSize,
+		ReturnLatents:  req.ReturnLatents,
+		ReferenceCodes: req.ReferenceCodes,
 	})
 	if err != nil {
 		writeError(rw, http.StatusInternalServerError, err)
 		return
 	}
-	writeWav(rw, audio.Samples, audio.SampleRate, audio.Channels)
+	if !req.ReturnLatents {
+		writeWav(rw, res.Audio.Samples, res.Audio.SampleRate, res.Audio.Channels)
+		return
+	}
+	data, err := encodeWav(res.Audio.Samples, res.Audio.SampleRate, res.Audio.Channels)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(rw, ttsproto.GenerateResponse{WAV: data, Latents: res.Latents, ReferenceCodes: res.ReferenceCodes})
+}
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // HandleDesign serves POST /design.
@@ -153,12 +170,53 @@ func (w *Worker) HandleStableAudioMedium(rw http.ResponseWriter, r *http.Request
 		return
 	}
 
-	audio, err := w.StableAudioMedium(req)
+	audio, lat, err := w.StableAudioMediumFull(req)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	if !req.ReturnLatents {
+		writeWav(rw, audio.Samples, audio.SampleRate, audio.Channels)
+		return
+	}
+	data, err := encodeWav(audio.Samples, audio.SampleRate, audio.Channels)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(rw, ttsproto.StableAudioResponse{WAV: data, Latents: lat})
+}
+
+// HandleCodecDecode serves POST /codec-decode: WAV for the request's
+// latents - see Worker.CodecDecode.
+func (w *Worker) HandleCodecDecode(rw http.ResponseWriter, r *http.Request) {
+	var req ttsproto.CodecDecodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	audio, err := w.CodecDecode(req)
 	if err != nil {
 		writeError(rw, http.StatusInternalServerError, err)
 		return
 	}
 	writeWav(rw, audio.Samples, audio.SampleRate, audio.Channels)
+}
+
+// HandleCodecEncode serves POST /codec-encode: a ttsproto.Latents (JSON)
+// for the request's audio - see Worker.CodecEncode.
+func (w *Worker) HandleCodecEncode(rw http.ResponseWriter, r *http.Request) {
+	var req ttsproto.CodecEncodeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	lat, err := w.CodecEncode(req)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(rw, lat)
 }
 
 // HandleTranscribe serves POST /transcribe.

@@ -8,8 +8,10 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rhino1998/lectable/backend/internal/latents"
 	"github.com/rhino1998/lectable/backend/internal/textsplit"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
+	"github.com/rhino1998/lectable/backend/internal/ttsworker"
 	"github.com/rhino1998/lectable/backend/internal/wav"
 )
 
@@ -154,7 +156,7 @@ func bisectSentencesFrac(sentences []string) (left, right string, leftFrac float
 // this is the sole recovery mechanism for a chunk that overflows, whether
 // from a long paragraph or (confirmed live) a short one at a slow,
 // deliberate voice's own pace.
-func (m *Manager) generateClone(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct string) ([]byte, error) {
+func (m *Manager) generateClone(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct string) (ttsworker.Audio, error) {
 	return m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, text, cloneInstruct, 0, maxGenerationSplitDepth)
 }
 
@@ -177,18 +179,18 @@ func (m *Manager) generateClone(ctx context.Context, cloneModel string, refAudio
 // caller falls back to its ordinary detached alignment then, and the
 // audio is returned unchecked rather than failed. A failed transcription
 // only skips the extra-words half of the check.
-func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct, alignText string) ([]byte, []ttsproto.Word, error) {
+func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct, alignText string) (ttsworker.Audio, []ttsproto.Word, error) {
 	audio, err := m.generateClone(ctx, cloneModel, refAudio, refText, language, text, cloneInstruct)
 	if err != nil || alignText == "" {
 		return audio, nil, err
 	}
-	words, missing, err := m.alignForCompleteness(ctx, alignText, audio, language)
+	words, missing, err := m.alignForCompleteness(ctx, alignText, audio.WAV, language)
 	if err != nil {
 		log.Printf("jobs: completeness check alignment failed, keeping audio unchecked: %v", err)
 		completenessResults.WithLabelValues("unchecked").Inc()
 		return audio, nil, nil
 	}
-	extra := m.extraWordsIn(ctx, audio, alignText, text)
+	extra := m.extraWordsIn(ctx, audio.WAV, alignText, text)
 	retried := false
 	for _, chunkSize := range retryChunkSizes(text) {
 		if missing < minMissingWords && extra < minExtraWords {
@@ -205,12 +207,12 @@ func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, r
 			log.Printf("jobs: text_chunk_size=%d retry failed: %v", chunkSize, err)
 			continue
 		}
-		retryWords, retryMissing, err := m.alignForCompleteness(ctx, alignText, retryAudio, language)
+		retryWords, retryMissing, err := m.alignForCompleteness(ctx, alignText, retryAudio.WAV, language)
 		if err != nil {
 			log.Printf("jobs: text_chunk_size=%d retry alignment failed: %v", chunkSize, err)
 			continue
 		}
-		retryExtra := m.extraWordsIn(ctx, retryAudio, alignText, text)
+		retryExtra := m.extraWordsIn(ctx, retryAudio.WAV, alignText, text)
 		if retryMissing+retryExtra < missing+extra {
 			audio, words, missing, extra = retryAudio, retryWords, retryMissing, retryExtra
 		}
@@ -315,11 +317,11 @@ func retryChunkSizes(text string) []int {
 // overrides the clone family's own internal text chunk budget (see
 // ttsworker.Manager.GenerateChunked) for this call and every split half
 // it recurses into.
-func (m *Manager) generateCloneSplit(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct string, textChunkSize, splitBudget int) ([]byte, error) {
+func (m *Manager) generateCloneSplit(ctx context.Context, cloneModel string, refAudio []byte, refText, language, text, cloneInstruct string, textChunkSize, splitBudget int) (ttsworker.Audio, error) {
 	expected := expectedDuration(text)
 	durationAttempt := 0
 	for {
-		audio, err := m.tts.GenerateChunked(ctx, text, cloneModel, refAudio, refText, language, cloneInstruct, textChunkSize)
+		audio, err := m.tts.GenerateChunkedAudio(ctx, text, cloneModel, refAudio, refText, language, cloneInstruct, textChunkSize)
 		if err != nil {
 			if isMaxTokensExceeded(err) && splitBudget > 0 {
 				if leftText, rightText, ok := bisectForGeneration(text); ok {
@@ -329,18 +331,18 @@ func (m *Manager) generateCloneSplit(ctx context.Context, cloneModel string, ref
 					)
 					leftAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, leftText, cloneInstruct, textChunkSize, splitBudget-1)
 					if err != nil {
-						return nil, err
+						return ttsworker.Audio{}, err
 					}
 					rightAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, rightText, cloneInstruct, textChunkSize, splitBudget-1)
 					if err != nil {
-						return nil, err
+						return ttsworker.Audio{}, err
 					}
 					return concatCloneAudio(leftAudio, rightAudio)
 				}
 			}
-			return nil, err
+			return ttsworker.Audio{}, err
 		}
-		actual, durErr := wav.Duration(audio)
+		actual, durErr := wav.Duration(audio.WAV)
 		if durErr != nil || !isImplausiblyLong(actual, expected) || durationAttempt >= maxDurationRetries {
 			return audio, nil
 		}
@@ -385,20 +387,35 @@ func bisectForGeneration(text string) (left, right string, ok bool) {
 // but here the two halves are genuinely separate recordings (not slices of
 // one shared take), stitched back together after being split apart for
 // generation rather than alignment.
-func concatCloneAudio(left, right []byte) ([]byte, error) {
-	leftClip, err := wav.Decode(left)
+func concatCloneAudio(left, right ttsworker.Audio) (ttsworker.Audio, error) {
+	leftClip, err := wav.Decode(left.WAV)
 	if err != nil {
-		return nil, fmt.Errorf("decode left half: %w", err)
+		return ttsworker.Audio{}, fmt.Errorf("decode left half: %w", err)
 	}
-	rightClip, err := wav.Decode(right)
+	rightClip, err := wav.Decode(right.WAV)
 	if err != nil {
-		return nil, fmt.Errorf("decode right half: %w", err)
+		return ttsworker.Audio{}, fmt.Errorf("decode right half: %w", err)
 	}
 	joined, err := wav.Concat(leftClip, rightClip)
 	if err != nil {
-		return nil, err
+		return ttsworker.Audio{}, err
 	}
-	return wav.Encode(joined.Samples, joined.SampleRate, joined.Channels)
+	data, err := wav.Encode(joined.Samples, joined.SampleRate, joined.Channels)
+	if err != nil {
+		return ttsworker.Audio{}, err
+	}
+	// The halves decode independently and their audio is plainly
+	// concatenated, so their latents concatenate as separate chunks. Drop
+	// them rather than fail if they can't (say, one half has none).
+	out := ttsworker.Audio{WAV: data}
+	if left.Latents != nil && right.Latents != nil {
+		if joinedLatents, err := latents.Concat(left.Latents, right.Latents); err == nil {
+			out.Latents = joinedLatents
+		} else {
+			log.Printf("jobs: concatenating split halves' latents: %v", err)
+		}
+	}
+	return out, nil
 }
 
 // isMaxSourcePositionsExceeded reports whether err is audio.cpp's forced

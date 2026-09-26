@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rhino1998/lectable/audiocpp-go/audiocpp"
+	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
 
 // GenerateRequest clones cloneModel's voice, given the caller's own already-
@@ -107,6 +108,22 @@ type GenerateRequest struct {
 	// for this one call, overriding the family's own compiled-in default -
 	// see ttsproto.GenerateRequest.TextChunkSize.
 	TextChunkSize int
+	// ReturnLatents asks for the decoder input alongside the audio
+	// (GenerateResult.Latents; nil for families without one - see
+	// familyHasLatents) and, for Higgs, the reference's encoding
+	// (GenerateResult.ReferenceCodes).
+	ReturnLatents bool
+	// ReferenceCodes, when its codec_model matches the loaded Higgs
+	// checkpoint, is used instead of encoding RefSamples (which are still
+	// sent, as the fallback when it doesn't match).
+	ReferenceCodes *ttsproto.Latents
+}
+
+// GenerateResult is GenerateFull's output.
+type GenerateResult struct {
+	Audio          *audiocpp.AudioBuffer
+	Latents        *ttsproto.Latents
+	ReferenceCodes *ttsproto.Latents
 }
 
 // isMaxTokensOverflow reports whether err is Higgs generation running out
@@ -120,16 +137,22 @@ func isMaxTokensOverflow(err error) bool {
 
 // Generate mirrors clone_backends/audiocpp.py's AudioCppBackend.generate().
 func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
+	res, err := w.GenerateFull(req)
+	return res.Audio, err
+}
+
+// GenerateFull is Generate plus the latents req.ReturnLatents asked for.
+func (w *Worker) GenerateFull(req GenerateRequest) (GenerateResult, error) {
 	w.touch()
 	familyKey, ok := cloneModelFamilies[req.CloneModel]
 	if !ok {
-		return nil, fmt.Errorf("unsupported clone_model %q", req.CloneModel)
+		return GenerateResult{}, fmt.Errorf("unsupported clone_model %q", req.CloneModel)
 	}
 	fam := cloneFamilies[familyKey]
 
 	lc, err := w.getCloneModel(req.CloneModel)
 	if err != nil {
-		return nil, err
+		return GenerateResult{}, err
 	}
 	// Reserved for the rest of this call - see loadedClone.inFlight's own
 	// doc comment for why this has to cover checkoutSession/Run too, not
@@ -205,8 +228,31 @@ func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
 	if fam.temperature && req.Temperature != nil {
 		request.SetOption("temperature", strconv.FormatFloat(*req.Temperature, 'f', -1, 64))
 	}
+	wantLatents := req.ReturnLatents && familyHasLatents(fam.family)
+	codecModel := ""
+	injectedRef := false
+	if familyHasLatents(fam.family) {
+		codecModel = modelIdentity(fam.modelPath)
+	}
+	if wantLatents {
+		request.SetOption("return_latents", "true")
+	}
+	if fam.family == "higgs_audio_tts" && !fam.noReference {
+		if rc := req.ReferenceCodes; rc != nil && sameModel(rc.Meta["codec_model"], codecModel) {
+			codes, err := codesFromWire(rc)
+			if err != nil {
+				return GenerateResult{}, fmt.Errorf("reference codes: %w", err)
+			}
+			if err := request.AddCodes(codes, "reference_codes"); err != nil {
+				return GenerateResult{}, fmt.Errorf("reference codes: %w", err)
+			}
+			injectedRef = true
+		} else if wantLatents {
+			request.SetOption("return_reference_codes", "true")
+		}
+	}
 	if err := request.Err(); err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return GenerateResult{}, fmt.Errorf("build request: %w", err)
 	}
 
 	// Check out one of this clone_model's pooled sessions rather than
@@ -221,7 +267,7 @@ func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
 	// backend/CLAUDE.md) concurrently instead of one at a time.
 	session, err := w.checkoutSession(lc)
 	if err != nil {
-		return nil, err
+		return GenerateResult{}, err
 	}
 	result, err := session.Run(request)
 	if err != nil {
@@ -231,19 +277,49 @@ func (w *Worker) Generate(req GenerateRequest) (*audiocpp.AudioBuffer, error) {
 			log.Printf("audioworker: %s session hit a max-tokens overflow - kept warm in the pool rather than evicted", req.CloneModel)
 		}
 		lc.avail <- session
-		return nil, fmt.Errorf("run: %w", err)
+		return GenerateResult{}, fmt.Errorf("run: %w", err)
 	}
 	lc.avail <- session
 	defer result.Close()
 
 	audio, err := result.Audio()
 	if err != nil {
-		return nil, fmt.Errorf("read audio: %w", err)
+		return GenerateResult{}, fmt.Errorf("read audio: %w", err)
 	}
 	if audio == nil {
-		return nil, fmt.Errorf("generation produced no audio")
+		return GenerateResult{}, fmt.Errorf("generation produced no audio")
 	}
-	return audio, nil
+	out := GenerateResult{Audio: audio}
+	if wantLatents {
+		switch fam.family {
+		case "higgs_audio_tts":
+			codes, err := result.Codes("codes")
+			if err != nil {
+				return GenerateResult{}, fmt.Errorf("read codes: %w", err)
+			}
+			if codes != nil {
+				out.Latents = wireFromCodes(codes, codecModel)
+			}
+			if !injectedRef {
+				ref, err := result.Codes("reference_codes")
+				if err != nil {
+					return GenerateResult{}, fmt.Errorf("read reference codes: %w", err)
+				}
+				if ref != nil {
+					out.ReferenceCodes = wireFromCodes(ref, codecModel)
+				}
+			}
+		default:
+			lats, err := result.Latents()
+			if err != nil {
+				return GenerateResult{}, fmt.Errorf("read latents: %w", err)
+			}
+			if len(lats) == 1 {
+				out.Latents = wireFromLatents(lats[0], codecModel)
+			}
+		}
+	}
+	return out, nil
 }
 
 // estimateCloneDuration sizes a fixed-duration family's output (see
