@@ -93,7 +93,7 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "lectable's backend runs on your own network (see the root CLAUDE.md) - " +
+                "Lectable's backend runs on your own network (see the root CLAUDE.md) - " +
                     "point this at wherever it's listening, e.g. http://192.168.1.42:8080",
                 style = MaterialTheme.typography.bodyMedium,
             )
@@ -123,7 +123,7 @@ fun SettingsScreen(
             }
             if (discoveredServers.isEmpty()) {
                 Text(
-                    "Searching for a lectable backend advertising itself via mDNS...",
+                    "Searching for a Lectable backend advertising itself via mDNS...",
                     style = MaterialTheme.typography.bodySmall,
                 )
             } else {
