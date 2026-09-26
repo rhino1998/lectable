@@ -135,6 +135,23 @@ type Config struct {
 	// and nil-checked since cmd/benchattr (this package's other caller)
 	// runs with no audioworker.Worker to unload.
 	BeforeLoad func()
+
+	// NUBatch, FlashAttn and KVType pass straight through to
+	// llamacpp.ContextParams (NUBatch, FlashAttn, TypeK/TypeV); their zero
+	// values keep llama.cpp's own defaults.
+	NUBatch   uint32
+	FlashAttn llamacpp.FlashAttnMode
+	KVType    llamacpp.KVType
+
+	// PrimeAsState keeps each primed system prompt as a host-side KV
+	// snapshot (llamacpp.Context.SaveSeq) restored into a slot on admission,
+	// instead of a permanently-resident sequence CopySeq'd from. The Context
+	// is then non-unified (one KV stream per slot, NCtx cells each) and holds
+	// no primed sequences at all. In a unified Context every call's attention
+	// spans the whole used cell range - including every resident primed
+	// prefix (~10K tokens for speakerattr's prompts) - which measured as ~2x
+	// slower prompt processing on real attribution batches.
+	PrimeAsState bool
 }
 
 func (c Config) withDefaults() Config {
@@ -144,12 +161,59 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// totals accumulates every finished LLMGenerate call's llamacpp.GenStats -
+// see Worker.Totals.
+type totals struct {
+	mu sync.Mutex
+	t  Totals
+}
+
+// Totals is the sum of llamacpp.GenStats over every LLMGenerate call this
+// Worker has finished - cmd/benchattr's prefill-vs-decode breakdown.
+type Totals struct {
+	Calls                                 int
+	ReusedTokens, PromptTokens, GenTokens int
+	Queued, Prefill, Decode               time.Duration
+}
+
+// RoundStats returns the loaded model's Scheduler round totals (see
+// llamacpp.RoundStats); zero if no model is loaded.
+func (w *Worker) RoundStats() llamacpp.RoundStats {
+	w.loadGate.RLock()
+	defer w.loadGate.RUnlock()
+	if w.sched == nil {
+		return llamacpp.RoundStats{}
+	}
+	return w.sched.RoundStats()
+}
+
+// Totals returns the running sum of every finished call's stats.
+func (w *Worker) Totals() Totals {
+	w.totals.mu.Lock()
+	defer w.totals.mu.Unlock()
+	return w.totals.t
+}
+
+func (w *Worker) addTotals(st llamacpp.GenStats) {
+	w.totals.mu.Lock()
+	defer w.totals.mu.Unlock()
+	t := &w.totals.t
+	t.Calls++
+	t.ReusedTokens += st.ReusedTokens
+	t.PromptTokens += st.PromptTokens
+	t.GenTokens += st.GenTokens
+	t.Queued += st.Queued
+	t.Prefill += st.Prefill
+	t.Decode += st.Decode
+}
+
 // primed is one already-decoded, permanently-resident system-prompt prefix
 // that a generation slot copies from (llamacpp.Context.CopySeq) instead of
 // redecoding - see Config.SystemPrompts and load.
 type primed struct {
 	seqID        int32
 	prefixTokens []llamacpp.Token
+	state        []byte // PrimeAsState's snapshot; nil when seqID holds the prefix
 }
 
 // Worker embeds a GGUF model in-process, lazily on first LLMGenerate call
@@ -185,6 +249,8 @@ type Worker struct {
 	inFlight atomic.Int64
 
 	reqCounter atomic.Int64 // monotonic id for LLMGenerate's own debug logging - see LLMGenerate
+
+	totals totals
 
 	idleStop chan struct{}
 	idleDone chan struct{}
@@ -320,18 +386,30 @@ func (w *Worker) load() error {
 	}
 
 	nSeqMax := uint32(w.cfg.MaxConcurrent) + uint32(len(w.cfg.SystemPrompts))
+	residentPrimes := w.cfg.SystemPrompts
+	if w.cfg.PrimeAsState {
+		nSeqMax = uint32(w.cfg.MaxConcurrent)
+		residentPrimes = nil
+	}
 
-	ctxNCtx, err := contextNCtx(model, w.cfg.NCtx, uint32(w.cfg.MaxConcurrent), w.cfg.SystemPrompts)
+	ctxNCtx, err := contextNCtx(model, w.cfg.NCtx, uint32(w.cfg.MaxConcurrent), residentPrimes)
 	if err != nil {
 		model.Close()
 		return fmt.Errorf("llmworker: size context: %w", err)
 	}
-	log.Printf("llmworker: sizing shared KV pool to %d tokens (perSlot=%d x MaxConcurrent=%d + primed prefixes, nSeqMax=%d)", ctxNCtx, w.cfg.NCtx, w.cfg.MaxConcurrent, nSeqMax)
+	log.Printf("llmworker: sizing KV cache to %d tokens (perSlot=%d x MaxConcurrent=%d + resident primed prefixes, nSeqMax=%d, primeAsState=%v)", ctxNCtx, w.cfg.NCtx, w.cfg.MaxConcurrent, nSeqMax, w.cfg.PrimeAsState)
 
 	lctx, err := model.NewContext(llamacpp.ContextParams{
-		NCtx:      ctxNCtx,
-		NSeqMax:   nSeqMax,
-		KVUnified: true, // required for CopySeq's cheap partial-prefix path - see ContextParams.KVUnified's own doc comment
+		NCtx:    ctxNCtx,
+		NSeqMax: nSeqMax,
+		// Unified is required for CopySeq's cheap partial-prefix path - see
+		// ContextParams.KVUnified's own doc comment. PrimeAsState restores
+		// snapshots instead, so each slot gets its own stream.
+		KVUnified: !w.cfg.PrimeAsState,
+		NUBatch:   w.cfg.NUBatch,
+		FlashAttn: w.cfg.FlashAttn,
+		TypeK:     w.cfg.KVType,
+		TypeV:     w.cfg.KVType,
 	})
 	if err != nil {
 		model.Close()
@@ -339,14 +417,29 @@ func (w *Worker) load() error {
 	}
 
 	primedMap := make(map[string]*primed, len(w.cfg.SystemPrompts))
+	stateBytes := 0
 	for i, sp := range w.cfg.SystemPrompts {
 		seqID := int32(w.cfg.MaxConcurrent + i)
+		if w.cfg.PrimeAsState {
+			seqID = 0 // decoded, snapshotted, then wiped - see below
+		}
 		p, err := primePrefix(model, lctx, sp, seqID)
+		if err == nil && w.cfg.PrimeAsState {
+			p.state = lctx.SaveSeq(seqID)
+			lctx.TrimSequence(seqID, 0)
+			if p.state == nil {
+				err = fmt.Errorf("empty KV snapshot")
+			}
+			stateBytes += len(p.state)
+		}
 		if err != nil {
 			log.Printf("llmworker: could not prime system prompt %d/%d, it will be decoded fresh every call: %v", i+1, len(w.cfg.SystemPrompts), err)
 			continue
 		}
 		primedMap[sp] = p
+	}
+	if w.cfg.PrimeAsState {
+		log.Printf("llmworker: %d primed prefix snapshots, %d MiB", len(primedMap), stateBytes>>20)
 	}
 
 	w.model = model
@@ -444,28 +537,28 @@ func primePrefix(model *llamacpp.Model, lctx *llamacpp.Context, systemPrompt str
 // occurrence so a systematic mismatch is visible, but always as a fallback
 // to decoding the full prompt fresh, never a failure of the call itself.
 // Caller must hold w.loadGate (for read).
-func (w *Worker) tryPrimed(model *llamacpp.Model, systemPrompt, fullPrompt string) (startPos int32, primedSeq int32, ok bool) {
+func (w *Worker) tryPrimed(model *llamacpp.Model, systemPrompt, fullPrompt string) (startPos int32, primedSeq int32, state []byte, ok bool) {
 	p, found := w.primed[systemPrompt]
 	if !found {
-		return 0, 0, false
+		return 0, 0, nil, false
 	}
 
 	fullTokens, err := model.Vocab().Tokenize(fullPrompt, true, true)
 	if err != nil {
 		log.Printf("llmworker: could not tokenize prompt to verify primed-prefix reuse, decoding fresh for this call: %v", err)
-		return 0, 0, false
+		return 0, 0, nil, false
 	}
 	if len(fullTokens) <= len(p.prefixTokens) {
 		log.Printf("llmworker: full prompt tokenized shorter than the primed prefix alone, decoding fresh for this call")
-		return 0, 0, false
+		return 0, 0, nil, false
 	}
 	for i, t := range p.prefixTokens {
 		if fullTokens[i] != t {
 			log.Printf("llmworker: chat-template rendering no longer matches the primed system-prompt prefix at token %d, decoding fresh for this call", i)
-			return 0, 0, false
+			return 0, 0, nil, false
 		}
 	}
-	return int32(len(p.prefixTokens)), p.seqID, true
+	return int32(len(p.prefixTokens)), p.seqID, p.state, true
 }
 
 // LLMGenerate renders systemPrompt/userPrompt as one chat completion and
@@ -494,12 +587,16 @@ func (w *Worker) LLMGenerate(ctx context.Context, systemPrompt, userPrompt strin
 	// outside the live pipeline.
 	reqID := w.reqCounter.Add(1)
 	start := time.Now()
+	var stats llamacpp.GenStats
 	log.Printf("llmworker: [req %d] starting generate (temp=%.2f maxTokens=%d)\n--- system prompt ---\n%s\n--- user prompt ---\n%s\n--- end prompt ---", reqID, temp, maxTokens, systemPrompt, userPrompt)
 	defer func() {
 		if err != nil {
 			log.Printf("llmworker: [req %d] failed after %s: %v", reqID, time.Since(start).Round(time.Millisecond), err)
 		} else {
-			log.Printf("llmworker: [req %d] finished after %s (%d bytes out)\n--- output ---\n%s\n--- end output ---", reqID, time.Since(start).Round(time.Millisecond), len(out), out)
+			log.Printf("llmworker: [req %d] finished after %s (%d bytes out; prompt %d tok + %d reused, prefill %s; gen %d tok, decode %s; queued %s)\n--- output ---\n%s\n--- end output ---",
+				reqID, time.Since(start).Round(time.Millisecond), len(out),
+				stats.PromptTokens, stats.ReusedTokens, stats.Prefill.Round(time.Millisecond),
+				stats.GenTokens, stats.Decode.Round(time.Millisecond), stats.Queued.Round(time.Millisecond), out)
 		}
 	}()
 
@@ -537,16 +634,18 @@ func (w *Worker) LLMGenerate(ctx context.Context, systemPrompt, userPrompt strin
 	// live via ttsworker crash dumps. The Scheduler now owns closing it.
 	sampler := llamacpp.NewSampler(llamacpp.SamplerParams{Temp: temp, TopK: 40, TopP: 0.9})
 
-	req := llamacpp.GenRequest{Prompt: fullPrompt, Sampler: sampler, MaxTokens: maxTokens}
-	if startPos, primedSeq, ok := w.tryPrimed(model, systemPrompt, fullPrompt); ok {
+	req := llamacpp.GenRequest{Prompt: fullPrompt, Sampler: sampler, MaxTokens: maxTokens, Stats: &stats}
+	if startPos, primedSeq, state, ok := w.tryPrimed(model, systemPrompt, fullPrompt); ok {
 		req.StartPos = startPos
 		req.PrimedSeq = primedSeq
+		req.PrefixState = state
 	}
 
 	out, err = sched.Generate(ctx, req)
 	if err != nil {
 		return "", err
 	}
+	w.addTotals(stats)
 	out = stripThinking(out)
 	return out, nil
 }

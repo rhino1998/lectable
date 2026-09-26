@@ -23,6 +23,26 @@ type ContextParams struct {
 	// 0 defaults to 2048.
 	NBatch uint32
 
+	// NUBatch is the physical batch size - how many tokens one graph
+	// evaluation inside llama_decode actually processes; a larger logical
+	// batch (NBatch) is split into NUBatch-sized pieces internally. 0 leaves
+	// libllama's own default (512), or NBatch when that is set. Mostly a
+	// prompt-processing throughput knob: bigger ubatches amortize each
+	// graph launch over more tokens, at the cost of a bigger compute buffer.
+	NUBatch uint32
+
+	// FlashAttn selects llama.cpp's flash-attention mode. The zero value,
+	// FlashAttnAuto, leaves libllama's own default (auto: on when the
+	// backend supports it for this model).
+	FlashAttn FlashAttnMode
+
+	// TypeK/TypeV are the KV cache's element types. The zero value,
+	// KVTypeDefault, leaves libllama's own default (F16). KVTypeQ8_0 halves
+	// the cache's memory; llama.cpp requires flash attention for a
+	// quantized V cache.
+	TypeK KVType
+	TypeV KVType
+
 	// NThreads is the number of threads used for single-token (generation)
 	// decoding; NThreadsBatch for multi-token (prompt) decoding. 0 leaves
 	// libllama's own default (typically all detected cores).
@@ -58,6 +78,35 @@ type ContextParams struct {
 	KVUnified bool
 }
 
+// FlashAttnMode is ContextParams.FlashAttn.
+type FlashAttnMode int
+
+const (
+	FlashAttnAuto FlashAttnMode = iota
+	FlashAttnOn
+	FlashAttnOff
+)
+
+// KVType is ContextParams.TypeK/TypeV - the KV cache element types this
+// package exposes, not every ggml_type.
+type KVType int
+
+const (
+	KVTypeDefault KVType = iota
+	KVTypeF16
+	KVTypeQ8_0
+)
+
+func (t KVType) ggmlType() (C.enum_ggml_type, bool) {
+	switch t {
+	case KVTypeF16:
+		return C.GGML_TYPE_F16, true
+	case KVTypeQ8_0:
+		return C.GGML_TYPE_Q8_0, true
+	}
+	return 0, false
+}
+
 func (p ContextParams) cParams() C.struct_llama_context_params {
 	c := C.llama_context_default_params()
 	if p.NCtx != 0 {
@@ -66,6 +115,21 @@ func (p ContextParams) cParams() C.struct_llama_context_params {
 	if p.NBatch != 0 {
 		c.n_batch = C.uint32_t(p.NBatch)
 		c.n_ubatch = C.uint32_t(p.NBatch)
+	}
+	if p.NUBatch != 0 {
+		c.n_ubatch = C.uint32_t(p.NUBatch)
+	}
+	switch p.FlashAttn {
+	case FlashAttnOn:
+		c.flash_attn_type = C.LLAMA_FLASH_ATTN_TYPE_ENABLED
+	case FlashAttnOff:
+		c.flash_attn_type = C.LLAMA_FLASH_ATTN_TYPE_DISABLED
+	}
+	if t, ok := p.TypeK.ggmlType(); ok {
+		c.type_k = t
+	}
+	if t, ok := p.TypeV.ggmlType(); ok {
+		c.type_v = t
 	}
 	if p.NThreads != 0 {
 		c.n_threads = C.int32_t(p.NThreads)
@@ -119,6 +183,13 @@ func (c *Context) Close() {
 	}
 	C.llama_free(c.handle)
 	c.handle = nil
+}
+
+// Synchronize blocks until every computation queued by Decode has finished
+// (llama_synchronize). Decode itself returns once the work is queued on a
+// GPU backend; the wait otherwise happens on the next logits read.
+func (c *Context) Synchronize() {
+	C.llama_synchronize(c.handle)
 }
 
 // Model returns the Model this Context was created from.

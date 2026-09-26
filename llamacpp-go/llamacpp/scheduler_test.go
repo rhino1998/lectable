@@ -293,3 +293,84 @@ func TestSchedulerReclaimsSlotAfterDecodeFailure(t *testing.T) {
 		t.Errorf("follow-up request reused a leaked slot: got %q, want %q (fresh Generate)", got, want)
 	}
 }
+
+// TestSchedulerWithPrefixState is TestSchedulerWithPrimedPrefix for
+// GenRequest.PrefixState: a non-unified Context (one KV stream per slot),
+// the prefix snapshotted once via SaveSeq and restored into whichever slot
+// each request lands in, must still match a fresh single-sequence Generate.
+func TestSchedulerWithPrefixState(t *testing.T) {
+	initBackend()
+	modelPath := testModelPath(t)
+
+	model, err := llamacpp.LoadModel(modelPath, llamacpp.ModelParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer model.Close()
+
+	const nSlots = 3
+	sctx, err := model.NewContext(llamacpp.ContextParams{NCtx: 2048 * nSlots, NSeqMax: nSlots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sctx.Close()
+
+	const prefix = "You are a helpful assistant that follows instructions exactly and replies tersely.\n\n"
+	prefixLen, err := sctx.DecodePromptSeq(prefix, 0)
+	if err != nil {
+		t.Fatalf("DecodePromptSeq: %v", err)
+	}
+	state := sctx.SaveSeq(0)
+	if state == nil {
+		t.Fatal("SaveSeq returned no state")
+	}
+	sctx.TrimSequence(0, 0)
+
+	sched := llamacpp.NewScheduler(sctx, nSlots)
+	defer sched.Close()
+
+	suffixes := []string{
+		"Reply with exactly the word: hello",
+		"Reply with exactly the word: goodbye",
+		"What is 2+2? Reply with only the digit.",
+		"Name one primary color. Reply with one word.",
+		"Reply with exactly the word: lantern",
+	}
+
+	var wg sync.WaitGroup
+	got := make([]string, len(suffixes))
+	want := make([]string, len(suffixes))
+	errs := make([]error, len(suffixes))
+	for i, suffix := range suffixes {
+		full := prefix + suffix
+		want[i] = freshGenerate(t, model, full, 12)
+
+		wg.Add(1)
+		go func(i int, full string) {
+			defer wg.Done()
+			var stats llamacpp.GenStats
+			got[i], errs[i] = sched.Generate(t.Context(), llamacpp.GenRequest{
+				Prompt:      full,
+				StartPos:    prefixLen,
+				PrefixState: state,
+				Sampler:     llamacpp.NewSampler(llamacpp.SamplerParams{}),
+				MaxTokens:   12,
+				Stats:       &stats,
+			})
+			if errs[i] == nil && stats.ReusedTokens != int(prefixLen) {
+				errs[i] = fmt.Errorf("ReusedTokens = %d, want %d", stats.ReusedTokens, prefixLen)
+			}
+		}(i, full)
+	}
+	wg.Wait()
+
+	for i, suffix := range suffixes {
+		if errs[i] != nil {
+			t.Errorf("suffix %q: %v", suffix, errs[i])
+			continue
+		}
+		if got[i] != want[i] {
+			t.Errorf("suffix %q: Scheduler.Generate (restored prefix) = %q, want %q (fresh Generate)", suffix, got[i], want[i])
+		}
+	}
+}

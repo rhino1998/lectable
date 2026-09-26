@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // GenRequest describes one independent prompt-in/text-out generation to run
@@ -34,6 +35,14 @@ type GenRequest struct {
 	StartPos  int32
 	PrimedSeq int32
 
+	// PrefixState, if set (with StartPos > 0), seeds the slot by restoring
+	// this Context.SaveSeq snapshot of the prefix instead of CopySeq-ing
+	// PrimedSeq - the path for a Context without KVUnified, where CopySeq
+	// can't copy a partial range but a primed prefix also doesn't sit in
+	// the shared cell range every other sequence's attention spans. If the
+	// restore fails, the whole prompt is decoded instead.
+	PrefixState []byte
+
 	// Sampler is closed by the Scheduler itself, exactly once, whenever it
 	// is actually done sampling from it -- never by the caller. This
 	// matters specifically because Generate can return well before that
@@ -60,6 +69,30 @@ type GenRequest struct {
 	// Returning false stops this request's own generation early (other
 	// requests sharing the Scheduler are unaffected).
 	OnPiece func(piece string) bool
+
+	// Stats, if non-nil, is filled in with this request's timing breakdown
+	// when Generate returns its result (not when it returns early on ctx
+	// cancellation - the Scheduler may still be running the request then,
+	// so it never writes here directly).
+	Stats *GenStats
+}
+
+// GenStats is one Scheduler request's timing breakdown - where its wall
+// time went, split the way prompt-side and generation-side optimizations
+// need it split. Phase durations are wall clock: rounds are shared across
+// every active slot, so a phase also absorbs other slots' work packed into
+// the same decode calls.
+type GenStats struct {
+	// ReusedTokens came from GenRequest.PrimedSeq or PrefixState instead of
+	// being decoded; PromptTokens were actually prefilled by this request.
+	ReusedTokens int
+	PromptTokens int
+	// GenTokens is the number of tokens sampled (including a final EOG).
+	GenTokens int
+
+	Queued  time.Duration // submitted until admitted into a slot
+	Prefill time.Duration // admitted until the prompt's last token was decoded
+	Decode  time.Duration // prompt decoded until the request finished
 }
 
 // Scheduler batches concurrent generation requests against one Context
@@ -89,17 +122,58 @@ type Scheduler struct {
 	closed chan struct{}
 
 	closeOnce sync.Once
+
+	roundsMu sync.Mutex
+	rounds   RoundStats
+
+	// kept[i] is the PrefixState prefix slot i's sequence still holds from
+	// its last request (see release), touched only by run's goroutine.
+	kept []keptPrefix
+}
+
+// keptPrefix identifies a restored prefix left in a slot after its request
+// finished: the snapshot it came from (by its first byte's address - the
+// same snapshot slice is passed for every request sharing that prefix)
+// and how many tokens of it the slot holds.
+type keptPrefix struct {
+	state *byte
+	n     int32
+}
+
+// RoundStats sums a Scheduler's decode rounds by kind: rounds that carried
+// any prompt (prefill) tokens versus rounds carrying only generation
+// tokens. Unlike GenStats (per request, where one slot's decode phase also
+// absorbs rounds spent on another slot's prefill), these partition the
+// Scheduler's actual busy time, so they show where wall time really goes.
+type RoundStats struct {
+	PrefillRounds, DecodeRounds int
+	PrefillTokens, DecodeTokens int // tokens submitted in each kind of round
+	PrefillTime, DecodeTime     time.Duration
+
+	// PrefixReused counts PrefixState requests that found their prefix
+	// still in the slot; PrefixRestored those that restored the snapshot.
+	PrefixReused, PrefixRestored int
+	RestoreTime                  time.Duration
+}
+
+// RoundStats returns the running totals since the Scheduler started.
+func (s *Scheduler) RoundStats() RoundStats {
+	s.roundsMu.Lock()
+	defer s.roundsMu.Unlock()
+	return s.rounds
 }
 
 type schedRequest struct {
-	ctx    context.Context
-	req    GenRequest
-	result chan schedResult
+	ctx       context.Context
+	req       GenRequest
+	result    chan schedResult
+	submitted time.Time
 }
 
 type schedResult struct {
-	text string
-	err  error
+	text  string
+	err   error
+	stats GenStats
 }
 
 // NewScheduler starts a Scheduler backed by ctx, using nSlots of its
@@ -121,6 +195,7 @@ func NewScheduler(ctx *Context, nSlots int) *Scheduler {
 		submit: make(chan *schedRequest),
 		done:   make(chan struct{}),
 		closed: make(chan struct{}),
+		kept:   make([]keptPrefix, nSlots),
 	}
 	go s.run()
 	return s
@@ -154,7 +229,7 @@ func (s *Scheduler) Close() {
 // GenRequest.Sampler's own doc comment for why that's specifically why its
 // Sampler must never be closed by this function's caller after the fact).
 func (s *Scheduler) Generate(ctx context.Context, req GenRequest) (string, error) {
-	sr := &schedRequest{ctx: ctx, req: req, result: make(chan schedResult, 1)}
+	sr := &schedRequest{ctx: ctx, req: req, result: make(chan schedResult, 1), submitted: time.Now()}
 	select {
 	case s.submit <- sr:
 	case <-ctx.Done():
@@ -169,6 +244,9 @@ func (s *Scheduler) Generate(ctx context.Context, req GenRequest) (string, error
 	}
 	select {
 	case res := <-sr.result:
+		if req.Stats != nil {
+			*req.Stats = res.stats
+		}
 		return res.text, res.err
 	case <-ctx.Done():
 		// Already handed off above -- the Scheduler goroutine owns sr now
@@ -191,9 +269,23 @@ type slot struct {
 	nextTok   Token   // sampled token waiting to be decoded next round
 	haveNext  bool    // whether nextTok is actually set yet (false on a slot's very first round)
 	left      int     // generation tokens still allowed before MaxTokens is hit
+
+	stats       GenStats
+	admitted    time.Time
+	prefillDone time.Time
 }
 
 func (sl *slot) finish(res schedResult) {
+	now := time.Now()
+	st := sl.stats
+	st.Queued = sl.admitted.Sub(sl.req.submitted)
+	if sl.prefillDone.IsZero() {
+		st.Prefill = now.Sub(sl.admitted)
+	} else {
+		st.Prefill = sl.prefillDone.Sub(sl.admitted)
+		st.Decode = now.Sub(sl.prefillDone)
+	}
+	res.stats = st
 	finishRequest(sl.req, res)
 	*sl = slot{}
 }
@@ -317,6 +409,7 @@ func (s *Scheduler) run() {
 
 		batch.Reset()
 		budget := nBatch
+		prefillN := 0 // prompt tokens in this round, for recordRound
 
 		// Continuing (decode-phase) slots first -- one token each, cheap,
 		// and keeping them fed is what keeps their own latency low instead
@@ -373,6 +466,7 @@ func (s *Scheduler) run() {
 				continue
 			}
 			budget -= n
+			prefillN += n
 			if last {
 				outputIdx[i] = lastTokenPos
 				hasOutput[i] = true
@@ -389,7 +483,16 @@ func (s *Scheduler) run() {
 			continue
 		}
 
-		if err := s.ctx.Decode(batch); err != nil {
+		// Synchronize so the round's time is its real GPU time: llama_decode
+		// only queues work, which otherwise lands on whichever later call
+		// first reads logits (and a partial prefill chunk reads none).
+		roundStart := time.Now()
+		err := s.ctx.Decode(batch)
+		if err == nil {
+			s.ctx.Synchronize()
+		}
+		s.recordRound(batch.NTokens(), prefillN, time.Since(roundStart))
+		if err != nil {
 			for i := range slots {
 				if slots[i].active {
 					slots[i].finish(schedResult{err: fmt.Errorf("llamacpp: decode: %w", err)})
@@ -417,44 +520,50 @@ func (s *Scheduler) run() {
 					// those failures leaked another slot's worth of space
 					// the same way.
 					s.ctx.TrimSequence(int32(i), 0)
+					s.kept[i] = keptPrefix{}
 				}
 			}
 			continue
 		}
 
+		decoded := time.Now()
 		for i := range slots {
 			sl := &slots[i]
 			if !sl.active || !hasOutput[i] {
 				continue
+			}
+			if sl.prefillDone.IsZero() {
+				sl.prefillDone = decoded
 			}
 			if sl.left <= 0 {
 				// MaxTokens <= 0: the prompt is decoded (same as
 				// GenerateFrom always does, unconditionally) but nothing is
 				// ever sampled from it, matching GenerateFrom's own
 				// `for n := 0; n < maxTokens; n++` never running its body.
+				s.release(int32(i), sl)
 				sl.finish(schedResult{text: string(sl.generated)})
-				s.ctx.TrimSequence(int32(i), 0)
 				continue
 			}
 			next := sl.req.req.Sampler.Sample(s.ctx, outputIdx[i])
+			sl.stats.GenTokens++
 			if vocab.IsEOG(next) {
+				s.release(int32(i), sl)
 				sl.finish(schedResult{text: string(sl.generated)})
-				s.ctx.TrimSequence(int32(i), 0)
 				continue
 			}
 
 			piece := vocab.TokenToPiece(next, false)
 			sl.generated = append(sl.generated, piece...)
 			if onPiece := sl.req.req.OnPiece; onPiece != nil && !onPiece(piece) {
+				s.release(int32(i), sl)
 				sl.finish(schedResult{text: string(sl.generated)})
-				s.ctx.TrimSequence(int32(i), 0)
 				continue
 			}
 
 			sl.left--
 			if sl.left <= 0 {
+				s.release(int32(i), sl)
 				sl.finish(schedResult{text: string(sl.generated)})
-				s.ctx.TrimSequence(int32(i), 0)
 				continue
 			}
 			sl.nextTok = next
@@ -463,10 +572,45 @@ func (s *Scheduler) run() {
 	}
 }
 
+// release clears slot slotID's sequence once its request is done. A
+// request seeded from GenRequest.PrefixState keeps that prefix instead of
+// wiping it, so the next request with the same snapshot can reuse it in
+// place (admitInto). Only that path keeps anything: it runs on a
+// non-unified Context, where one slot's leftover cells don't widen any
+// other sequence's attention range.
+func (s *Scheduler) release(slotID int32, sl *slot) {
+	st := sl.req.req.PrefixState
+	n := int32(sl.stats.ReusedTokens)
+	if st != nil && n > 0 && s.ctx.TrimSequence(slotID, n) {
+		s.kept[slotID] = keptPrefix{state: &st[0], n: n}
+		return
+	}
+	s.ctx.TrimSequence(slotID, 0)
+	s.kept[slotID] = keptPrefix{}
+}
+
+// recordRound adds one Decode call to s.rounds - a prefill round if it
+// carried any prompt tokens at all.
+func (s *Scheduler) recordRound(nTokens, prefillN int, d time.Duration) {
+	s.roundsMu.Lock()
+	defer s.roundsMu.Unlock()
+	if prefillN > 0 {
+		s.rounds.PrefillRounds++
+		s.rounds.PrefillTokens += nTokens
+		s.rounds.PrefillTime += d
+		return
+	}
+	s.rounds.DecodeRounds++
+	s.rounds.DecodeTokens += nTokens
+	s.rounds.DecodeTime += d
+}
+
 // admitInto starts sr running in slot slotID: wipes that slot's own
 // sequence (a whole-sequence removal, which never fails, so this never
-// leaves stale tokens from whatever request last occupied it), optionally
-// seeds it with sr's primed prefix (Context.CopySeq), and sets up sl to
+// leaves stale tokens from whatever request last occupied it) - or, when
+// the slot still holds sr's own PrefixState prefix, trims back to it -
+// seeds it with sr's prefix if it doesn't already hold it (Context.CopySeq
+// from PrimedSeq, or Context.RestoreSeq of PrefixState), and sets up sl to
 // begin prefilling sr's own prompt from StartPos onward next round.
 func (s *Scheduler) admitInto(slotID int32, sl *slot, sr *schedRequest, vocab *Vocab) error {
 	tokens, err := vocab.Tokenize(sr.req.Prompt, true, true)
@@ -481,8 +625,32 @@ func (s *Scheduler) admitInto(slotID int32, sl *slot, sr *schedRequest, vocab *V
 		return fmt.Errorf("llamacpp: startPos %d exceeds prompt token count %d", startPos, len(tokens))
 	}
 
-	s.ctx.TrimSequence(slotID, 0)
-	if startPos > 0 {
+	kept := s.kept[slotID]
+	s.kept[slotID] = keptPrefix{}
+	switch {
+	case startPos == 0:
+		s.ctx.TrimSequence(slotID, 0)
+	case sr.req.PrefixState != nil:
+		// Slot affinity: the slot's last request left this same prefix
+		// behind (release), so cut back to it instead of restoring.
+		if kept.state == &sr.req.PrefixState[0] && kept.n == startPos && s.ctx.TrimSequence(slotID, startPos) {
+			s.roundsMu.Lock()
+			s.rounds.PrefixReused++
+			s.roundsMu.Unlock()
+			break
+		}
+		t := time.Now()
+		s.ctx.TrimSequence(slotID, 0)
+		if !s.ctx.RestoreSeq(slotID, sr.req.PrefixState) {
+			s.ctx.TrimSequence(slotID, 0)
+			startPos = 0
+		}
+		s.roundsMu.Lock()
+		s.rounds.PrefixRestored++
+		s.rounds.RestoreTime += time.Since(t)
+		s.roundsMu.Unlock()
+	default:
+		s.ctx.TrimSequence(slotID, 0)
 		s.ctx.CopySeq(sr.req.PrimedSeq, slotID, 0, startPos)
 	}
 
@@ -492,6 +660,11 @@ func (s *Scheduler) admitInto(slotID int32, sl *slot, sr *schedRequest, vocab *V
 		pos:       startPos,
 		remaining: tokens[startPos:],
 		left:      sr.req.MaxTokens,
+		admitted:  time.Now(),
+		stats: GenStats{
+			ReusedTokens: int(startPos),
+			PromptTokens: len(tokens) - int(startPos),
+		},
 	}
 	return nil
 }

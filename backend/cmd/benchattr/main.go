@@ -17,6 +17,7 @@ import (
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/rhino1998/lectable/backend/internal/llmworker"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
+	"github.com/rhino1998/lectable/llamacpp-go/llamacpp"
 )
 
 type chapter struct {
@@ -39,6 +40,12 @@ func main() {
 	useRoster := flag.Bool("roster", false, "seed attribution with the book's real character roster (valid names, aliases, most frequent speakers) instead of starting empty")
 	score := flag.Bool("score", false, "score each chapter's dialogue speakers against the ones stored in the library (e.g. hand-corrected chapters)")
 	quiet := flag.Bool("quiet", false, "don't print every paragraph")
+	maxConcurrent := flag.Int("concurrent", 2, "llmworker MaxConcurrent (generation slots)")
+	ubatch := flag.Uint("ubatch", 0, "physical batch size (0 = llama.cpp default, 512)")
+	flash := flag.String("flash", "auto", "flash attention: auto, on, off")
+	prime := flag.Int("prime", -1, "prime only the first N of speakerattr.SystemPrompts (attribution's is first); -1 = all, like production")
+	primeState := flag.Bool("prime-state", false, "llmworker PrimeAsState: primed prompts as restored KV snapshots in a non-unified cache")
+	kvType := flag.String("kv", "", "KV cache type: f16, q8_0 (empty = llama.cpp default)")
 	flag.Parse()
 
 	db, err := sql.Open("duckdb", *dbPath+"?access_mode=READ_ONLY")
@@ -75,7 +82,12 @@ func main() {
 		ModelPath:     *modelPath,
 		NGPULayers:    int32(*gpuLayers),
 		NCtx:          uint32(*nctx),
-		SystemPrompts: speakerattr.SystemPrompts(),
+		SystemPrompts: primeList(*prime),
+		MaxConcurrent: *maxConcurrent,
+		PrimeAsState:  *primeState,
+		NUBatch:       uint32(*ubatch),
+		FlashAttn:     map[string]llamacpp.FlashAttnMode{"auto": llamacpp.FlashAttnAuto, "on": llamacpp.FlashAttnOn, "off": llamacpp.FlashAttnOff}[*flash],
+		KVType:        map[string]llamacpp.KVType{"": llamacpp.KVTypeDefault, "f16": llamacpp.KVTypeF16, "q8_0": llamacpp.KVTypeQ8_0}[*kvType],
 	})
 	defer llm.Close()
 
@@ -188,6 +200,23 @@ func main() {
 		}
 	}
 	fmt.Printf("\n=== %s TOTAL attribution time: %v ===\n", *label, totalElapsed)
+	t := llm.Totals()
+	perTok := func(d time.Duration, n int) float64 {
+		if d <= 0 {
+			return 0
+		}
+		return float64(n) / d.Seconds()
+	}
+	fmt.Printf("=== %s LLM: %d calls; prompt %d tok (+%d reused) in %v summed prefill (%.0f tok/s per call); gen %d tok in %v summed decode (%.1f tok/s per call); queued %v ===\n",
+		*label, t.Calls, t.PromptTokens, t.ReusedTokens, t.Prefill.Round(time.Millisecond), perTok(t.Prefill, t.PromptTokens),
+		t.GenTokens, t.Decode.Round(time.Millisecond), perTok(t.Decode, t.GenTokens), t.Queued.Round(time.Millisecond))
+	r := llm.RoundStats()
+	fmt.Printf("=== %s ROUNDS: prefill %d rounds, %d tok in %v (%.0f tok/s); decode-only %d rounds, %d tok in %v (%.1f ms/round, %.0f tok/s) ===\n",
+		*label, r.PrefillRounds, r.PrefillTokens, r.PrefillTime.Round(time.Millisecond), perTok(r.PrefillTime, r.PrefillTokens),
+		r.DecodeRounds, r.DecodeTokens, r.DecodeTime.Round(time.Millisecond), float64(r.DecodeTime.Milliseconds())/float64(max(r.DecodeRounds, 1)), perTok(r.DecodeTime, r.DecodeTokens))
+	if r.PrefixReused+r.PrefixRestored > 0 {
+		fmt.Printf("=== %s PREFIX: reused in slot %d, restored %d in %v ===\n", *label, r.PrefixReused, r.PrefixRestored, r.RestoreTime.Round(time.Millisecond))
+	}
 	if *score && total > 0 {
 		fmt.Printf("=== %s SCORE: %d/%d (%.1f%%) dialogue lines match the stored speaker ===\n", *label, agree, total, 100*float64(agree)/float64(total))
 	}
@@ -262,4 +291,12 @@ func recentSpeakers(db *sql.DB, bookID string, chapterIdx int) []string {
 		out = append(out, n)
 	}
 	return out
+}
+
+func primeList(n int) []string {
+	all := speakerattr.SystemPrompts()
+	if n < 0 || n > len(all) {
+		return all
+	}
+	return all[:n]
 }

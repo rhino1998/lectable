@@ -96,10 +96,13 @@ func main() {
 	// model here is not a startup error the way a bad defaultCloneModel
 	// above is.
 	llmWorker := llmworker.New(llmworker.Config{
-		ModelPath:       speakerattr.ModelPathFromEnv(),
-		NGPULayers:      int32(envIntOr("SPEAKER_LLM_GPU_LAYERS", -1)),
-		NCtx:            uint32(envIntOr("SPEAKER_LLM_CTX", speakerattr.SlotNCtx())),
-		MaxConcurrent:   envIntOr("SPEAKER_LLM_MAX_CONCURRENT", 2),
+		ModelPath:     speakerattr.ModelPathFromEnv(),
+		NGPULayers:    int32(envIntOr("SPEAKER_LLM_GPU_LAYERS", -1)),
+		NCtx:          uint32(envIntOr("SPEAKER_LLM_CTX", speakerattr.SlotNCtx())),
+		MaxConcurrent: envIntOr("SPEAKER_LLM_MAX_CONCURRENT", 2),
+		// Opt-in: see llmworker.Config.PrimeAsState/NUBatch.
+		PrimeAsState:    envOr("SPEAKER_LLM_PRIME_STATE", "") == "true",
+		NUBatch:         uint32(envIntOr("SPEAKER_LLM_UBATCH", 0)),
 		SystemPrompts:   speakerattr.SystemPrompts(),
 		IdleUnloadAfter: idleUnloadAfter,
 		// Free every resident clone model before the LLM's own (lazy,

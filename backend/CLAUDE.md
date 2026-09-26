@@ -337,7 +337,10 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
   permanently-resident sequence at load time, so later calls sharing one
   of those exact strings skip redecoding it - `llamacpp.Context.CopySeq`
   copies that shared prefix into whichever generation slot picks up the
-  call.
+  call. With `SPEAKER_LLM_PRIME_STATE=true` they're snapshots
+  restored into (and then kept in) a slot's own KV stream instead. Each
+  finished call logs its prompt/reused/generated tokens and prefill/decode
+  time.
 - **`cmd/ttsworker/main.go`** is a thin `main()` wiring `audioworker.
   Worker` and `llmworker.Worker` up to one loopback HTTP server (default
   `:8091`), including `/llm/generate` alongside the TTS routes.
@@ -503,7 +506,13 @@ building/running `ttsworker` does, since both now link into that binary.
   cache sized for that can fail to allocate alongside another
   already-VRAM-resident model; set `SPEAKER_LLM_CTX=0` explicitly if a
   given model genuinely needs more), `SPEAKER_LLM_MAX_CONCURRENT` (default `2`, see
-  `llmworker.Config.MaxConcurrent`'s own doc comment for why), `SPEAKER_LLM_NO_THINK` (bool, default
+  `llmworker.Config.MaxConcurrent`'s own doc comment for why),
+  `SPEAKER_LLM_PRIME_STATE` (bool, default `false`, but `run.sh` - so
+  `make deploy`/`make run` - sets `true`; keeps primed system
+  prompts as restored KV snapshots in a non-unified cache instead of
+  resident sequences; ~28% faster attribution, +1.4GB worker RSS, see
+  `llmworker.Config.PrimeAsState` and `../llamacpp-go/CLAUDE.md`),
+  `SPEAKER_LLM_UBATCH` (physical batch size, default llama.cpp's 512), `SPEAKER_LLM_NO_THINK` (bool, default
   `false`) - appends Qwen3's `/no_think` marker to every attribution
   batch's user turn.
   **Recommended model: `Qwen3-4B-Instruct-2507`** (a genuinely

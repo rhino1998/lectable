@@ -17,6 +17,9 @@ export LD_LIBRARY_PATH="${LLAMACPP_DIR}:${AUDIOCPP_DIR}:${LD_LIBRARY_PATH:-}"
 
 export DATA_DIR="${DATA_DIR:-$(pwd)/data}"
 export SPEAKER_LLM_GPU_LAYERS="${SPEAKER_LLM_GPU_LAYERS:--1}"
+# Primed system prompts as restored KV snapshots (~28% faster LLM passes,
+# +1.4GB ttsworker RSS) - see llmworker.Config.PrimeAsState.
+export SPEAKER_LLM_PRIME_STATE="${SPEAKER_LLM_PRIME_STATE:-true}"
 
 GO_TOOLCHAIN_DIR="${GO_TOOLCHAIN_DIR:-$HOME/go-toolchains/go1.27.1/bin}"
 if [ -d "$GO_TOOLCHAIN_DIR" ]; then

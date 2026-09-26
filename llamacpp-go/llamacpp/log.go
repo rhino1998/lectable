@@ -23,6 +23,7 @@ static void llamacpp_install_log_callback(void) {
 import "C"
 
 import (
+	"os"
 	"strings"
 	"sync"
 	"unsafe"
@@ -31,6 +32,11 @@ import (
 var (
 	logMu    sync.Mutex
 	lastWarn string
+
+	// verboseLog, set from LLAMACPP_LOG=1, also copies every libllama log
+	// line (every level) to stderr - which device a model landed on,
+	// buffer sizes, whether flash attention was enabled, and so on.
+	verboseLog = os.Getenv("LLAMACPP_LOG") == "1"
 )
 
 // goLlamacppLogCallback receives every line libllama logs. llama.cpp's C API
@@ -41,6 +47,9 @@ var (
 //
 //export goLlamacppLogCallback
 func goLlamacppLogCallback(level C.int, text *C.char, _ unsafe.Pointer) {
+	if verboseLog {
+		os.Stderr.WriteString(C.GoString(text))
+	}
 	if level < C.GGML_LOG_LEVEL_WARN {
 		return
 	}

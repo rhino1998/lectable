@@ -152,3 +152,31 @@ brand-new single-sequence `Context` given the same prompt produces under
 deterministic (temp 0, greedy) sampling - not just "it doesn't crash."
 `TestSchedulerMoreRequestsThanSlots` checks that a queue deeper than
 `nSlots` drains correctly rather than dropping or corrupting a request.
+
+## Prefix snapshots and timing
+
+`GenRequest.PrefixState` is the non-unified alternative to `PrimedSeq`: a
+`Context.SaveSeq` snapshot of the prefix, restored into the slot
+(`RestoreSeq`) on admission. On finish, `Scheduler.release` trims such a
+slot back to its prefix instead of wiping it, so the next request with the
+same snapshot (same slice) reuses it in place - passes run in bursts of one
+system prompt, so on real attribution runs only the first request per slot
+restored (~70ms; ~250MB per restore for Qwen3-4B's ~1.7K-token prompts).
+Why it exists: in a `KVUnified` context llama.cpp's attention spans the
+whole used cell range, so permanently resident primed prefixes (~10K tokens
+for speakerattr's 8 prompts) made every call attend over them - measured
+2026-09-26 on 10 Spire's Spite chapters (RX 7900 XTX, Qwen3-4B Q4_K_M):
+prompt processing 2.6K -> 4.4K tok/s, decode 9.8 -> 8.1 ms/round,
+attribution wall 102s -> 73s; scare-quote pass 40s -> 30s.
+`TestSchedulerWithPrefixState` checks restored output matches a fresh
+`Generate`.
+
+`GenRequest.Stats` (`GenStats`) reports one request's prompt/reused/
+generated tokens and queued/prefill/decode wall time; `Scheduler.
+RoundStats` partitions the Scheduler's busy time into prefill and
+decode-only rounds. Every round calls `Context.Synchronize` so its time is
+real GPU time - `llama_decode` only queues work, and without the sync a
+decode-only round measured ~1ms. `ContextParams` also exposes `NUBatch`,
+`FlashAttn` (auto already resolves to on here; off is 2-2.5x slower) and
+`TypeK`/`TypeV`. `LLAMACPP_LOG=1` copies every libllama log line to stderr.
+
