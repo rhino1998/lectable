@@ -10,11 +10,7 @@ import {
   useVoicePresets,
 } from '../api/queries'
 import { ApiError } from '../api/client'
-import {
-  CLONE_MODELS,
-  DEFAULT_CHARACTER_VOICE_MODE,
-  DEFAULT_CLONE_MODEL,
-} from '../api/types'
+import { CLONE_MODELS, DEFAULT_CHARACTER_VOICE_MODE, DEFAULT_CLONE_MODEL } from '../api/types'
 
 // Voice *selection* for one book - a dropdown of built-in and custom voices,
 // a language, and the clone model every voice in the book narrates through,
@@ -76,13 +72,19 @@ export function VoicePanel({ bookId }: { bookId: string }) {
   }
 
   const runDeleteAudio = () => {
-    if (!confirm('Delete all generated audio for this book? This cannot be undone - every paragraph will need to be regenerated.')) {
+    if (
+      !confirm(
+        'Delete all generated audio for this book? This cannot be undone - every paragraph will need to be regenerated.',
+      )
+    ) {
       return
     }
     setDeleteAudioError(null)
     deleteBookAudio.mutate(undefined, {
       onError: (err) =>
-        setDeleteAudioError(err instanceof ApiError ? err.message : 'Could not delete generated audio'),
+        setDeleteAudioError(
+          err instanceof ApiError ? err.message : 'Could not delete generated audio',
+        ),
     })
   }
 
@@ -144,7 +146,9 @@ export function VoicePanel({ bookId }: { bookId: string }) {
             setCloneModel(e.target.value)
           }}
         >
-          {!CLONE_MODELS.some((m) => m.id === cloneModel) && <option value={cloneModel}>{cloneModel}</option>}
+          {!CLONE_MODELS.some((m) => m.id === cloneModel) && (
+            <option value={cloneModel}>{cloneModel}</option>
+          )}
           {CLONE_MODELS.map((m) => (
             <option key={m.id} value={m.id}>
               {m.label}
@@ -154,7 +158,11 @@ export function VoicePanel({ bookId }: { bookId: string }) {
       </label>
 
       <div className="voice-panel-actions">
-        <button className="primary-button" onClick={save} disabled={!dirty || updateVoice.isPending}>
+        <button
+          className="primary-button"
+          onClick={save}
+          disabled={!dirty || updateVoice.isPending}
+        >
           {updateVoice.isPending ? 'Saving…' : 'Save voice'}
         </button>
         <button

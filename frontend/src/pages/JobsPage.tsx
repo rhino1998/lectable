@@ -1,5 +1,11 @@
 import { useMemo, useRef, useState } from 'react'
-import { RiCloseCircleLine, RiPauseCircleLine, RiPlayCircleLine, RiRestartLine, RiStopCircleLine } from 'react-icons/ri'
+import {
+  RiCloseCircleLine,
+  RiPauseCircleLine,
+  RiPlayCircleLine,
+  RiRestartLine,
+  RiStopCircleLine,
+} from 'react-icons/ri'
 import {
   useCancelAllJobs,
   useCancelJob,
@@ -90,7 +96,12 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
 // show for it any more than there is for a "pipeline_*" row.
 // "music_live_generation" is one task per region, so it shows the paragraph
 // its region starts at.
-const PARAGRAPH_SCOPED_KINDS = new Set<QueueTask['kind']>(['voice_clone', 'voice_design', 'sfx_generation', 'music_live_generation'])
+const PARAGRAPH_SCOPED_KINDS = new Set<QueueTask['kind']>([
+  'voice_clone',
+  'voice_design',
+  'sfx_generation',
+  'music_live_generation',
+])
 
 // Ordered most urgent first, matching backend jobs.TierUrgent/TierLookahead/
 // TierBackground's own numeric ordering - used both to compute which tiers
@@ -162,7 +173,10 @@ function TierBadge({
             <button
               key={tier}
               type="button"
-              className={'job-tier-badge job-tier-badge-button job-tier-menu-option' + (tier !== 'background' ? ` job-tier-badge-${tier}` : '')}
+              className={
+                'job-tier-badge job-tier-badge-button job-tier-menu-option' +
+                (tier !== 'background' ? ` job-tier-badge-${tier}` : '')
+              }
               title={`Raise to ${TIER_LABELS[tier]}`}
               onClick={() => {
                 onPromote(task, tier)
@@ -219,7 +233,7 @@ function cancelTitle(t: QueueTask, inFlight: boolean): string {
     return "Cancel — drops this generation's still-queued paragraphs; ones already rendering finish"
   }
   if (t.kind.startsWith('pipeline_')) {
-    return "Cancel — stops this phase from starting more chapters/characters; anything already in progress keeps running"
+    return 'Cancel — stops this phase from starting more chapters/characters; anything already in progress keeps running'
   }
   return 'Cancel'
 }
@@ -269,7 +283,11 @@ function TaskTable({
               <TierBadge task={t} onPromote={onPromote} promoting={promotingId === t.id} />
             </td>
             <td>
-              {t.attempt > 0 ? <span className="job-tier-badge job-tier-badge-urgent">retry {t.attempt}</span> : t.attempt}
+              {t.attempt > 0 ? (
+                <span className="job-tier-badge job-tier-badge-urgent">retry {t.attempt}</span>
+              ) : (
+                t.attempt
+              )}
             </td>
             <td>
               <button
@@ -329,7 +347,10 @@ export function JobsPage() {
     setCancelError(null)
     setCancelingId(t.id)
     cancelJob.mutate(t.id, {
-      onError: (err) => setCancelError(err instanceof ApiError ? err.message : `Could not cancel "${targetLabel(t)}"`),
+      onError: (err) =>
+        setCancelError(
+          err instanceof ApiError ? err.message : `Could not cancel "${targetLabel(t)}"`,
+        ),
       onSettled: () => setCancelingId(null),
     })
   }
@@ -341,19 +362,28 @@ export function JobsPage() {
       { id: t.id, tier },
       {
         onError: (err) =>
-          setPromoteError(err instanceof ApiError ? err.message : `Could not raise priority for "${targetLabel(t)}"`),
+          setPromoteError(
+            err instanceof ApiError
+              ? err.message
+              : `Could not raise priority for "${targetLabel(t)}"`,
+          ),
         onSettled: () => setPromotingId(null),
       },
     )
   }
 
   const runCancelAll = () => {
-    if (!confirm(`Cancel all ${totalCount} queued/in-flight jobs? Anything already generating will stop as soon as it notices.`)) {
+    if (
+      !confirm(
+        `Cancel all ${totalCount} queued/in-flight jobs? Anything already generating will stop as soon as it notices.`,
+      )
+    ) {
       return
     }
     setCancelError(null)
     cancelAllJobs.mutate(undefined, {
-      onError: (err) => setCancelError(err instanceof ApiError ? err.message : 'Could not cancel all jobs'),
+      onError: (err) =>
+        setCancelError(err instanceof ApiError ? err.message : 'Could not cancel all jobs'),
     })
   }
 
@@ -363,11 +393,13 @@ export function JobsPage() {
     setCancelError(null)
     if (paused) {
       resumeJobs.mutate(undefined, {
-        onError: (err) => setCancelError(err instanceof ApiError ? err.message : 'Could not resume the queue'),
+        onError: (err) =>
+          setCancelError(err instanceof ApiError ? err.message : 'Could not resume the queue'),
       })
     } else {
       pauseJobs.mutate(undefined, {
-        onError: (err) => setCancelError(err instanceof ApiError ? err.message : 'Could not pause the queue'),
+        onError: (err) =>
+          setCancelError(err instanceof ApiError ? err.message : 'Could not pause the queue'),
       })
     }
   }
@@ -378,12 +410,17 @@ export function JobsPage() {
   // blocks every proxied TTS/LLM call until the new worker is healthy), so
   // this confirms first, same as Cancel all.
   const runRestartWorker = () => {
-    if (!confirm('Restart ttsworker now? Any TTS/LLM call in flight will be interrupted until the new worker is healthy again.')) {
+    if (
+      !confirm(
+        'Restart ttsworker now? Any TTS/LLM call in flight will be interrupted until the new worker is healthy again.',
+      )
+    ) {
       return
     }
     setRestartError(null)
     restartWorker.mutate(undefined, {
-      onError: (err) => setRestartError(err instanceof ApiError ? err.message : 'Could not restart ttsworker'),
+      onError: (err) =>
+        setRestartError(err instanceof ApiError ? err.message : 'Could not restart ttsworker'),
     })
   }
 
@@ -422,7 +459,7 @@ export function JobsPage() {
             title={
               paused
                 ? 'Resume dispatching new jobs'
-                : "Pause dispatching new jobs - anything already in flight keeps running to completion"
+                : 'Pause dispatching new jobs - anything already in flight keeps running to completion'
             }
           >
             {paused ? <RiPlayCircleLine /> : <RiPauseCircleLine />}
@@ -446,13 +483,15 @@ export function JobsPage() {
         </div>
       </div>
       <p className="muted">
-        Live view of the backend's job queue - voice-clone/design generation, speaker attribution, and
-        speaker characterization runs sharing one priority queue, plus each book's own "Preprocess" run
-        shown as its four ordered phases - what's actually running right now, and what's waiting.
-        Updates live as the queue changes.
+        Live view of the backend's job queue - voice-clone/design generation, speaker attribution,
+        and speaker characterization runs sharing one priority queue, plus each book's own
+        "Preprocess" run shown as its four ordered phases - what's actually running right now, and
+        what's waiting. Updates live as the queue changes.
       </p>
       {paused && (
-        <p className="jobs-paused-banner">Paused — no new jobs will be dispatched. Anything already in flight is still running.</p>
+        <p className="jobs-paused-banner">
+          Paused — no new jobs will be dispatched. Anything already in flight is still running.
+        </p>
       )}
       {cancelError && <p className="error-text">{cancelError}</p>}
       {promoteError && <p className="error-text">{promoteError}</p>}

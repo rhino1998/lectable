@@ -40,7 +40,11 @@ export function SleepTimerButton({
         title="Sleep timer"
       >
         <RiMoonLine />
-        {active ? (option === 'end-of-chapter' ? 'End of chapter' : formatCountdown(remainingSeconds)) : 'Sleep'}
+        {active
+          ? option === 'end-of-chapter'
+            ? 'End of chapter'
+            : formatCountdown(remainingSeconds)
+          : 'Sleep'}
       </button>
 
       {open && (

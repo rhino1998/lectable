@@ -42,11 +42,13 @@ const EMOTION_ICONS: Record<Emotion, IconType> = {
   pained: RiFirstAidKitLine,
 }
 
-export const EMOTIONS: { id: Emotion; label: string; icon: IconType }[] = GENERATED_EMOTIONS.map((e) => ({
-  id: e.id,
-  label: e.label,
-  icon: EMOTION_ICONS[e.id],
-}))
+export const EMOTIONS: { id: Emotion; label: string; icon: IconType }[] = GENERATED_EMOTIONS.map(
+  (e) => ({
+    id: e.id,
+    label: e.label,
+    icon: EMOTION_ICONS[e.id],
+  }),
+)
 
 const LABELS = new Map<string, string>(EMOTIONS.map((e) => [e.id, e.label]))
 const ICONS = new Map<string, IconType>(EMOTIONS.map((e) => [e.id, e.icon]))

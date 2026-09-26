@@ -90,7 +90,11 @@ export interface PlaybackController {
 // after the per-frame loop below missed several while backgrounded, or one
 // coarse 'timeupdate' tick spanning more than one very short merge-group
 // member) still lands on whichever paragraph is actually playing right now.
-function advanceMergeGroup(chapter: ChapterDetail | undefined, fromIdx: number, atTime: number): number {
+function advanceMergeGroup(
+  chapter: ChapterDetail | undefined,
+  fromIdx: number,
+  atTime: number,
+): number {
   if (!chapter) return fromIdx
   let idx = fromIdx
   for (;;) {
@@ -137,7 +141,8 @@ function resolveNextClipUrl(
     }
     const p = chapter.paragraphs[pi]
     if (p.audioStatus !== 'ready' || !p.audioUrl) return undefined
-    if (p.audioUrl !== currentUrl) return (p.audioPointerSeconds ?? 0) === 0 ? p.audioUrl : undefined
+    if (p.audioUrl !== currentUrl)
+      return (p.audioPointerSeconds ?? 0) === 0 ? p.audioUrl : undefined
     pi += 1
   }
 }
@@ -222,7 +227,8 @@ export function usePlayback({
 
   const currentChapter = chapters.get(chapterIdx)
   const currentParagraph = currentChapter?.paragraphs[paragraphIdx]
-  const readyAudioUrl = currentParagraph?.audioStatus === 'ready' ? currentParagraph.audioUrl : undefined
+  const readyAudioUrl =
+    currentParagraph?.audioStatus === 'ready' ? currentParagraph.audioUrl : undefined
   const isWaitingForAudio = isPlaying && currentParagraph !== undefined && !readyAudioUrl
   // currentTime/duration state below track the ACTIVE <audio> element
   // directly (el.currentTime/el.duration) - correct for an ordinary
@@ -291,7 +297,12 @@ export function usePlayback({
         // comes after the whole group instead of ever making its members
         // (a scare quote's own short fragment, then the narration after it)
         // active.
-        const { chapterIdx: ci, paragraphIdx: pi, chapters: chs, onPosition: report } = stateRef.current
+        const {
+          chapterIdx: ci,
+          paragraphIdx: pi,
+          chapters: chs,
+          onPosition: report,
+        } = stateRef.current
         const advanced = advanceMergeGroup(chs.get(ci), pi, el.currentTime)
         if (advanced !== pi) setParagraphIdx(advanced)
         const now = Date.now()
@@ -331,7 +342,8 @@ export function usePlayback({
         const otherIdx = idx === 0 ? 1 : 0
         const standby = elements[otherIdx]
         const nextUrl = resolveReadyUrl(chs, ci, resolvedPi + 1)
-        const standbyReady = nextUrl !== undefined && standby.currentSrc.endsWith(nextUrl) && standby.readyState >= 2
+        const standbyReady =
+          nextUrl !== undefined && standby.currentSrc.endsWith(nextUrl) && standby.readyState >= 2
 
         if (advanceWithin) {
           if (standbyReady) {
@@ -477,7 +489,9 @@ export function usePlayback({
         paragraphIdx === initialParagraphIdx &&
         initialSeconds > 0
       appliedInitialSeek.current = true
-      const seekTarget = isInitialPosition ? initialSeconds : (currentParagraph?.audioPointerSeconds ?? 0)
+      const seekTarget = isInitialPosition
+        ? initialSeconds
+        : (currentParagraph?.audioPointerSeconds ?? 0)
       if (seekTarget > 0) {
         const seekOnce = () => {
           audio.currentTime = seekTarget
@@ -554,6 +568,15 @@ export function usePlayback({
       },
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chapterIdx, paragraphIdx, isPlaying, isWaitingForAudio, exposedCurrentTime, exposedDuration, playbackRate, activeIndex],
+    [
+      chapterIdx,
+      paragraphIdx,
+      isPlaying,
+      isWaitingForAudio,
+      exposedCurrentTime,
+      exposedDuration,
+      playbackRate,
+      activeIndex,
+    ],
   )
 }

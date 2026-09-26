@@ -80,7 +80,11 @@ function RegenerateButton({
         className="icon-action-button"
         onClick={run}
         disabled={pending}
-        title={pending ? 'Regenerating…' : "Regenerate — re-render this voice's reference clip from its saved recipe"}
+        title={
+          pending
+            ? 'Regenerating…'
+            : "Regenerate — re-render this voice's reference clip from its saved recipe"
+        }
       >
         <RiRefreshLine />
       </button>
@@ -113,7 +117,11 @@ function InlineVoiceTest({ onTest }: { onTest: (text: string) => Promise<Blob> }
 
   if (!open) {
     return (
-      <button className="icon-action-button" onClick={() => setOpen(true)} title="Test with new text">
+      <button
+        className="icon-action-button"
+        onClick={() => setOpen(true)}
+        title="Test with new text"
+      >
         <RiPlayLine />
       </button>
     )
@@ -180,9 +188,12 @@ export function VoicesPage() {
   // re-fetches instead of showing/playing the pre-regenerate clip - see
   // withCacheBust's own doc comment.
   const [audioVersion, setAudioVersion] = useState<Record<string, number>>({})
-  const bumpAudioVersion = (id: string) => setAudioVersion((v) => ({ ...v, [id]: (v[id] ?? 0) + 1 }))
+  const bumpAudioVersion = (id: string) =>
+    setAudioVersion((v) => ({ ...v, [id]: (v[id] ?? 0) + 1 }))
 
-  const updateDefaults = (patch: { presetId: string; instruct: string } | { cloneModel: string }) => {
+  const updateDefaults = (
+    patch: { presetId: string; instruct: string } | { cloneModel: string },
+  ) => {
     const current = defaultVoiceQuery.data
     updateDefaultVoice.mutate({
       presetId: current?.presetId ?? '',
@@ -200,7 +211,8 @@ export function VoicesPage() {
       musicEnabled: false,
     })
   }
-  const selectDefault = (p: { id: string; instruct: string }) => updateDefaults({ presetId: p.id, instruct: p.instruct })
+  const selectDefault = (p: { id: string; instruct: string }) =>
+    updateDefaults({ presetId: p.id, instruct: p.instruct })
 
   const [target, setTarget] = useState<FormTarget>(null)
   const [name, setName] = useState('')
@@ -211,7 +223,8 @@ export function VoicesPage() {
   // through. Not part of the voice (it has none); starts at the default
   // clone model new books get.
   const [previewCloneModel, setPreviewCloneModel] = useState<string | null>(null)
-  const effectivePreviewCloneModel = previewCloneModel ?? defaultVoiceQuery.data?.cloneModel ?? DEFAULT_CLONE_MODEL
+  const effectivePreviewCloneModel =
+    previewCloneModel ?? defaultVoiceQuery.data?.cloneModel ?? DEFAULT_CLONE_MODEL
   // Which VoiceDesign engine renders the reference clip - always reset to
   // DEFAULT_DESIGN_MODEL for a brand-new voice (openNew) or one derived
   // from an existing preset (openDerive), regardless of what that source
@@ -321,7 +334,8 @@ export function VoicesPage() {
         },
         {
           onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
-          onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not synthesize test text'),
+          onError: (err) =>
+            setTestError(err instanceof ApiError ? err.message : 'Could not synthesize test text'),
         },
       )
       return
@@ -341,7 +355,8 @@ export function VoicesPage() {
       },
       {
         onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
-        onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not preview this voice'),
+        onError: (err) =>
+          setTestError(err instanceof ApiError ? err.message : 'Could not preview this voice'),
       },
     )
   }
@@ -370,7 +385,8 @@ export function VoicesPage() {
     <li key={p.id}>
       <span>{p.name}</span>
       <span className="muted voice-model-badge">
-        {DESIGN_MODEL_LABELS[(p.designModel || DEFAULT_DESIGN_MODEL) as DesignModel] ?? p.designModel}
+        {DESIGN_MODEL_LABELS[(p.designModel || DEFAULT_DESIGN_MODEL) as DesignModel] ??
+          p.designModel}
       </span>
       {p.refError && (
         <span className="error-text" title={p.refError}>
@@ -425,7 +441,8 @@ export function VoicesPage() {
   const save = () => {
     setError(null)
     const input = { name, instruct, refText, speedMultiplier, seed, designModel }
-    const onError = (err: unknown) => setError(err instanceof ApiError ? err.message : 'Could not save voice')
+    const onError = (err: unknown) =>
+      setError(err instanceof ApiError ? err.message : 'Could not save voice')
     if (editing) {
       updatePreset.mutate({ id: editing.id, input }, { onSuccess: () => setTarget(null), onError })
     } else {
@@ -461,9 +478,9 @@ export function VoicesPage() {
             </select>
           </label>
           <p className="muted">
-            Each book picks its own cloning model in its voice settings. This only sets what a newly added
-            book starts with. Voices don't have a cloning model of their own, and previews here use this
-            default.
+            Each book picks its own cloning model in its voice settings. This only sets what a newly
+            added book starts with. Voices don't have a cloning model of their own, and previews
+            here use this default.
           </p>
 
           <h2>Built-in</h2>
@@ -474,9 +491,14 @@ export function VoicesPage() {
               <li key={p.id}>
                 <span>{p.name}</span>
                 <span className="muted voice-model-badge">
-                  {DESIGN_MODEL_LABELS[(p.designModel || DEFAULT_DESIGN_MODEL) as DesignModel] ?? p.designModel}
+                  {DESIGN_MODEL_LABELS[(p.designModel || DEFAULT_DESIGN_MODEL) as DesignModel] ??
+                    p.designModel}
                 </span>
-                <audio controls preload="none" src={withCacheBust(p.audioUrl, audioVersion[p.id])} />
+                <audio
+                  controls
+                  preload="none"
+                  src={withCacheBust(p.audioUrl, audioVersion[p.id])}
+                />
                 {defaultPresetId === p.id ? (
                   <span className="icon-action-button" title="Default voice">
                     <RiStarFill />
@@ -510,7 +532,9 @@ export function VoicesPage() {
                   onRegenerate={() => regenerateBuiltinPreset.mutateAsync(p.id)}
                   onRegenerated={() => bumpAudioVersion(p.id)}
                 />
-                <InlineVoiceTest onTest={(text) => testBuiltinPreset.mutateAsync({ id: p.id, text })} />
+                <InlineVoiceTest
+                  onTest={(text) => testBuiltinPreset.mutateAsync({ id: p.id, text })}
+                />
               </li>
             ))}
           </ul>
@@ -528,7 +552,9 @@ export function VoicesPage() {
       {target === null ? (
         <>
           {ungroupedPresets.length > 0 && (
-            <ul className="custom-voice-list custom-voice-list-page">{ungroupedPresets.map(renderPreset)}</ul>
+            <ul className="custom-voice-list custom-voice-list-page">
+              {ungroupedPresets.map(renderPreset)}
+            </ul>
           )}
           {groupNames.map((name) => (
             <div key={name} className="custom-voice-group">
@@ -570,9 +596,13 @@ export function VoicesPage() {
               ? 'Uses the saved voice through the preview cloning model above - save any other changes first to hear them reflected here.'
               : 'Preview renders the reference line above via VoiceDesign directly - no preset saved yet. Creating the voice right after, unchanged, reuses this exact clip instead of rendering again.',
             onRun: runTest,
-            guidance: editing ? undefined : { value: designGuidanceScale, onChange: setDesignGuidanceScale },
+            guidance: editing
+              ? undefined
+              : { value: designGuidanceScale, onChange: setDesignGuidanceScale },
             temperature: { value: testTemperature, onChange: setTestTemperature },
-            cloneModel: editing ? { value: effectivePreviewCloneModel, onChange: setPreviewCloneModel } : undefined,
+            cloneModel: editing
+              ? { value: effectivePreviewCloneModel, onChange: setPreviewCloneModel }
+              : undefined,
           }}
         />
       )}

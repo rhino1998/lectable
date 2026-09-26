@@ -94,24 +94,46 @@ export function ExportPage() {
   const missing = chosen.reduce((sum, c) => sum + Math.max(0, c.paragraphCount - c.readyCount), 0)
 
   if (bookQuery.isLoading) return <p>Loading…</p>
-  if (bookQuery.isError || !bookQuery.data) return <p className="error-text">Could not load this book.</p>
+  if (bookQuery.isError || !bookQuery.data)
+    return <p className="error-text">Could not load this book.</p>
   const book = bookQuery.data
 
   const start = (reqs: CreateExportRequest[]) => {
     setError(null)
     for (const req of reqs) {
       createExport.mutate(req, {
-        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not start the export'),
+        onError: (err) =>
+          setError(err instanceof ApiError ? err.message : 'Could not start the export'),
       })
     }
   }
   const handleBuild = () => {
     const chapters = wholeBook ? [] : [...selected].sort((a, b) => a - b)
-    start([{ format, wordLevel, phraseSeconds, asIs: asIs || latents, excludeMusic: wholeBook && !includeMusic, chapters, latents }])
+    start([
+      {
+        format,
+        wordLevel,
+        phraseSeconds,
+        asIs: asIs || latents,
+        excludeMusic: wholeBook && !includeMusic,
+        chapters,
+        latents,
+      },
+    ])
   }
   const handleSplit = () => {
     const runs = splitIntoParts(chapters, Math.min(parts, chapters.length))
-    start(runs.map((run) => ({ format, wordLevel, phraseSeconds, asIs: asIs || latents, excludeMusic: false, chapters: run, latents })))
+    start(
+      runs.map((run) => ({
+        format,
+        wordLevel,
+        phraseSeconds,
+        asIs: asIs || latents,
+        excludeMusic: false,
+        chapters: run,
+        latents,
+      })),
+    )
   }
   const handleRebuild = (e: BookExport) => {
     start([
@@ -127,10 +149,14 @@ export function ExportPage() {
     ])
   }
   const handleDelete = (e: BookExport) => {
-    const what = e.building || e.rendering || e.queued ? 'Cancel this export?' : `Delete ${e.fileName ?? 'this export'}?`
+    const what =
+      e.building || e.rendering || e.queued
+        ? 'Cancel this export?'
+        : `Delete ${e.fileName ?? 'this export'}?`
     if (!confirm(what)) return
     deleteExport.mutate(e.id, {
-      onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not delete the export'),
+      onError: (err) =>
+        setError(err instanceof ApiError ? err.message : 'Could not delete the export'),
     })
   }
   const toggle = (idx: number) => {
@@ -161,7 +187,9 @@ export function ExportPage() {
       <section>
         <h2>Exports</h2>
         {exportsQuery.isLoading && <p className="muted">Loading…</p>}
-        {!exportsQuery.isLoading && exports.length === 0 && <p className="muted">No exports yet.</p>}
+        {!exportsQuery.isLoading && exports.length === 0 && (
+          <p className="muted">No exports yet.</p>
+        )}
         {exports.length > 0 && (
           <table className="jobs-table export-table">
             <thead>
@@ -183,21 +211,38 @@ export function ExportPage() {
                     {syncLabel(e) && <span className="export-badge">{syncLabel(e)}</span>}
                     {e.excludeMusic && <span className="export-badge">No music</span>}
                     {e.latents && (
-                      <span className="export-badge" title="A latent-only transfer to another Lectable library - not playable as an audiobook">
+                      <span
+                        className="export-badge"
+                        title="A latent-only transfer to another Lectable library - not playable as an audiobook"
+                      >
                         Latents
                       </span>
                     )}
-                    {e.full && <span className="export-badge" title="Includes Lectable's own data - upload it to another Lectable library to restore this book">Importable</span>}
+                    {e.full && (
+                      <span
+                        className="export-badge"
+                        title="Includes Lectable's own data - upload it to another Lectable library to restore this book"
+                      >
+                        Importable
+                      </span>
+                    )}
                     {!!e.missingAudio && (
-                      <div className="muted export-note">{e.missingAudio} paragraphs without audio</div>
+                      <div className="muted export-note">
+                        {e.missingAudio} paragraphs without audio
+                      </div>
                     )}
                   </td>
                   <td className={e.error ? 'error-text' : e.stale ? 'export-stale' : undefined}>
-                    {(e.building || e.rendering || e.queued) && <RiLoader4Line className="spin export-spinner" />}
+                    {(e.building || e.rendering || e.queued) && (
+                      <RiLoader4Line className="spin export-spinner" />
+                    )}
                     {exportStatus(e)}
                     {e.building && (
                       <div className="export-progress">
-                        <div className="export-progress-fill" style={{ width: `${Math.round(e.progress * 100)}%` }} />
+                        <div
+                          className="export-progress-fill"
+                          style={{ width: `${Math.round(e.progress * 100)}%` }}
+                        />
                       </div>
                     )}
                   </td>
@@ -207,7 +252,12 @@ export function ExportPage() {
                   <td>
                     <div className="export-actions">
                       {e.ready && e.downloadUrl && (
-                        <a className="icon-action-button" href={e.downloadUrl} download={e.fileName} title="Download">
+                        <a
+                          className="icon-action-button"
+                          href={e.downloadUrl}
+                          download={e.fileName}
+                          title="Download"
+                        >
                           <RiDownload2Line />
                         </a>
                       )}
@@ -261,7 +311,9 @@ export function ExportPage() {
               <select value={syncSpeed} onChange={(ev) => setSyncSpeed(Number(ev.target.value))}>
                 {SYNC_SPEEDS.map((s) => (
                   <option key={s} value={s}>
-                    {s === 1 ? '1× (every word)' : `${s}× (phrases of ${phraseSecondsFor(s).toFixed(1)}s+)`}
+                    {s === 1
+                      ? '1× (every word)'
+                      : `${s}× (phrases of ${phraseSecondsFor(s).toFixed(1)}s+)`}
                   </option>
                 ))}
               </select>
@@ -272,25 +324,44 @@ export function ExportPage() {
             Export as-is - don't generate missing audio first (those paragraphs go in text-only)
           </label>
           <label className="checkbox-label">
-            <input type="checkbox" checked={latentTransfer} onChange={(ev) => setLatentTransfer(ev.target.checked)} />
-            Latent-only transfer - ships the models' latents instead of audio where they exist (much smaller); only for
-            moving the book to another Lectable library, which decodes each clip when it's first played. Always as-is:
-            an in-progress book moves with what it has. Selected chapters import as their own book (&ldquo;Title
-            (chapters&nbsp;…)&rdquo;)
+            <input
+              type="checkbox"
+              checked={latentTransfer}
+              onChange={(ev) => setLatentTransfer(ev.target.checked)}
+            />
+            Latent-only transfer - ships the models' latents instead of audio where they exist (much
+            smaller); only for moving the book to another Lectable library, which decodes each clip
+            when it's first played. Always as-is: an in-progress book moves with what it has.
+            Selected chapters import as their own book (&ldquo;Title (chapters&nbsp;…)&rdquo;)
           </label>
           <label className="checkbox-label">
-            <input type="radio" name="scope" checked={wholeBook} onChange={() => setWholeBook(true)} />
-            Whole book - includes Lectable's own data, so it can be uploaded to another Lectable library
+            <input
+              type="radio"
+              name="scope"
+              checked={wholeBook}
+              onChange={() => setWholeBook(true)}
+            />
+            Whole book - includes Lectable's own data, so it can be uploaded to another Lectable
+            library
           </label>
           {wholeBook && (
             <label className="checkbox-label export-indent">
-              <input type="checkbox" checked={includeMusic} onChange={(ev) => setIncludeMusic(ev.target.checked)} />
-              Include background music - usually most of the file (without it, an importing library keeps the music
-              scoring and renders the music again)
+              <input
+                type="checkbox"
+                checked={includeMusic}
+                onChange={(ev) => setIncludeMusic(ev.target.checked)}
+              />
+              Include background music - usually most of the file (without it, an importing library
+              keeps the music scoring and renders the music again)
             </label>
           )}
           <label className="checkbox-label">
-            <input type="radio" name="scope" checked={!wholeBook} onChange={() => setWholeBook(false)} />
+            <input
+              type="radio"
+              name="scope"
+              checked={!wholeBook}
+              onChange={() => setWholeBook(false)}
+            />
             Selected chapters
           </label>
         </div>
@@ -298,7 +369,10 @@ export function ExportPage() {
         {!wholeBook && (
           <div className="export-chapters">
             <div className="export-chapter-actions">
-              <button className="option-chip" onClick={() => setSelected(new Set(chapters.map((c) => c.idx)))}>
+              <button
+                className="option-chip"
+                onClick={() => setSelected(new Set(chapters.map((c) => c.idx)))}
+              >
                 All
               </button>
               <button className="option-chip" onClick={() => setSelected(new Set())}>
@@ -309,7 +383,11 @@ export function ExportPage() {
             <div className="export-chapter-list">
               {chapters.map((c) => (
                 <label key={c.idx} className="checkbox-label export-chapter">
-                  <input type="checkbox" checked={selected.has(c.idx)} onChange={() => toggle(c.idx)} />
+                  <input
+                    type="checkbox"
+                    checked={selected.has(c.idx)}
+                    onChange={() => toggle(c.idx)}
+                  />
                   <span className="export-chapter-idx">{c.idx + 1}</span>
                   <span className="export-chapter-title">{c.title || `Chapter ${c.idx + 1}`}</span>
                   <span className={c.readyCount < c.paragraphCount ? 'export-stale' : 'muted'}>
@@ -323,8 +401,8 @@ export function ExportPage() {
 
         {missing > 0 && (
           <p className="export-stale">
-            {missing} paragraph{missing === 1 ? '' : 's'} in {wholeBook ? 'the book' : 'the selection'} have no audio
-            yet -{' '}
+            {missing} paragraph{missing === 1 ? '' : 's'} in{' '}
+            {wholeBook ? 'the book' : 'the selection'} have no audio yet -{' '}
             {asIs || latents
               ? "they'll be in the text but not read aloud."
               : 'the export generates them first and waits for them (it shows on the Jobs page).'}
@@ -332,7 +410,11 @@ export function ExportPage() {
         )}
 
         <div className="export-buttons">
-          <button className="primary-button" onClick={handleBuild} disabled={chosen.length === 0 || createExport.isPending}>
+          <button
+            className="primary-button"
+            onClick={handleBuild}
+            disabled={chosen.length === 0 || createExport.isPending}
+          >
             <RiDownload2Line /> Build export
           </button>
           <span className="muted">or split the whole book into</span>
@@ -344,14 +426,18 @@ export function ExportPage() {
             value={parts}
             onChange={(ev) => setParts(Math.max(2, Number(ev.target.value) || 2))}
           />
-          <button className="option-chip" onClick={handleSplit} disabled={chapters.length < 2 || createExport.isPending}>
+          <button
+            className="option-chip"
+            onClick={handleSplit}
+            disabled={chapters.length < 2 || createExport.isPending}
+          >
             parts
           </button>
         </div>
         <p className="muted">
-          Each export runs as a task on the Jobs page. Building the same contents again replaces that export. Exports
-          stay on the server until you delete them, so downloading again is instant; one marked out of date no longer
-          matches the book.
+          Each export runs as a task on the Jobs page. Building the same contents again replaces
+          that export. Exports stay on the server until you delete them, so downloading again is
+          instant; one marked out of date no longer matches the book.
         </p>
       </section>
     </div>

@@ -13,6 +13,14 @@ purpose (not a system install). Prefix commands with:
 export PATH=/home/rhino/node-toolchains/v24.21.0/bin:$PATH
 ```
 
+## Formatting
+
+Prettier (`.prettierrc.json`: no semicolons, single quotes, 100 columns).
+`npm run format` rewrites, `npm run format:check` only reports.
+`.prettierignore` skips Markdown (hand-wrapped) and `src/api/generated.ts` -
+its layout is owned by `backend/cmd/apigen`, and a backend test compares it
+byte-for-byte.
+
 ## Layout
 
 - `src/api/generated.ts` — **generated** from the backend by

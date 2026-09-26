@@ -1,7 +1,22 @@
 import { useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { RiDeleteBinLine, RiDownload2Line, RiHeadphoneLine, RiLoader4Line, RiMagicLine, RiUploadLine, RiUserVoiceLine } from 'react-icons/ri'
-import { useBooks, useDeleteBook, useGenerateBook, useGenerateRemaining, usePreprocessBook, useUploadBook } from '../api/queries'
+import {
+  RiDeleteBinLine,
+  RiDownload2Line,
+  RiHeadphoneLine,
+  RiLoader4Line,
+  RiMagicLine,
+  RiUploadLine,
+  RiUserVoiceLine,
+} from 'react-icons/ri'
+import {
+  useBooks,
+  useDeleteBook,
+  useGenerateBook,
+  useGenerateRemaining,
+  usePreprocessBook,
+  useUploadBook,
+} from '../api/queries'
 import { useClickOutside } from '../hooks/useClickOutside'
 import { ApiError } from '../api/client'
 import { formatDurationLong } from '../utils/time'
@@ -30,7 +45,12 @@ function groupBySeries(books: BookSummary[]): LibraryItem[] {
       if (seenSeries.has(book.seriesName)) continue
       seenSeries.add(book.seriesName)
       const sorted = [...seriesMates].sort((a, b) => (a.seriesIndex ?? 0) - (b.seriesIndex ?? 0))
-      items.push({ kind: 'series', key: `series:${book.seriesName}`, seriesName: book.seriesName, books: sorted })
+      items.push({
+        kind: 'series',
+        key: `series:${book.seriesName}`,
+        seriesName: book.seriesName,
+        books: sorted,
+      })
       continue
     }
     const last = items[items.length - 1]
@@ -54,7 +74,10 @@ function BookCard({
 }) {
   const percent = Math.round(book.progressPercent)
   const generatedPercent = Math.round(book.generatedPercent)
-  const remainingSeconds = Math.max(0, book.estimatedTotalSeconds * (1 - book.progressPercent / 100))
+  const remainingSeconds = Math.max(
+    0,
+    book.estimatedTotalSeconds * (1 - book.progressPercent / 100),
+  )
 
   const preprocessBook = usePreprocessBook()
   const handlePreprocess = () => {
@@ -93,7 +116,10 @@ function BookCard({
           )}
           {book.finished && <span className="book-finished-badge">Finished</span>}
           {book.preprocessing && (
-            <div className="book-cover-processing" title="Preprocessing: attributing speakers, characterizing, provisioning voices, tagging directions, resolving pronunciation…">
+            <div
+              className="book-cover-processing"
+              title="Preprocessing: attributing speakers, characterizing, provisioning voices, tagging directions, resolving pronunciation…"
+            >
               <RiLoader4Line className="spin" />
             </div>
           )}
@@ -148,7 +174,11 @@ function BookCard({
         </button>
         {generateMenuOpen && (
           <div className="popover-panel book-generate-menu-panel">
-            <button className="option-chip" title="Generate the whole book from the beginning" onClick={handleGenerateAll}>
+            <button
+              className="option-chip"
+              title="Generate the whole book from the beginning"
+              onClick={handleGenerateAll}
+            >
               All
             </button>
             <button
@@ -208,7 +238,10 @@ export function LibraryPage() {
     const books = booksQuery.data ?? []
     const finished = books.filter((b) => b.finished).length
     const inProgress = books.filter((b) => !b.finished && b.progressPercent > 0).length
-    const listenedSeconds = books.reduce((sum, b) => sum + b.estimatedTotalSeconds * (b.progressPercent / 100), 0)
+    const listenedSeconds = books.reduce(
+      (sum, b) => sum + b.estimatedTotalSeconds * (b.progressPercent / 100),
+      0,
+    )
     return { finished, inProgress, listenedSeconds }
   }, [booksQuery.data])
 
@@ -255,14 +288,24 @@ export function LibraryPage() {
             <h2 className="library-series-heading">{item.seriesName}</h2>
             <div className="book-grid">
               {item.books.map((book) => (
-                <BookCard key={book.id} book={book} onDelete={() => confirmDelete(book)} showSeriesName={false} />
+                <BookCard
+                  key={book.id}
+                  book={book}
+                  onDelete={() => confirmDelete(book)}
+                  showSeriesName={false}
+                />
               ))}
             </div>
           </section>
         ) : (
           <div key={item.key} className="book-grid">
             {item.books.map((book) => (
-              <BookCard key={book.id} book={book} onDelete={() => confirmDelete(book)} showSeriesName={true} />
+              <BookCard
+                key={book.id}
+                book={book}
+                onDelete={() => confirmDelete(book)}
+                showSeriesName={true}
+              />
             ))}
           </div>
         ),

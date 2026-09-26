@@ -37,7 +37,9 @@ export function resolveGenerationText(
 
   if (marksByOffset.size === 0 && subByOffset.size === 0) return text
 
-  const offsets = [...new Set([...marksByOffset.keys(), ...subByOffset.keys(), text.length])].sort((a, b) => a - b)
+  const offsets = [...new Set([...marksByOffset.keys(), ...subByOffset.keys(), text.length])].sort(
+    (a, b) => a - b,
+  )
 
   let result = ''
   let cursor = 0

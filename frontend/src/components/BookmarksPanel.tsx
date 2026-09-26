@@ -56,7 +56,9 @@ export function BookmarksPanel({
       {open && (
         <div className={'popover-panel' + (align === 'above' ? ' popover-panel-above' : '')}>
           {bookmarks.length === 0 && (
-            <p className="muted">No bookmarks yet — click the bookmark icon next to a paragraph to add one.</p>
+            <p className="muted">
+              No bookmarks yet — click the bookmark icon next to a paragraph to add one.
+            </p>
           )}
           <div className="book-search-results">
             {bookmarks.map((b) => (
@@ -75,14 +77,22 @@ export function BookmarksPanel({
                       autoFocus
                       onKeyDown={(e) => e.key === 'Enter' && saveNote(b.id)}
                     />
-                    <button className="book-search-close" onClick={() => saveNote(b.id)} title="Save note">
+                    <button
+                      className="book-search-close"
+                      onClick={() => saveNote(b.id)}
+                      title="Save note"
+                    >
                       <RiCheckLine />
                     </button>
                   </div>
                 ) : (
                   <div className="bookmark-actions">
                     {b.note && <span className="bookmark-note">{b.note}</span>}
-                    <button className="book-search-close" onClick={() => startEdit(b)} title="Edit note">
+                    <button
+                      className="book-search-close"
+                      onClick={() => startEdit(b)}
+                      title="Edit note"
+                    >
                       <RiEditLine />
                     </button>
                     <button

@@ -17,19 +17,40 @@ function RootLayout() {
           <img src="/favicon.svg" alt="" width="22" height="22" />
           Lectable
         </div>
-        <Link to="/" className="sidebar-tab" activeOptions={{ exact: true }} activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}>
+        <Link
+          to="/"
+          className="sidebar-tab"
+          activeOptions={{ exact: true }}
+          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
+        >
           Library
         </Link>
-        <Link to="/voices" className="sidebar-tab" activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}>
+        <Link
+          to="/voices"
+          className="sidebar-tab"
+          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
+        >
           Voices
         </Link>
-        <Link to="/sfx" className="sidebar-tab" activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}>
+        <Link
+          to="/sfx"
+          className="sidebar-tab"
+          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
+        >
           SFX
         </Link>
-        <Link to="/llm" className="sidebar-tab" activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}>
+        <Link
+          to="/llm"
+          className="sidebar-tab"
+          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
+        >
           LLM
         </Link>
-        <Link to="/jobs" className="sidebar-tab" activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}>
+        <Link
+          to="/jobs"
+          className="sidebar-tab"
+          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
+        >
           Jobs
         </Link>
         <div className="app-sidebar-spacer" />
@@ -92,7 +113,16 @@ const jobsRoute = createRoute({
   component: JobsPage,
 })
 
-const routeTree = rootRoute.addChildren([libraryRoute, voicesRoute, sfxRoute, llmRoute, readerRoute, speakersRoute, exportRoute, jobsRoute])
+const routeTree = rootRoute.addChildren([
+  libraryRoute,
+  voicesRoute,
+  sfxRoute,
+  llmRoute,
+  readerRoute,
+  speakersRoute,
+  exportRoute,
+  jobsRoute,
+])
 
 export const router = createRouter({ routeTree })
 

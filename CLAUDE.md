@@ -145,8 +145,9 @@ client, not a browser.)
 
 - Lint with `make lint` from the repo root (or `lint-go` / `lint-frontend`
   / `lint-android`): golangci-lint v2 for all three Go modules via the
-  shared root `.golangci.yml`, oxlint for `frontend`, AGP's built-in lint
-  for `android`. All three should stay at zero errors.
+  shared root `.golangci.yml`, oxlint + `prettier --check` for
+  `frontend`, AGP's built-in lint for `android`. All three should stay at
+  zero errors.
 
 - The API clients are generated, not hand-mirrored: `backend/internal/httpapi`
   is the source of truth for wire types, enums, the model catalog, live

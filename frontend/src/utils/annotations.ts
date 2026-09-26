@@ -49,7 +49,9 @@ export function annotationTitle(p: Paragraph): string {
     base += ` · ${emotionLabel(p.emotion)}`
   }
   const tags = p.directionMarks ?? []
-  return tags.length > 0 ? `${base} · ${tags.map((m) => formatDirectionTag(m.tag)).join(', ')}` : base
+  return tags.length > 0
+    ? `${base} · ${tags.map((m) => formatDirectionTag(m.tag)).join(', ')}`
+    : base
 }
 
 // Whether a segment counts as one of `selected`'s own lines, for the

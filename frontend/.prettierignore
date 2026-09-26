@@ -1,0 +1,5 @@
+dist
+package-lock.json
+# Written by backend/cmd/apigen - regenerate instead of reformatting.
+src/api/generated.ts
+*.md

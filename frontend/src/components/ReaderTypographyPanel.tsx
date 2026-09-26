@@ -1,4 +1,9 @@
-import { DEFAULT_FONT_SIZE, MAX_FONT_SIZE, MIN_FONT_SIZE, READER_FONT_FAMILIES } from '../hooks/useReaderTypography'
+import {
+  DEFAULT_FONT_SIZE,
+  MAX_FONT_SIZE,
+  MIN_FONT_SIZE,
+  READER_FONT_FAMILIES,
+} from '../hooks/useReaderTypography'
 import type { ReaderFontFamily } from '../hooks/useReaderTypography'
 
 // The web analogue of android's own reading-font-size/family controls in
@@ -45,7 +50,8 @@ export function ReaderTypographyPanel({
           <button
             key={f.value}
             className={
-              'reader-typography-family-button' + (fontFamily === f.value ? ' reader-typography-family-button-active' : '')
+              'reader-typography-family-button' +
+              (fontFamily === f.value ? ' reader-typography-family-button-active' : '')
             }
             style={{ fontFamily: f.stack }}
             onClick={() => onFontFamilyChange(f.value)}

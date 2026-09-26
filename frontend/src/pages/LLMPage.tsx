@@ -35,7 +35,8 @@ export function LLMPage() {
       },
       {
         onSuccess: (res) => setResult(res.text),
-        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not generate text'),
+        onError: (err) =>
+          setError(err instanceof ApiError ? err.message : 'Could not generate text'),
       },
     )
   }
@@ -46,8 +47,8 @@ export function LLMPage() {
         <h1>LLM</h1>
       </div>
       <p className="muted">
-        Test a raw system/user prompt pair against this app's own embedded speaker-attribution model. Nothing here
-        is saved.
+        Test a raw system/user prompt pair against this app's own embedded speaker-attribution
+        model. Nothing here is saved.
       </p>
       <div className="custom-voice-form">
         <label>
@@ -70,7 +71,14 @@ export function LLMPage() {
         </label>
         <label>
           Temperature
-          <input type="number" min={0} max={2} step={0.05} value={temp} onChange={(e) => setTemp(e.target.value)} />
+          <input
+            type="number"
+            min={0}
+            max={2}
+            step={0.05}
+            value={temp}
+            onChange={(e) => setTemp(e.target.value)}
+          />
         </label>
         <label>
           Max tokens
@@ -84,7 +92,11 @@ export function LLMPage() {
         </label>
         {error && <p className="error-text">{error}</p>}
         <div className="voice-panel-actions">
-          <button className="primary-button" onClick={run} disabled={!userPrompt.trim() || testLLM.isPending}>
+          <button
+            className="primary-button"
+            onClick={run}
+            disabled={!userPrompt.trim() || testLLM.isPending}
+          >
             {testLLM.isPending ? 'Generating…' : 'Generate'}
           </button>
         </div>

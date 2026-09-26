@@ -34,7 +34,12 @@ function tokenize(text: string): WordToken[] {
 // old estimate: allocating the paragraph's total duration proportionally
 // to character position within the text. Approximate, but always
 // available and good enough to track a karaoke-style highlight.
-function wordStartTimes(tokens: WordToken[], words: WordTiming[], textLength: number, duration: number): number[] {
+function wordStartTimes(
+  tokens: WordToken[],
+  words: WordTiming[],
+  textLength: number,
+  duration: number,
+): number[] {
   if (words.length > 0 && words.length === tokens.length) {
     return words.map((w) => w.start)
   }
@@ -82,7 +87,10 @@ function DirectionCaret({ tag }: { tag: string }) {
 // insertions), so the two still read as related even though this one isn't a caret shape.
 function PronunciationStrike({ mark, children }: { mark: PronunciationMark; children: ReactNode }) {
   return (
-    <span className="pronunciation-strike" title={`"${mark.original}" read as "${mark.replacement}"`}>
+    <span
+      className="pronunciation-strike"
+      title={`"${mark.original}" read as "${mark.replacement}"`}
+    >
       {children}
     </span>
   )
@@ -116,7 +124,8 @@ function renderWithMarks(
   const emitMarksAt = (offset: number) => {
     const marks = marksByOffset.get(offset)
     if (!marks) return
-    for (const m of marks) nodes.push(<DirectionCaret key={`mark-${offset}-${m.tag}`} tag={m.tag} />)
+    for (const m of marks)
+      nodes.push(<DirectionCaret key={`mark-${offset}-${m.tag}`} tag={m.tag} />)
   }
   tokens.forEach((t, i) => {
     if (t.start > cursor) nodes.push(text.slice(cursor, t.start))
@@ -253,5 +262,17 @@ export function ParagraphText({
   }
 
   const activeIdx = activeWordIndex(times, currentTime + HIGHLIGHT_LOOKAHEAD_SECONDS)
-  return <>{renderWithHighlight(text, tokens, times, activeIdx, onSeek, marksByOffset, pronunciationByOffset)}</>
+  return (
+    <>
+      {renderWithHighlight(
+        text,
+        tokens,
+        times,
+        activeIdx,
+        onSeek,
+        marksByOffset,
+        pronunciationByOffset,
+      )}
+    </>
+  )
 }

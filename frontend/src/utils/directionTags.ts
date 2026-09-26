@@ -21,7 +21,9 @@ export type DirectionTagCategory = 'emotion' | 'style' | 'prosody' | 'sfx' | 'ot
 
 // The tag categories the backend still produces - used by PlayerBar's
 // annotation legend to show what each caret color means.
-export const DIRECTION_TAG_CATEGORY_LABELS: Partial<Record<Exclude<DirectionTagCategory, 'other'>, string>> = {
+export const DIRECTION_TAG_CATEGORY_LABELS: Partial<
+  Record<Exclude<DirectionTagCategory, 'other'>, string>
+> = {
   prosody: 'Pause',
 }
 

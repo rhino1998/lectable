@@ -30,8 +30,12 @@ const CROSSFADE_SECONDS = CROSSFADE_HALF_SECONDS * 2
 // a plain linear crossfade dips audibly toward silence at its midpoint,
 // which is exactly the boundary this is centred on.
 const CURVE_POINTS = 64
-const FADE_IN_CURVE = Float32Array.from({ length: CURVE_POINTS }, (_, i) => Math.sin(((i / (CURVE_POINTS - 1)) * Math.PI) / 2))
-const FADE_OUT_CURVE = Float32Array.from({ length: CURVE_POINTS }, (_, i) => Math.cos(((i / (CURVE_POINTS - 1)) * Math.PI) / 2))
+const FADE_IN_CURVE = Float32Array.from({ length: CURVE_POINTS }, (_, i) =>
+  Math.sin(((i / (CURVE_POINTS - 1)) * Math.PI) / 2),
+)
+const FADE_OUT_CURVE = Float32Array.from({ length: CURVE_POINTS }, (_, i) =>
+  Math.cos(((i / (CURVE_POINTS - 1)) * Math.PI) / 2),
+)
 
 // Two gain stages per deck, each automated exactly once in its lifetime
 // (fadeIn at start, fadeOut at stop) - so a deck switched away from while
@@ -134,7 +138,11 @@ export function useBackgroundMusic({
   // start) instead of crossfading the way an ordinary in-chapter region
   // switch already does. `enabled` also requires a next chapter to
   // actually exist - the book's last chapter has none to fetch.
-  const { data: nextChapterData } = useChapterMusic(bookId, chapterIdx + 1, musicEnabled && chapterIdx + 1 < totalChapters)
+  const { data: nextChapterData } = useChapterMusic(
+    bookId,
+    chapterIdx + 1,
+    musicEnabled && chapterIdx + 1 < totalChapters,
+  )
 
   const ctxRef = useRef<AudioContext | null>(null)
   const masterGainRef = useRef<GainNode | null>(null)
@@ -241,7 +249,10 @@ export function useBackgroundMusic({
   // otherwise never reach it. AudioBufferSourceNode.playbackRate is a
   // live AudioParam, safe to update on an already-started source.
   useEffect(() => {
-    activeDeckRef.current?.source.playbackRate.setValueAtTime(playbackRate, ctxRef.current?.currentTime ?? 0)
+    activeDeckRef.current?.source.playbackRate.setValueAtTime(
+      playbackRate,
+      ctxRef.current?.currentTime ?? 0,
+    )
   }, [playbackRate])
 
   // Fades the master bus in/out when music availability changes (the
@@ -269,7 +280,10 @@ export function useBackgroundMusic({
   // ahead of the actual switch decision without duplicating this. Dedupes
   // against an already-in-flight fetch for the same region (see
   // pendingFetchRef) rather than starting a fresh one every call.
-  function getBuffer(ctx: AudioContext, region: NonNullable<typeof data>['regions'][number]): Promise<AudioBuffer> {
+  function getBuffer(
+    ctx: AudioContext,
+    region: NonNullable<typeof data>['regions'][number],
+  ): Promise<AudioBuffer> {
     const cached = bufferCacheRef.current.get(region.id)
     if (cached) return Promise.resolve(cached)
     const pending = pendingFetchRef.current.get(region.id)
@@ -322,13 +336,19 @@ export function useBackgroundMusic({
     if (last === null) {
       isJumpRef.current = false
     } else if (last.chapterIdx !== chapterIdx || last.paragraphIdx !== paragraphIdx) {
-      isJumpRef.current = !(last.chapterIdx === chapterIdx && paragraphIdx === last.paragraphIdx + 1)
+      isJumpRef.current = !(
+        last.chapterIdx === chapterIdx && paragraphIdx === last.paragraphIdx + 1
+      )
     }
     lastParagraphPosRef.current = { chapterIdx, paragraphIdx }
     const isJump = isJumpRef.current
 
     const currentIdx = data.regions.findIndex(
-      (r) => paragraphIdx >= r.startIdx && paragraphIdx <= r.endIdx && r.status === 'ready' && r.audioUrl,
+      (r) =>
+        paragraphIdx >= r.startIdx &&
+        paragraphIdx <= r.endIdx &&
+        r.status === 'ready' &&
+        r.audioUrl,
     )
 
     // Pre-roll: if the very next paragraph is where a new region begins,
@@ -356,15 +376,23 @@ export function useBackgroundMusic({
     // actually clicked (currentIdx), immediately.
     let region: MusicRegion | null = currentIdx === -1 ? null : data.regions[currentIdx]
     if (!isJump) {
-      const isLastParagraphOfChapter = chapterParagraphCount > 0 && paragraphIdx === chapterParagraphCount - 1
+      const isLastParagraphOfChapter =
+        chapterParagraphCount > 0 && paragraphIdx === chapterParagraphCount - 1
       const upcoming =
-        data.regions.find((r) => r.startIdx === paragraphIdx + 1 && r.status === 'ready' && r.audioUrl) ??
-        (isLastParagraphOfChapter ? nextChapterData?.regions.find((r) => r.startIdx === 0 && r.status === 'ready' && r.audioUrl) : undefined)
+        data.regions.find(
+          (r) => r.startIdx === paragraphIdx + 1 && r.status === 'ready' && r.audioUrl,
+        ) ??
+        (isLastParagraphOfChapter
+          ? nextChapterData?.regions.find(
+              (r) => r.startIdx === 0 && r.status === 'ready' && r.audioUrl,
+            )
+          : undefined)
       if (upcoming) {
         if (!bufferCacheRef.current.has(upcoming.id)) {
           void getBuffer(ensureContext(), upcoming)
         } else if (paragraphDuration > 0) {
-          const remainingRealSeconds = (paragraphDuration - paragraphCurrentTime) / (playbackRate || 1)
+          const remainingRealSeconds =
+            (paragraphDuration - paragraphCurrentTime) / (playbackRate || 1)
           if (remainingRealSeconds <= CROSSFADE_HALF_SECONDS) {
             region = upcoming
           }
@@ -425,7 +453,16 @@ export function useBackgroundMusic({
         // surfacing an error to the reader over.
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [musicEnabled, data, nextChapterData, chapterParagraphCount, paragraphIdx, paragraphCurrentTime, paragraphDuration, playbackRate])
+  }, [
+    musicEnabled,
+    data,
+    nextChapterData,
+    chapterParagraphCount,
+    paragraphIdx,
+    paragraphCurrentTime,
+    paragraphDuration,
+    playbackRate,
+  ])
 
   // Full teardown on unmount (leaving the reader, or switching books).
   // Clears every ref pointing into the closed context, not just closes it:

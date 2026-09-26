@@ -22,8 +22,16 @@ export type ReaderFontFamily = 'default' | 'serif' | 'sans' | 'mono'
 export const READER_FONT_FAMILIES: { value: ReaderFontFamily; label: string; stack: string }[] = [
   { value: 'default', label: 'Default', stack: 'inherit' },
   { value: 'serif', label: 'Serif', stack: 'Georgia, "Times New Roman", Times, serif' },
-  { value: 'sans', label: 'Sans', stack: '-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif' },
-  { value: 'mono', label: 'Mono', stack: 'ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace' },
+  {
+    value: 'sans',
+    label: 'Sans',
+    stack: '-apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+  },
+  {
+    value: 'mono',
+    label: 'Mono',
+    stack: 'ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace',
+  },
 ]
 
 const FONT_SIZE_KEY = 'lectable:reader-font-size'

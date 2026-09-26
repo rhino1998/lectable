@@ -9,7 +9,10 @@ import { useReimportChapter } from '../api/queries'
 // or the epub's chapter title differs (confirm, then force). Any other
 // failure goes to onError. reimportingIdx is the chapter currently being
 // re-imported, or null.
-export function useReimportChapterAction(bookId: string, onError: (message: string | null) => void) {
+export function useReimportChapterAction(
+  bookId: string,
+  onError: (message: string | null) => void,
+) {
   const reimportChapter = useReimportChapter(bookId)
 
   const run = useCallback(
@@ -51,6 +54,8 @@ export function useReimportChapterAction(bookId: string, onError: (message: stri
     [reimportChapter, onError],
   )
 
-  const reimportingIdx = reimportChapter.isPending ? (reimportChapter.variables?.chapterIdx ?? null) : null
+  const reimportingIdx = reimportChapter.isPending
+    ? (reimportChapter.variables?.chapterIdx ?? null)
+    : null
   return { run, reimportingIdx }
 }

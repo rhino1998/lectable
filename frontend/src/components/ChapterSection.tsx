@@ -88,7 +88,12 @@ interface ParagraphGroupProps {
   // the way down through ChapterSection. onSetSFXPrompt's triggerWord is
   // omitted for a plain prompt edit (see the word-picker below, the only
   // caller that passes one).
-  onSetSFXPrompt: (chapterIdx: number, paragraphIdx: number, prompt: string, triggerWord?: number) => void
+  onSetSFXPrompt: (
+    chapterIdx: number,
+    paragraphIdx: number,
+    prompt: string,
+    triggerWord?: number,
+  ) => void
   onGenerateSFX: (chapterIdx: number, paragraphIdx: number, prompt: string) => Promise<void>
 }
 
@@ -214,12 +219,18 @@ const ParagraphGroup = memo(function ParagraphGroup({
                 (segmentPending ? 'segment-pending ' : '') +
                 (annotationsView
                   ? `annotation-${annotationKind(p)}` +
-                    (selectedSpeaker && matchesSelectedSpeaker(p, selectedSpeaker) ? ' annotation-selected-speaker' : '') +
+                    (selectedSpeaker && matchesSelectedSpeaker(p, selectedSpeaker)
+                      ? ' annotation-selected-speaker'
+                      : '') +
                     (p.scareQuote ? ' annotation-scare-quote' : '')
                   : '')
               }
-              onMouseEnter={annotationsView ? (e) => onShowTooltip(e, annotationTitle(p)) : undefined}
-              onMouseMove={annotationsView ? (e) => onShowTooltip(e, annotationTitle(p)) : undefined}
+              onMouseEnter={
+                annotationsView ? (e) => onShowTooltip(e, annotationTitle(p)) : undefined
+              }
+              onMouseMove={
+                annotationsView ? (e) => onShowTooltip(e, annotationTitle(p)) : undefined
+              }
               onMouseLeave={annotationsView ? onHideTooltip : undefined}
               onClick={() => {
                 if (hasActiveTextSelection()) return
@@ -250,13 +261,17 @@ const ParagraphGroup = memo(function ParagraphGroup({
                 marks={annotationsView ? (p.directionMarks ?? []) : []}
                 pronunciationMarks={annotationsView ? (p.pronunciationMarks ?? []) : []}
               />
-              {p.audioStatus === 'error' && <span className="error-text"> (audio failed: {p.audioError})</span>}
+              {p.audioStatus === 'error' && (
+                <span className="error-text"> (audio failed: {p.audioError})</span>
+              )}
             </span>
           )
         })}
         {speakers.length > 0 && (
           <span
-            className={'paragraph-speaker-hint' + (annotationsView ? ' paragraph-speaker-hint-visible' : '')}
+            className={
+              'paragraph-speaker-hint' + (annotationsView ? ' paragraph-speaker-hint-visible' : '')
+            }
             title={`Speaker: ${speakers.join(', ')}`}
           >
             <RiUser3Line /> {speakers.join(', ')}
@@ -265,15 +280,14 @@ const ParagraphGroup = memo(function ParagraphGroup({
         {/* Hover-only summary outside annotations view - annotations view
             shows each segment's own EmotionIcon instead. */}
         {!annotationsView && emotionLabels.length > 0 && (
-          <span
-            className="paragraph-direction-hint"
-            title={`Emotion: ${emotionLabels.join(', ')}`}
-          >
+          <span className="paragraph-direction-hint" title={`Emotion: ${emotionLabels.join(', ')}`}>
             <RiEmotionLine /> {emotionLabels.join(', ')}
           </span>
         )}
         <button
-          className={'paragraph-bookmark-toggle' + (bookmarked ? ' paragraph-bookmark-toggle-active' : '')}
+          className={
+            'paragraph-bookmark-toggle' + (bookmarked ? ' paragraph-bookmark-toggle-active' : '')
+          }
           onClick={(e) => {
             e.stopPropagation()
             onToggleBookmark(chapterIdx, firstIdx)
@@ -296,7 +310,8 @@ const ParagraphGroup = memo(function ParagraphGroup({
         {annotationsView && (
           <button
             className={
-              'paragraph-generation-toggle' + (showGenerationText ? ' paragraph-generation-toggle-active' : '')
+              'paragraph-generation-toggle' +
+              (showGenerationText ? ' paragraph-generation-toggle-active' : '')
             }
             onClick={(e) => {
               e.stopPropagation()
@@ -312,12 +327,20 @@ const ParagraphGroup = memo(function ParagraphGroup({
           </button>
         )}
         <button
-          className={'paragraph-sfx-toggle' + (sfxOpen ? ' paragraph-sfx-toggle-active' : '') + (segments[0].sfxStatus === 'ready' ? ' paragraph-sfx-toggle-ready' : '')}
+          className={
+            'paragraph-sfx-toggle' +
+            (sfxOpen ? ' paragraph-sfx-toggle-active' : '') +
+            (segments[0].sfxStatus === 'ready' ? ' paragraph-sfx-toggle-ready' : '')
+          }
           onClick={(e) => {
             e.stopPropagation()
             setSFXOpen((v) => !v)
           }}
-          title={segments[0].sfxStatus === 'ready' ? 'SFX test: sound effect ready' : 'SFX test: generate a sound effect for this paragraph'}
+          title={
+            segments[0].sfxStatus === 'ready'
+              ? 'SFX test: sound effect ready'
+              : 'SFX test: generate a sound effect for this paragraph'
+          }
         >
           <RiVolumeUpLine />
         </button>
@@ -353,8 +376,20 @@ const ParagraphGroup = memo(function ParagraphGroup({
                 {segments[0].words.map((w, i) => (
                   <button
                     key={i}
-                    className={'paragraph-sfx-trigger-word' + (i === (segments[0].sfxTriggerWord ?? 0) ? ' paragraph-sfx-trigger-word-active' : '')}
-                    onClick={() => onSetSFXPrompt(chapterIdx, firstIdx, sfxDraft ?? segments[0].sfxPrompt ?? '', i)}
+                    className={
+                      'paragraph-sfx-trigger-word' +
+                      (i === (segments[0].sfxTriggerWord ?? 0)
+                        ? ' paragraph-sfx-trigger-word-active'
+                        : '')
+                    }
+                    onClick={() =>
+                      onSetSFXPrompt(
+                        chapterIdx,
+                        firstIdx,
+                        sfxDraft ?? segments[0].sfxPrompt ?? '',
+                        i,
+                      )
+                    }
                     title={`Start the sound effect at "${w.text}"`}
                   >
                     {w.text}
@@ -372,11 +407,19 @@ const ParagraphGroup = memo(function ParagraphGroup({
                 setSFXBusy(true)
                 setSFXLocalError('')
                 onGenerateSFX(chapterIdx, firstIdx, prompt)
-                  .catch((err) => setSFXLocalError(err instanceof Error ? err.message : String(err)))
+                  .catch((err) =>
+                    setSFXLocalError(err instanceof Error ? err.message : String(err)),
+                  )
                   .finally(() => setSFXBusy(false))
               }}
             >
-              {sfxBusy ? 'Queuing…' : segments[0].sfxStatus === 'generating' ? 'Generating…' : segments[0].sfxStatus === 'ready' ? 'Regenerate' : 'Generate'}
+              {sfxBusy
+                ? 'Queuing…'
+                : segments[0].sfxStatus === 'generating'
+                  ? 'Generating…'
+                  : segments[0].sfxStatus === 'ready'
+                    ? 'Regenerate'
+                    : 'Generate'}
             </button>
             {segments[0].sfxStatus === 'ready' && segments[0].sfxAudioUrl && (
               <audio className="paragraph-sfx-preview" controls src={segments[0].sfxAudioUrl} />
@@ -417,7 +460,10 @@ function paragraphGroupPropsEqual(prev: ParagraphGroupProps, next: ParagraphGrou
     if (key === 'group') {
       if (!groupsEqual(prev.group, next.group)) return false
     } else if (key === 'audioElement') {
-      if ((prev.activeParagraphIdx !== null || next.activeParagraphIdx !== null) && prev.audioElement !== next.audioElement) {
+      if (
+        (prev.activeParagraphIdx !== null || next.activeParagraphIdx !== null) &&
+        prev.audioElement !== next.audioElement
+      ) {
         return false
       }
     } else if (prev[key] !== next[key]) {
@@ -476,7 +522,10 @@ function MusicRegionBoundary({
   onRegenerate: (regionId: string) => void
 }) {
   const status = formatMusicStatus(region.status)
-  const durationLabel = region.status === 'ready' && region.durationSeconds > 0 ? formatMusicDuration(region.durationSeconds) : null
+  const durationLabel =
+    region.status === 'ready' && region.durationSeconds > 0
+      ? formatMusicDuration(region.durationSeconds)
+      : null
   // Appended to the hover tooltip alongside the full prompt, not just
   // shown inline - the inline chip stays short (mood + transition/status),
   // so duration goes wherever a reader is already looking to read the rest
@@ -515,7 +564,9 @@ function MusicRegionBoundary({
           <span className="chapter-music-boundary-ambience-text">{region.ambience}</span>
         </span>
       )}
-      {region.status === 'ready' && region.audioUrl && <MusicRegionPreviewButton audioUrl={region.audioUrl} />}
+      {region.status === 'ready' && region.audioUrl && (
+        <MusicRegionPreviewButton audioUrl={region.audioUrl} />
+      )}
       <button
         className="chapter-music-boundary-regenerate"
         disabled={busy}
@@ -523,7 +574,13 @@ function MusicRegionBoundary({
           e.stopPropagation()
           onRegenerate(region.id)
         }}
-        title={busy ? 'Generating…' : region.status === 'ready' ? 'Regenerate this region’s music' : 'Generate this region’s music'}
+        title={
+          busy
+            ? 'Generating…'
+            : region.status === 'ready'
+              ? 'Regenerate this region’s music'
+              : 'Generate this region’s music'
+        }
       >
         <RiRefreshLine className={busy ? 'spin' : undefined} />
       </button>
@@ -658,7 +715,12 @@ interface ChapterSectionProps {
   onShowTooltip: (e: React.MouseEvent<HTMLElement>, text: string) => void
   onHideTooltip: () => void
   registerParagraphRef: (key: string, el: HTMLElement | null) => void
-  onSetSFXPrompt: (chapterIdx: number, paragraphIdx: number, prompt: string, triggerWord?: number) => void
+  onSetSFXPrompt: (
+    chapterIdx: number,
+    paragraphIdx: number,
+    prompt: string,
+    triggerWord?: number,
+  ) => void
   onGenerateSFX: (chapterIdx: number, paragraphIdx: number, prompt: string) => Promise<void>
 }
 
@@ -869,7 +931,8 @@ export const ChapterSection = memo(function ChapterSection({
       {!chapter && <p className="muted">Loading chapter…</p>}
       <div className="paragraph-list">
         {groups.map((group) => {
-          const startingRegion = group.kind === 'text' ? musicRegionsByStartIdx.get(group.paragraphs[0].idx) : undefined
+          const startingRegion =
+            group.kind === 'text' ? musicRegionsByStartIdx.get(group.paragraphs[0].idx) : undefined
           return (
             <Fragment key={group.key}>
               {annotationsView && startingRegion && (
@@ -887,12 +950,18 @@ export const ChapterSection = memo(function ChapterSection({
                 selectedSpeaker={selectedSpeaker}
                 isActiveChapter={isActiveChapter}
                 activeParagraphIdx={
-                  isActiveChapter && group.kind === 'text' && group.paragraphs.some((p) => p.idx === activeParagraphIdx)
+                  isActiveChapter &&
+                  group.kind === 'text' &&
+                  group.paragraphs.some((p) => p.idx === activeParagraphIdx)
                     ? activeParagraphIdx
                     : null
                 }
                 audioElement={audioElement}
-                bookmarked={group.kind === 'text' ? bookmarkByKey.has(`${idx}:${group.paragraphs[0].idx}`) : false}
+                bookmarked={
+                  group.kind === 'text'
+                    ? bookmarkByKey.has(`${idx}:${group.paragraphs[0].idx}`)
+                    : false
+                }
                 onSeek={onSeek}
                 onPlayAt={onPlayAt}
                 onToggleBookmark={onToggleBookmark}

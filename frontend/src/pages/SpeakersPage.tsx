@@ -88,7 +88,16 @@ import {
   INSTRUCTED_CLONE_MODEL,
   type CharacterVoiceMode,
 } from '../api/types'
-import type { BulkAction, BulkScope, ResetPass, CustomVoicePreset, Speaker, SpeakerAppearance, SpeakerEmotion, VoicePreset } from '../api/types'
+import type {
+  BulkAction,
+  BulkScope,
+  ResetPass,
+  CustomVoicePreset,
+  Speaker,
+  SpeakerAppearance,
+  SpeakerEmotion,
+  VoicePreset,
+} from '../api/types'
 
 // Per-book speaker management: run LLM attribution chapter by chapter,
 // review who's been identified so far and how much of their dialogue has
@@ -267,21 +276,28 @@ export function SpeakersPage() {
   const runRetagDescriptions = (idx: number) => {
     setRetagError(null)
     retagDescriptions.mutate(idx, {
-      onError: (err) => setRetagError(err instanceof ApiError ? err.message : 'Description tagging failed'),
+      onError: (err) =>
+        setRetagError(err instanceof ApiError ? err.message : 'Description tagging failed'),
     })
   }
 
   const runRetagScareQuotes = (idx: number) => {
     setRetagScareQuoteError(null)
     retagScareQuotes.mutate(idx, {
-      onError: (err) => setRetagScareQuoteError(err instanceof ApiError ? err.message : 'Scare-quote tagging failed'),
+      onError: (err) =>
+        setRetagScareQuoteError(
+          err instanceof ApiError ? err.message : 'Scare-quote tagging failed',
+        ),
     })
   }
 
   const runDirection = (idx: number) => {
     setDirectionError(null)
     tagDirections.mutate(idx, {
-      onError: (err) => setDirectionError(err instanceof ApiError ? err.message : 'Speech-direction tagging failed'),
+      onError: (err) =>
+        setDirectionError(
+          err instanceof ApiError ? err.message : 'Speech-direction tagging failed',
+        ),
     })
   }
 
@@ -289,14 +305,19 @@ export function SpeakersPage() {
     setPronunciationError(null)
     resolvePronunciation.mutate(idx, {
       onError: (err) =>
-        setPronunciationError(err instanceof ApiError ? err.message : 'Pronunciation resolution failed'),
+        setPronunciationError(
+          err instanceof ApiError ? err.message : 'Pronunciation resolution failed',
+        ),
     })
   }
 
   const runScoreMusic = (idx: number) => {
     setMusicScoreError(null)
     scoreChapterMusic.mutate(idx, {
-      onError: (err) => setMusicScoreError(err instanceof ApiError ? err.message : 'Background-music scoring failed'),
+      onError: (err) =>
+        setMusicScoreError(
+          err instanceof ApiError ? err.message : 'Background-music scoring failed',
+        ),
     })
   }
 
@@ -304,14 +325,17 @@ export function SpeakersPage() {
     setMusicGenerateError(null)
     generateChapterMusic.mutate(idx, {
       onError: (err) =>
-        setMusicGenerateError(err instanceof ApiError ? err.message : 'Background-music generation failed'),
+        setMusicGenerateError(
+          err instanceof ApiError ? err.message : 'Background-music generation failed',
+        ),
     })
   }
 
   const runGenerate = (idx: number) => {
     setGenerateError(null)
     generateChapter.mutate(idx, {
-      onError: (err) => setGenerateError(err instanceof ApiError ? err.message : 'Audio generation failed'),
+      onError: (err) =>
+        setGenerateError(err instanceof ApiError ? err.message : 'Audio generation failed'),
     })
   }
 
@@ -342,14 +366,20 @@ export function SpeakersPage() {
   }
 
   const runDeleteCharacter = (characterId: string, name: string) => {
-    if (!confirm(`Delete "${name}"? Their lines in this book revert to Unknown, and their voice is removed.`)) {
+    if (
+      !confirm(
+        `Delete "${name}"? Their lines in this book revert to Unknown, and their voice is removed.`,
+      )
+    ) {
       return
     }
     setDeleteCharacterError(null)
     setDeletingCharacterId(characterId)
     deleteCharacter.mutate(characterId, {
       onError: (err) =>
-        setDeleteCharacterError(err instanceof ApiError ? err.message : 'Could not delete this character'),
+        setDeleteCharacterError(
+          err instanceof ApiError ? err.message : 'Could not delete this character',
+        ),
       onSettled: () => setDeletingCharacterId(null),
     })
   }
@@ -362,7 +392,10 @@ export function SpeakersPage() {
     setCharacterInvalid.mutate(
       { characterId, invalid },
       {
-        onError: (err) => setInvalidError(err instanceof ApiError ? err.message : 'Could not update this character'),
+        onError: (err) =>
+          setInvalidError(
+            err instanceof ApiError ? err.message : 'Could not update this character',
+          ),
         onSettled: () => setTogglingInvalidId(null),
       },
     )
@@ -381,7 +414,8 @@ export function SpeakersPage() {
       { characterId, targetName },
       {
         onSuccess: () => setMergingId(null),
-        onError: (err) => setMergeError(err instanceof ApiError ? err.message : 'Could not merge this character'),
+        onError: (err) =>
+          setMergeError(err instanceof ApiError ? err.message : 'Could not merge this character'),
       },
     )
   }
@@ -412,7 +446,8 @@ export function SpeakersPage() {
             ? `Auto Split queued for ${queued} chapter${queued === 1 ? '' : 's'}.`
             : 'Nothing to split — no lines are currently attributed to this speaker.',
         ),
-      onError: (err) => setAutoSplitError(err instanceof ApiError ? err.message : 'Auto Split failed'),
+      onError: (err) =>
+        setAutoSplitError(err instanceof ApiError ? err.message : 'Auto Split failed'),
     })
   }
 
@@ -444,7 +479,8 @@ export function SpeakersPage() {
   }
 
   if (bookQuery.isLoading) return <p>Loading…</p>
-  if (bookQuery.isError || !bookQuery.data) return <p className="error-text">Could not load this book.</p>
+  if (bookQuery.isError || !bookQuery.data)
+    return <p className="error-text">Could not load this book.</p>
 
   const book = bookQuery.data
 
@@ -452,7 +488,10 @@ export function SpeakersPage() {
     setBulkError(null)
     bulkAction.mutate(
       { action, scope },
-      { onError: (err) => setBulkError(err instanceof ApiError ? err.message : 'Could not start this action') },
+      {
+        onError: (err) =>
+          setBulkError(err instanceof ApiError ? err.message : 'Could not start this action'),
+      },
     )
   }
 
@@ -460,10 +499,12 @@ export function SpeakersPage() {
   // never ran, deleting any audio that used it - see api.resetPass. The
   // character roster is untouched ("Delete speaker data" covers that).
   const runReset = (pass: ResetPass, what: string) => {
-    if (!confirm(`Reset ${what} for every chapter of "${book.title}"? This can't be undone.`)) return
+    if (!confirm(`Reset ${what} for every chapter of "${book.title}"? This can't be undone.`))
+      return
     setBulkError(null)
     resetPass.mutate(pass, {
-      onError: (err) => setBulkError(err instanceof ApiError ? err.message : 'Could not reset this pass'),
+      onError: (err) =>
+        setBulkError(err instanceof ApiError ? err.message : 'Could not reset this pass'),
     })
   }
 
@@ -511,8 +552,11 @@ export function SpeakersPage() {
   })
   const isMusicGenerated = (c: (typeof book.chapters)[number]) =>
     musicCounts(c).total > 0 && musicCounts(c).ready >= musicCounts(c).total
-  const canGenerateMusic = (c: (typeof book.chapters)[number]) => musicCounts(c).total > 0 && isGenerated(c)
-  const missingMusicChapters = book.chapters.filter((c) => canGenerateMusic(c) && !isMusicGenerated(c))
+  const canGenerateMusic = (c: (typeof book.chapters)[number]) =>
+    musicCounts(c).total > 0 && isGenerated(c)
+  const missingMusicChapters = book.chapters.filter(
+    (c) => canGenerateMusic(c) && !isMusicGenerated(c),
+  )
   const runGenerateMissingMusic = () => runBulk('music_generation', 'rest')
 
   // Roster-wide counterparts, over the series roster (characters marked
@@ -539,7 +583,10 @@ export function SpeakersPage() {
     if (!confirm(warning)) return
     setDeleteSpeakerError(null)
     deleteSpeakerData.mutate(undefined, {
-      onError: (err) => setDeleteSpeakerError(err instanceof ApiError ? err.message : 'Could not delete speaker data'),
+      onError: (err) =>
+        setDeleteSpeakerError(
+          err instanceof ApiError ? err.message : 'Could not delete speaker data',
+        ),
     })
   }
 
@@ -595,12 +642,16 @@ export function SpeakersPage() {
           </select>
         </label>
         <p className="muted">
-          {CHARACTER_VOICE_MODE_DESCRIPTIONS[voiceQuery.data?.characterVoiceMode ?? DEFAULT_CHARACTER_VOICE_MODE]}
+          {
+            CHARACTER_VOICE_MODE_DESCRIPTIONS[
+              voiceQuery.data?.characterVoiceMode ?? DEFAULT_CHARACTER_VOICE_MODE
+            ]
+          }
         </p>
         {!instructedCloneSupported && (
           <p className="muted">
-            The two "style" options above are only available for the "{INSTRUCTED_CLONE_MODEL}" clone
-            model - this book uses "{effectiveCloneModel}".
+            The two "style" options above are only available for the "{INSTRUCTED_CLONE_MODEL}"
+            clone model - this book uses "{effectiveCloneModel}".
           </p>
         )}
 
@@ -614,9 +665,9 @@ export function SpeakersPage() {
           Wait for emotion labeling and pronunciation before generating audio
         </label>
         <p className="muted">
-          When on, a chapter's audio waits for emotion labeling and pronunciation resolution to finish first, so
-          each line is voiced in its emotion and ambiguous abbreviations are read correctly right away, instead of
-          needing a later regenerate. Off by default.
+          When on, a chapter's audio waits for emotion labeling and pronunciation resolution to
+          finish first, so each line is voiced in its emotion and ambiguous abbreviations are read
+          correctly right away, instead of needing a later regenerate. Off by default.
         </p>
 
         <label className="checkbox-label">
@@ -629,9 +680,10 @@ export function SpeakersPage() {
           Background music
         </label>
         <p className="muted">
-          When on, each chapter's own background music is generated (from the chapter table below, or
-          automatically as the reader reaches it) and mixed in under narration. Off by default - turning this off
-          doesn't delete anything already scored or generated, it just stops new chapters from generating audio.
+          When on, each chapter's own background music is generated (from the chapter table below,
+          or automatically as the reader reaches it) and mixed in under narration. Off by default -
+          turning this off doesn't delete anything already scored or generated, it just stops new
+          chapters from generating audio.
         </p>
       </section>
 
@@ -668,7 +720,9 @@ export function SpeakersPage() {
                 chapters that aren't done yet, the second re-runs every
                 chapter, the third resets each pass. */}
             <tr className="chapter-attribute-bulk-row">
-              <td className="muted" title="Every chapter that isn't done yet">Rest</td>
+              <td className="muted" title="Every chapter that isn't done yet">
+                Rest
+              </td>
               <td>
                 <BulkActionButton
                   icon={RiUserSearchLine}
@@ -743,7 +797,9 @@ export function SpeakersPage() {
               </td>
             </tr>
             <tr className="chapter-attribute-bulk-row">
-              <td className="muted" title="Every chapter, including ones already done">All</td>
+              <td className="muted" title="Every chapter, including ones already done">
+                All
+              </td>
               <td>
                 <BulkActionButton
                   icon={RiUserSearchLine}
@@ -881,7 +937,8 @@ export function SpeakersPage() {
               const directing = directingIdxs.has(c.idx)
               const pronouncing = pronouncingIdxs.has(c.idx)
               const scoringMusic = scoringMusicIdxs.has(c.idx)
-              const generating = generatingIdxs.has(c.idx) || (bulkRunning.has('generate') && !isGenerated(c))
+              const generating =
+                generatingIdxs.has(c.idx) || (bulkRunning.has('generate') && !isGenerated(c))
               const generatingMusic = generatingMusicIdxs.has(c.idx)
               return (
                 <tr key={c.idx}>
@@ -897,7 +954,9 @@ export function SpeakersPage() {
                             : "Re-import this chapter from the book's epub — re-parses its paragraphs and resets its passes and audio"
                         }
                       >
-                        <RiFileHistoryLine className={reimportingIdx === c.idx ? 'spin' : undefined} />
+                        <RiFileHistoryLine
+                          className={reimportingIdx === c.idx ? 'spin' : undefined}
+                        />
                       </button>
                       {c.title}
                     </div>
@@ -1056,7 +1115,10 @@ export function SpeakersPage() {
                         <RiDiscLine className={generatingMusic ? 'spin' : undefined} />
                       </button>
                       {musicCounts(c).total === 0 ? (
-                        <span className="chapter-attribute-status" title="Music audio: not scored yet">
+                        <span
+                          className="chapter-attribute-status"
+                          title="Music audio: not scored yet"
+                        >
                           —
                         </span>
                       ) : (
@@ -1084,7 +1146,8 @@ export function SpeakersPage() {
             {speakers.length > 0 && (
               <span className="muted">
                 {' '}
-                ({filteredSpeakers.length === speakers.length
+                (
+                {filteredSpeakers.length === speakers.length
                   ? speakers.length
                   : `${filteredSpeakers.length} of ${speakers.length}`}
                 )
@@ -1105,7 +1168,11 @@ export function SpeakersPage() {
                   }
                 >
                   <RiUserHeartLine
-                    className={bulkRunning.has('characterization') || characterizingNames.size > 0 ? 'spin' : undefined}
+                    className={
+                      bulkRunning.has('characterization') || characterizingNames.size > 0
+                        ? 'spin'
+                        : undefined
+                    }
                   />
                 </button>
               )}
@@ -1165,7 +1232,9 @@ export function SpeakersPage() {
             onChange={(e) => setRosterFilter(e.target.value)}
           />
         )}
-        {speakers.length > 0 && filteredSpeakers.length === 0 && <p className="muted">No matches</p>}
+        {speakers.length > 0 && filteredSpeakers.length === 0 && (
+          <p className="muted">No matches</p>
+        )}
         <ul className="speaker-list">
           {filteredSpeakers.map((s) => {
             // "Someone other than this character" - shared by the
@@ -1179,7 +1248,11 @@ export function SpeakersPage() {
               <SpeakerRow
                 key={s.id || s.name}
                 bookId={bookId}
-                speaker={s.refAudioUrl ? { ...s, refAudioUrl: withCacheBust(s.refAudioUrl, audioVersion[s.id]) } : s}
+                speaker={
+                  s.refAudioUrl
+                    ? { ...s, refAudioUrl: withCacheBust(s.refAudioUrl, audioVersion[s.id]) }
+                    : s
+                }
                 builtins={builtins}
                 customs={customs}
                 bookVoiceName={bookVoiceName}
@@ -1207,7 +1280,9 @@ export function SpeakersPage() {
                 appearancesLoading={appearancesQuery.isLoading}
                 reassignTargets={otherTargets}
                 descriptionsExpanded={descriptionsFor === s.id && s.id !== ''}
-                onToggleDescriptions={() => setDescriptionsFor((cur) => (cur === s.id ? null : s.id))}
+                onToggleDescriptions={() =>
+                  setDescriptionsFor((cur) => (cur === s.id ? null : s.id))
+                }
                 descriptions={descriptionsQuery.data}
                 descriptionsLoading={descriptionsQuery.isLoading}
               />
@@ -1228,7 +1303,15 @@ export function SpeakersPage() {
 // Other names a character goes by (Speaker.aliases), shown under their
 // name with an inline comma-separated editor. The speakers list is live,
 // so a save shows up without any local state beyond the draft.
-function SpeakerAliases({ bookId, characterId, aliases }: { bookId: string; characterId: string; aliases: string[] }) {
+function SpeakerAliases({
+  bookId,
+  characterId,
+  aliases,
+}: {
+  bookId: string
+  characterId: string
+  aliases: string[]
+}) {
   const setAliases = useSetCharacterAliases(bookId)
   const [draft, setDraft] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -1244,7 +1327,8 @@ function SpeakerAliases({ bookId, characterId, aliases }: { bookId: string; char
       { characterId, aliases: next },
       {
         onSuccess: () => setDraft(null),
-        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not save aliases'),
+        onError: (err) =>
+          setError(err instanceof ApiError ? err.message : 'Could not save aliases'),
       },
     )
   }
@@ -1324,7 +1408,8 @@ function SpeakerEmotions({
       { speaker: speakerName, emotion },
       {
         onSuccess: () => setVersions((v) => ({ ...v, [emotion]: Date.now() })),
-        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not regenerate this variant'),
+        onError: (err) =>
+          setError(err instanceof ApiError ? err.message : 'Could not regenerate this variant'),
       },
     )
   }
@@ -1348,7 +1433,9 @@ function SpeakerEmotions({
             <button
               className="speaker-emotion-button"
               onClick={() => togglePlay(e)}
-              aria-label={playing === e.emotion ? `Stop ${e.label} sample` : `Play ${e.label} sample`}
+              aria-label={
+                playing === e.emotion ? `Stop ${e.label} sample` : `Play ${e.label} sample`
+              }
             >
               {playing === e.emotion ? <RiPauseFill /> : <RiPlayFill />}
             </button>
@@ -1461,7 +1548,10 @@ function SpeakerRow({
         <span>
           {speaker.name}
           {speaker.invalid && (
-            <span className="speaker-invalid-badge" title="Not a real speaker — attribution won't assign this name">
+            <span
+              className="speaker-invalid-badge"
+              title="Not a real speaker — attribution won't assign this name"
+            >
               invalid
             </span>
           )}
@@ -1471,7 +1561,9 @@ function SpeakerRow({
         </span>
       </div>
 
-      {!isNarrator && <SpeakerAliases bookId={bookId} characterId={speaker.id} aliases={speaker.aliases ?? []} />}
+      {!isNarrator && (
+        <SpeakerAliases bookId={bookId} characterId={speaker.id} aliases={speaker.aliases ?? []} />
+      )}
       {speaker.summary && <p className="muted speaker-row-summary">{speaker.summary}</p>}
       {speaker.refLine && (
         <p className="muted speaker-row-refline">
@@ -1527,7 +1619,7 @@ function SpeakerRow({
               title={
                 characterizing
                   ? 'Regenerating characterization…'
-                  : 'Regenerate characterization — re-describe this character\'s voice from their dialogue, and invalidate their assigned voice so it\'s rebuilt fresh next time it\'s needed'
+                  : "Regenerate characterization — re-describe this character's voice from their dialogue, and invalidate their assigned voice so it's rebuilt fresh next time it's needed"
               }
             >
               <RiUserHeartLine className={characterizing ? 'spin' : undefined} />
@@ -1567,7 +1659,7 @@ function SpeakerRow({
                 title={
                   autoSplitting
                     ? 'Auto Split in progress…'
-                    : 'Auto Split — this character isn\'t a real, distinct individual: re-judge and reassign every line currently attributed to them to whichever real character, Narrator, or Unknown actually speaks it'
+                    : "Auto Split — this character isn't a real, distinct individual: re-judge and reassign every line currently attributed to them to whichever real character, Narrator, or Unknown actually speaks it"
                 }
               >
                 <RiScissorsCutLine className={autoSplitting ? 'spin' : undefined} />
@@ -1581,7 +1673,9 @@ function SpeakerRow({
               <RiGitMergeLine />
             </button>
             <button
-              className={'icon-action-button' + (speaker.invalid ? ' icon-action-button-active' : '')}
+              className={
+                'icon-action-button' + (speaker.invalid ? ' icon-action-button-active' : '')
+              }
               onClick={onToggleInvalid}
               disabled={togglingInvalid}
               title={
@@ -1604,7 +1698,9 @@ function SpeakerRow({
         )}
       </div>
 
-      {merging && <MergeCharacterPanel targets={mergeTargets} onMerge={onMerge} onCancel={onToggleMerge} />}
+      {merging && (
+        <MergeCharacterPanel targets={mergeTargets} onMerge={onMerge} onCancel={onToggleMerge} />
+      )}
 
       {customizing && (
         <CharacterVoiceEditor
@@ -1642,7 +1738,12 @@ function SpeakerRow({
             </p>
           )}
           {descriptions?.map((d, i) => (
-            <DescriptionRow key={i} description={d} characterName={speaker.name} reassignTargets={reassignTargets} />
+            <DescriptionRow
+              key={i}
+              description={d}
+              characterName={speaker.name}
+              reassignTargets={reassignTargets}
+            />
           ))}
         </div>
       )}
@@ -1718,7 +1819,8 @@ function AppearanceRow({
       { chapterIdx: appearance.chapterIdx, paragraphIdx: appearance.paragraphIdx },
       {
         onSuccess: () => setQueued(true),
-        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not generate this line'),
+        onError: (err) =>
+          setError(err instanceof ApiError ? err.message : 'Could not generate this line'),
       },
     )
   }
@@ -1726,7 +1828,11 @@ function AppearanceRow({
   const runReassign = (targetName: string) => {
     setReassignError(null)
     reassign.mutate(
-      { chapterIdx: appearance.chapterIdx, paragraphIdx: appearance.paragraphIdx, speaker: targetName },
+      {
+        chapterIdx: appearance.chapterIdx,
+        paragraphIdx: appearance.paragraphIdx,
+        speaker: targetName,
+      },
       {
         onSuccess: () => setReassigned(true),
         onError: (err) =>
@@ -1820,11 +1926,18 @@ function DescriptionRow({
   const runReassign = (targetName: string) => {
     setReassignError(null)
     reassign.mutate(
-      { chapterIdx: description.chapterIdx, paragraphIdx: description.paragraphIdx, from: characterName, to: targetName },
+      {
+        chapterIdx: description.chapterIdx,
+        paragraphIdx: description.paragraphIdx,
+        from: characterName,
+        to: targetName,
+      },
       {
         onSuccess: () => setReassigned(true),
         onError: (err) =>
-          setReassignError(err instanceof ApiError ? err.message : 'Could not reassign this description'),
+          setReassignError(
+            err instanceof ApiError ? err.message : 'Could not reassign this description',
+          ),
       },
     )
   }
@@ -1904,12 +2017,18 @@ function CharacterVoiceEditor({
   // as a starting point for a new custom one, same as the Voices page's
   // own "Derive a new voice").
   const customSource = customs.find((p) => p.id === speaker.voicePresetId)
-  const builtinSource = !customSource ? builtins.find((p) => p.id === speaker.voicePresetId) : undefined
+  const builtinSource = !customSource
+    ? builtins.find((p) => p.id === speaker.voicePresetId)
+    : undefined
   const isEditingCustom = !!customSource
 
   const [name, setName] = useState(customSource?.name ?? builtinSource?.name ?? speaker.name)
-  const [instruct, setInstruct] = useState(customSource?.instruct ?? builtinSource?.instruct ?? speaker.summary ?? '')
-  const [refText, setRefText] = useState(customSource?.refText ?? builtinSource?.ref_text ?? DEFAULT_REF_TEXT)
+  const [instruct, setInstruct] = useState(
+    customSource?.instruct ?? builtinSource?.instruct ?? speaker.summary ?? '',
+  )
+  const [refText, setRefText] = useState(
+    customSource?.refText ?? builtinSource?.ref_text ?? DEFAULT_REF_TEXT,
+  )
   const [speedMultiplier, setSpeedMultiplier] = useState(
     customSource?.speedMultiplier ?? builtinSource?.speed_multiplier ?? 1,
   )
@@ -1985,7 +2104,8 @@ function CharacterVoiceEditor({
         },
         {
           onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
-          onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not synthesize test text'),
+          onError: (err) =>
+            setTestError(err instanceof ApiError ? err.message : 'Could not synthesize test text'),
         },
       )
       return
@@ -2001,7 +2121,8 @@ function CharacterVoiceEditor({
       },
       {
         onSuccess: (blob) => setTestAudioUrl(URL.createObjectURL(blob)),
-        onError: (err) => setTestError(err instanceof ApiError ? err.message : 'Could not preview this voice'),
+        onError: (err) =>
+          setTestError(err instanceof ApiError ? err.message : 'Could not preview this voice'),
       },
     )
   }
@@ -2020,7 +2141,9 @@ function CharacterVoiceEditor({
       {
         onSuccess: (blob) => setBaseTestAudioUrl(URL.createObjectURL(blob)),
         onError: (err) =>
-          setBaseTestError(err instanceof ApiError ? err.message : 'Could not synthesize this voice'),
+          setBaseTestError(
+            err instanceof ApiError ? err.message : 'Could not synthesize this voice',
+          ),
       },
     )
   }
@@ -2028,14 +2151,18 @@ function CharacterVoiceEditor({
   const save = () => {
     setError(null)
     const input = { name, instruct, refText, speedMultiplier, seed, designModel }
-    const onError = (err: unknown) => setError(err instanceof ApiError ? err.message : 'Could not save voice')
+    const onError = (err: unknown) =>
+      setError(err instanceof ApiError ? err.message : 'Could not save voice')
     if (isEditingCustom) {
       updatePreset.mutate({ id: customSource.id, input }, { onSuccess: onDone, onError })
       return
     }
     createPreset.mutate(input, {
       onSuccess: (created) =>
-        setCharacterVoice.mutate({ characterId: speaker.id, voicePresetId: created.id }, { onSuccess: onDone, onError }),
+        setCharacterVoice.mutate(
+          { characterId: speaker.id, voicePresetId: created.id },
+          { onSuccess: onDone, onError },
+        ),
       onError,
     })
   }
@@ -2072,9 +2199,13 @@ function CharacterVoiceEditor({
             ? 'Uses the saved voice through the preview cloning model above - save any other changes first to hear them reflected here.'
             : 'Preview renders the reference line above via VoiceDesign directly - no preset saved yet. Saving right after, unchanged, reuses this exact clip instead of rendering again.',
           onRun: runTest,
-          guidance: isEditingCustom ? undefined : { value: designGuidanceScale, onChange: setDesignGuidanceScale },
+          guidance: isEditingCustom
+            ? undefined
+            : { value: designGuidanceScale, onChange: setDesignGuidanceScale },
           temperature: { value: testTemperature, onChange: setTestTemperature },
-          cloneModel: isEditingCustom ? { value: previewCloneModel, onChange: setPreviewCloneModel } : undefined,
+          cloneModel: isEditingCustom
+            ? { value: previewCloneModel, onChange: setPreviewCloneModel }
+            : undefined,
         }}
       />
 
@@ -2095,12 +2226,12 @@ function CharacterVoiceEditor({
           </select>
         </label>
         <p className="muted">
-          Clones the selected voice's own reference clip while applying the voice instruction above as a
-          clone-time style direction, instead of designing a brand-new voice from scratch - previews
-          exactly what "Style unassigned characters with the narrator's own voice" (Speakers page settings)
-          does automatically. Only the "{INSTRUCTED_CLONE_MODEL}" clone model actually honors the
-          instruction this way, so this always tests through that model regardless of this book's own
-          cloning model.
+          Clones the selected voice's own reference clip while applying the voice instruction above
+          as a clone-time style direction, instead of designing a brand-new voice from scratch -
+          previews exactly what "Style unassigned characters with the narrator's own voice"
+          (Speakers page settings) does automatically. Only the "{INSTRUCTED_CLONE_MODEL}" clone
+          model actually honors the instruction this way, so this always tests through that model
+          regardless of this book's own cloning model.
         </p>
         <label>
           Guidance scale
@@ -2114,17 +2245,19 @@ function CharacterVoiceEditor({
           />
         </label>
         <p className="muted">
-          How strongly the model follows the instruction (and the reference clip/text) above - higher
-          values push harder toward all of that conditioning at once, at some cost to generation speed.
-          Blank uses the backend's own configured default. Overrides it for this test only, so you can
-          compare values without a server restart.
+          How strongly the model follows the instruction (and the reference clip/text) above -
+          higher values push harder toward all of that conditioning at once, at some cost to
+          generation speed. Blank uses the backend's own configured default. Overrides it for this
+          test only, so you can compare values without a server restart.
         </p>
         {baseTestError && <p className="error-text">{baseTestError}</p>}
         <div className="voice-panel-actions">
           <button
             className="primary-button"
             onClick={runBaseTest}
-            disabled={!baseVoiceId || !instruct.trim() || !testText.trim() || testCloneInstruct.isPending}
+            disabled={
+              !baseVoiceId || !instruct.trim() || !testText.trim() || testCloneInstruct.isPending
+            }
           >
             {testCloneInstruct.isPending ? 'Synthesizing…' : 'Test with base voice'}
           </button>
@@ -2162,7 +2295,12 @@ function BulkActionButton({
     )
   }
   return (
-    <button className="icon-action-button" disabled={disabled || busy} onClick={onClick} title={title}>
+    <button
+      className="icon-action-button"
+      disabled={disabled || busy}
+      onClick={onClick}
+      title={title}
+    >
       <Icon className={busy ? 'spin' : undefined} />
     </button>
   )
@@ -2201,7 +2339,8 @@ function CountStatus({
   unit?: string
 }) {
   const done = total > 0 && ready >= total
-  const text = `${label}: ${ready}/${total} ${unit} ready` + (errors > 0 ? `, ${errors} failed` : '')
+  const text =
+    `${label}: ${ready}/${total} ${unit} ready` + (errors > 0 ? `, ${errors} failed` : '')
   return (
     <span
       className={

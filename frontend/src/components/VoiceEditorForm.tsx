@@ -129,7 +129,8 @@ export function VoiceEditorForm({
     }
   }
 }) {
-  const guidanceDefault = DESIGN_MODEL_GUIDANCE_DEFAULTS[(designModel || DEFAULT_DESIGN_MODEL) as DesignModel]
+  const guidanceDefault =
+    DESIGN_MODEL_GUIDANCE_DEFAULTS[(designModel || DEFAULT_DESIGN_MODEL) as DesignModel]
   const temperatureDefault = test.cloneModel
     ? CLONE_MODEL_TEMPERATURE_DEFAULTS[test.cloneModel.value as CloneModel]
     : DESIGN_MODEL_TEMPERATURE_DEFAULTS[(designModel || DEFAULT_DESIGN_MODEL) as DesignModel]
@@ -138,7 +139,11 @@ export function VoiceEditorForm({
     <div className="custom-voice-form">
       <label>
         Name
-        <input value={name} onChange={(e) => onNameChange(e.target.value)} placeholder="e.g. Grandpa Joe" />
+        <input
+          value={name}
+          onChange={(e) => onNameChange(e.target.value)}
+          placeholder="e.g. Grandpa Joe"
+        />
       </label>
       {currentAudioUrl && (
         <div className="voice-ref-preview">
@@ -204,7 +209,10 @@ export function VoiceEditorForm({
       </label>
       <label>
         Design model
-        <select value={designModel || DEFAULT_DESIGN_MODEL} onChange={(e) => onDesignModelChange(e.target.value)}>
+        <select
+          value={designModel || DEFAULT_DESIGN_MODEL}
+          onChange={(e) => onDesignModelChange(e.target.value)}
+        >
           {DESIGN_MODELS.map((b) => (
             <option key={b.id} value={b.id}>
               {b.label}
@@ -246,17 +254,20 @@ export function VoiceEditorForm({
               />
             </label>
             <p className="muted">
-              How strongly the design model follows the voice instruction - higher values push harder toward
-              the description, lower values sound more natural but drift from it. Applies to this preview
-              only: a preview with a custom value is never reused on save, which renders the reference clip
-              at the model's default.
+              How strongly the design model follows the voice instruction - higher values push
+              harder toward the description, lower values sound more natural but drift from it.
+              Applies to this preview only: a preview with a custom value is never reused on save,
+              which renders the reference clip at the model's default.
             </p>
           </>
         )}
         {test.cloneModel && (
           <label>
             Preview cloning model
-            <select value={test.cloneModel.value} onChange={(e) => test.cloneModel?.onChange(e.target.value)}>
+            <select
+              value={test.cloneModel.value}
+              onChange={(e) => test.cloneModel?.onChange(e.target.value)}
+            >
               {CLONE_MODELS.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.label}
@@ -279,15 +290,19 @@ export function VoiceEditorForm({
               />
             </label>
             <p className="muted">
-              How much randomness the model samples with - lower is steadier and more monotone, higher is more
-              expressive but more prone to glitches. Applies to this test only.
+              How much randomness the model samples with - lower is steadier and more monotone,
+              higher is more expressive but more prone to glitches. Applies to this test only.
             </p>
           </>
         )}
         <p className="muted">{test.hint}</p>
         {test.error && <p className="error-text">{test.error}</p>}
         <div className="voice-panel-actions">
-          <button className="primary-button" onClick={test.onRun} disabled={test.disabled || test.pending}>
+          <button
+            className="primary-button"
+            onClick={test.onRun}
+            disabled={test.disabled || test.pending}
+          >
             {test.pending ? 'Synthesizing…' : test.buttonLabel}
           </button>
           {test.audioUrl && <audio controls autoPlay src={test.audioUrl} />}

@@ -1,4 +1,13 @@
-import { startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import {
+  startTransition,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useParams } from '@tanstack/react-router'
 import {
   useAttributeSpeakers,
@@ -124,12 +133,16 @@ export function ReaderPage() {
   // completion (pushed on the chapter topic).
   const setSFXPrompt = useSetParagraphSFXPrompt(bookId)
   const generateSFX = useGenerateParagraphSFX(bookId)
-  const setSFXPromptAt = useStableCallback((chapterIdx: number, paragraphIdx: number, prompt: string, triggerWord?: number) => {
-    setSFXPrompt.mutate({ chapterIdx, paragraphIdx, prompt, triggerWord })
-  })
-  const generateSFXAt = useStableCallback(async (chapterIdx: number, paragraphIdx: number, prompt: string) => {
-    await generateSFX.mutateAsync({ chapterIdx, paragraphIdx, prompt })
-  })
+  const setSFXPromptAt = useStableCallback(
+    (chapterIdx: number, paragraphIdx: number, prompt: string, triggerWord?: number) => {
+      setSFXPrompt.mutate({ chapterIdx, paragraphIdx, prompt, triggerWord })
+    },
+  )
+  const generateSFXAt = useStableCallback(
+    async (chapterIdx: number, paragraphIdx: number, prompt: string) => {
+      await generateSFX.mutateAsync({ chapterIdx, paragraphIdx, prompt })
+    },
+  )
   // lastSFXKeyRef backs the sound-effect overlay-playback effect below -
   // declared here (before playback/chapters exist yet) since hooks must
   // run unconditionally in the same order every render; the effect itself
@@ -160,7 +173,6 @@ export function ReaderPage() {
   // job-queue topic like attributingIdxs/directingIdxs above.
   const describingIdxs = useDescribingChapters(bookId)
   const scareQuotingIdxs = useScareQuotingChapters(bookId)
-
 
   // Colors narrator/speaker/description segments in the paragraph list
   // instead of leaving that distinction to the speaker-hint badge alone
@@ -266,7 +278,12 @@ export function ReaderPage() {
       setChapterActionError(null)
       setParagraphSpeaker.mutate(
         { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, speaker },
-        { onError: (err) => setChapterActionError(err instanceof ApiError ? err.message : 'Could not reassign this paragraph') },
+        {
+          onError: (err) =>
+            setChapterActionError(
+              err instanceof ApiError ? err.message : 'Could not reassign this paragraph',
+            ),
+        },
       )
       setContextMenu(null)
     },
@@ -284,7 +301,12 @@ export function ReaderPage() {
       setChapterActionError(null)
       setParagraphDescription.mutate(
         { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, from, to },
-        { onError: (err) => setChapterActionError(err instanceof ApiError ? err.message : 'Could not reassign this description') },
+        {
+          onError: (err) =>
+            setChapterActionError(
+              err instanceof ApiError ? err.message : 'Could not reassign this description',
+            ),
+        },
       )
       setContextMenu(null)
     },
@@ -300,8 +322,17 @@ export function ReaderPage() {
     if (!contextMenu) return
     setChapterActionError(null)
     setParagraphScareQuote.mutate(
-      { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, scareQuote: !contextMenu.scareQuote },
-      { onError: (err) => setChapterActionError(err instanceof ApiError ? err.message : 'Could not update scare-quote status') },
+      {
+        chapterIdx: contextMenu.chapterIdx,
+        paragraphIdx: contextMenu.paragraphIdx,
+        scareQuote: !contextMenu.scareQuote,
+      },
+      {
+        onError: (err) =>
+          setChapterActionError(
+            err instanceof ApiError ? err.message : 'Could not update scare-quote status',
+          ),
+      },
     )
     setContextMenu(null)
   }, [contextMenu, setParagraphScareQuote])
@@ -315,7 +346,12 @@ export function ReaderPage() {
       setChapterActionError(null)
       setParagraphEmotion.mutate(
         { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, emotion },
-        { onError: (err) => setChapterActionError(err instanceof ApiError ? err.message : 'Could not set this line\'s emotion') },
+        {
+          onError: (err) =>
+            setChapterActionError(
+              err instanceof ApiError ? err.message : "Could not set this line's emotion",
+            ),
+        },
       )
       setContextMenu(null)
     },
@@ -324,26 +360,37 @@ export function ReaderPage() {
 
   const runClearChapterAudio = useCallback(
     (idx: number, title: string) => {
-      if (!confirm(`Clear all generated audio for "${title}"? Every paragraph in this chapter will need to be regenerated.`)) {
+      if (
+        !confirm(
+          `Clear all generated audio for "${title}"? Every paragraph in this chapter will need to be regenerated.`,
+        )
+      ) {
         return
       }
       setChapterActionError(null)
       deleteChapterAudio.mutate(idx, {
         onError: (err) =>
-          setChapterActionError(err instanceof ApiError ? err.message : 'Could not clear this chapter\'s audio'),
+          setChapterActionError(
+            err instanceof ApiError ? err.message : "Could not clear this chapter's audio",
+          ),
       })
     },
     [deleteChapterAudio],
   )
 
-  const { run: runReimportChapter, reimportingIdx } = useReimportChapterAction(bookId, setChapterActionError)
+  const { run: runReimportChapter, reimportingIdx } = useReimportChapterAction(
+    bookId,
+    setChapterActionError,
+  )
 
   const runAttributeChapter = useCallback(
     (idx: number) => {
       setChapterActionError(null)
       attributeSpeakers.mutate(idx, {
         onError: (err) =>
-          setChapterActionError(err instanceof ApiError ? err.message : 'Speaker attribution failed'),
+          setChapterActionError(
+            err instanceof ApiError ? err.message : 'Speaker attribution failed',
+          ),
       })
     },
     [attributeSpeakers],
@@ -354,7 +401,9 @@ export function ReaderPage() {
       setChapterActionError(null)
       retagDescriptions.mutate(idx, {
         onError: (err) =>
-          setChapterActionError(err instanceof ApiError ? err.message : 'Description tagging failed'),
+          setChapterActionError(
+            err instanceof ApiError ? err.message : 'Description tagging failed',
+          ),
       })
     },
     [retagDescriptions],
@@ -365,7 +414,9 @@ export function ReaderPage() {
       setChapterActionError(null)
       retagScareQuotes.mutate(idx, {
         onError: (err) =>
-          setChapterActionError(err instanceof ApiError ? err.message : 'Scare-quote tagging failed'),
+          setChapterActionError(
+            err instanceof ApiError ? err.message : 'Scare-quote tagging failed',
+          ),
       })
     },
     [retagScareQuotes],
@@ -376,7 +427,9 @@ export function ReaderPage() {
       setChapterActionError(null)
       tagDirections.mutate(idx, {
         onError: (err) =>
-          setChapterActionError(err instanceof ApiError ? err.message : 'Speech-direction tagging failed'),
+          setChapterActionError(
+            err instanceof ApiError ? err.message : 'Speech-direction tagging failed',
+          ),
       })
     },
     [tagDirections],
@@ -387,7 +440,9 @@ export function ReaderPage() {
       setChapterActionError(null)
       resolvePronunciation.mutate(idx, {
         onError: (err) =>
-          setChapterActionError(err instanceof ApiError ? err.message : 'Pronunciation resolution failed'),
+          setChapterActionError(
+            err instanceof ApiError ? err.message : 'Pronunciation resolution failed',
+          ),
       })
     },
     [resolvePronunciation],
@@ -398,7 +453,9 @@ export function ReaderPage() {
       setChapterActionError(null)
       scoreChapterMusic.mutate(idx, {
         onError: (err) =>
-          setChapterActionError(err instanceof ApiError ? err.message : 'Background-music scoring failed'),
+          setChapterActionError(
+            err instanceof ApiError ? err.message : 'Background-music scoring failed',
+          ),
       })
     },
     [scoreChapterMusic],
@@ -422,7 +479,9 @@ export function ReaderPage() {
         { regionId, chapterIdx },
         {
           onError: (err) =>
-            setChapterActionError(err instanceof ApiError ? err.message : 'Could not generate background music'),
+            setChapterActionError(
+              err instanceof ApiError ? err.message : 'Could not generate background music',
+            ),
         },
       )
     },
@@ -466,7 +525,12 @@ export function ReaderPage() {
   // reader who never opens annotations view will never see. ChapterMusic itself
   // carries no chapter idx of its own (unlike ChapterDetail), so this maps
   // by the range's own position rather than reading one back off the data.
-  const musicResults = useChapterMusicRange(bookId, range?.start ?? 0, range?.end ?? -1, annotationsView)
+  const musicResults = useChapterMusicRange(
+    bookId,
+    range?.start ?? 0,
+    range?.end ?? -1,
+    annotationsView,
+  )
   const chapterMusicRegions = useMemo(() => {
     const map = new Map<number, MusicRegion[]>()
     const start = range?.start ?? 0
@@ -583,14 +647,21 @@ export function ReaderPage() {
     if (scoringMusicIdxs.has(playback.chapterIdx)) return
     scoreChapterMusic.mutate(playback.chapterIdx)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bookQuery.data?.musicEnabled, bookQuery.data?.chapters, playback.chapterIdx, scoringMusicIdxs])
+  }, [
+    bookQuery.data?.musicEnabled,
+    bookQuery.data?.chapters,
+    playback.chapterIdx,
+    scoringMusicIdxs,
+  ])
 
   // Stable-identity wrappers around playback's own playAt/seek - playback
   // itself is a new object every time usePlayback's internal state ticks
   // (e.g. every 'timeupdate'), which would otherwise defeat ChapterSection/
   // ParagraphGroup's memoization on every such tick even though the actual
   // behavior these close over hasn't changed.
-  const playAt = useStableCallback((chapterIdx: number, paragraphIdx: number) => playback.playAt(chapterIdx, paragraphIdx))
+  const playAt = useStableCallback((chapterIdx: number, paragraphIdx: number) =>
+    playback.playAt(chapterIdx, paragraphIdx),
+  )
   const seek = useStableCallback((seconds: number) => playback.seek(seconds))
 
   // Sound-effect overlay playback: a brand-new, independent <audio> (via
@@ -626,7 +697,13 @@ export function ReaderPage() {
       // Autoplay blocked (no user gesture on this tab yet) - nothing to
       // recover from; a later paragraph's own overlay isn't affected.
     })
-  }, [playback.isPlaying, playback.chapterIdx, playback.paragraphIdx, playback.currentTime, chapters])
+  }, [
+    playback.isPlaying,
+    playback.chapterIdx,
+    playback.paragraphIdx,
+    playback.currentTime,
+    chapters,
+  ])
 
   // ParagraphText only ever reads the audioElement prop while its own
   // `active` is true (see that component), so a non-active chapter's
@@ -855,7 +932,8 @@ export function ReaderPage() {
         const visibleIdx = visibleChapterIdxRef.current
         const chapterDistance = visibleIdx === null ? 0 : Math.abs(playback.chapterIdx - visibleIdx)
         const rect = el.getBoundingClientRect()
-        const viewportDistance = Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2) / window.innerHeight
+        const viewportDistance =
+          Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2) / window.innerHeight
         if (chapterDistance > 1 || viewportDistance > FAR_SCROLL_VIEWPORTS) behavior = 'instant'
       }
       el.scrollIntoView({ block: 'center', behavior })
@@ -921,7 +999,10 @@ export function ReaderPage() {
       const neighborChapterIdx = playback.chapterIdx + direction
       const neighborChapter = chapters.get(neighborChapterIdx)
       if (!neighborChapter || neighborChapter.paragraphs.length === 0) return
-      playback.playAt(neighborChapterIdx, direction === 1 ? 0 : neighborChapter.paragraphs.length - 1)
+      playback.playAt(
+        neighborChapterIdx,
+        direction === 1 ? 0 : neighborChapter.paragraphs.length - 1,
+      )
     },
     [chapters, playback],
   )
@@ -935,7 +1016,10 @@ export function ReaderPage() {
   // after a jump), same fallback chain the reader-header title elsewhere
   // in this component already leans on.
   useMediaSession({
-    title: chapters.get(playback.chapterIdx)?.title ?? bookQuery.data?.chapters[playback.chapterIdx]?.title ?? '',
+    title:
+      chapters.get(playback.chapterIdx)?.title ??
+      bookQuery.data?.chapters[playback.chapterIdx]?.title ??
+      '',
     artist: bookQuery.data?.author ?? '',
     album: bookQuery.data?.title ?? '',
     artworkUrl: bookQuery.data?.coverUrl,
@@ -970,7 +1054,9 @@ export function ReaderPage() {
         const chapter = chapters.get(chIdx)
         if (!chapter) break
         const startIdx = chIdx === playback.chapterIdx ? playback.paragraphIdx + 1 : 0
-        const match = chapter.paragraphs.find((p) => p.idx >= startIdx && matchesSelectedSpeaker(p, speakerName))
+        const match = chapter.paragraphs.find(
+          (p) => p.idx >= startIdx && matchesSelectedSpeaker(p, speakerName),
+        )
         if (match) {
           playback.playAt(chIdx, match.idx, { autoplay: false })
           setAutoFollow(true)
@@ -988,7 +1074,9 @@ export function ReaderPage() {
         const chapter = chapters.get(chIdx)
         if (!chapter) break
         const endIdx = chIdx === playback.chapterIdx ? playback.paragraphIdx : Infinity
-        const match = chapter.paragraphs.find((p) => p.idx < endIdx && matchesSelectedSpeaker(p, speakerName))
+        const match = chapter.paragraphs.find(
+          (p) => p.idx < endIdx && matchesSelectedSpeaker(p, speakerName),
+        )
         if (match) {
           playback.playAt(chIdx, match.idx, { autoplay: false })
           setAutoFollow(true)
@@ -1034,7 +1122,12 @@ export function ReaderPage() {
   useEffect(() => {
     const isTypingTarget = (el: EventTarget | null) => {
       if (!(el instanceof HTMLElement)) return false
-      return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable
+      return (
+        el.tagName === 'INPUT' ||
+        el.tagName === 'TEXTAREA' ||
+        el.tagName === 'SELECT' ||
+        el.isContentEditable
+      )
     }
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return
@@ -1077,7 +1170,8 @@ export function ReaderPage() {
   }
 
   if (bookQuery.isLoading || range === null) return <p>Loading…</p>
-  if (bookQuery.isError || !bookQuery.data) return <p className="error-text">Could not load this book.</p>
+  if (bookQuery.isError || !bookQuery.data)
+    return <p className="error-text">Could not load this book.</p>
 
   const book = bookQuery.data
   const currentChapter = chapters.get(playback.chapterIdx)
@@ -1099,7 +1193,8 @@ export function ReaderPage() {
             <h1>{book.title}</h1>
             <p className="muted">
               {book.author || 'Unknown author'}
-              {book.seriesName && ` · ${book.seriesName}${book.seriesIndex ? ` #${book.seriesIndex}` : ''}`}
+              {book.seriesName &&
+                ` · ${book.seriesName}${book.seriesIndex ? ` #${book.seriesIndex}` : ''}`}
             </p>
           </div>
         </div>
@@ -1111,80 +1206,94 @@ export function ReaderPage() {
         style={
           {
             '--reader-font-size': `${typography.fontSize}px`,
-            '--reader-font-family': READER_FONT_FAMILIES.find((f) => f.value === typography.fontFamily)?.stack,
+            '--reader-font-family': READER_FONT_FAMILIES.find(
+              (f) => f.value === typography.fontFamily,
+            )?.stack,
           } as React.CSSProperties
         }
       >
-        {range.start > 0 && startSettled && <div ref={topSentinelRef} className="scroll-sentinel" />}
+        {range.start > 0 && startSettled && (
+          <div ref={topSentinelRef} className="scroll-sentinel" />
+        )}
 
-        {Array.from({ length: range.end - range.start + 1 }, (_, i) => range.start + i).map((idx) => {
-          const chapter = renderedChapters.get(idx)
-          const chapterSummary = book.chapters[idx]
-          const chapterTitle = chapter?.title ?? chapterSummary?.title ?? ''
-          const isActiveChapter = idx === playback.chapterIdx
-          const measuredHeight = chapterHeights.get(idx)
-          // The playing chapter always stays fully mounted too, however
-          // far the reader has scrolled away from it - otherwise its
-          // paragraph refs (paragraphRefs) unregister once it collapses to
-          // a placeholder, and "Jump to current"/autoFollow's
-          // scrollToActiveParagraph would have nothing to scroll to.
-          const renderFull =
-            isActiveChapter || Math.abs(idx - focusChapterIdx) <= RENDER_WINDOW_RADIUS || measuredHeight === undefined
-          return (
-            <ChapterSection
-              key={idx}
-              idx={idx}
-              chapter={chapter}
-              chapterTitle={chapterTitle}
-              renderFull={renderFull}
-              placeholderHeight={measuredHeight}
-              chapterAttributing={attributingIdxs.has(idx)}
-              chapterClearing={deleteChapterAudio.isPending && deleteChapterAudio.variables === idx}
-              chapterReimporting={reimportingIdx === idx}
-              hasAttribution={!!chapterSummary?.passes.attribution}
-              chapterRetaggingDescriptions={describingIdxs.has(idx)}
-              chapterRetaggingScareQuotes={scareQuotingIdxs.has(idx)}
-              chapterDirecting={directingIdxs.has(idx)}
-              chapterPronouncing={pronouncingIdxs.has(idx)}
-              chapterScoringMusic={scoringMusicIdxs.has(idx)}
-              chapterGenerating={generatingIdxs.has(idx)}
-              hasDirection={!!chapterSummary?.passes.direction}
-              hasPronunciation={!!chapterSummary?.passes.pronunciation}
-              hasMusic={!!chapterSummary?.passes.music}
-              isGenerated={!!chapterSummary && chapterSummary.readyCount >= chapterSummary.paragraphCount}
-              annotationsView={annotationsView}
-              selectedSpeaker={selectedSpeaker}
-              isActiveChapter={isActiveChapter}
-              activeParagraphIdx={isActiveChapter ? playback.paragraphIdx : null}
-              audioElement={isActiveChapter ? playback.audioElement : inertAudioRef.current!}
-              bookmarkByKey={bookmarkByKey}
-              onClearAudio={runClearChapterAudio}
-              onReimport={runReimportChapter}
-              onAttribute={runAttributeChapter}
-              onRetagDescriptions={runRetagDescriptionsChapter}
-              onRetagScareQuotes={runRetagScareQuotesChapter}
-              onTagDirections={runTagDirectionsChapter}
-              onResolvePronunciation={runResolvePronunciationChapter}
-              onScoreMusic={runScoreMusicChapter}
-              onGenerate={runGenerateChapter}
-              musicRegions={chapterMusicRegions.get(idx) ?? EMPTY_MUSIC_REGIONS}
-              onRegenerateMusic={runRegenerateMusic}
-              registerSectionRef={registerChapterSectionRef}
-              onSeek={seek}
-              onPlayAt={playAt}
-              onToggleBookmark={toggleBookmark}
-              onRegenerate={regenerateParagraphAt}
-              onOpenSpeakerMenu={openSpeakerMenu}
-              onShowTooltip={showAnnotationTooltip}
-              onHideTooltip={hideAnnotationTooltip}
-              registerParagraphRef={registerParagraphRef}
-              onSetSFXPrompt={setSFXPromptAt}
-              onGenerateSFX={generateSFXAt}
-            />
-          )
-        })}
+        {Array.from({ length: range.end - range.start + 1 }, (_, i) => range.start + i).map(
+          (idx) => {
+            const chapter = renderedChapters.get(idx)
+            const chapterSummary = book.chapters[idx]
+            const chapterTitle = chapter?.title ?? chapterSummary?.title ?? ''
+            const isActiveChapter = idx === playback.chapterIdx
+            const measuredHeight = chapterHeights.get(idx)
+            // The playing chapter always stays fully mounted too, however
+            // far the reader has scrolled away from it - otherwise its
+            // paragraph refs (paragraphRefs) unregister once it collapses to
+            // a placeholder, and "Jump to current"/autoFollow's
+            // scrollToActiveParagraph would have nothing to scroll to.
+            const renderFull =
+              isActiveChapter ||
+              Math.abs(idx - focusChapterIdx) <= RENDER_WINDOW_RADIUS ||
+              measuredHeight === undefined
+            return (
+              <ChapterSection
+                key={idx}
+                idx={idx}
+                chapter={chapter}
+                chapterTitle={chapterTitle}
+                renderFull={renderFull}
+                placeholderHeight={measuredHeight}
+                chapterAttributing={attributingIdxs.has(idx)}
+                chapterClearing={
+                  deleteChapterAudio.isPending && deleteChapterAudio.variables === idx
+                }
+                chapterReimporting={reimportingIdx === idx}
+                hasAttribution={!!chapterSummary?.passes.attribution}
+                chapterRetaggingDescriptions={describingIdxs.has(idx)}
+                chapterRetaggingScareQuotes={scareQuotingIdxs.has(idx)}
+                chapterDirecting={directingIdxs.has(idx)}
+                chapterPronouncing={pronouncingIdxs.has(idx)}
+                chapterScoringMusic={scoringMusicIdxs.has(idx)}
+                chapterGenerating={generatingIdxs.has(idx)}
+                hasDirection={!!chapterSummary?.passes.direction}
+                hasPronunciation={!!chapterSummary?.passes.pronunciation}
+                hasMusic={!!chapterSummary?.passes.music}
+                isGenerated={
+                  !!chapterSummary && chapterSummary.readyCount >= chapterSummary.paragraphCount
+                }
+                annotationsView={annotationsView}
+                selectedSpeaker={selectedSpeaker}
+                isActiveChapter={isActiveChapter}
+                activeParagraphIdx={isActiveChapter ? playback.paragraphIdx : null}
+                audioElement={isActiveChapter ? playback.audioElement : inertAudioRef.current!}
+                bookmarkByKey={bookmarkByKey}
+                onClearAudio={runClearChapterAudio}
+                onReimport={runReimportChapter}
+                onAttribute={runAttributeChapter}
+                onRetagDescriptions={runRetagDescriptionsChapter}
+                onRetagScareQuotes={runRetagScareQuotesChapter}
+                onTagDirections={runTagDirectionsChapter}
+                onResolvePronunciation={runResolvePronunciationChapter}
+                onScoreMusic={runScoreMusicChapter}
+                onGenerate={runGenerateChapter}
+                musicRegions={chapterMusicRegions.get(idx) ?? EMPTY_MUSIC_REGIONS}
+                onRegenerateMusic={runRegenerateMusic}
+                registerSectionRef={registerChapterSectionRef}
+                onSeek={seek}
+                onPlayAt={playAt}
+                onToggleBookmark={toggleBookmark}
+                onRegenerate={regenerateParagraphAt}
+                onOpenSpeakerMenu={openSpeakerMenu}
+                onShowTooltip={showAnnotationTooltip}
+                onHideTooltip={hideAnnotationTooltip}
+                registerParagraphRef={registerParagraphRef}
+                onSetSFXPrompt={setSFXPromptAt}
+                onGenerateSFX={generateSFXAt}
+              />
+            )
+          },
+        )}
 
-        {range.end < totalChapters - 1 && endSettled && <div ref={bottomSentinelRef} className="scroll-sentinel" />}
+        {range.end < totalChapters - 1 && endSettled && (
+          <div ref={bottomSentinelRef} className="scroll-sentinel" />
+        )}
       </div>
 
       <PlayerBar
@@ -1221,7 +1330,11 @@ export function ReaderPage() {
         <div
           ref={contextMenuRef}
           className="speaker-context-menu"
-          style={menuPos ? { top: menuPos.top, left: menuPos.left } : { top: contextMenu.y, left: contextMenu.x }}
+          style={
+            menuPos
+              ? { top: menuPos.top, left: menuPos.left }
+              : { top: contextMenu.y, left: contextMenu.x }
+          }
         >
           {contextMenu.isQuote ? (
             <>
@@ -1244,23 +1357,29 @@ export function ReaderPage() {
                 <>
                   <div className="speaker-context-menu-section">Emotion</div>
                   <div className="speaker-context-menu-chips">
-                    {[{ id: '', label: 'Neutral', icon: RiEmotionNormalLine }, ...EMOTIONS].map((e) => (
-                      <button
-                        key={e.id}
-                        className={
-                          'speaker-context-menu-chip' +
-                          (e.id === contextMenu.emotion ? ' speaker-context-menu-chip-active' : '')
-                        }
-                        disabled={e.id === contextMenu.emotion}
-                        onClick={() => setEmotion(e.id)}
-                      >
-                        <e.icon /> {e.label}
-                      </button>
-                    ))}
+                    {[{ id: '', label: 'Neutral', icon: RiEmotionNormalLine }, ...EMOTIONS].map(
+                      (e) => (
+                        <button
+                          key={e.id}
+                          className={
+                            'speaker-context-menu-chip' +
+                            (e.id === contextMenu.emotion
+                              ? ' speaker-context-menu-chip-active'
+                              : '')
+                          }
+                          disabled={e.id === contextMenu.emotion}
+                          onClick={() => setEmotion(e.id)}
+                        >
+                          <e.icon /> {e.label}
+                        </button>
+                      ),
+                    )}
                   </div>
                 </>
               )}
-              {nearbyReassignTargets.length > 0 && <div className="speaker-context-menu-section">Nearby</div>}
+              {nearbyReassignTargets.length > 0 && (
+                <div className="speaker-context-menu-section">Nearby</div>
+              )}
               {nearbyReassignTargets.map((name) => (
                 <button
                   key={name}
@@ -1271,7 +1390,9 @@ export function ReaderPage() {
                   {name}
                 </button>
               ))}
-              {nearbyReassignTargets.length > 0 && <div className="speaker-context-menu-section">All characters</div>}
+              {nearbyReassignTargets.length > 0 && (
+                <div className="speaker-context-menu-section">All characters</div>
+              )}
               {restReassignTargets.map((name) => (
                 <button
                   key={name}
@@ -1291,13 +1412,20 @@ export function ReaderPage() {
                   <div className="speaker-context-menu-current">
                     Describes: <strong>{from}</strong>
                   </div>
-                  <button className="speaker-context-menu-item" onClick={() => reassignDescription(from, '')}>
+                  <button
+                    className="speaker-context-menu-item"
+                    onClick={() => reassignDescription(from, '')}
+                  >
                     Remove
                   </button>
                   {reassignTargets
                     .filter((name) => name !== from)
                     .map((name) => (
-                      <button key={name} className="speaker-context-menu-item" onClick={() => reassignDescription(from, name)}>
+                      <button
+                        key={name}
+                        className="speaker-context-menu-item"
+                        onClick={() => reassignDescription(from, name)}
+                      >
                         {name}
                       </button>
                     ))}
@@ -1310,7 +1438,9 @@ export function ReaderPage() {
               <div className="speaker-context-menu-current">
                 Currently: <strong>Narrator</strong>
               </div>
-              <div className="speaker-context-menu-empty">Only dialogue can be reassigned to a character</div>
+              <div className="speaker-context-menu-empty">
+                Only dialogue can be reassigned to a character
+              </div>
             </>
           )}
         </div>

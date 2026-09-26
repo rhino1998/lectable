@@ -18,7 +18,7 @@ lint-go:
 	@for m in $(GO_MODULES); do echo "== golangci-lint $$m"; (cd $$m && $(GOLANGCI_LINT) run ./...) || exit 1; done
 
 lint-frontend:
-	cd frontend && npm run lint
+	cd frontend && npm run lint && npm run format:check
 
 lint-android:
 	cd android && ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ./gradlew -q lintDebug

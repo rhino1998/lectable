@@ -63,8 +63,18 @@ const LINGER_MS = 5000
 const RECONNECT_DELAY_MS = 1000
 const MAX_RECONNECT_DELAY_MS = 10000
 
-const LOADING: LiveResult<never> = { data: undefined, error: undefined, isLoading: true, isError: false }
-const DISABLED: LiveResult<never> = { data: undefined, error: undefined, isLoading: false, isError: false }
+const LOADING: LiveResult<never> = {
+  data: undefined,
+  error: undefined,
+  isLoading: true,
+  isError: false,
+}
+const DISABLED: LiveResult<never> = {
+  data: undefined,
+  error: undefined,
+  isLoading: false,
+  isError: false,
+}
 
 // Applies patch ops to doc, copying only the containers along each changed
 // path - untouched subtrees (e.g. every paragraph but the one whose audio

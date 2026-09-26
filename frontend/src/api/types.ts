@@ -66,31 +66,41 @@ export const CHARACTER_VOICE_MODE_LABELS: Record<CharacterVoiceMode, string> = {
 }
 
 export const CHARACTER_VOICE_MODE_DESCRIPTIONS: Record<CharacterVoiceMode, string> = {
-  narrator: 'Every paragraph narrates in this book\'s own single voice, regardless of attributed speaker.',
+  narrator:
+    "Every paragraph narrates in this book's own single voice, regardless of attributed speaker.",
   assigned:
-    'A character with a voice explicitly assigned below narrates in that voice; an unassigned character still narrates in the book\'s own.',
+    "A character with a voice explicitly assigned below narrates in that voice; an unassigned character still narrates in the book's own.",
   instruct_unassigned:
     "A character with no voice explicitly assigned narrates in this book's own narrator voice, styled by their own characterization, instead of getting an entirely separate, independently-synthesized voice. A character can still be given their own distinct voice below regardless.",
   instruct_all:
     "Every character narrates in this book's own narrator voice, styled by their own characterization - even one with its own explicitly assigned voice below (that assignment is ignored while this is selected, not deleted).",
 }
 
-export const CLONE_MODEL_LABELS = Object.fromEntries(CLONE_MODELS.map((m) => [m.id, m.label])) as Record<CloneModel, string>
+export const CLONE_MODEL_LABELS = Object.fromEntries(
+  CLONE_MODELS.map((m) => [m.id, m.label]),
+) as Record<CloneModel, string>
 
-export const DESIGN_MODEL_LABELS = Object.fromEntries(DESIGN_MODELS.map((m) => [m.id, m.label])) as Record<DesignModel, string>
+export const DESIGN_MODEL_LABELS = Object.fromEntries(
+  DESIGN_MODELS.map((m) => [m.id, m.label]),
+) as Record<DesignModel, string>
 
 // Each design engine's default guidance_scale, for the ones that read one
 // - the voice editor's placeholder; absent = the editor hides the control.
-export const DESIGN_MODEL_GUIDANCE_DEFAULTS: Partial<Record<DesignModel, number>> = Object.fromEntries(
-  DESIGN_MODELS.flatMap((m) => ('defaultGuidanceScale' in m ? [[m.id, m.defaultGuidanceScale]] : [])),
-)
+export const DESIGN_MODEL_GUIDANCE_DEFAULTS: Partial<Record<DesignModel, number>> =
+  Object.fromEntries(
+    DESIGN_MODELS.flatMap((m) =>
+      'defaultGuidanceScale' in m ? [[m.id, m.defaultGuidanceScale]] : [],
+    ),
+  )
 
 // Each model's default sampling temperature, for the ones that read one -
 // the voice tester's placeholder; absent = the tester hides the control.
-export const CLONE_MODEL_TEMPERATURE_DEFAULTS: Partial<Record<CloneModel, number>> = Object.fromEntries(
-  CLONE_MODELS.flatMap((m) => ('defaultTemperature' in m ? [[m.id, m.defaultTemperature]] : [])),
-)
+export const CLONE_MODEL_TEMPERATURE_DEFAULTS: Partial<Record<CloneModel, number>> =
+  Object.fromEntries(
+    CLONE_MODELS.flatMap((m) => ('defaultTemperature' in m ? [[m.id, m.defaultTemperature]] : [])),
+  )
 
-export const DESIGN_MODEL_TEMPERATURE_DEFAULTS: Partial<Record<DesignModel, number>> = Object.fromEntries(
-  DESIGN_MODELS.flatMap((m) => ('defaultTemperature' in m ? [[m.id, m.defaultTemperature]] : [])),
-)
+export const DESIGN_MODEL_TEMPERATURE_DEFAULTS: Partial<Record<DesignModel, number>> =
+  Object.fromEntries(
+    DESIGN_MODELS.flatMap((m) => ('defaultTemperature' in m ? [[m.id, m.defaultTemperature]] : [])),
+  )

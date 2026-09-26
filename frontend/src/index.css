@@ -45,7 +45,11 @@
   --music-region: #c026d3;
 
   color-scheme: light dark;
-  font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
+  font:
+    16px/1.5 system-ui,
+    'Segoe UI',
+    Roboto,
+    sans-serif;
   color: var(--text);
   background: var(--bg);
 }
@@ -836,7 +840,11 @@ label {
 .speed-slider input[type='range']::-webkit-slider-runnable-track {
   height: 2px;
   border-radius: 1px;
-  background: linear-gradient(to right, var(--accent) var(--fill, 0%), var(--border) var(--fill, 0%));
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--fill, 0%),
+    var(--border) var(--fill, 0%)
+  );
 }
 .speed-slider input[type='range']::-webkit-slider-thumb {
   -webkit-appearance: none;
@@ -1585,7 +1593,7 @@ label {
   border-radius: 6px;
   border-left: 3px solid var(--accent);
   background: var(--bg-subtle);
-  font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
   font-size: 0.8rem;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -2399,7 +2407,9 @@ label {
   border-radius: 50%;
   border: 1px solid var(--accent);
   background: var(--bg);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent), 0 2px 8px rgba(0, 0, 0, 0.15);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent),
+    0 2px 8px rgba(0, 0, 0, 0.15);
   font-size: 1.05rem;
   display: flex;
   align-items: center;

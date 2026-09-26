@@ -30,7 +30,11 @@ import { SleepTimerButton } from './SleepTimerButton'
 import { formatCountdown, useSleepTimer } from '../hooks/useSleepTimer'
 import { formatDurationLong } from '../utils/time'
 import { useClickOutside } from '../hooks/useClickOutside'
-import { useCharacterizeSpeaker, useMergeCharacter, useRegenerateCharacterVoices } from '../api/queries'
+import {
+  useCharacterizeSpeaker,
+  useMergeCharacter,
+  useRegenerateCharacterVoices,
+} from '../api/queries'
 import { ApiError } from '../api/client'
 
 const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5]
@@ -102,7 +106,11 @@ export function PlayerBar({
   const [typographyOpen, setTypographyOpen] = useState(false)
   const typographyButtonRef = useRef<HTMLButtonElement>(null)
   const typographyPopoverRef = useRef<HTMLDivElement>(null)
-  useClickOutside([typographyButtonRef, typographyPopoverRef], () => setTypographyOpen(false), typographyOpen)
+  useClickOutside(
+    [typographyButtonRef, typographyPopoverRef],
+    () => setTypographyOpen(false),
+    typographyOpen,
+  )
 
   const sleepTimer = useSleepTimer(playback.chapterIdx, playback.pause)
 
@@ -155,7 +163,8 @@ export function PlayerBar({
     setCharacterizeError(null)
     setCharacterizingIds((ids) => new Set(ids).add(characterId))
     characterizeSpeaker.mutate(characterId, {
-      onError: (err) => setCharacterizeError(err instanceof ApiError ? err.message : 'Characterization failed'),
+      onError: (err) =>
+        setCharacterizeError(err instanceof ApiError ? err.message : 'Characterization failed'),
       onSettled: () =>
         setCharacterizingIds((ids) => {
           const next = new Set(ids)
@@ -172,7 +181,8 @@ export function PlayerBar({
     setRegenerateError(null)
     setRegeneratingIds((ids) => new Set(ids).add(characterId))
     regenerateVoices.mutate([characterId], {
-      onError: (err) => setRegenerateError(err instanceof ApiError ? err.message : 'Regenerate voice failed'),
+      onError: (err) =>
+        setRegenerateError(err instanceof ApiError ? err.message : 'Regenerate voice failed'),
       onSettled: () =>
         setRegeneratingIds((ids) => {
           const next = new Set(ids)
@@ -252,7 +262,8 @@ export function PlayerBar({
   // currentTime and the end of the current clip is neither "played" nor
   // "buffered", leaving a permanent gap even when the whole chapter is
   // ready.
-  const bufferedAheadUnits = bufferedAheadCount + (current?.audioStatus === 'ready' ? 1 - currentFraction : 0)
+  const bufferedAheadUnits =
+    bufferedAheadCount + (current?.audioStatus === 'ready' ? 1 - currentFraction : 0)
   const bufferedAheadPercent = total > 0 ? (bufferedAheadUnits / total) * 100 : 0
 
   // Elapsed/total time for the whole chapter, not just the current
@@ -263,8 +274,9 @@ export function PlayerBar({
   // the audio clips' own native (1x) timescale - durationSeconds is a
   // fixed property of each rendered .wav, unaffected by playback.rate.
   const chapterElapsedSeconds =
-    paragraphs.slice(0, playback.paragraphIdx).reduce((sum, p) => sum + (p.durationSeconds ?? 0), 0) +
-    playback.currentTime
+    paragraphs
+      .slice(0, playback.paragraphIdx)
+      .reduce((sum, p) => sum + (p.durationSeconds ?? 0), 0) + playback.currentTime
   const chapterTotalSeconds = paragraphs.reduce((sum, p) => sum + (p.durationSeconds ?? 0), 0)
 
   const chapterRemainingSeconds = Math.max(0, chapterTotalSeconds - chapterElapsedSeconds)
@@ -274,9 +286,14 @@ export function PlayerBar({
   // same set chapterTotalSeconds already sums), scaled by the current playback rate since a
   // speed change is applied to the clip directly rather than baked into durationSeconds. null
   // until at least one paragraph in this chapter has generated audio to measure a pace from.
-  const chapterWordCount = paragraphs.reduce((sum, p) => (p.durationSeconds ? sum + wordCount(p.text) : sum), 0)
+  const chapterWordCount = paragraphs.reduce(
+    (sum, p) => (p.durationSeconds ? sum + wordCount(p.text) : sum),
+    0,
+  )
   const wordsPerMinute =
-    chapterTotalSeconds > 0 ? Math.round((chapterWordCount / (chapterTotalSeconds / 60)) * playback.playbackRate) : null
+    chapterTotalSeconds > 0
+      ? Math.round((chapterWordCount / (chapterTotalSeconds / 60)) * playback.playbackRate)
+      : null
 
   // Total narration time left in the *whole book*, not just this chapter -
   // extrapolated from the book's self-calibrating estimatedTotalSeconds
@@ -301,7 +318,11 @@ export function PlayerBar({
   return (
     <div className="player-bar">
       {!autoFollow && (
-        <button className="jump-to-current-button" title="Scroll to the paragraph currently playing" onClick={onJumpToCurrent}>
+        <button
+          className="jump-to-current-button"
+          title="Scroll to the paragraph currently playing"
+          onClick={onJumpToCurrent}
+        >
           <RiIndentIncrease />
         </button>
       )}
@@ -334,9 +355,15 @@ export function PlayerBar({
                 <div className="annotation-speaker-list-header">
                   <div className="annotation-legend-title">Speakers</div>
                   <button
-                    className={'icon-action-button' + (scopeToChapter ? ' icon-action-button-active' : '')}
+                    className={
+                      'icon-action-button' + (scopeToChapter ? ' icon-action-button-active' : '')
+                    }
                     onClick={() => setScopeToChapter((v) => !v)}
-                    title={scopeToChapter ? 'Showing this chapter only - click to show the whole book' : 'Show only this chapter’s speakers'}
+                    title={
+                      scopeToChapter
+                        ? 'Showing this chapter only - click to show the whole book'
+                        : 'Show only this chapter’s speakers'
+                    }
                   >
                     {scopeToChapter ? <RiFileTextLine /> : <RiBook2Line />}
                   </button>
@@ -354,7 +381,9 @@ export function PlayerBar({
                   {filteredSpeakers.map((s) => {
                     const mergeTargets = [
                       'Narrator',
-                      ...speakers.filter((o) => o.id && o.id !== s.id && !o.invalid).map((o) => o.name),
+                      ...speakers
+                        .filter((o) => o.id && o.id !== s.id && !o.invalid)
+                        .map((o) => o.name),
                     ]
                     return (
                       <div key={s.id || s.name} className="annotation-speaker-row">
@@ -362,9 +391,13 @@ export function PlayerBar({
                           <button
                             className={
                               'annotation-speaker-list-item' +
-                              (selectedSpeaker === s.name ? ' annotation-speaker-list-item-active' : '')
+                              (selectedSpeaker === s.name
+                                ? ' annotation-speaker-list-item-active'
+                                : '')
                             }
-                            onClick={() => onSelectSpeaker(selectedSpeaker === s.name ? null : s.name)}
+                            onClick={() =>
+                              onSelectSpeaker(selectedSpeaker === s.name ? null : s.name)
+                            }
                             title={`Highlight ${s.name}'s lines in the reader`}
                           >
                             {s.name}
@@ -388,7 +421,9 @@ export function PlayerBar({
                                     : `Recharacterize "${s.name}" — re-describe their voice from their dialogue, and invalidate their assigned voice so it's rebuilt fresh next time it's needed`
                                 }
                               >
-                                <RiUserHeartLine className={characterizingIds.has(s.id) ? 'spin' : undefined} />
+                                <RiUserHeartLine
+                                  className={characterizingIds.has(s.id) ? 'spin' : undefined}
+                                />
                               </button>
                               <button
                                 className="icon-action-button"
@@ -400,7 +435,9 @@ export function PlayerBar({
                                     : `Regenerate "${s.name}"'s voice — force a fresh render, whether or not they already have one`
                                 }
                               >
-                                <RiRefreshLine className={regeneratingIds.has(s.id) ? 'spin' : undefined} />
+                                <RiRefreshLine
+                                  className={regeneratingIds.has(s.id) ? 'spin' : undefined}
+                                />
                               </button>
                               <button
                                 className="icon-action-button"
@@ -418,7 +455,10 @@ export function PlayerBar({
                         </div>
                         {mergingId === s.id && (
                           <div className="annotation-speaker-merge">
-                            <select value={mergeTarget} onChange={(e) => setMergeTarget(e.target.value)}>
+                            <select
+                              value={mergeTarget}
+                              onChange={(e) => setMergeTarget(e.target.value)}
+                            >
                               <option value="" disabled>
                                 Merge into…
                               </option>
@@ -437,7 +477,9 @@ export function PlayerBar({
                                   {
                                     onSuccess: () => setMergingId(null),
                                     onError: (err) =>
-                                      setMergeError(err instanceof ApiError ? err.message : 'Could not merge'),
+                                      setMergeError(
+                                        err instanceof ApiError ? err.message : 'Could not merge',
+                                      ),
                                   },
                                 )
                               }
@@ -466,7 +508,9 @@ export function PlayerBar({
               {ANNOTATION_LABELS[kind]}
             </span>
           ))}
-          {(Object.keys(DIRECTION_TAG_CATEGORY_LABELS) as Exclude<DirectionTagCategory, 'other'>[]).map((category) => (
+          {(
+            Object.keys(DIRECTION_TAG_CATEGORY_LABELS) as Exclude<DirectionTagCategory, 'other'>[]
+          ).map((category) => (
             <span key={category} className="annotation-legend-item">
               <span className={`direction-caret direction-caret-${category}`} aria-hidden="true">
                 <RiArrowDropUpLine />
@@ -506,7 +550,10 @@ export function PlayerBar({
             {playback.isWaitingForAudio && <span className="muted"> — generating…</span>}
           </div>
           <div className="player-track">
-            <div className="player-track-buffered" style={{ left: `${chapterProgress}%`, width: `${bufferedAheadPercent}%` }} />
+            <div
+              className="player-track-buffered"
+              style={{ left: `${chapterProgress}%`, width: `${bufferedAheadPercent}%` }}
+            />
             <div className="player-track-fill" style={{ width: `${chapterProgress}%` }} />
           </div>
           <div className="player-times">
@@ -527,13 +574,20 @@ export function PlayerBar({
               </span>
             )}
             <span className="player-times-right">
-              <span className="player-remaining" title="Time left in this chapter, at the current playback speed">
+              <span
+                className="player-remaining"
+                title="Time left in this chapter, at the current playback speed"
+              >
                 {!finished && `-${formatTime(chapterRemainingAtSpeed)} · `}
                 {formatTime(chapterTotalAtSpeed)} <RiBookmarkLine />
               </span>
               {!finished && (
-                <span className="player-remaining" title="Time left in the book, at the current playback speed">
-                  {formatDurationLong(bookRemainingAtSpeed)} ({Math.round(100 - progressPercent)}%) <RiBookOpenLine />
+                <span
+                  className="player-remaining"
+                  title="Time left in the book, at the current playback speed"
+                >
+                  {formatDurationLong(bookRemainingAtSpeed)} ({Math.round(100 - progressPercent)}%){' '}
+                  <RiBookOpenLine />
                 </span>
               )}
             </span>
@@ -542,7 +596,10 @@ export function PlayerBar({
 
         <label className="player-speed">
           Speed
-          <select value={playback.playbackRate} onChange={(e) => playback.setPlaybackRate(Number(e.target.value))}>
+          <select
+            value={playback.playbackRate}
+            onChange={(e) => playback.setPlaybackRate(Number(e.target.value))}
+          >
             {RATES.map((r) => (
               <option key={r} value={r}>
                 {r}×
@@ -560,7 +617,8 @@ export function PlayerBar({
         >
           {bookChapters.map((c) => (
             <option key={c.idx} value={c.idx}>
-              {c.title} {c.readyCount < c.paragraphCount ? `(${c.readyCount}/${c.paragraphCount})` : ''}
+              {c.title}{' '}
+              {c.readyCount < c.paragraphCount ? `(${c.readyCount}/${c.paragraphCount})` : ''}
             </option>
           ))}
         </select>

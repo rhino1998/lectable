@@ -78,14 +78,23 @@ export function useDeleteBookAudio(bookId: string) {
 // Chapter-header "Clear generation" - useDeleteBookAudio's single-chapter
 // counterpart.
 export function useDeleteChapterAudio(bookId: string) {
-  return useMutation({ mutationFn: (chapterIdx: number) => api.deleteChapterAudio(bookId, chapterIdx) })
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.deleteChapterAudio(bookId, chapterIdx),
+  })
 }
 
 // Chapter-header "Re-import" - see api.reimportChapter.
 export function useReimportChapter(bookId: string) {
   return useMutation({
-    mutationFn: ({ chapterIdx, file, force }: { chapterIdx: number; file?: File; force?: boolean }) =>
-      api.reimportChapter(bookId, chapterIdx, { file, force }),
+    mutationFn: ({
+      chapterIdx,
+      file,
+      force,
+    }: {
+      chapterIdx: number
+      file?: File
+      force?: boolean
+    }) => api.reimportChapter(bookId, chapterIdx, { file, force }),
   })
 }
 
@@ -96,7 +105,11 @@ export function useChapter(bookId: string, idx: number): LiveResult<ChapterDetai
 // A contiguous, inclusive range of chapters [start, end] for
 // continuous-scroll reading - one live subscription per chapter, so a
 // paragraph finishing in any loaded chapter patches just that chapter.
-export function useChapterRange(bookId: string, start: number, end: number): LiveResult<ChapterDetail>[] {
+export function useChapterRange(
+  bookId: string,
+  start: number,
+  end: number,
+): LiveResult<ChapterDetail>[] {
   const params = useMemo(() => {
     const out: { bookId: string; chapterIdx: number }[] = []
     for (let i = Math.max(start, 0); i <= end; i++) out.push({ bookId, chapterIdx: i })
@@ -111,7 +124,11 @@ export function useChapterRange(bookId: string, start: number, end: number): Liv
 // (useChapterMusicRange below) passes true unconditionally, since it's
 // showing scored-region info as a diagnostic regardless of whether the
 // book-wide toggle is even on.
-export function useChapterMusic(bookId: string, chapterIdx: number, enabled: boolean): LiveResult<ChapterMusic> {
+export function useChapterMusic(
+  bookId: string,
+  chapterIdx: number,
+  enabled: boolean,
+): LiveResult<ChapterMusic> {
   return useLive('chapterMusic', enabled && chapterIdx >= 0 ? { bookId, chapterIdx } : null)
 }
 
@@ -122,7 +139,12 @@ export function useChapterMusic(bookId: string, chapterIdx: number, enabled: boo
 // ReaderPage passes annotationsView, so switching annotations off drops
 // every loaded chapter's music subscription instead of leaving them live
 // unseen.
-export function useChapterMusicRange(bookId: string, start: number, end: number, enabled: boolean): LiveResult<ChapterMusic>[] {
+export function useChapterMusicRange(
+  bookId: string,
+  start: number,
+  end: number,
+  enabled: boolean,
+): LiveResult<ChapterMusic>[] {
   const params = useMemo(() => {
     const out: { bookId: string; chapterIdx: number }[] = []
     if (enabled) for (let i = Math.max(start, 0); i <= end; i++) out.push({ bookId, chapterIdx: i })
@@ -135,11 +157,15 @@ export function useChapterMusicRange(bookId: string, start: number, end: number,
 // forget (see api.scoreChapterMusic/useScoringMusicChapters for tracking
 // completion).
 export function useScoreChapterMusic(bookId: string) {
-  return useMutation({ mutationFn: (chapterIdx: number) => api.scoreChapterMusic(bookId, chapterIdx) })
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.scoreChapterMusic(bookId, chapterIdx),
+  })
 }
 
 export function useGenerateChapterMusic(bookId: string) {
-  return useMutation({ mutationFn: (chapterIdx: number) => api.generateChapterMusic(bookId, chapterIdx) })
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.generateChapterMusic(bookId, chapterIdx),
+  })
 }
 
 // Generates/regenerates one music region. chapterIdx isn't needed by the
@@ -147,7 +173,8 @@ export function useGenerateChapterMusic(bookId: string) {
 // variables so existing call sites don't change shape.
 export function useRegenerateMusicRegion(_bookId: string) {
   return useMutation({
-    mutationFn: ({ regionId }: { regionId: string; chapterIdx: number }) => api.regenerateMusicRegion(regionId),
+    mutationFn: ({ regionId }: { regionId: string; chapterIdx: number }) =>
+      api.regenerateMusicRegion(regionId),
   })
 }
 
@@ -165,8 +192,15 @@ export function useRegenerateParagraph(bookId: string) {
 // Reassigns one paragraph to a different speaker.
 export function useSetParagraphSpeaker(bookId: string) {
   return useMutation({
-    mutationFn: ({ chapterIdx, paragraphIdx, speaker }: { chapterIdx: number; paragraphIdx: number; speaker: string }) =>
-      api.setParagraphSpeaker(bookId, chapterIdx, paragraphIdx, speaker),
+    mutationFn: ({
+      chapterIdx,
+      paragraphIdx,
+      speaker,
+    }: {
+      chapterIdx: number
+      paragraphIdx: number
+      speaker: string
+    }) => api.setParagraphSpeaker(bookId, chapterIdx, paragraphIdx, speaker),
   })
 }
 
@@ -209,8 +243,15 @@ export function useSetParagraphScareQuote(bookId: string) {
 // Manual per-line emotion override - see api.setParagraphEmotion.
 export function useSetParagraphEmotion(bookId: string) {
   return useMutation({
-    mutationFn: ({ chapterIdx, paragraphIdx, emotion }: { chapterIdx: number; paragraphIdx: number; emotion: string }) =>
-      api.setParagraphEmotion(bookId, chapterIdx, paragraphIdx, emotion),
+    mutationFn: ({
+      chapterIdx,
+      paragraphIdx,
+      emotion,
+    }: {
+      chapterIdx: number
+      paragraphIdx: number
+      emotion: string
+    }) => api.setParagraphEmotion(bookId, chapterIdx, paragraphIdx, emotion),
   })
 }
 
@@ -264,7 +305,9 @@ export function useGenerateParagraphSFX(bookId: string) {
 // Fire-and-forget, same as useRetagDescriptions below - progress comes
 // from useScareQuotingChapters.
 export function useRetagScareQuotes(bookId: string) {
-  return useMutation({ mutationFn: (chapterIdx: number) => api.retagScareQuotes(bookId, chapterIdx) })
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.retagScareQuotes(bookId, chapterIdx),
+  })
 }
 
 // Fire-and-forget: keeps generation running ahead of the reader's current
@@ -281,7 +324,9 @@ export function useVoice(bookId: string): LiveResult<VoiceSettings> {
 }
 
 export function useUpdateVoice(bookId: string) {
-  return useMutation({ mutationFn: (settings: VoiceSettingsUpdate) => api.updateVoice(bookId, settings) })
+  return useMutation({
+    mutationFn: (settings: VoiceSettingsUpdate) => api.updateVoice(bookId, settings),
+  })
 }
 
 export function useSpeakers(bookId: string): LiveResult<Speaker[]> {
@@ -295,7 +340,9 @@ export function useDeleteSpeakerData(bookId: string) {
 // Only enqueues (see api.attributeSpeakers) - see useAttributingChapters
 // for tracking the run itself.
 export function useAttributeSpeakers(bookId: string) {
-  return useMutation({ mutationFn: (chapterIdx: number) => api.attributeSpeakers(bookId, chapterIdx) })
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.attributeSpeakers(bookId, chapterIdx),
+  })
 }
 
 // Same fire-and-forget shape as useAttributeSpeakers (see
@@ -308,7 +355,9 @@ export function useTagDirections(bookId: string) {
 // api.resolvePronunciation) - see usePronouncingChapters for tracking the
 // run.
 export function useResolvePronunciation(bookId: string) {
-  return useMutation({ mutationFn: (chapterIdx: number) => api.resolvePronunciation(bookId, chapterIdx) })
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.resolvePronunciation(bookId, chapterIdx),
+  })
 }
 
 // The library page's "Preprocess" button (attribution -> characterization
@@ -354,7 +403,8 @@ export function useBulkActionsRunning(bookId: string): Set<BulkAction> {
     for (const t of [...(jobs?.inFlight ?? []), ...(jobs?.queued ?? [])]) {
       if (t.bookId !== bookId) continue
       if (t.kind === 'pipeline_generate_book') running.add('generate')
-      else if (t.kind.startsWith('pipeline_bulk_')) running.add(t.kind.slice('pipeline_bulk_'.length) as BulkAction)
+      else if (t.kind.startsWith('pipeline_bulk_'))
+        running.add(t.kind.slice('pipeline_bulk_'.length) as BulkAction)
     }
     return running
   }, [jobs, bookId])
@@ -364,7 +414,10 @@ export function useBulkActionsRunning(bookId: string): Set<BulkAction> {
 function useBookJobs(bookId: string, kind: QueueTask['kind']): QueueTask[] {
   const jobs = useJobsSnapshot().data
   return useMemo(
-    () => [...(jobs?.inFlight ?? []), ...(jobs?.queued ?? [])].filter((t) => t.kind === kind && t.bookId === bookId),
+    () =>
+      [...(jobs?.inFlight ?? []), ...(jobs?.queued ?? [])].filter(
+        (t) => t.kind === kind && t.bookId === bookId,
+      ),
     [jobs, bookId, kind],
   )
 }
@@ -455,7 +508,9 @@ export function useSetCharacterAliases(bookId: string) {
 }
 
 export function useDeleteCharacter(bookId: string) {
-  return useMutation({ mutationFn: (characterId: string) => api.deleteCharacter(bookId, characterId) })
+  return useMutation({
+    mutationFn: (characterId: string) => api.deleteCharacter(bookId, characterId),
+  })
 }
 
 export function useMergeCharacter(bookId: string) {
@@ -488,17 +543,23 @@ export function useReattributingSpeakers(bookId: string): Set<string> {
 }
 
 export function useGenerateCharacterVoice(bookId: string) {
-  return useMutation({ mutationFn: (characterId: string) => api.generateCharacterVoice(bookId, characterId) })
+  return useMutation({
+    mutationFn: (characterId: string) => api.generateCharacterVoice(bookId, characterId),
+  })
 }
 
 // Batch "regenerate these characters' voices" (PlayerBar's per-character
 // action) - fire-and-forget, see api.regenerateCharacterVoices.
 export function useRegenerateCharacterVoices(bookId: string) {
-  return useMutation({ mutationFn: (characterIds: string[]) => api.regenerateCharacterVoices(bookId, characterIds) })
+  return useMutation({
+    mutationFn: (characterIds: string[]) => api.regenerateCharacterVoices(bookId, characterIds),
+  })
 }
 
 export function useCharacterizeSpeaker(bookId: string) {
-  return useMutation({ mutationFn: (characterId: string) => api.characterizeSpeaker(bookId, characterId) })
+  return useMutation({
+    mutationFn: (characterId: string) => api.characterizeSpeaker(bookId, characterId),
+  })
 }
 
 // Which of bookId's characters (by name - QueueTask.label is the only
@@ -522,7 +583,10 @@ export function useCharacterizeSpeaker(bookId: string) {
 // of which endpoint triggered it, but the URL itself never changes, so a
 // still-open <audio src> has no reason to refetch it unless something
 // explicitly watches for it.
-export function useCharacterizingCharacters(bookId: string, onFinished?: (names: string[]) => void): Set<string> {
+export function useCharacterizingCharacters(
+  bookId: string,
+  onFinished?: (names: string[]) => void,
+): Set<string> {
   const characterizing = useLabelSet(bookId, 'speaker_characterization')
   const prevRef = useRef<Set<string>>(characterizing)
   const onFinishedRef = useRef(onFinished)
@@ -535,18 +599,26 @@ export function useCharacterizingCharacters(bookId: string, onFinished?: (names:
   return characterizing
 }
 
-export function useCharacterAppearances(bookId: string, characterId: string | null): LiveResult<SpeakerAppearance[]> {
+export function useCharacterAppearances(
+  bookId: string,
+  characterId: string | null,
+): LiveResult<SpeakerAppearance[]> {
   return useLive('characterAppearances', characterId !== null ? { bookId, characterId } : null)
 }
 
-export function useCharacterDescriptions(bookId: string, characterId: string | null): LiveResult<SpeakerAppearance[]> {
+export function useCharacterDescriptions(
+  bookId: string,
+  characterId: string | null,
+): LiveResult<SpeakerAppearance[]> {
   return useLive('characterDescriptions', characterId !== null ? { bookId, characterId } : null)
 }
 
 // Fire-and-forget (see api.retagDescriptions's own doc comment) - progress
 // comes from useDescribingChapters.
 export function useRetagDescriptions(bookId: string) {
-  return useMutation({ mutationFn: (chapterIdx: number) => api.retagDescriptions(bookId, chapterIdx) })
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.retagDescriptions(bookId, chapterIdx),
+  })
 }
 
 export function useUpdatePosition(bookId: string) {
@@ -570,13 +642,22 @@ export function useBookmarks(bookId: string): LiveResult<Bookmark[]> {
 
 export function useCreateBookmark(bookId: string) {
   return useMutation({
-    mutationFn: ({ chapterIdx, paragraphIdx, note }: { chapterIdx: number; paragraphIdx: number; note?: string }) =>
-      api.createBookmark(bookId, chapterIdx, paragraphIdx, note),
+    mutationFn: ({
+      chapterIdx,
+      paragraphIdx,
+      note,
+    }: {
+      chapterIdx: number
+      paragraphIdx: number
+      note?: string
+    }) => api.createBookmark(bookId, chapterIdx, paragraphIdx, note),
   })
 }
 
 export function useUpdateBookmarkNote(_bookId: string) {
-  return useMutation({ mutationFn: ({ id, note }: { id: string; note: string }) => api.updateBookmarkNote(id, note) })
+  return useMutation({
+    mutationFn: ({ id, note }: { id: string; note: string }) => api.updateBookmarkNote(id, note),
+  })
 }
 
 export function useDeleteBookmark(_bookId: string) {
@@ -592,12 +673,18 @@ export function useDefaultVoice(): LiveResult<VoiceSettings> {
 }
 
 export function useUpdateDefaultVoice() {
-  return useMutation({ mutationFn: (settings: VoiceSettingsUpdate) => api.updateDefaultVoice(settings) })
+  return useMutation({
+    mutationFn: (settings: VoiceSettingsUpdate) => api.updateDefaultVoice(settings),
+  })
 }
 
 // Compiled into the backend, never changes - a plain one-off fetch.
 export function useVoiceLanguages() {
-  return useQuery({ queryKey: ['voice-languages'], queryFn: api.voiceLanguages, staleTime: Infinity })
+  return useQuery({
+    queryKey: ['voice-languages'],
+    queryFn: api.voiceLanguages,
+    staleTime: Infinity,
+  })
 }
 
 export function useCustomVoicePresets(): LiveResult<CustomVoicePreset[]> {
@@ -605,12 +692,15 @@ export function useCustomVoicePresets(): LiveResult<CustomVoicePreset[]> {
 }
 
 export function useCreateCustomVoicePreset() {
-  return useMutation({ mutationFn: (input: CustomVoicePresetInput) => api.createCustomVoicePreset(input) })
+  return useMutation({
+    mutationFn: (input: CustomVoicePresetInput) => api.createCustomVoicePreset(input),
+  })
 }
 
 export function useUpdateCustomVoicePreset() {
   return useMutation({
-    mutationFn: ({ id, input }: { id: string; input: CustomVoicePresetInput }) => api.updateCustomVoicePreset(id, input),
+    mutationFn: ({ id, input }: { id: string; input: CustomVoicePresetInput }) =>
+      api.updateCustomVoicePreset(id, input),
   })
 }
 

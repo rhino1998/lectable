@@ -54,7 +54,8 @@ export function SFXPage() {
       },
       {
         onSuccess: (blob) => setAudioUrl(URL.createObjectURL(blob)),
-        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not generate audio'),
+        onError: (err) =>
+          setError(err instanceof ApiError ? err.message : 'Could not generate audio'),
       },
     )
   }
@@ -65,8 +66,8 @@ export function SFXPage() {
         <h1>SFX</h1>
       </div>
       <p className="muted">
-        Generate a standalone sound effect or music clip to test a prompt before attaching one to a paragraph in the
-        reader. Nothing here is saved.
+        Generate a standalone sound effect or music clip to test a prompt before attaching one to a
+        paragraph in the reader. Nothing here is saved.
       </p>
       <div className="custom-voice-form">
         <label>
@@ -102,7 +103,11 @@ export function SFXPage() {
         )}
         <label>
           Negative prompt (optional)
-          <input value={negativePrompt} onChange={(e) => setNegativePrompt(e.target.value)} placeholder="" />
+          <input
+            value={negativePrompt}
+            onChange={(e) => setNegativePrompt(e.target.value)}
+            placeholder=""
+          />
         </label>
         <label>
           Duration (seconds)
@@ -138,11 +143,21 @@ export function SFXPage() {
         </label>
         <label>
           Seed
-          <input type="number" min={0} step={1} value={seed} onChange={(e) => setSeed(e.target.value)} />
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={seed}
+            onChange={(e) => setSeed(e.target.value)}
+          />
         </label>
         {error && <p className="error-text">{error}</p>}
         <div className="voice-panel-actions">
-          <button className="primary-button" onClick={run} disabled={!prompt.trim() || testSFX.isPending}>
+          <button
+            className="primary-button"
+            onClick={run}
+            disabled={!prompt.trim() || testSFX.isPending}
+          >
             {testSFX.isPending ? 'Generating…' : 'Generate'}
           </button>
           {audioUrl && <audio controls autoPlay src={audioUrl} />}
