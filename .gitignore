@@ -30,3 +30,7 @@ android/.cxx/
 
 # editors / OS
 .DS_Store
+
+# local env (machine-specific paths)
+.envrc
+.env
