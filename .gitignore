@@ -12,12 +12,6 @@ backend/*.duckdb
 frontend/node_modules/
 frontend/dist/
 
-# tts-service
-tts-service/__pycache__/
-tts-service/*.pyc
-tts-service/**/__pycache__/
-tts-service/voice_refs/
-
 # android
 android/local.properties
 android/.gradle/
