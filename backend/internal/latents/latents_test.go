@@ -92,6 +92,16 @@ func TestSliceConcatFile(t *testing.T) {
 	if !reflect.DeepEqual(s.Data, ints(2, 3, 4)) || s.Meta != nil {
 		t.Fatalf("Slice = %+v", s)
 	}
+	// Checkpoint-level meta survives a slice; window-specific meta doesn't.
+	stamped := &ttsproto.Latents{Kind: KindCodes, Frames: 3, Dim: 1, CodebookSize: 1024, Family: "higgs_audio_tts", Data: ints(1, 2, 3),
+		Meta: map[string]string{"chunk_frames": "2,1", "decode_seed": "3", "codec_model": "m.gguf:1", "normalized": "true"}}
+	s, err = Slice(stamped, 1, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"codec_model": "m.gguf:1", "normalized": "true"}; !reflect.DeepEqual(s.Meta, want) {
+		t.Fatalf("Slice meta = %v, want %v", s.Meta, want)
+	}
 	path := filepath.Join(t.TempDir(), "x.lat")
 	if err := WriteFile(path, c, ""); err != nil {
 		t.Fatal(err)

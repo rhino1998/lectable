@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS books (
 	speech_direction BOOLEAN NOT NULL DEFAULT false,
 	-- Reader-facing book-wide background-music toggle - see
 	-- store.Book.MusicEnabled's own doc comment. Book-wide, not
-	-- per-chapter: a chapter's own music_regions rows and passes.music
+	-- per-chapter: a chapter's own music_regions rows and passes.ambience
 	-- fact (chapters.passes) still exist per-chapter regardless (scoring/
 	-- generation are inherently chapter-scoped work), but whether the
 	-- feature is on at all is one setting for the whole book, the same
@@ -211,6 +211,9 @@ CREATE TABLE IF NOT EXISTS characters (
 	invalid BOOLEAN NOT NULL DEFAULT false,
 	-- Other names this character goes by - see Character.Aliases.
 	aliases JSON NOT NULL DEFAULT '[]',
+	-- "he/him", "she/her", "they/them", "it/its", or '' - see
+	-- Character.Pronouns.
+	pronouns TEXT NOT NULL DEFAULT '',
 	created_at BIGINT NOT NULL,
 	UNIQUE(scope, name)
 );
@@ -345,6 +348,9 @@ CREATE TABLE IF NOT EXISTS music_regions (
 	ambience TEXT NOT NULL DEFAULT '',
 	-- 'cut' or 'continuation' - see store.MusicTransition's own doc comment.
 	transition TEXT NOT NULL DEFAULT 'cut',
+	-- store.Lighting, NULL until the ambience pass's lighting sub-pass
+	-- reaches this region (see migrateMusicRegionsLighting).
+	lighting JSON,
 	-- One of AudioPending/AudioGenerating/AudioReady/AudioError - the same
 	-- vocabulary paragraph_audio/sfx already use.
 	status TEXT NOT NULL DEFAULT 'pending',
@@ -435,11 +441,40 @@ func Open(path string) (*DuckStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := migrateCharactersPronouns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := migrateMusicRegionsLighting(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(`INSERT INTO default_voice (id) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM default_voice)`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("seed default_voice: %w", err)
 	}
 	return &DuckStore{db: &notifyDB{DB: db}}, nil
+}
+
+// migrateCharactersPronouns adds characters.pronouns to a library created
+// before it existed. DuckDB's ADD COLUMN rejects NOT NULL, so the column
+// is nullable there - but the DEFAULT fills every existing row, and every
+// insert after goes through the default too, so it's never actually NULL.
+func migrateCharactersPronouns(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS pronouns TEXT DEFAULT ''`); err != nil {
+		return fmt.Errorf("migrate characters.pronouns: %w", err)
+	}
+	return nil
+}
+
+// migrateMusicRegionsLighting adds music_regions.lighting to a library
+// created before the ambience pass's lighting sub-pass existed. NULL (no
+// cue yet) is the column's real resting value, so no default is needed.
+func migrateMusicRegionsLighting(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE music_regions ADD COLUMN IF NOT EXISTS lighting JSON`); err != nil {
+		return fmt.Errorf("migrate music_regions.lighting: %w", err)
+	}
+	return nil
 }
 
 func (s *DuckStore) Close() error { return s.db.Close() }
@@ -1276,37 +1311,84 @@ func (s *DuckStore) GetChapterByIdx(bookID string, idx int) (*Chapter, error) {
 	return &c, nil
 }
 
-// SetChapterMusicScored marks chapterID's own passes.music true, leaving
-// every other Passes field untouched - set by httpapi.scoreChapterMusic
+// SetChapterAmbienceScored marks chapterID's own passes.ambience true, leaving
+// every other Passes field untouched - set by httpapi.ambienceChapter
 // once internal/speakerattr.Client.ScoreMusic completes a full,
 // uninterrupted pass over the whole chapter, never on a pause or a genuine
 // failure partway through. SetChapterAttributed/SetChapterDirected's own
 // json_merge_patch shape (see SetChapterAttributed's own doc comment for
 // why a single statement like this, not a Go-side read-modify-write).
-func (s *DuckStore) SetChapterMusicScored(chapterID string) error {
+func (s *DuckStore) SetChapterAmbienceScored(chapterID string) error {
 	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"music": true}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_merge_patch(passes, '{"ambience": true}') WHERE id = ?`,
 		chapterID,
 	)
 	return err
 }
 
+// SetChapterLit marks chapterID's own passes.lighting true - set by
+// httpapi.lightChapter once every music region has a Lighting cue.
+func (s *DuckStore) SetChapterLit(chapterID string) error {
+	_, err := s.db.Exec(
+		`UPDATE chapters SET passes = json_merge_patch(passes, '{"lighting": true}') WHERE id = ?`,
+		chapterID,
+	)
+	return err
+}
+
+// SetMusicRegionLighting stores each region id's lighting cue in one
+// transaction - one lighting sub-pass call's worth (a region plus the
+// length-only splits sharing its description).
+func (s *DuckStore) SetMusicRegionLighting(lighting map[string]Lighting) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for id, l := range lighting {
+		if _, err := tx.Exec(`UPDATE music_regions SET lighting = ? WHERE id = ?`, l, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// ClearBookLighting drops every music region's lighting cue across bookID
+// and unsets each chapter's passes.lighting, leaving the music itself
+// alone - the Speakers page's "lighting" reset, so the next ambience run
+// re-lights every chapter without re-scoring its music.
+func (s *DuckStore) ClearBookLighting(bookID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE music_regions SET lighting = NULL WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, '{"lighting": null}') WHERE book_id = ?`, bookID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ClearMusicRegions deletes every music_regions row for chapterID and
-// clears the chapter's own passes.music flag back to unset (same
+// clears the chapter's own passes.ambience and passes.lighting flags back
+// to unset (lighting lives on the regions, so it goes with them) (same
 // json_merge_patch-null-deletes-the-key pattern ResetBookAttribution's own
 // bulk equivalent uses) - called once, up front, by
-// httpapi.scoreChapterMusic's own wipeExisting branch before a (re)scoring
+// httpapi.ambienceChapter's own wipeExisting branch before a (re)scoring
 // run starts on a chapter that's already fully scored: a chapter's regions
 // must always fully partition its paragraphs with no gaps/overlaps, so a
 // partial old set can never usefully coexist with a fresh run's own output
 // the way, say, tts_tags accumulates incrementally across reruns.
 //
-// The passes.music reset is not just tidiness: scoreChapterMusic only
+// The passes.ambience reset is not just tidiness: ambienceChapter only
 // takes its "wipe and restart from paragraph 0" branch when
-// ch.Passes.Music is already true (resumeMusicScoring's own
+// ch.Passes.Ambience is already true (resumeMusicScoring's own
 // alreadyFullyScored case) - its own "resume from the last persisted
 // region" branch, the one that actually accumulates progress across
-// retries, only ever triggers when passes.music is still false. Before
+// retries, only ever triggers when passes.ambience is still false. Before
 // this reset existed, a fresh run dispatched from here that itself paused
 // partway (e.g. real scheduling contention - s.Jobs.HasHigherPriorityWork,
 // checked between ScoreMusic's own batches) left the chapter with a
@@ -1315,7 +1397,7 @@ func (s *DuckStore) SetChapterMusicScored(chapterID string) error {
 // wipe-and-restart-from-0 branch again, and could stall hitting the same
 // pause point every single time - zero net progress across retries no
 // matter how many times it's retriggered, the exact failure mode
-// scoreChapterMusic's own resume path exists to prevent, just reached via
+// ambienceChapter's own resume path exists to prevent, just reached via
 // this wipe branch instead of the original always-wipe design it replaced.
 //
 // Returns whatever existed before deleting (same "read before delete,
@@ -1337,7 +1419,7 @@ func (s *DuckStore) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 		return nil, err
 	}
 	if _, err := tx.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"music": null}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_merge_patch(passes, '{"ambience": null, "lighting": null}') WHERE id = ?`,
 		chapterID,
 	); err != nil {
 		return nil, err
@@ -1354,7 +1436,7 @@ func (s *DuckStore) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 // ScoreMusic's own doc comment for why regions are persisted incrementally,
 // batch by batch, rather than all at once at the very end. Assigns each
 // inserted region a fresh ID and returns the persisted rows (with ID/Idx
-// filled in) so the caller (httpapi.scoreChapterMusic) can react to newly
+// filled in) so the caller (httpapi.ambienceChapter) can react to newly
 // available regions - e.g. kick maybeAdvanceChapterMusic - without a
 // separate re-list.
 //
@@ -1365,10 +1447,10 @@ func (s *DuckStore) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 // Within this one batch, a region's EndIdx is simply its own next
 // sibling's StartIdx minus one; regions[len(regions)-1] instead gets
 // lastParagraphIdx as a provisional value - the chapter's own real last
-// paragraph if this call's caller (httpapi.scoreChapterMusic) covered the
+// paragraph if this call's caller (httpapi.ambienceChapter) covered the
 // chapter all the way to its own end, or wherever that call's own attempt
 // actually stopped otherwise (a pause partway through, resumed by a later
-// call rather than restarted - see scoreChapterMusic's own doc comment),
+// call rather than restarted - see ambienceChapter's own doc comment),
 // since whether anything comes after it depends on whether a *later*
 // batch gets appended too. If one does, that later call's own first step
 // fixes this batch's own last region back up to the real boundary, before
@@ -1441,7 +1523,7 @@ type MusicRegionInput struct {
 
 // ListMusicRegions returns chapterID's own music regions in idx order.
 func (s *DuckStore) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
-	rows, err := s.db.Query(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, status, error, duration_seconds FROM music_regions WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
+	rows, err := s.db.Query(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, lighting, status, error, duration_seconds FROM music_regions WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
 	}
@@ -1450,7 +1532,7 @@ func (s *DuckStore) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
 	var out []MusicRegion
 	for rows.Next() {
 		var r MusicRegion
-		if err := rows.Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Ambience, &r.Transition, &r.Status, &r.Error, &r.DurationSeconds); err != nil {
+		if err := rows.Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Ambience, &r.Transition, &r.Lighting, &r.Status, &r.Error, &r.DurationSeconds); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -1462,8 +1544,8 @@ func (s *DuckStore) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
 // own single-row lookup, not a whole chapter's list.
 func (s *DuckStore) GetMusicRegion(id string) (*MusicRegion, error) {
 	var r MusicRegion
-	err := s.db.QueryRow(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, status, error, duration_seconds FROM music_regions WHERE id = ?`, id).
-		Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Ambience, &r.Transition, &r.Status, &r.Error, &r.DurationSeconds)
+	err := s.db.QueryRow(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, lighting, status, error, duration_seconds FROM music_regions WHERE id = ?`, id).
+		Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Ambience, &r.Transition, &r.Lighting, &r.Status, &r.Error, &r.DurationSeconds)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1547,7 +1629,7 @@ func (s *DuckStore) ResetMusicRegionAudio(id string) error {
 // target duration is derived from its paragraphs' own real narration
 // durations (see store.MusicRegion's own doc comment) and so goes stale
 // the moment that narration is deleted/regenerated. Never touches
-// passes.music or deletes any row - re-scoring is not needed
+// passes.ambience or deletes any row - re-scoring is not needed
 // just because narration changed, only re-generating the audio once
 // narration is ready again. Returns the regions as they stood before the
 // reset (same reasoning as ClearMusicRegions) so the caller can remove
@@ -1846,7 +1928,7 @@ func (s *DuckStore) GetParagraph(id string) (*Paragraph, error) {
 // discovery order. Identity/summary only - see CharacterVoicesForModel for
 // their (per-clone-model) voice assignments.
 func (s *DuckStore) ListCharacters(scope string) ([]Character, error) {
-	rows, err := s.db.Query(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, created_at FROM characters WHERE scope = ? ORDER BY created_at ASC`, scope)
+	rows, err := s.db.Query(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, pronouns, created_at FROM characters WHERE scope = ? ORDER BY created_at ASC`, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1855,7 +1937,7 @@ func (s *DuckStore) ListCharacters(scope string) ([]Character, error) {
 	var out []Character
 	for rows.Next() {
 		var c Character
-		if err := rows.Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.CreatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.Pronouns, &c.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -1867,8 +1949,8 @@ func (s *DuckStore) ListCharacters(scope string) ([]Character, error) {
 // routes, which address a character directly rather than by scope+name).
 func (s *DuckStore) GetCharacter(id string) (*Character, error) {
 	var c Character
-	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, created_at FROM characters WHERE id = ?`, id).
-		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.CreatedAt)
+	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, pronouns, created_at FROM characters WHERE id = ?`, id).
+		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.Pronouns, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -1880,8 +1962,8 @@ func (s *DuckStore) GetCharacter(id string) (*Character, error) {
 
 func (s *DuckStore) GetCharacterByName(scope, name string) (*Character, error) {
 	var c Character
-	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, created_at FROM characters WHERE scope = ? AND name = ?`, scope, name).
-		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.CreatedAt)
+	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, pronouns, created_at FROM characters WHERE scope = ? AND name = ?`, scope, name).
+		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.Pronouns, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -2064,6 +2146,13 @@ func (s *DuckStore) SyncCharacterSummariesFromPreset(presetID, instruct, refText
 		}
 	}
 	return nil
+}
+
+// SetCharacterPronouns sets id's pronouns (Character.Pronouns) - "" clears
+// them. Callers normalize first (speakerattr.NormalizePronouns).
+func (s *DuckStore) SetCharacterPronouns(id, pronouns string) error {
+	_, err := s.db.Exec(`UPDATE characters SET pronouns = ? WHERE id = ?`, pronouns, id)
+	return err
 }
 
 // SetCharacterInvalid marks (or, with false, unmarks) id as invalid - see
@@ -3207,7 +3296,7 @@ type PassReset struct {
 }
 
 // PassResets are the per-chapter passes ResetBookPass knows how to clear,
-// keyed by the same names httpapi's bulk actions use. Music scoring isn't
+// keyed by the same names httpapi's bulk actions use. The ambience pass isn't
 // here - its output lives in music_regions, not paragraphs (see
 // ClearBookMusicRegions).
 var PassResets = map[string]PassReset{
@@ -3299,7 +3388,8 @@ func (s *DuckStore) ResetBookPass(bookID, pass string, fromIdx int) (map[string]
 }
 
 // ClearBookMusicRegions is ClearMusicRegions for every chapter of bookID at
-// once: deletes every music region and unsets each chapter's passes.music.
+// once: deletes every music region and unsets each chapter's
+// passes.ambience/passes.lighting.
 // The caller removes the regions' audio files (audiopath.MusicDir).
 func (s *DuckStore) ClearBookMusicRegions(bookID string) error {
 	tx, err := s.db.Begin()
@@ -3310,7 +3400,7 @@ func (s *DuckStore) ClearBookMusicRegions(bookID string) error {
 	if _, err := tx.Exec(`DELETE FROM music_regions WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, '{"music": null}') WHERE book_id = ?`, bookID); err != nil {
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, '{"ambience": null, "lighting": null}') WHERE book_id = ?`, bookID); err != nil {
 		return err
 	}
 	return tx.Commit()

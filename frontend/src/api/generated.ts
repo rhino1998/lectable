@@ -17,7 +17,7 @@ export type AudioStatus = (typeof AUDIO_STATUSES)[number]
  * queues the same "pipeline_generate_book" row as the library page's
  * Generate: All.
  */
-export const BULK_ACTIONS = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'music_scoring', 'music_generation', 'generate', 'characterization', 'voices'] as const
+export const BULK_ACTIONS = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'ambience', 'music_generation', 'generate', 'characterization', 'voices'] as const
 export type BulkAction = (typeof BULK_ACTIONS)[number]
 
 /**
@@ -56,11 +56,19 @@ export const JOB_TIERS = ['urgent', 'lookahead', 'normal', 'background'] as cons
 export type JobTier = (typeof JOB_TIERS)[number]
 
 /**
+ * LightEffect is Lighting.Effect's own type. Clients animate these
+ * themselves (see frontend/src/lighting and android's playback/lighting) -
+ * the backend never talks to a light.
+ */
+export const LIGHT_EFFECTS = ['steady', 'flicker', 'pulse', 'lightning', 'shimmer'] as const
+export type LightEffect = (typeof LIGHT_EFFECTS)[number]
+
+/**
  * resetPass is a pass the Speakers page can reset across a whole book
  * (POST /api/books/{id}/reset/{pass}) - every bulkAction except the
  * character-scoped ones.
  */
-export const RESET_PASSES = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'music_scoring', 'music_generation', 'generate'] as const
+export const RESET_PASSES = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'ambience', 'music_generation', 'generate', 'lighting'] as const
 export type ResetPass = (typeof RESET_PASSES)[number]
 
 /**
@@ -320,7 +328,14 @@ export interface ChapterHash {
 
 export interface ChapterMusic {
   enabled: boolean
+  /**
+   * Scored is passes.ambience - the ambience pass's music sub-pass.
+   */
   scored: boolean
+  /**
+   * Lit is passes.lighting - every region has its Lighting cue.
+   */
+  lit: boolean
   regions: MusicRegion[]
 }
 
@@ -656,6 +671,38 @@ export interface LanguagesResponse {
   languages: string[]
 }
 
+/**
+ * Lighting is one music region's room-lighting cue (music_regions.lighting,
+ * a native JSON column - NULL until the lighting sub-pass reaches the
+ * region). Deliberately device-agnostic: an sRGB color plus a brightness
+ * and a named effect, which a client maps onto whatever lights it drives.
+ */
+export interface Lighting {
+  /**
+   * Description is the lighting sub-pass's own short description of the
+   * light ("dim flickering candlelight in a stone cellar") - display only.
+   */
+  description?: string
+  /**
+   * Color is the base color, "#rrggbb".
+   */
+  color: string
+  /**
+   * Accent is a second "#rrggbb" color the effect moves toward (a
+   * shimmer's other color, a lightning flash's tint) - "" for none.
+   */
+  accent?: string
+  /**
+   * Brightness is 1-100, a fraction of the client's own brightness cap
+   * rather than an absolute level.
+   */
+  brightness: number
+  /**
+   * Effect is how the light moves over time - see LightEffect.
+   */
+  effect: LightEffect
+}
+
 export interface LlmTestResponse {
   text: string
 }
@@ -710,6 +757,12 @@ export interface MusicRegion {
    * "cut" or "continuation" - see store.MusicTransition
    */
   transition: 'cut' | 'continuation'
+  /**
+   * Lighting is the region's room-lighting cue from the ambience pass's
+   * lighting sub-pass - absent until that sub-pass reaches the region.
+   * Clients drive the actual lights (Philips Hue) from it themselves.
+   */
+  lighting?: Lighting | null
   status: AudioStatus
   error?: string
   durationSeconds: number
@@ -897,22 +950,35 @@ export interface Passes {
    */
   pronunciation: boolean
   /**
-   * Music is set once internal/speakerattr.Client.ScoreMusic has
-   * completed a full, uninterrupted pass over this chapter (never on a
-   * pause or a genuine failure partway through) - Direction's own "full
-   * pass, not a pause/failure" contract, and just as independent of
+   * Ambience is set once the ambience pass's music sub-pass
+   * (internal/speakerattr.Client.ScoreMusic, via httpapi.ambienceChapter)
+   * has completed a full, uninterrupted pass over this chapter (never on
+   * a pause or a genuine failure partway through) - Direction's own
+   * "full pass, not a pause/failure" contract, and just as independent of
    * Attribution/Description/Direction as Direction itself is: a reader
-   * can trigger background-music scoring for a chapter regardless of
-   * whether it's ever been attributed/direction-tagged. Triggered by
-   * httpapi.handleScoreChapterMusic (the Speakers page's per-chapter
-   * button/bulk actions, book preprocessing's own music phase, or the
-   * reader lazily scoring whichever chapter it's currently on) -
+   * can trigger the ambience pass for a chapter regardless of whether
+   * it's ever been attributed/direction-tagged. Triggered by
+   * httpapi.handleRunChapterAmbience (the Speakers page's per-chapter
+   * button/bulk actions, book preprocessing's own ambience phase, or the
+   * reader lazily running whichever chapter it's currently on) -
    * deliberately NOT gated on store.Book.MusicEnabled: that toggle only
    * controls whether a scored region's audio actually gets generated
    * (jobs.Manager.MaybeAdvanceChapterMusic), not whether scoring itself
-   * can run (see Book.MusicEnabled's own doc comment).
+   * can run (see Book.MusicEnabled's own doc comment). Stored as
+   * "music" until the pass was renamed (and backfilled by hand).
    */
-  music: boolean
+  ambience: boolean
+  /**
+   * Lighting is set once the ambience pass's lighting sub-pass
+   * (internal/speakerattr.Client.DescribeLighting, via
+   * httpapi.lightChapter) has given every one of the chapter's music
+   * regions a MusicRegion.Lighting cue. Runs after the music sub-pass in
+   * the same task (it lights the regions scoring produced), but is its
+   * own flag so a chapter scored before lighting existed - Ambience set,
+   * Lighting not - gets just the lighting sub-pass on its next ambience
+   * run, without re-scoring its music.
+   */
+  lighting: boolean
 }
 
 /**
@@ -931,6 +997,10 @@ export interface Position {
   chapterIdx: number
   paragraphIdx: number
   seconds: number
+}
+
+export interface PronounsResponse {
+  pronouns: string
 }
 
 /**
@@ -971,11 +1041,11 @@ export interface QueueTask {
   /**
    * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
    * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
-   * | "speech_direction" | "music_scoring" | "scare_quote_tagging" |
+   * | "speech_direction" | "ambience" | "scare_quote_tagging" |
    * "description_tagging" (per-item work, see jobs.Kind) or
    * "pipeline_scare_quote" | "pipeline_attribution" |
    * "pipeline_description" | "pipeline_characterization" |
-   * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_music"
+   * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
    * (one of a book's own preprocessing phases - see
    * jobs.EnqueuePipeline/toPipelineQueueTask; deliberately "pipeline_"-
    * prefixed so these can never collide with the per-item kind sharing a
@@ -1083,6 +1153,15 @@ export interface SetCharacterInvalidRequest {
   invalid: boolean
 }
 
+export interface SetCharacterPronounsRequest {
+  /**
+   * Pronouns is "he/him", "she/her", "they/them", "it/its" (or a
+   * recognizable variant, see speakerattr.NormalizePronouns), or "" to
+   * clear them.
+   */
+  pronouns: string
+}
+
 export interface SetCharacterVoiceRequest {
   voicePresetId: string
 }
@@ -1188,6 +1267,11 @@ export interface Speaker {
    * goes by.
    */
   aliases?: string[]
+  /**
+   * Pronouns mirrors store.Character.Pronouns - "he/him", "she/her",
+   * "they/them", "it/its", or omitted when not established.
+   */
+  pronouns?: string
   /**
    * Emotions is every emotion this speaker's dialogue in this book
    * actually uses (store.Paragraph.EffectiveEmotion), in internal/emotions
@@ -1431,7 +1515,7 @@ export interface VoiceSettingsUpdate {
   /**
    * MusicEnabled is the reader-facing background-music toggle - see
    * store.Book.MusicEnabled's own doc comment for why this is book-wide
-   * rather than per-chapter like Passes.Music itself. Off by default.
+   * rather than per-chapter like Passes.Ambience itself. Off by default.
    */
   musicEnabled: boolean
 }
@@ -1673,7 +1757,7 @@ export interface Routes {
    * handleGetChapterMusic serves GET .../chapters/{idx}/music - the reader's
    * own background-music mixer watches the same data live as the
    * "chapterMusic" topic (see registerLiveTopics), and the Speakers page's chapter
-   * table reads book.chapters[idx].passes.music/store.Book.MusicEnabled
+   * table reads book.chapters[idx].passes.ambience/store.Book.MusicEnabled
    * directly (already part of the book fetch it already has) rather than
    * this endpoint, which exists for the regions themselves.
    */
@@ -1919,8 +2003,10 @@ export interface Routes {
     errorCode: never
   }
   /**
-   * handleScoreChapterMusic is POST .../chapters/{idx}/score-music - triggers
-   * internal/speakerattr.Client.ScoreMusic for one chapter, handleAttributeSpeakers/
+   * handleRunChapterAmbience is POST .../chapters/{idx}/run-ambience - runs the
+   * ambience pass (ambienceChapter: music scoring via
+   * internal/speakerattr.Client.ScoreMusic, then the lighting sub-pass) for
+   * one chapter, handleAttributeSpeakers/
    * handleTagDirections' own exact fire-and-forget shape. Explicit and
    * always allowed regardless of store.Book.MusicEnabled (the Speakers
    * page's per-row/bulk buttons can score a chapter's music the same way
@@ -1929,14 +2015,14 @@ export interface Routes {
    * jobs.Manager.MaybeAdvanceChapterMusic goes on to actually *generate* a
    * scored region's audio, not whether scoring itself can run. Re-running
    * this for an already-scored chapter re-scores it from scratch
-   * (scoreChapterMusic's own Store.ClearMusicRegions), the same "always
+   * (ambienceChapter's own Store.ClearMusicRegions), the same "always
    * allow a fresh run" shape the direction-tagging button already has - but
-   * re-running (or auto-retriggering, e.g. maybeScoreChapterMusic) a chapter
+   * re-running (or auto-retriggering, e.g. maybeRunChapterAmbience) a chapter
    * that's only partially scored resumes from where the last attempt left
    * off instead, rather than wiping and redoing that real work; see
-   * scoreChapterMusic's own doc comment for why.
+   * ambienceChapter's own doc comment for why.
    */
-  'POST /api/books/{id}/chapters/{idx}/score-music': {
+  'POST /api/books/{id}/chapters/{idx}/run-ambience': {
     path: { id: string; idx: number }
     query: Record<never, never>
     body: never
@@ -2217,6 +2303,20 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleSetCharacterPronouns sets one character's pronouns (store.
+   * Character.Pronouns), which attribution shows in "Known characters" and
+   * characterization takes as its gender signal. Doesn't re-characterize
+   * on its own - the Speakers page's "Regenerate" does that. 400 for a
+   * value that isn't one of the known sets.
+   */
+  'PUT /api/books/{id}/characters/{characterId}/pronouns': {
+    path: { id: string; characterId: string }
+    query: Record<never, never>
+    body: SetCharacterPronounsRequest
+    response: PronounsResponse
+    errorCode: never
+  }
+  /**
    * handleSetCharacterVoice assigns (or, with "", clears) a character's own
    * narration voice - a character with no voice assigned still narrates in
    * the book's own voice even when book.MultiVoice is on (see
@@ -2414,8 +2514,10 @@ export interface Routes {
    *     store.PassResets), invalidating audio for just the paragraphs whose
    *     narration it changed (and their scare-quote merge groups). The
    *     character roster is left alone - "Delete speaker data" covers that.
-   *   - "music_scoring": every music region (and its clip), unsetting
-   *     passes.music
+   *   - "ambience": every music region (and its clip, and its lighting),
+   *     unsetting passes.ambience and passes.lighting
+   *   - "lighting": every music region's lighting cue, unsetting
+   *     passes.lighting - the music is kept
    *   - "music_generation": every music region's clip, back to pending
    *   - "generate": every narration clip - handleDeleteBookAudio's action
    *
@@ -2425,7 +2527,7 @@ export interface Routes {
    * Doesn't cancel an in-flight run of the same pass, which would set its
    * flag again as it finishes - the Speakers page disables a reset while its
    * pass is running. 200 {"invalidated": n}, n = paragraphs whose audio was
-   * deleted (0 for the music/generate resets).
+   * deleted (0 for the music/lighting/generate resets).
    */
   'POST /api/books/{id}/reset/{pass}': {
     path: { id: string; pass: ResetPass }
@@ -3049,7 +3151,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/resolve-pronunciation': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-descriptions': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes': 'json',
-  'POST /api/books/{id}/chapters/{idx}/score-music': 'json',
+  'POST /api/books/{id}/chapters/{idx}/run-ambience': 'json',
   'POST /api/books/{id}/chapters/{idx}/tag-directions': 'json',
   'POST /api/books/{id}/characters/characterize': 'json',
   'POST /api/books/{id}/characters/generate-voice': 'json',
@@ -3062,6 +3164,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/characters/{characterId}/generate-voice': 'json',
   'PUT /api/books/{id}/characters/{characterId}/invalid': 'none',
   'POST /api/books/{id}/characters/{characterId}/merge': 'none',
+  'PUT /api/books/{id}/characters/{characterId}/pronouns': 'json',
   'PUT /api/books/{id}/characters/{characterId}/voice': 'none',
   'GET /api/books/{id}/cover': 'binary',
   'GET /api/books/{id}/exports': 'json',

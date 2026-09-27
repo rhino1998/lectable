@@ -182,7 +182,8 @@ func sameModel(a, b string) bool {
 }
 
 // familyHasLatents reports whether a clone family returns its decoder
-// input (audio.cpp's return_latents): Higgs codes, PocketTTS latents.
+// input (audio.cpp's return_latents): Higgs/BreezeTTS codes, PocketTTS
+// latents.
 func familyHasLatents(family string) bool {
-	return family == "higgs_audio_tts" || family == "pocket_tts"
+	return family == "higgs_audio_tts" || family == "breeze_tts" || family == "pocket_tts"
 }

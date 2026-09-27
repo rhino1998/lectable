@@ -2588,3 +2588,142 @@ label {
 .export-parts {
   width: 4rem;
 }
+
+/* PlayerBar's "Lights" popover (LightingPanel). */
+.lighting-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.lighting-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.lighting-ip {
+  flex: 1;
+  min-width: 0;
+}
+.lighting-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9em;
+}
+.lighting-hint {
+  font-size: 0.8em;
+  opacity: 0.7;
+  margin: 0;
+}
+.lighting-steps {
+  margin: 0;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.9em;
+}
+
+/* A music region's lighting cue in its boundary marker (ChapterSection's
+   LightingSwatch) - the ambience chip's muted styling, plus a swatch that
+   plays a miniature of the effect the room lights run. */
+.chapter-music-boundary-lighting {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+  max-width: 16rem;
+  color: color-mix(in srgb, var(--music-region) 70%, var(--text));
+  font-weight: 500;
+  opacity: 0.85;
+}
+.lighting-cue-swatch {
+  flex: none;
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: linear-gradient(135deg, var(--cue-color) 50%, var(--cue-accent) 50%);
+  opacity: var(--cue-level);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .lighting-cue-flicker {
+    animation: lighting-cue-flicker 2.4s ease-in-out infinite;
+  }
+  .lighting-cue-pulse {
+    animation: lighting-cue-pulse 4.5s ease-in-out infinite;
+  }
+  .lighting-cue-shimmer {
+    background: linear-gradient(135deg, var(--cue-color), var(--cue-accent), var(--cue-color));
+    background-size: 300% 300%;
+    animation: lighting-cue-shimmer 11s ease-in-out infinite;
+  }
+  .lighting-cue-lightning {
+    background: var(--cue-color);
+    animation: lighting-cue-lightning 7s linear infinite;
+  }
+}
+@keyframes lighting-cue-flicker {
+  0%,
+  100% {
+    filter: brightness(1);
+  }
+  35% {
+    filter: brightness(0.82);
+  }
+  70% {
+    filter: brightness(0.92);
+  }
+}
+
+@keyframes lighting-cue-pulse {
+  0%,
+  100% {
+    filter: brightness(0.6);
+  }
+  50% {
+    filter: brightness(1.1);
+  }
+}
+@keyframes lighting-cue-shimmer {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+@keyframes lighting-cue-lightning {
+  0%,
+  90%,
+  93%,
+  100% {
+    background: var(--cue-color);
+  }
+  91%,
+  94% {
+    background: var(--cue-accent);
+  }
+}
+/* The Lights panel's preview of the current scene's cue. */
+.lighting-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem;
+  border-radius: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+.lighting-preview-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.lighting-cue-swatch-large {
+  width: 2.5rem;
+  height: 2.5rem;
+}

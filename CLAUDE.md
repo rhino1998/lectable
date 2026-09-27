@@ -109,6 +109,14 @@ The only Higgs inline tag still used is `<|prosody:pause|>`, inserted by a
 plain Go pass before ellipses/em dashes. See `backend/CLAUDE.md`'s
 "Emotions" section.
 
+The **ambience pass** (formerly "music scoring") splits each chapter into
+tone regions and gives each one a background-music/soundscape prompt and,
+in its **lighting sub-pass**, a room-lighting cue (color, accent,
+brightness, effect). The backend only stores cues; the clients drive
+Philips Hue lights themselves over the bridge's local v1 API (HTTPS)
+(`frontend/src/lighting`, android `playback/lighting`), configured
+per device. See `backend/CLAUDE.md`'s `run-ambience` entry.
+
 ## Running everything locally
 
 1. `backend`: from `backend/`, build both binaries once
@@ -164,7 +172,7 @@ client, not a browser.)
   like `music/<regionID>.seed.wav` and `audio/<bookID>/ambience/*.wav` stay
   WAV; see `backend/CLAUDE.md`'s `internal/audiomaint`),
   latents sidecars beside clips whose model has them
-  (`<idx>.lat`: Higgs codes/PocketTTS latents, exact - see
+  (`<idx>.lat`: Higgs/BreezeTTS codes, PocketTTS latents, exact - see
   `backend/CLAUDE.md`'s "Latents in the backend") and music seeds as
   `music/<regionID>.seed.lat` (Stable Audio latents; legacy `.seed.wav` is
   migrated in the background),

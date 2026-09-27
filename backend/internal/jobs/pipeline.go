@@ -70,7 +70,7 @@ const maxPipelineInFlight = 256
 // and description paragraphs), then voice provisioning (needs
 // characterization's own Summary). Direction tagging, pronunciation
 // resolution and music scoring need nothing any other phase produces (see httpapi.directChapter/
-// scoreChapterMusic - only the book's resolved voice and each paragraph's
+// ambienceChapter - only the book's resolved voice and each paragraph's
 // own IsQuote/Text), so they dispatch immediately alongside scare-quote
 // tagging. The constants' numeric order is just identity, not execution
 // order (new phases are appended rather than renumbering existing ones).
@@ -81,7 +81,7 @@ const (
 	pipelinePhaseCharacterization
 	pipelinePhaseVoiceProvision
 	pipelinePhaseDirection
-	pipelinePhaseMusic
+	pipelinePhaseAmbience
 	pipelinePhaseScareQuote
 	pipelinePhaseDescription
 	pipelinePhasePronunciation
@@ -93,7 +93,7 @@ var pipelinePhaseNames = [pipelinePhaseCount]string{
 	pipelinePhaseCharacterization: "characterization",
 	pipelinePhaseVoiceProvision:   "voice_provision",
 	pipelinePhaseDirection:        "direction",
-	pipelinePhaseMusic:            "music",
+	pipelinePhaseAmbience:         "ambience",
 	pipelinePhaseScareQuote:       "scare_quote",
 	pipelinePhaseDescription:      "description",
 	pipelinePhasePronunciation:    "pronunciation",
@@ -113,7 +113,7 @@ const (
 	PhaseCharacterization = pipelinePhaseCharacterization
 	PhaseVoiceProvision   = pipelinePhaseVoiceProvision
 	PhaseDirection        = pipelinePhaseDirection
-	PhaseMusic            = pipelinePhaseMusic
+	PhaseAmbience         = pipelinePhaseAmbience
 	PhasePronunciation    = pipelinePhasePronunciation
 )
 
@@ -141,7 +141,7 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 	pipelinePhaseCharacterization: "pipeline_characterization",
 	pipelinePhaseVoiceProvision:   "pipeline_voice_provision",
 	pipelinePhaseDirection:        "pipeline_direction",
-	pipelinePhaseMusic:            "pipeline_music",
+	pipelinePhaseAmbience:         "pipeline_ambience",
 	pipelinePhaseScareQuote:       "pipeline_scare_quote",
 	pipelinePhaseDescription:      "pipeline_description",
 	pipelinePhasePronunciation:    "pipeline_pronunciation",
@@ -150,11 +150,11 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 // PipelinePhaseFunc is one phase's own real work for one book - fan out
 // whatever per-chapter/per-character tasks that phase covers (via
 // RunScareQuote/RunAttribution/RunDescription/RunCharacterization/
-// RunVoiceProvision/RunDirection/RunMusicScoring) and block until every one of them finishes or ctx is
+// RunVoiceProvision/RunDirection/RunAmbience) and block until every one of them finishes or ctx is
 // canceled. Supplied by the caller at EnqueuePipeline time (httpapi's own
 // preprocessAttributionPhase/preprocessCharacterizationPhase/
 // preprocessVoiceProvisionPhase/preprocessDirectionPhase/
-// preprocessMusicPhase), since running
+// preprocessAmbiencePhase), since running
 // any given phase needs Store/Speaker access this package doesn't have -
 // the same reason AttributionFunc/DirectionFunc/CharacterizationFunc are
 // all caller-supplied too. A non-nil return is logged by pipelineWorker
@@ -166,7 +166,7 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 //
 // tier reports this phase's own pipelineTask.Tier() live, read fresh at
 // whatever moment the phase actually dispatches each of its own
-// RunAttribution/RunDirection/RunMusicScoring calls - not a value snapshot
+// RunAttribution/RunDirection/RunAmbience calls - not a value snapshot
 // at phase-start, since a phase can sit queued or already fanning out for
 // a while before a reader (or a caller of Manager.PromoteTier) bumps its
 // priority, and every per-item task dispatched before that point would
@@ -544,7 +544,7 @@ func (f ChildFilter) matches(t *task) bool {
 var phaseChildKinds = map[int]Kind{
 	pipelinePhaseAttribution:   KindSpeakerAttribution,
 	pipelinePhaseDirection:     KindSpeechDirection,
-	pipelinePhaseMusic:         KindMusicScoring,
+	pipelinePhaseAmbience:      KindAmbience,
 	pipelinePhaseScareQuote:    KindScareQuote,
 	pipelinePhaseDescription:   KindDescription,
 	pipelinePhasePronunciation: KindPronunciation,

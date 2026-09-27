@@ -196,7 +196,7 @@ interface LectableApi {
      * handleGetChapterMusic serves GET .../chapters/{idx}/music - the reader's
      * own background-music mixer watches the same data live as the
      * "chapterMusic" topic (see registerLiveTopics), and the Speakers page's chapter
-     * table reads book.chapters[idx].passes.music/store.Book.MusicEnabled
+     * table reads book.chapters[idx].passes.ambience/store.Book.MusicEnabled
      * directly (already part of the book fetch it already has) rather than
      * this endpoint, which exists for the regions themselves.
      */
@@ -446,8 +446,10 @@ interface LectableApi {
     ): QueuedResponseDto
 
     /**
-     * handleScoreChapterMusic is POST .../chapters/{idx}/score-music - triggers
-     * internal/speakerattr.Client.ScoreMusic for one chapter, handleAttributeSpeakers/
+     * handleRunChapterAmbience is POST .../chapters/{idx}/run-ambience - runs the
+     * ambience pass (ambienceChapter: music scoring via
+     * internal/speakerattr.Client.ScoreMusic, then the lighting sub-pass) for
+     * one chapter, handleAttributeSpeakers/
      * handleTagDirections' own exact fire-and-forget shape. Explicit and
      * always allowed regardless of store.Book.MusicEnabled (the Speakers
      * page's per-row/bulk buttons can score a chapter's music the same way
@@ -456,15 +458,15 @@ interface LectableApi {
      * jobs.Manager.MaybeAdvanceChapterMusic goes on to actually *generate* a
      * scored region's audio, not whether scoring itself can run. Re-running
      * this for an already-scored chapter re-scores it from scratch
-     * (scoreChapterMusic's own Store.ClearMusicRegions), the same "always
+     * (ambienceChapter's own Store.ClearMusicRegions), the same "always
      * allow a fresh run" shape the direction-tagging button already has - but
-     * re-running (or auto-retriggering, e.g. maybeScoreChapterMusic) a chapter
+     * re-running (or auto-retriggering, e.g. maybeRunChapterAmbience) a chapter
      * that's only partially scored resumes from where the last attempt left
      * off instead, rather than wiping and redoing that real work; see
-     * scoreChapterMusic's own doc comment for why.
+     * ambienceChapter's own doc comment for why.
      */
-    @POST("api/books/{id}/chapters/{idx}/score-music")
-    suspend fun scoreChapterMusic(
+    @POST("api/books/{id}/chapters/{idx}/run-ambience")
+    suspend fun runChapterAmbience(
         @Path("id") id: String,
         @Path("idx") idx: Int,
     ): QueuedResponseDto
@@ -734,6 +736,20 @@ interface LectableApi {
     ): Unit
 
     /**
+     * handleSetCharacterPronouns sets one character's pronouns (store.
+     * Character.Pronouns), which attribution shows in "Known characters" and
+     * characterization takes as its gender signal. Doesn't re-characterize
+     * on its own - the Speakers page's "Regenerate" does that. 400 for a
+     * value that isn't one of the known sets.
+     */
+    @PUT("api/books/{id}/characters/{characterId}/pronouns")
+    suspend fun setCharacterPronouns(
+        @Path("id") id: String,
+        @Path("characterId") characterId: String,
+        @Body body: SetCharacterPronounsRequestDto,
+    ): PronounsResponseDto
+
+    /**
      * handleSetCharacterVoice assigns (or, with "", clears) a character's own
      * narration voice - a character with no voice assigned still narrates in
      * the book's own voice even when book.MultiVoice is on (see
@@ -915,8 +931,10 @@ interface LectableApi {
      *     store.PassResets), invalidating audio for just the paragraphs whose
      *     narration it changed (and their scare-quote merge groups). The
      *     character roster is left alone - "Delete speaker data" covers that.
-     *   - "music_scoring": every music region (and its clip), unsetting
-     *     passes.music
+     *   - "ambience": every music region (and its clip, and its lighting),
+     *     unsetting passes.ambience and passes.lighting
+     *   - "lighting": every music region's lighting cue, unsetting
+     *     passes.lighting - the music is kept
      *   - "music_generation": every music region's clip, back to pending
      *   - "generate": every narration clip - handleDeleteBookAudio's action
      *
@@ -926,7 +944,7 @@ interface LectableApi {
      * Doesn't cancel an in-flight run of the same pass, which would set its
      * flag again as it finishes - the Speakers page disables a reset while its
      * pass is running. 200 {"invalidated": n}, n = paragraphs whose audio was
-     * deleted (0 for the music/generate resets).
+     * deleted (0 for the music/lighting/generate resets).
      */
     @POST("api/books/{id}/reset/{pass}")
     suspend fun resetPass(

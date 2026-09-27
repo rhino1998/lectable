@@ -35,6 +35,7 @@ import com.lectable.app.data.settings.DEFAULT_MUSIC_VOLUME
 import com.lectable.app.data.settings.PlaybackSettingsRepository
 import com.lectable.app.data.settings.ReadingSettingsRepository
 import com.lectable.app.playback.BackgroundMusicPlayer
+import com.lectable.app.playback.lighting.HueLightingController
 import com.lectable.app.playback.ChapterDownloadWorker
 import com.lectable.app.playback.ParagraphPlayer
 import com.lectable.app.playback.PlaybackState
@@ -47,6 +48,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -127,6 +129,7 @@ class ReaderViewModel @Inject constructor(
     private val playbackSettingsRepository: PlaybackSettingsRepository,
     val player: ParagraphPlayer,
     private val backgroundMusicPlayer: BackgroundMusicPlayer,
+    private val lightingController: HueLightingController,
     private val liveStore: LiveStore,
     private val downloadRepository: DownloadRepository,
     private val workManager: WorkManager,
@@ -149,7 +152,8 @@ class ReaderViewModel @Inject constructor(
     private val chapterJobs = mutableMapOf<Int, Job>()
     private val lastGenerateRequestAtMs = mutableMapOf<Int, Long>()
 
-    // Live "chapterMusic" subscriptions, one per loaded chapter while music is on - see
+    // Live "chapterMusic" subscriptions, one per loaded chapter while music or Hue lighting is
+    // on (both read each region - its clip, its lighting cue) - see
     // syncMusicSubscriptions.
     private val musicJobs = mutableMapOf<Int, Job>()
 
@@ -216,8 +220,11 @@ class ReaderViewModel @Inject constructor(
         // the book-wide toggle is on (and none while it's off). Not gated on annotations mode
         // (local Compose state ReaderScreen owns) - the live mix itself (BackgroundMusicPlayer)
         // needs this data whether or not the reader ever opens annotations mode to see it.
+        lightingController.setBook(bookId)
         viewModelScope.launch {
-            _uiState.map { if (it.musicEnabled) it.loadedChapters.keys else emptySet() }
+            combine(_uiState, lightingController.enabled) { ui, lighting ->
+                if (ui.musicEnabled || lighting) ui.loadedChapters.keys else emptySet()
+            }
                 .distinctUntilChanged()
                 .collect { syncMusicSubscriptions(it) }
         }
@@ -784,7 +791,7 @@ class ReaderViewModel @Inject constructor(
      *  (see [scoringMusicChapters]'s own doc comment).
      *
      *  Before actually POSTing a scoring trigger, checks the live job queue ([jobsRepository]) for
-     *  an already in-flight/queued "music_scoring" task for this exact (book, chapter) - not just
+     *  an already in-flight/queued "ambience" task for this exact (book, chapter) - not just
      *  [scoringMusicChapters]'s own local memory. Real bug this fixes: without the job-queue
      *  check, a *second* ReaderViewModel for the same book (leaving and reopening the reader, a
      *  config change, process recreation - all common on Android, unlike a long-lived web tab)
@@ -800,9 +807,12 @@ class ReaderViewModel @Inject constructor(
     private suspend fun onChapterMusic(idx: Int, dto: ChapterMusicDto) {
         _uiState.update { it.copy(chapterMusic = it.chapterMusic + (idx to dto)) }
         backgroundMusicPlayer.setChapterMusic(idx, dto)
-        if (dto.scored || idx in scoringMusicChapters) return
+        lightingController.setChapterMusic(idx, dto)
+        // The ambience pass is done once its music is scored and its lighting sub-pass has lit
+        // every region - a chapter scored before lighting existed still gets (just) lit.
+        if ((dto.scored && dto.lit) || idx in scoringMusicChapters) return
         val alreadyInFlight = runCatching { jobsRepository.snapshot() }.getOrNull()?.let { snapshot ->
-            (snapshot.inFlight + snapshot.queued).any { it.kind == "music_scoring" && it.bookId == bookId && it.chapterIdx == idx }
+            (snapshot.inFlight + snapshot.queued).any { it.kind == "ambience" && it.bookId == bookId && it.chapterIdx == idx }
         } ?: false
         if (alreadyInFlight) {
             // Someone else (another instance, or this book open elsewhere) already has this
@@ -812,7 +822,7 @@ class ReaderViewModel @Inject constructor(
             return
         }
         scoringMusicChapters.add(idx)
-        runCatching { libraryRepository.scoreChapterMusic(bookId, idx) }
+        runCatching { libraryRepository.runChapterAmbience(bookId, idx) }
     }
 
     /** Toggles book-wide background music (see [ReaderUiState.musicEnabled]/
@@ -936,7 +946,7 @@ class ReaderViewModel @Inject constructor(
                     ChapterPass.DESCRIPTIONS -> libraryRepository.retagDescriptions(bookId, chapterIdx)
                     ChapterPass.DIRECTIONS -> libraryRepository.tagDirections(bookId, chapterIdx)
                     ChapterPass.PRONUNCIATION -> libraryRepository.resolvePronunciation(bookId, chapterIdx)
-                    ChapterPass.MUSIC -> libraryRepository.scoreChapterMusic(bookId, chapterIdx)
+                    ChapterPass.AMBIENCE -> libraryRepository.runChapterAmbience(bookId, chapterIdx)
                 }
             }.onFailure { e -> _uiState.update { it.copy(error = e.message ?: "${pass.label} failed") } }
         }
@@ -1029,5 +1039,5 @@ enum class ChapterPass(val label: String) {
     DESCRIPTIONS("Tag descriptions"),
     DIRECTIONS("Label emotions"),
     PRONUNCIATION("Resolve pronunciation"),
-    MUSIC("Score background music"),
+    AMBIENCE("Run ambience (music + lighting)"),
 }

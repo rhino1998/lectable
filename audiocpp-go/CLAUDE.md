@@ -60,6 +60,7 @@ Family extras:
 Model-gated tests (each skips unless its env var is set):
 - `TestStableAudioCodec`: `AUDIOCPP_STABLE_AUDIO_MODEL`.
 - `TestHiggsCodec`: `AUDIOCPP_HIGGS_MODEL` (the .gguf).
+- `TestBreezeTTSCodec`: `AUDIOCPP_BREEZE_TTS_MODEL` (the .gguf).
 - `TestPocketTTSCodec`, `TestPocketTTSReferenceLatents`:
   `AUDIOCPP_POCKET_TTS_MODEL` (package dir).
 

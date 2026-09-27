@@ -32,8 +32,8 @@ import {
   useRetagDescriptions,
   useRetagScareQuotes,
   useScareQuotingChapters,
-  useScoreChapterMusic,
-  useScoringMusicChapters,
+  useRunChapterAmbience,
+  useAmbienceChapters,
   useSetParagraphDescription,
   useSetParagraphEmotion,
   useSetParagraphScareQuote,
@@ -46,6 +46,8 @@ import {
 import { ApiError } from '../api/client'
 import { usePlayback } from '../hooks/usePlayback'
 import { useBackgroundMusic } from '../hooks/useBackgroundMusic'
+import { useLighting } from '../hooks/useLighting'
+import { useLightingState } from '../lighting/controller'
 import { useInView } from '../hooks/useInView'
 import { useClickOutside } from '../hooks/useClickOutside'
 import { useMediaSession } from '../hooks/useMediaSession'
@@ -163,8 +165,8 @@ export function ReaderPage() {
   const directingIdxs = useDirectingChapters(bookId)
   const resolvePronunciation = useResolvePronunciation(bookId)
   const pronouncingIdxs = usePronouncingChapters(bookId)
-  const scoreChapterMusic = useScoreChapterMusic(bookId)
-  const scoringMusicIdxs = useScoringMusicChapters(bookId)
+  const runChapterAmbience = useRunChapterAmbience(bookId)
+  const ambienceIdxs = useAmbienceChapters(bookId)
   const generateChapter = useGenerateChapter(bookId)
   const generatingIdxs = useGeneratingChapters(bookId)
   const regenerateMusicRegion = useRegenerateMusicRegion(bookId)
@@ -448,17 +450,15 @@ export function ReaderPage() {
     [resolvePronunciation],
   )
 
-  const runScoreMusicChapter = useCallback(
+  const runAmbienceChapter = useCallback(
     (idx: number) => {
       setChapterActionError(null)
-      scoreChapterMusic.mutate(idx, {
+      runChapterAmbience.mutate(idx, {
         onError: (err) =>
-          setChapterActionError(
-            err instanceof ApiError ? err.message : 'Background-music scoring failed',
-          ),
+          setChapterActionError(err instanceof ApiError ? err.message : 'Ambience pass failed'),
       })
     },
-    [scoreChapterMusic],
+    [runChapterAmbience],
   )
 
   const runGenerateChapter = useCallback(
@@ -627,31 +627,45 @@ export function ReaderPage() {
     playbackRate: playback.playbackRate,
   })
 
+  // Room lighting from the same regions' lighting cues - see useLighting.
+  useLighting({
+    bookId,
+    chapterIdx: playback.chapterIdx,
+    paragraphIdx: playback.paragraphIdx,
+    isPlaying: playback.isPlaying,
+  })
+  const lightingEnabled = useLightingState().settings.enabled
+
   // Lazily scores whichever chapter the reader is currently on, the first
   // time it's needed - background music is a book-wide toggle
   // (BookSummary.musicEnabled) but scoring itself is real per-chapter LLM
-  // work (store.Passes.Music), so turning the toggle on doesn't eagerly
+  // work (store.Passes.Ambience/Lighting), so turning the toggle on doesn't eagerly
   // score every chapter in the book at once; instead each chapter gets
   // scored the first time playback actually reaches it, mirroring how
   // narration itself only generates lookahead-bounded runway rather than
   // the whole book up front. Re-fires as playback advances into a new
-  // chapter; api.scoreChapterMusic dedups server-side (one in-flight
+  // chapter; api.runChapterAmbience dedups server-side (one in-flight
   // scoring task per chapter - see jobs.Manager's dedup), so calling this
   // opportunistically on every chapter change is safe. Skipped entirely
-  // once already scored (passes.music) or already in flight
-  // (scoringMusicIdxs, from the shared job queue).
+  // once the ambience pass is done (passes.ambience and passes.lighting)
+  // or already in flight
+  // (ambienceIdxs, from the shared job queue).
   useEffect(() => {
-    if (!bookQuery.data?.musicEnabled) return
+    // Lighting needs the ambience pass too, even with music off.
+    if (!bookQuery.data?.musicEnabled && !lightingEnabled) return
+    if (!bookQuery.data) return
     const chapterSummary = bookQuery.data.chapters[playback.chapterIdx]
-    if (!chapterSummary || chapterSummary.passes.music) return
-    if (scoringMusicIdxs.has(playback.chapterIdx)) return
-    scoreChapterMusic.mutate(playback.chapterIdx)
+    if (!chapterSummary || (chapterSummary.passes.ambience && chapterSummary.passes.lighting))
+      return
+    if (ambienceIdxs.has(playback.chapterIdx)) return
+    runChapterAmbience.mutate(playback.chapterIdx)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     bookQuery.data?.musicEnabled,
+    lightingEnabled,
     bookQuery.data?.chapters,
     playback.chapterIdx,
-    scoringMusicIdxs,
+    ambienceIdxs,
   ])
 
   // Stable-identity wrappers around playback's own playAt/seek - playback
@@ -1250,11 +1264,11 @@ export function ReaderPage() {
                 chapterRetaggingScareQuotes={scareQuotingIdxs.has(idx)}
                 chapterDirecting={directingIdxs.has(idx)}
                 chapterPronouncing={pronouncingIdxs.has(idx)}
-                chapterScoringMusic={scoringMusicIdxs.has(idx)}
+                chapterRunningAmbience={ambienceIdxs.has(idx)}
                 chapterGenerating={generatingIdxs.has(idx)}
                 hasDirection={!!chapterSummary?.passes.direction}
                 hasPronunciation={!!chapterSummary?.passes.pronunciation}
-                hasMusic={!!chapterSummary?.passes.music}
+                hasMusic={!!chapterSummary?.passes.ambience}
                 isGenerated={
                   !!chapterSummary && chapterSummary.readyCount >= chapterSummary.paragraphCount
                 }
@@ -1271,7 +1285,7 @@ export function ReaderPage() {
                 onRetagScareQuotes={runRetagScareQuotesChapter}
                 onTagDirections={runTagDirectionsChapter}
                 onResolvePronunciation={runResolvePronunciationChapter}
-                onScoreMusic={runScoreMusicChapter}
+                onRunAmbience={runAmbienceChapter}
                 onGenerate={runGenerateChapter}
                 musicRegions={chapterMusicRegions.get(idx) ?? EMPTY_MUSIC_REGIONS}
                 onRegenerateMusic={runRegenerateMusic}

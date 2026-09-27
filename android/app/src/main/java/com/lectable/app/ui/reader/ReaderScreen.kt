@@ -1,5 +1,11 @@
 package com.lectable.app.ui.reader
 
+import androidx.compose.foundation.border
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Brush
+import com.lectable.app.data.remote.dto.LightEffects
+import com.lectable.app.data.remote.dto.LightingDto
+import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -1072,6 +1078,31 @@ private fun MusicRegionBoundaryRow(
                     )
                 }
             }
+            // The region's room-lighting cue (the ambience pass's lighting sub-pass) - mirrors
+            // frontend ChapterSection's LightingSwatch, minus the animation.
+            region.lighting?.let { lighting ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                    Icon(
+                        Icons.Outlined.Lightbulb,
+                        contentDescription = "Lighting",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    LightingSwatch(lighting, Modifier.padding(start = 4.dp))
+                    Text(
+                        listOfNotNull(
+                            lighting.description?.takeIf { it.isNotBlank() },
+                            lightEffectLabel(lighting.effect),
+                            "${lighting.brightness}%",
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 4.dp),
+                    )
+                }
+            }
         }
         if (region.status == AudioStatuses.READY && region.audioUrl != null) {
             IconButton(onClick = onPreview) {
@@ -1085,6 +1116,33 @@ private fun MusicRegionBoundaryRow(
             )
         }
     }
+}
+
+/** A lighting cue's color (and accent, as the second half), dimmed by its brightness. */
+@Composable
+private fun LightingSwatch(lighting: LightingDto, modifier: Modifier = Modifier) {
+    fun parse(hex: String?): Color? = hex?.takeIf { it.isNotBlank() }?.let {
+        runCatching { Color(android.graphics.Color.parseColor(it)) }.getOrNull()
+    }
+    val base = parse(lighting.color) ?: return
+    val accent = parse(lighting.accent) ?: base
+    Box(
+        modifier
+            .size(12.dp)
+            .alpha(0.35f + 0.65f * (lighting.brightness / 100f).coerceIn(0f, 1f))
+            .clip(CircleShape)
+            .background(Brush.linearGradient(0.5f to base, 0.5f to accent))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+    )
+}
+
+/** How each lighting effect reads in the UI - frontend's LIGHT_EFFECT_LABELS. */
+private fun lightEffectLabel(effect: String): String = when (effect) {
+    LightEffects.FLICKER -> "flickering"
+    LightEffects.PULSE -> "pulsing"
+    LightEffects.LIGHTNING -> "lightning"
+    LightEffects.SHIMMER -> "shimmering"
+    else -> "steady"
 }
 
 /**
@@ -2892,5 +2950,5 @@ private val ChapterPass.icon: ImageVector
         ChapterPass.DESCRIPTIONS -> Icons.Filled.Person
         ChapterPass.DIRECTIONS -> Icons.Filled.Mood
         ChapterPass.PRONUNCIATION -> Icons.Filled.Spellcheck
-        ChapterPass.MUSIC -> Icons.Filled.MusicNote
+        ChapterPass.AMBIENCE -> Icons.Filled.MusicNote
     }

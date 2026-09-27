@@ -234,8 +234,11 @@ func ReadFile(path string) (*ttsproto.Latents, error) {
 	return Decode(data)
 }
 
-// Slice copies frames [from, to). The copy drops Meta, which describes the
-// whole original window (decode_*, chunk_frames), not a slice of it.
+// Slice copies frames [from, to). The copy keeps only the checkpoint-level
+// Meta ("normalized", "codec_model" - the keys Concat carries too), since
+// the rest (decode_*, chunk_frames) describes the whole original window,
+// not a slice of it. Dropping codec_model would make the worker reject the
+// slice as another checkpoint's.
 func Slice(l *ttsproto.Latents, from, to int) (*ttsproto.Latents, error) {
 	if err := Validate(l); err != nil {
 		return nil, err
@@ -247,6 +250,14 @@ func Slice(l *ttsproto.Latents, from, to int) (*ttsproto.Latents, error) {
 	out.Frames = to - from
 	out.Data = append([]byte(nil), l.Data[4*from*l.Dim:4*to*l.Dim]...)
 	out.Meta = nil
+	for _, k := range []string{"normalized", "codec_model"} {
+		if v, ok := l.Meta[k]; ok {
+			if out.Meta == nil {
+				out.Meta = map[string]string{}
+			}
+			out.Meta[k] = v
+		}
+	}
 	return &out, nil
 }
 

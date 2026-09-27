@@ -287,13 +287,15 @@ export const api = {
       body: { chapterIdx, paragraphIdx },
     }),
 
-  // Triggers background-music tone-region scoring for one chapter -
-  // attributeSpeakers/tagDirections' own exact fire-and-forget shape, see
-  // backend httpapi.handleScoreChapterMusic. Explicit and always allowed
+  // Runs the ambience pass for one chapter - background-music tone-region
+  // scoring, then its lighting sub-pass (or just the lighting, for a
+  // chapter scored before lighting existed) - attributeSpeakers/
+  // tagDirections' own exact fire-and-forget shape, see backend
+  // httpapi.handleRunChapterAmbience. Explicit and always allowed
   // regardless of the book-wide musicEnabled toggle (VoiceSettings) - that
   // only gates whether a scored region actually goes on to generate.
-  scoreChapterMusic: (bookId: string, chapterIdx: number) =>
-    call('POST /api/books/{id}/chapters/{idx}/score-music', {
+  runChapterAmbience: (bookId: string, chapterIdx: number) =>
+    call('POST /api/books/{id}/chapters/{idx}/run-ambience', {
       path: { id: bookId, idx: chapterIdx },
     }),
 
@@ -437,6 +439,16 @@ export const api = {
     call('PUT /api/books/{id}/characters/{characterId}/aliases', {
       path: { id: bookId, characterId },
       body: { aliases },
+    }),
+
+  // Sets (or, with '', clears) one character's pronouns - see
+  // Speaker.pronouns. Attribution lists them in its known-characters
+  // prompt and characterization takes them as its gender signal; changing
+  // them doesn't re-characterize by itself.
+  setCharacterPronouns: (bookId: string, characterId: string, pronouns: string) =>
+    call('PUT /api/books/{id}/characters/{characterId}/pronouns', {
+      path: { id: bookId, characterId },
+      body: { pronouns },
     }),
 
   // Removes one character entirely - this book's own paragraphs

@@ -80,6 +80,10 @@ type aliasesResponse struct {
 	Aliases []string `json:"aliases"`
 }
 
+type pronounsResponse struct {
+	Pronouns string `json:"pronouns"`
+}
+
 type characterizeResponse struct {
 	Summary string `json:"summary"`
 	// VoiceInvalidated is true when this run changed the characterization

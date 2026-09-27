@@ -130,7 +130,7 @@ func (s *Server) handlePreprocessBook(w http.ResponseWriter, r *http.Request) {
 		jobs.PhaseCharacterization: s.preprocessCharacterizationPhase(book),
 		jobs.PhaseVoiceProvision:   s.preprocessVoiceProvisionPhase(book),
 		jobs.PhaseDirection:        s.preprocessDirectionPhase(book, chapters),
-		jobs.PhaseMusic:            s.preprocessMusicPhase(book, chapters),
+		jobs.PhaseAmbience:         s.preprocessAmbiencePhase(book, chapters),
 		jobs.PhasePronunciation:    s.preprocessPronunciationPhase(book, chapters),
 	}
 	if err := s.Jobs.EnqueuePipeline(book.ID, phases); err != nil {
@@ -454,46 +454,47 @@ func (s *Server) preprocessDirectionPhase(book *store.Book, chapters []store.Cha
 	}
 }
 
-// preprocessMusicPhase is Phase 5 - background-music tone-region scoring
-// for every one of chapters (the same slice Phases 1/4 share, hoisted once
-// by handlePreprocessBook) whose Passes.Music isn't already set - same
+// preprocessAmbiencePhase is Phase 5 - the ambience pass (music scoring,
+// then its lighting sub-pass) for every one of chapters (the same slice
+// Phases 1/4 share, hoisted once by handlePreprocessBook) whose ambience
+// pass isn't already done (Passes.AmbienceDone) - same
 // skip reasoning as Phase 1/Phase 4. Carries no dependency on any earlier
-// phase, the same reason Phase 4 doesn't: scoreChapterMusic needs only a
+// phase, the same reason Phase 4 doesn't: ambienceChapter needs only a
 // chapter's own paragraph text (see jobs.pipelineResolver/the
 // pipelinePhase* constants' own doc comments), untouched by attribution/
 // characterization/voice-provisioning, so this phase dispatches
 // immediately alongside Phases 1 and 4 rather than waiting for Phases 1-3
 // to clear first.
 //
-// Deliberately not gated on store.Book.MusicEnabled - handleScoreChapterMusic
-// (the per-chapter/bulk "Score music" buttons on the Speakers page) already
+// Deliberately not gated on store.Book.MusicEnabled - handleRunChapterAmbience
+// (the per-chapter/bulk "Ambience" buttons on the Speakers page) already
 // allows scoring regardless of that book-wide toggle, since MusicEnabled
 // only gates whether a scored region's audio actually gets *generated*
 // (jobs.Manager.MaybeAdvanceChapterMusic), not whether scoring itself can
 // run - "run everything" follows that same rule rather than silently
 // skipping this phase for a book that hasn't turned music on yet. Same
 // fan-out/join/best-effort shape as the other four phases.
-func (s *Server) preprocessMusicPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
+func (s *Server) preprocessAmbiencePhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
 	return func(ctx context.Context, tier func() int) error {
 		var wg sync.WaitGroup
 		for _, cs := range chapters {
-			if cs.Passes.Music {
+			if cs.Passes.AmbienceDone() {
 				continue
 			}
 			ch := cs.Chapter
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if _, err := s.Jobs.RunMusicScoring(ctx, book.ID, ch.ID, ch.Idx, tier(), func(ctx context.Context) (int, func(), error) {
-					return s.scoreChapterMusic(ctx, book, &ch)
+				if _, err := s.Jobs.RunAmbience(ctx, book.ID, ch.ID, ch.Idx, tier(), func(ctx context.Context) (int, func(), error) {
+					return s.ambienceChapter(ctx, book, &ch)
 				}); err != nil {
-					log.Printf("httpapi: preprocess book %s: score music for chapter %d: %v", book.ID, ch.Idx, err)
+					log.Printf("httpapi: preprocess book %s: ambience for chapter %d: %v", book.ID, ch.Idx, err)
 				}
 			}()
 		}
 		wg.Wait()
 		if ctx.Err() != nil {
-			log.Printf("httpapi: preprocess book %s: canceled during music scoring", book.ID)
+			log.Printf("httpapi: preprocess book %s: canceled during the ambience pass", book.ID)
 		}
 		return nil
 	}

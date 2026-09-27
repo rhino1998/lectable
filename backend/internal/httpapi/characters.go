@@ -87,6 +87,9 @@ type speakerDTO struct {
 	// Aliases mirrors store.Character.Aliases - other names this speaker
 	// goes by.
 	Aliases []string `json:"aliases,omitempty"`
+	// Pronouns mirrors store.Character.Pronouns - "he/him", "she/her",
+	// "they/them", "it/its", or omitted when not established.
+	Pronouns string `json:"pronouns,omitempty"`
 	// Emotions is every emotion this speaker's dialogue in this book
 	// actually uses (store.Paragraph.EffectiveEmotion), in internal/emotions
 	// order, each with its line count and the state of the emotion-variant
@@ -263,6 +266,7 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 			row.RefLine = c.RefLine
 			row.Invalid = c.Invalid
 			row.Aliases = c.Aliases
+			row.Pronouns = c.Pronouns
 		}
 		// The voice this speaker's dialogue actually generates/plays under
 		// right now - their own assigned preset if they have one for this
@@ -773,6 +777,46 @@ func (s *Server) handleSetCharacterAliases(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, aliasesResponse{Aliases: updated.Aliases})
 }
 
+type setCharacterPronounsRequest struct {
+	// Pronouns is "he/him", "she/her", "they/them", "it/its" (or a
+	// recognizable variant, see speakerattr.NormalizePronouns), or "" to
+	// clear them.
+	Pronouns string `json:"pronouns"`
+}
+
+// handleSetCharacterPronouns sets one character's pronouns (store.
+// Character.Pronouns), which attribution shows in "Known characters" and
+// characterization takes as its gender signal. Doesn't re-characterize
+// on its own - the Speakers page's "Regenerate" does that. 400 for a
+// value that isn't one of the known sets.
+func (s *Server) handleSetCharacterPronouns(w http.ResponseWriter, r *http.Request) {
+	var req setCharacterPronounsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	pronouns := speakerattr.NormalizePronouns(req.Pronouns)
+	if pronouns == "" && strings.TrimSpace(req.Pronouns) != "" {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unrecognized pronouns %q", req.Pronouns))
+		return
+	}
+	id := r.PathValue("characterId")
+	char, err := s.Store.GetCharacter(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if char == nil {
+		writeError(w, http.StatusNotFound, "character not found")
+		return
+	}
+	if err := s.Store.SetCharacterPronouns(id, pronouns); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, pronounsResponse{Pronouns: pronouns})
+}
+
 type setCharacterInvalidRequest struct {
 	Invalid bool `json:"invalid"`
 }
@@ -1189,6 +1233,7 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	known := make([]string, len(existing))
 	knownRoles := make(map[string]bool, len(existing))
 	knownAliases := make(map[string][]string, len(existing))
+	knownPronouns := make(map[string]string, len(existing))
 	for i, c := range existing {
 		known[i] = c.Name
 		if c.IsRole {
@@ -1196,6 +1241,9 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		}
 		if len(c.Aliases) > 0 {
 			knownAliases[c.Name] = c.Aliases
+		}
+		if c.Pronouns != "" {
+			knownPronouns[c.Name] = c.Pronouns
 		}
 	}
 	knownDescriptions, err := s.knownCharacterDescriptions(book, existing)
@@ -1237,8 +1285,8 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	// under real contention could leave most of a bulk run's chapters
 	// silently stuck half-done with nothing left in the queue to ever
 	// pick them back up).
-	attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
-	speakers, roleNames, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, attrRoster, inputs, nil)
+	attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+	speakers, roleNames, pronouns, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, attrRoster, inputs, nil)
 
 	paragraphByIdx := make(map[int]store.Paragraph, len(all))
 	for _, p := range all {
@@ -1273,8 +1321,17 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		if name == "Narrator" || name == "Unknown" {
 			continue
 		}
-		if _, _, uerr := s.Store.UpsertCharacter(scope, name, roleNames[name]); uerr != nil {
+		char, _, uerr := s.Store.UpsertCharacter(scope, name, roleNames[name])
+		if uerr != nil {
 			return 0, nil, uerr
+		}
+		// Attribution only fills pronouns in - an established value (an
+		// earlier chapter's, or a reader's edit) always wins.
+		if p := pronouns[name]; p != "" && char.Pronouns == "" && !char.IsRole {
+			if perr := s.Store.SetCharacterPronouns(char.ID, p); perr != nil {
+				return 0, nil, perr
+			}
+			delete(pronouns, name)
 		}
 	}
 	// Persisted regardless of attrErr below - a batch failing partway
@@ -1361,6 +1418,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	known := make([]string, 0, len(existing))
 	knownRoles := make(map[string]bool, len(existing))
 	knownAliases := make(map[string][]string, len(existing))
+	knownPronouns := make(map[string]string, len(existing))
 	for _, c := range existing {
 		if c.Name == excludeName {
 			continue
@@ -1371,6 +1429,9 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 		}
 		if len(c.Aliases) > 0 {
 			knownAliases[c.Name] = c.Aliases
+		}
+		if c.Pronouns != "" {
+			knownPronouns[c.Name] = c.Pronouns
 		}
 	}
 	knownDescriptions, err := s.knownCharacterDescriptions(book, existing)
@@ -1435,7 +1496,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	sort.Ints(retry)
 	var attrErr error
 	if len(retry) > 0 {
-		attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+		attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
 		widened, widenedRoles, werr := s.Speaker.AttributeWithWideningContext(ctx, book.Title, ch.Title, attrRoster, inputs, retry, rejected)
 		if werr != nil {
 			attrErr = fmt.Errorf("auto split %q: chapter %d: %w", excludeName, ch.Idx, werr)
@@ -1959,7 +2020,7 @@ func (s *Server) characterizeVoice(ctx context.Context, book *store.Book, char s
 		speakerDescriptions[i] = speakerattr.DescriptionContext{Text: d.Text}
 	}
 
-	instruct, refLine, err := s.Speaker.CharacterizeVoice(ctx, char.Name, char.IsRole, speakerQuotes, speakerDescriptions)
+	instruct, refLine, err := s.Speaker.CharacterizeVoice(ctx, char.Name, char.IsRole, char.Pronouns, speakerQuotes, speakerDescriptions)
 	if err != nil {
 		return "", fmt.Errorf("characterize: %w", err)
 	}

@@ -21,6 +21,7 @@ type Store interface {
 	BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string]NarrationStats, error)
 	CharacterVoiceForModel(characterID, cloneModel string) (string, error)
 	CharacterVoicesForModel(characterIDs []string, cloneModel string) (map[string]string, error)
+	ClearBookLighting(bookID string) error
 	ClearBookMusicRegions(bookID string) error
 	ClearBookSpeakers(bookID string) error
 	ClearLegacyTags(chapterID string) ([]int, error)
@@ -89,16 +90,19 @@ type Store interface {
 	SetChapterAttributed(chapterID string) error
 	SetChapterDescribed(chapterID string) error
 	SetChapterDirected(chapterID string) error
-	SetChapterMusicScored(chapterID string) error
+	SetChapterAmbienceScored(chapterID string) error
+	SetChapterLit(chapterID string) error
 	SetChapterPronounced(chapterID string) error
 	SetChapterScareQuoted(chapterID string) error
 	SetCharacterAliases(characterID string, aliases []string) error
 	SetCharacterInvalid(id string, invalid bool) error
+	SetCharacterPronouns(id, pronouns string) error
 	SetCharacterSummary(id, summary, refLine string) error
 	SetCharacterVoice(characterID, cloneModel, voicePresetID string) error
 	SetDefaultVoice(presetID, instruct, language string, seed int, cloneModel string) error
 	SetLengthEstimate(bookID string, secPerChar float64) error
 	SetMusicRegionError(id, message string) error
+	SetMusicRegionLighting(lighting map[string]Lighting) error
 	SetMusicRegionGenerating(id string) error
 	SetMusicRegionReady(id string, durationSeconds float64) error
 	SetParagraphDescriptions(chapterID string, byDescribesIdx map[int][]string) error

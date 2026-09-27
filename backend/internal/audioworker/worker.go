@@ -808,6 +808,7 @@ func registerAuxEngines() map[string]*auxEngine {
 		// audio (latent-only book transfers, decoded on play): codec
 		// weights only, not the TTS models.
 		{key: "higgs_codec", family: "higgs_audio_tts", modelPath: cloneFamilies["audiocpp-higgs"].modelPath, task: "codec", poolSize: 1},
+		{key: "breeze_codec", family: "breeze_tts", modelPath: cloneFamilies["audiocpp-breeze"].modelPath, task: "codec", poolSize: 1},
 		{key: "pocket_codec", family: "pocket_tts", modelPath: cloneFamilies["audiocpp-pocket"].modelPath, task: "codec", poolSize: 1},
 	}
 	out := make(map[string]*auxEngine, len(specs))

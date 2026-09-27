@@ -174,7 +174,7 @@ func (m *Manager) Stop() {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		_ = m.cmd.Process.Kill()
+		killWorker(m.cmd.Process)
 		<-done
 	}
 }
@@ -197,6 +197,15 @@ func (m *Manager) spawnAndWait(ctx context.Context) error {
 // sessionThreads.
 const workerOMPThreads = 4
 
+// killWorker SIGKILLs the worker's whole process group (it's started with
+// Setpgid), not just the worker itself, so a forked child can't outlive
+// it holding the port.
+func killWorker(p *os.Process) {
+	if err := syscall.Kill(-p.Pid, syscall.SIGKILL); err != nil {
+		_ = p.Kill()
+	}
+}
+
 // spawnAndWaitLocked starts the worker process and blocks until it answers
 // GET /health, or startupTimeout elapses. Caller must hold m.mu.
 func (m *Manager) spawnAndWaitLocked(ctx context.Context) error {
@@ -208,6 +217,17 @@ func (m *Manager) spawnAndWaitLocked(ctx context.Context) error {
 	if _, set := os.LookupEnv("OMP_NUM_THREADS"); !set {
 		cmd.Env = append(cmd.Env, "OMP_NUM_THREADS="+strconv.Itoa(workerOMPThreads))
 	}
+	// ggml's abort handler otherwise forks itself to run gdb for a
+	// backtrace. Under yama ptrace_scope gdb can't attach, and the forks
+	// (full copies of the worker, listening socket included) hung on
+	// 2026-09-26, keeping port 8091 bound so no replacement could start.
+	// The Go runtime's own crash dump already shows the failing cgo call.
+	if _, set := os.LookupEnv("GGML_NO_BACKTRACE"); !set {
+		cmd.Env = append(cmd.Env, "GGML_NO_BACKTRACE=1")
+	}
+	// Its own process group, so killWorker takes any children it leaves
+	// behind (see above) down with it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
@@ -299,7 +319,7 @@ func (m *Manager) restart(ctx context.Context, reason string) error {
 		case <-done:
 		case <-time.After(10 * time.Second):
 			log.Printf("ttsworker: did not exit after SIGTERM, sending SIGKILL")
-			_ = m.cmd.Process.Kill()
+			killWorker(m.cmd.Process)
 			<-done
 		}
 	}
@@ -400,7 +420,7 @@ func (m *Manager) hardRestart(ctx context.Context, reason string) error {
 	m.mu.Lock()
 	log.Printf("ttsworker: hard-restarting (%s)", reason)
 	if m.cmd != nil && m.cmd.Process != nil {
-		_ = m.cmd.Process.Kill()
+		killWorker(m.cmd.Process)
 		done := make(chan struct{})
 		go func() {
 			_ = m.cmd.Wait()

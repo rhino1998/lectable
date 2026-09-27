@@ -355,7 +355,7 @@ var kindPool = map[Kind]taskqueue.PoolKey{
 	KindSFXGeneration:           poolSFX,
 	KindSFXPreview:              poolSFX,
 	KindLLMPreview:              poolLLM,
-	KindMusicScoring:            poolLLM,
+	KindAmbience:                poolLLM,
 	KindMusicGeneration:         poolSFX,
 	KindMusicLiveGeneration:     poolSFX,
 	KindScareQuote:              poolLLM,
@@ -549,15 +549,17 @@ const (
 	// shape, reusing runPreviewText/previewTextWaiters instead of
 	// runPreview/previewWaiters (a text result, not audio bytes).
 	KindLLMPreview Kind = "llm_preview"
-	// KindMusicScoring is an LLM tone-region-scoring run for one chapter
-	// (internal/speakerattr.Client.ScoreMusic), the entry point behind the
-	// reader's per-chapter background-music toggle - see EnqueueMusicScoring,
-	// httpapi.scoreChapterMusic. KindSpeechDirection's exact shape
+	// KindAmbience is one chapter's ambience pass - LLM tone-region music
+	// scoring (internal/speakerattr.Client.ScoreMusic) and then its
+	// lighting sub-pass (Client.DescribeLighting) - the entry point behind
+	// the reader's per-chapter background-music toggle - see
+	// EnqueueAmbience, httpapi.ambienceChapter. Was "music_scoring" before
+	// lighting joined it. KindSpeechDirection's exact shape
 	// (fire-and-forget, poolLLM, defaultAttributionTier, dispatched through
 	// the same generic runLLM/llmWaiters machinery handleResult's own
 	// poolLLM branch already handles for every kind in that pool) - see its
 	// own doc comment for the reasoning, which applies unchanged here.
-	KindMusicScoring Kind = "music_scoring"
+	KindAmbience Kind = "ambience"
 	// KindMusicGeneration renders and persists every one of a chapter's
 	// currently-eligible-in-order background-music regions in one task
 	// (internal/musicgen.GenerateRegion, once per region - see
@@ -963,8 +965,8 @@ func (t *task) dedupKey() string {
 		// exactly one call site, but harmless either way) just dedups
 		// instead of double-dispatching.
 		return "length_estimate:" + t.bookID
-	case KindMusicScoring:
-		return "music_score:" + t.llmKey
+	case KindAmbience:
+		return "ambience:" + t.llmKey
 	case KindMusicGeneration:
 		return "music_gen:" + t.llmKey
 	case KindMusicLiveGeneration:
@@ -1227,13 +1229,13 @@ type ReattributionFunc func(ctx context.Context) (reattributed int, requeue func
 // diverge later.
 type DirectionFunc func(ctx context.Context) (tagged int, requeue func(), err error)
 
-// MusicScoreFunc performs one chapter's background-music tone-region
+// AmbienceFunc performs one chapter's background-music tone-region
 // scoring and reports how many regions were produced - the actual work
-// behind a KindMusicScoring task. Supplied by the caller at
-// EnqueueMusicScoring time (see httpapi.scoreChapterMusic), for the same
+// behind a KindAmbience task. Supplied by the caller at
+// EnqueueAmbience time (see httpapi.ambienceChapter), for the same
 // reason AttributionFunc/DirectionFunc are - running it needs Store/
 // Speaker access this package doesn't have. DirectionFunc's exact shape.
-type MusicScoreFunc func(ctx context.Context) (scored int, requeue func(), err error)
+type AmbienceFunc func(ctx context.Context) (scored int, requeue func(), err error)
 
 // ScareQuoteFunc performs one chapter's scare-quote tagging and reports how
 // many paragraphs' flags changed - the actual work behind a KindScareQuote
@@ -1371,30 +1373,31 @@ type ChapterDirector func(ctx context.Context, book *store.Book, ch *store.Chapt
 // materializing - the same as before this existed.
 type ChapterAttributor func(ctx context.Context, book *store.Book, ch *store.Chapter) (attributed int, requeue func(), err error)
 
-// MusicScorer lazily runs one chapter's own background-music tone-region
-// scoring (the work behind MusicScoreFunc/EnqueueMusicScoring, persisting
+// AmbienceRunner lazily runs one chapter's own background-music tone-region
+// scoring (the work behind AmbienceFunc/EnqueueAmbience, persisting
 // new store.MusicRegion rows and - via MaybeAdvanceChapterMusic, called
 // from the same real implementation this wraps - dispatching whatever
 // region generation that scoring just made eligible) the moment
-// maybeScoreChapterMusic discovers a chapter about to have its own
+// maybeRunChapterAmbience discovers a chapter about to have its own
 // narration audio generated (enqueueChapter, i.e. every "generate this
 // chapter's voice" entry point - EnqueueChapter/EnqueueBookGenerate/
-// EnqueueRemaining) hasn't been scored yet (!ch.Passes.Music, the same
+// EnqueueRemaining) hasn't finished its ambience pass yet
+// (!ch.Passes.AmbienceDone(), the same
 // stored-fact finished-state check CharacterCharacterizer/ChapterDirector/
 // ChapterAttributor use) for a book with store.Book.MusicEnabled on.
-// Supplied once at startup (see SetMusicScorer), since it needs Store/
+// Supplied once at startup (see SetAmbienceRunner), since it needs Store/
 // Speaker access this package doesn't have - httpapi.Server wires in the
-// same scoreChapterMusic explicit "Score music" clicks already use.
+// same ambienceChapter explicit "Score music" clicks already use.
 // Unlike ChapterDirector/ChapterAttributor, this has no pause/resume
 // continuation of its own to worry about being reached a different way -
-// scoreChapterMusic's own requeue closure (same as directChapter/
-// attributeChapter's) re-invokes EnqueueMusicScoring directly regardless
+// ambienceChapter's own requeue closure (same as directChapter/
+// attributeChapter's) re-invokes EnqueueAmbience directly regardless
 // of who queued the task it's running as. A never-configured scorer (nil)
 // just means generating a chapter's voice never auto-triggers scoring for
 // it - the same as before this existed, when a reader had to visit the
 // Speakers page and score it (or wait for a bulk "Score all music" run)
 // separately from generating its audio.
-type MusicScorer func(ctx context.Context, book *store.Book, ch *store.Chapter) (scored int, requeue func(), err error)
+type AmbienceRunner func(ctx context.Context, book *store.Book, ch *store.Chapter) (scored int, requeue func(), err error)
 
 // ChapterScareQuoter lazily runs one chapter's own scare-quote tagging (the
 // work behind ScareQuoteFunc/EnqueueScareQuote, setting Passes.ScareQuote
@@ -1433,7 +1436,7 @@ type Manager struct {
 	characterize CharacterCharacterizer
 	direct       ChapterDirector
 	attribute    ChapterAttributor
-	scoreMusic   MusicScorer
+	runAmbience  AmbienceRunner
 	scareQuote   ChapterScareQuoter
 	pronounce    ChapterPronouncer
 	ctx          context.Context // set by Start; used by fire-and-forget Enqueue* resolution goroutines
@@ -1616,11 +1619,11 @@ func (m *Manager) SetChapterAttributor(fn ChapterAttributor) {
 	m.attribute = fn
 }
 
-// SetMusicScorer wires fn in as the lazy scorer - see MusicScorer's own
+// SetAmbienceRunner wires fn in as the lazy scorer - see AmbienceRunner's own
 // doc comment. Called once from httpapi.NewRouter, the same place/timing
 // as SetCharacterVoiceProvisioner.
-func (m *Manager) SetMusicScorer(fn MusicScorer) {
-	m.scoreMusic = fn
+func (m *Manager) SetAmbienceRunner(fn AmbienceRunner) {
+	m.runAmbience = fn
 }
 
 // SetChapterScareQuoter wires fn in as the lazy scare-quote tagger - see
@@ -2265,7 +2268,7 @@ func (m *Manager) enqueueChapter(ctx context.Context, bookID, chapterID string, 
 		log.Printf("jobs: book %s not found: %v", bookID, err)
 		return
 	}
-	m.maybeScoreChapterMusic(bookID, chapterID, chapterIdx, book)
+	m.maybeRunChapterAmbience(bookID, chapterID, chapterIdx, book)
 	resolved, all, err := m.paragraphsNeedingGeneration(ctx, book, chapterID)
 	if err != nil {
 		log.Printf("jobs: list paragraphs for chapter %s: %v", chapterID, err)
@@ -2279,35 +2282,35 @@ func (m *Manager) enqueueChapter(ctx context.Context, bookID, chapterID string, 
 	}
 }
 
-// maybeScoreChapterMusic fire-and-forget dispatches background-music
-// scoring for chapterID (EnqueueMusicScoring, via m.scoreMusic - a no-op
-// if never configured, see MusicScorer's own doc comment) the moment its
+// maybeRunChapterAmbience fire-and-forget dispatches background-music
+// scoring for chapterID (EnqueueAmbience, via m.runAmbience - a no-op
+// if never configured, see AmbienceRunner's own doc comment) the moment its
 // own narration audio generation is requested, rather than requiring a
 // reader to separately visit the Speakers page and score it (or run a
 // bulk "Score all music") before its music actually ever generates. A
 // no-op for a book with MusicEnabled off (the overwhelming common case -
 // same cheap-to-over-call reasoning MaybeAdvanceChapterMusic's own doc
-// comment gives) or a chapter already scored (!ch.Passes.Music) -
+// comment gives) or a chapter already done (ch.Passes.AmbienceDone()) -
 // scoring only ever needs to run once per chapter; MaybeAdvanceChapterMusic
 // (called from inside the real scorer once regions persist, and again as
 // each narration paragraph this same enqueueChapter call is about to
 // dispatch finishes) is what actually advances already-scored regions,
-// completely independent of this. EnqueueMusicScoring's own dedup-by-
+// completely independent of this. EnqueueAmbience's own dedup-by-
 // chapter means calling this on every enqueueChapter (including "Generate
 // remaining"'s whole-book walk, and a reader simply re-opening a chapter
 // they're already generating) is harmless even for a chapter whose
 // scoring is already queued or in flight.
-func (m *Manager) maybeScoreChapterMusic(bookID, chapterID string, chapterIdx int, book *store.Book) {
-	if !book.MusicEnabled || m.scoreMusic == nil {
+func (m *Manager) maybeRunChapterAmbience(bookID, chapterID string, chapterIdx int, book *store.Book) {
+	if !book.MusicEnabled || m.runAmbience == nil {
 		return
 	}
 	ch, err := m.store.GetChapterByID(chapterID)
-	if err != nil || ch == nil || ch.Passes.Music {
+	if err != nil || ch == nil || ch.Passes.AmbienceDone() {
 		return
 	}
 	chVal := *ch
-	m.EnqueueMusicScoring(bookID, chapterID, chapterIdx, func(ctx context.Context) (int, func(), error) {
-		return m.scoreMusic(ctx, book, &chVal)
+	m.EnqueueAmbience(bookID, chapterID, chapterIdx, func(ctx context.Context) (int, func(), error) {
+		return m.runAmbience(ctx, book, &chVal)
 	})
 }
 
@@ -2485,7 +2488,7 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 
 // PromoteChapterMusicNear bumps to TierUrgent whichever still-queued
 // background-music task (if any) is actually standing between the reader
-// and having music in chapterID: a KindMusicScoring task for the chapter
+// and having music in chapterID: a KindAmbience task for the chapter
 // itself, if it hasn't been scored yet, and/or a KindMusicLiveGeneration
 // task for the chapter - both keyed purely by chapterID. The whole-chapter
 // KindMusicGeneration batch is deliberately left alone: reader position
@@ -2501,7 +2504,7 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 // more than LookaheadParagraphCount paragraphs, and every position update
 // re-triggers this anyway, so this chapter alone is enough to keep pace
 // as they keep reading) - background music otherwise defaults to
-// TierBackground end to end (EnqueueMusicScoring's own
+// TierBackground end to end (EnqueueAmbience's own
 // defaultAttributionTier, EnqueueMusicGeneration's own TierBackground -
 // see MaybeAdvanceChapterMusic), since nothing about scoring/generating it
 // is reader-blocking on its own the way an unready narration paragraph is.
@@ -2520,7 +2523,7 @@ func (m *Manager) PromoteChapterMusicNear(bookID, chapterID string) {
 			},
 		)
 	}
-	promote("music_score:" + chapterID)
+	promote("ambience:" + chapterID)
 	m.queue.WithEachTask(
 		func(c taskqueue.Task) bool { return isLiveMusicTask(c, chapterID) },
 		func(c taskqueue.Task) {
@@ -3729,36 +3732,36 @@ func (m *Manager) RunDirection(ctx context.Context, bookID, chapterID string, ch
 	return m.runLLMTaskDirect(ctx, KindSpeechDirection, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
 }
 
-// EnqueueMusicScoring queues fn as a KindMusicScoring task -
+// EnqueueAmbience queues fn as a KindAmbience task -
 // EnqueueDirection's exact fire-and-forget shape (same dedup-by-chapter,
 // same poolLLM dispatch, same defaultAttributionTier), for background-
 // music tone-region scoring instead of speech-direction tagging. See
 // EnqueueAttribution's own doc comment for the full reasoning behind that
 // shape - it applies here unchanged.
-func (m *Manager) EnqueueMusicScoring(bookID, chapterID string, chapterIdx int, fn MusicScoreFunc) {
+func (m *Manager) EnqueueAmbience(bookID, chapterID string, chapterIdx int, fn AmbienceFunc) {
 	seriesName, seriesIndex := m.seriesFor(bookID)
 	m.pushTask(&task{
-		kind:        KindMusicScoring,
+		kind:        KindAmbience,
 		tier:        defaultAttributionTier,
 		chapterIdx:  chapterIdx,
 		bookID:      bookID,
 		chapterID:   chapterID,
 		llmKey:      chapterID,
-		runLLM:      fn, // MusicScoreFunc's underlying type already matches runLLM's field type exactly
+		runLLM:      fn, // AmbienceFunc's underlying type already matches runLLM's field type exactly
 		seriesName:  seriesName,
 		seriesIndex: seriesIndex,
 	})
 }
 
-// RunMusicScoring is EnqueueMusicScoring's blocking sibling, RunAttribution's
+// RunAmbience is EnqueueAmbience's blocking sibling, RunAttribution's
 // exact counterpart for background-music tone-region scoring - see
 // RunAttribution's own doc comment for why blocking is safe for its
-// pipeline-phase caller (httpapi.preprocessMusicPhase) despite
-// EnqueueMusicScoring's own fire-and-forget shape existing specifically to
+// pipeline-phase caller (httpapi.preprocessAmbiencePhase) despite
+// EnqueueAmbience's own fire-and-forget shape existing specifically to
 // avoid that for an HTTP handler, and for why tier is caller-supplied
 // rather than defaultAttributionTier.
-func (m *Manager) RunMusicScoring(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, fn MusicScoreFunc) (int, error) {
-	return m.runLLMTaskDirect(ctx, KindMusicScoring, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
+func (m *Manager) RunAmbience(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, fn AmbienceFunc) (int, error) {
+	return m.runLLMTaskDirect(ctx, KindAmbience, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
 }
 
 // EnqueueScareQuote queues fn as a KindScareQuote task - EnqueueDirection's
@@ -4086,7 +4089,7 @@ func (m *Manager) EnqueueSFXGeneration(bookID, chapterID string, chapterIdx int,
 // KindMusicGeneration's own doc comment for why. chapterID is this task's
 // own dedup key suffix (see task.dedupKey) - a chapter can only usefully
 // have one music-generation batch in flight at a time, the same "one at a
-// time per chapter" shape KindMusicScoring already has.
+// time per chapter" shape KindAmbience already has.
 func (m *Manager) EnqueueMusicGeneration(bookID, chapterID string, chapterIdx int, fn func(ctx context.Context, attempt int) error) {
 	m.enqueueMusicGeneration(bookID, chapterID, chapterIdx, TierBackground, fn)
 }
@@ -4144,7 +4147,7 @@ type pendingMusicRegion struct {
 // this package's own fields - so this builds and dispatches the whole
 // closure itself with no caller-supplied function required.
 //
-// Called from: httpapi.scoreChapterMusic, after each batch of freshly-
+// Called from: httpapi.ambienceChapter, after each batch of freshly-
 // scored regions persists (a chapter already fully narrated before music
 // was turned on has no future paragraph-completion event to kick it off);
 // saveParagraphAudio/handleMergedResult, once a paragraph finishes
@@ -4481,7 +4484,7 @@ type liveChainCarry struct {
 // chapter chapterIdx (whose last region is lastRegionID) into the next
 // chapter, from its first paragraph. A next chapter that isn't scored yet
 // stops the chain, but gets its scoring promoted so the chain can cross
-// into it once scoring lands (httpapi.scoreChapterMusic's own
+// into it once scoring lands (httpapi.ambienceChapter's own
 // MaybeAdvanceChapterMusic call picks it back up then).
 func (m *Manager) advanceLiveMusicIntoNextChapter(bookID, chapterID string, chapterIdx int, lastRegionID string, hops int) {
 	if hops >= maxLiveMusicChapterHops {
@@ -4497,7 +4500,7 @@ func (m *Manager) advanceLiveMusicIntoNextChapter(bookID, chapterID string, chap
 	}
 	if len(st.regions) == 0 {
 		m.queue.WithTask(
-			func(c taskqueue.Task) bool { return c.Key() == "music_score:"+next.ID },
+			func(c taskqueue.Task) bool { return c.Key() == "ambience:"+next.ID },
 			func(c taskqueue.Task) {
 				if TierLookahead < c.Tier() {
 					c.Promote(TierLookahead)

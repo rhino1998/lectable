@@ -107,6 +107,7 @@ func MaxOutputTokens() int {
 		pronunciationMaxTokens,
 		musicMaxTokens,
 		musicDescribeMaxTokens,
+		lightingMaxTokens,
 	} {
 		if t > max {
 			max = t
@@ -435,6 +436,12 @@ const jsonPassMaxTokens = 4096
 // least once - a caller persists it via store.UpsertCharacter's own isRole
 // parameter the same way it persists out via Store.SetParagraphSpeakers.
 //
+// pronouns, also returned alongside out, is each final speaker's
+// pronouns (see store.Character.Pronouns) where this call's own lines
+// settled on one by strict majority - the model appends " | he"/" | she"/
+// etc. to a reply line when the text establishes it. Never includes a
+// role label: a "Guard" line may be any of several different people.
+//
 // shouldPause (nil-safe: nil never pauses) is checked between batches -
 // never before the first one, so a single dispatch of this call always
 // makes at least some real progress rather than a run of back-to-back
@@ -466,10 +473,11 @@ const jsonPassMaxTokens = 4096
 // character's own name when it's one of their aliases or a case variant.
 // Once every batch is done, RefineWithSpeechTags corrects the result
 // against explicit speech tags in the chapter text - see refine.go.
-func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle string, roster Roster, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int]string, roleNames map[string]bool, remaining []ParagraphInput, err error) {
+func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle string, roster Roster, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int]string, roleNames map[string]bool, pronouns map[string]string, remaining []ParagraphInput, err error) {
 	knownCharacters := roster.Names
 	out = make(map[int]string, len(paragraphs))
 	isRoleByIdx := make(map[int]bool, len(paragraphs))
+	pronounsByIdx := make(map[int]string, len(paragraphs))
 	known := append([]string(nil), knownCharacters...)
 	knownIsRole := make(map[string]bool, len(roster.Roles))
 	for name, isRole := range roster.Roles {
@@ -481,8 +489,18 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		isQuoteByIdx[p.Idx] = p.IsQuote
 	}
 
-	finish := func(out map[int]string) (map[int]string, map[string]bool, []ParagraphInput, error) {
+	finish := func(out map[int]string) (map[int]string, map[string]bool, map[string]string, []ParagraphInput, error) {
 		canon := canonicalizeSpeakerNames(knownCharacters, out)
+		// Votes go to the name the model itself answered (canonicalized),
+		// before speech-tag refinement can move a line to someone else -
+		// the pronouns were its judgment about that speaker, not theirs.
+		votes := pronounVotes{}
+		for idx, p := range pronounsByIdx {
+			if !isRoleByIdx[idx] {
+				votes.add(canon[idx], p)
+			}
+		}
+		pronouns = votes.winners()
 		canon, _ = RefineWithSpeechTags(paragraphs, canon, NewSpeakerNameResolver(known, roster.Aliases))
 		roleNames = make(map[string]bool, len(isRoleByIdx))
 		for idx, isRole := range isRoleByIdx {
@@ -493,7 +511,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 				roleNames[name] = true
 			}
 		}
-		return canon, roleNames, remaining, err
+		return canon, roleNames, pronouns, remaining, err
 	}
 
 	var starts []int
@@ -531,6 +549,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 			Descriptions: roster.Descriptions,
 			Roles:        maps.Clone(knownIsRole),
 			Aliases:      roster.Aliases,
+			Pronouns:     roster.Pronouns,
 			Prominent:    append(append([]string(nil), roster.Prominent...), discovered...),
 		}
 		mu.Unlock()
@@ -565,6 +584,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 				speaker = resolver.Canonical(speaker)
 				speaker = disallowNarratorForDialogue(isQuoteByIdx[idx], speaker)
 				out[idx] = speaker
+				pronounsByIdx[idx] = a.Pronouns
 				if !isSentinel(speaker) && !slices.Contains(known, speaker) {
 					discovered = append(discovered, speaker)
 				}
@@ -867,9 +887,10 @@ func addKnown(known []string, name string) []string {
 }
 
 const systemPrompt = `You are a literary analysis assistant. Given numbered lines from a novel, identify who speaks each line of dialogue marked "(who?)".
-Reply with ONLY plain text lines, no JSON, no code fence, no commentary: one line per "(who?)" line, made of that line's number, a colon and a space, then its speaker - adding " [role]" after a generic role label (see below). For example:
+Reply with ONLY plain text lines, no JSON, no code fence, no commentary: one line per "(who?)" line, made of that line's number, a colon and a space, then its speaker - adding " [role]" after a generic role label (see below), then " | " and the speaker's pronouns (see below) when known. For example:
 
-12: Gandalf
+12: Gandalf | he
+14: Mira | she
 15: Guard [role]
 16: Unknown
 
@@ -884,6 +905,7 @@ Rules:
 - A character's name appearing INSIDE the quoted words themselves does not mean that character is speaking - it almost always means the opposite: someone else is addressing them by name (e.g. "Well, Jake, I wasn't expecting that," or "Thank you, Jake," or a bare "Jake!") is being said TO Jake by another character, not BY Jake. Never pick a name as the speaker just because it's mentioned, vocative, or exclaimed inside the line - identify the actual speaker from the surrounding narration/context, and if that's genuinely unclear, use "Unknown" rather than defaulting to whoever's name appears in the text.
 - If a dialogue line's speaker isn't a specific named individual, but the surrounding narration clearly gives a generic function/type for whoever's speaking instead (e.g. "the guard demanded," "a merchant called out," "one of the thugs replied"), use that type as speaker, followed by " [role]" - a short, generic, capitalized label with no article ("Guard", "Merchant", "Thug", never "a guard" or "the merchant"). A role label doesn't claim this is the same specific person every time it's used, only the same TYPE of minor, unindividuated speaker filling that function - reuse the same role label for every such speaker of that type throughout, the same way you'd reuse a real name, but understand it may cover several different unnamed people rather than one consistent individual. Only fall back to "Unknown" when even a generic type can't be determined. Never add " [role]" for a real named individual, including one only ever addressed by a title/epithet that clearly identifies one specific known person (e.g. "the captain" for a single established Captain Mocar) - that's a real individual, not a role, even though it reads like one; " [role]" is only for a genuinely interchangeable type.
 - If a dialogue line's speaker is genuinely unclear from context, use exactly "Unknown" rather than guessing.
+- Pronouns: after a named speaker, add " | " and ONE word - he, she, they, or it - for the pronoun the text uses for that character (e.g. "she said", "his voice", "the old man", "the queen"), or the pronouns listed for them in "Known characters". Omit the " | ..." part entirely when nothing establishes it - never guess from the name alone. Never add pronouns after "Unknown" or a " [role]" label. Pronouns can also help identify the speaker: a tag like "she said" can't belong to a character listed as "he/him".
 - A blank line in "Lines:" marks a real paragraph break. Lines with NO blank line between them come from one continuous original paragraph - often a quote, then a short "X said" narration tag, then more dialogue right after it, but just as often a quote followed by a longer run of action/description/thought (several sentences, not just a short tag) before the next quote. In either case, the quote before that in-between narration and the quote after it are almost always the SAME speaker - the narration is a beat inside one character's continuous turn, not a hand-off to someone else, no matter how long that beat runs. This holds even when the in-between narration mentions another character by name or describes something that other character does - a passing mention or reaction shot does NOT make that other character the speaker of the quote that follows. Only attribute the quote after the gap to a different speaker when the in-between narration itself explicitly says someone else is now speaking (e.g. a tag like "Jake cut in" or "she interrupted" naming a different character than whoever spoke the line before it).
 - Conversely, when a dialogue line is separated from the dialogue line before it by a blank line (a real paragraph break) with no narration tag anywhere between them naming who's speaking, default to treating that break itself as a signal the speaker changed, not a continuation of the same speaker - back-and-forth dialogue conventionally starts a new paragraph for each new speaker's turn. Only keep the same speaker across a paragraph break like that when something in the surrounding context clearly supports it (e.g. a tag elsewhere in the passage naming them again, or the dialogue is obviously one uninterrupted speech continuing across a paragraph break rather than an exchange).
 - Some entries in "Known characters" carry a short parenthetical description after their name (e.g. "Captain Mocar (a weathered, broad-shouldered sea captain...)"). That's there to help you recognize them when a narration tag names them by role or epithet instead of their proper name ("the captain said," "the old orc grunted") - if a tag's role/epithet clearly matches one character's own parenthetical description and no other known character fits better, attribute the line to that character's exact proper name, never the role/epithet itself (no " [role]" - this is a real individual, not a generic type). Still use "Unknown" if the match is genuinely ambiguous (e.g. the role could plausibly fit more than one known character, or nothing in "Known characters" matches it at all).
@@ -893,8 +915,10 @@ Rules:
 
 // Roster is what attribution knows about a book's characters going in:
 // their names, an optional identifying blurb per name (Descriptions),
-// which names are generic role labels (Roles), and other names each one
-// goes by (Aliases, canonical name -> aliases). Every map is nil-safe.
+// which names are generic role labels (Roles), other names each one goes
+// by (Aliases, canonical name -> aliases), and their established
+// pronouns (Pronouns, see store.Character.Pronouns). Every map is
+// nil-safe.
 //
 // Prominent (optional) are the names every batch's prompt lists even when
 // its lines never mention them - a book's main cast, who speak on most
@@ -907,6 +931,7 @@ type Roster struct {
 	Descriptions map[string]string
 	Roles        map[string]bool
 	Aliases      map[string][]string
+	Pronouns     map[string]string
 	Prominent    []string
 }
 
@@ -1021,6 +1046,9 @@ func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle
 		entries := make([]string, len(knownCharacters))
 		for i, name := range knownCharacters {
 			var notes []string
+			if p := roster.Pronouns[name]; p != "" {
+				notes = append(notes, p)
+			}
 			if aliases := roster.Aliases[name]; len(aliases) > 0 {
 				notes = append(notes, "also called "+strings.Join(aliases, ", "))
 			}
@@ -1074,6 +1102,9 @@ type attribution struct {
 type Attributed struct {
 	Speaker string
 	Role    bool
+	// Pronouns is the reply's own " | he" part, normalized (see
+	// NormalizePronouns) - "" when the model gave none.
+	Pronouns string
 }
 
 // attributionLineRe matches one reply line: "<idx>: <speaker>",
@@ -1083,7 +1114,8 @@ var attributionLineRe = regexp.MustCompile(`^\s*(\d+)\s*(?:\(who\?\))?\s*[:\-–
 
 // parseAttributionLines reads attributeBatch's plain-text reply, keeping
 // only lines whose idx was asked about (answer). A speaker suffixed
-// " [role]" is a role label (sanitizeSpeaker strips the marker). A model
+// " [role]" is a role label (sanitizeSpeaker strips the marker); a
+// trailing " | she" is that speaker's pronouns. A model
 // that answers in the old JSON-array shape anyway still parses, via
 // parseAttributions. Only a reply with no usable line at all is an error
 // (so generateAndParse retries it) - a line the model skipped just stays
@@ -1110,11 +1142,12 @@ func parseAttributionLines(content string, answer map[int]bool) (map[int]Attribu
 			if err != nil || !answer[idx] {
 				continue
 			}
-			speaker := strings.Trim(m[2], ` "'*.“”`)
+			speaker, pronouns := splitPronouns(m[2])
+			speaker = strings.Trim(speaker, ` "'*.“”`)
 			if speaker == "" {
 				continue
 			}
-			out[idx] = Attributed{Speaker: speaker, Role: strings.Contains(strings.ToLower(speaker), "[role]")}
+			out[idx] = Attributed{Speaker: speaker, Role: strings.Contains(strings.ToLower(speaker), "[role]"), Pronouns: pronouns}
 		}
 	}
 	if len(out) == 0 && len(answer) > 0 {
@@ -1224,16 +1257,18 @@ Write "instruct" as a direct instruction to a narrator, in the form "Speak as a 
 Describe the voice across specific, concrete dimensions rather than one or two vague adjectives - a vague, single-word impression ("a nice voice", "distinctive") produces a generic-sounding result, while naming pitch (e.g. "low-pitched", "a bright upper register"), pace (e.g. "an unhurried, measured pace", "a quick, clipped cadence"), and timbre/texture (e.g. "warm and smooth", "raspy", "breathy", "magnetic", "mellow", "a gravelly weight underneath") together gives a narrator something they can actually perform consistently. Cover at least pitch, pace, and timbre/texture explicitly, alongside personality/tone, rather than leaning on personality words alone. Never stack repeated or piled-up intensifiers ("very, very energetic", "extremely extremely deep") to signal strength - repetition doesn't add precision; reach for one stronger, more specific word or phrase instead (e.g. "booming and intense" rather than "very very loud").
 Never describe the voice by comparing it to a real, identifiable person - a celebrity, actor, public figure, or narrator, by name (e.g. "sounds like Morgan Freeman", "a David Attenborough quality") - even if the dialogue or description evokes one. A small, locally-run voice-design model has no reliable knowledge of what any specific real person actually sounds like, so a name like that is dead weight at best and a distracting mismatch at worst; translate whatever impression that comparison is standing in for directly into the same pitch/pace/timbre/personality vocabulary above instead (e.g. a "deep, commanding, gravelly bass-baritone with unhurried gravitas" rather than "a James Earl Jones voice").
 Whenever there is any gender signal at all, state it explicitly and unambiguously as one word in that opening "Speak as a [word] ..." clause - "male"/"female", or "man"/"woman"/"boy"/"girl" if age makes that the more natural fit - before any age/accent/tone words, the same way the built-in presets read (e.g. "Speak as a calm, warm middle-aged male narrator..."). Do not rely on pronouns, a gendered name, or descriptive words like "gruff" or "delicate" to imply gender on their own - one of those explicit words must actually appear, every time there is a signal to base it on, so this is consistent from one character to the next rather than only sometimes stated outright.
-Every character gets a specific nationality- or region-based accent named explicitly somewhere in "instruct" - never the generic word "accent" alone, and never left out entirely, even for an ordinary human with nothing distinctive about them otherwise. Whenever the source material gives an accent, regional, or national signal - a stated nationality/hometown/origin, a description of how they sound ("spoke with a thick Scottish burr", "his clipped British vowels"), dialect/phonetic spelling written into their own dialogue ("y'all", "dinnae", dropped g's), or a name/setting that strongly suggests a place or culture of origin - name that specific accent or regional voice explicitly (e.g. "with a Scottish accent", "a Southern American drawl", "a clipped British accent") rather than the generic word "accent" alone. This is for audiobook narration, so a reasonable, tasteful inference from a name or setting is fine when nothing more explicit is available. When the material gives no signal at all - no name, setting, or dialogue cue to infer from - still name a specific accent rather than omitting one: reach for whatever's most plausible given the story's own general setting (e.g. a General American accent for an otherwise-unmarked contemporary American setting, a standard/neutral British accent for an unmarked British one), falling back to a plain, unremarkable General American accent as the last resort default when the setting itself gives nothing to go on either.
+Every character gets a specific nationality- or region-based accent named explicitly somewhere in "instruct" - never the generic word "accent" alone, and never left out entirely, even for an ordinary human with nothing distinctive about them otherwise. Whenever the source material gives an accent, regional, or national signal - a stated nationality/hometown/origin, a description of how they sound ("spoke with a thick Scottish burr", "his clipped British vowels"), dialect/phonetic spelling written into their own dialogue ("y'all", "dinnae", "innit"), regional slang ("bloody", "mate", "arse" read British; "y'all", "fixin' to" read Southern American), or a name/setting that strongly suggests a place or culture of origin - name that specific accent or regional voice explicitly (e.g. "with a Scottish accent", "a Yorkshire accent", "a clipped Received Pronunciation accent", "a lilting Irish accent", "a Brooklyn accent", "a General American accent") rather than the generic word "accent" alone.
+Casual or informal speech is NOT a regional signal on its own - dropped g's ("goin'"), "ain't", "gonna", contractions, slang, swearing, and a rough, folksy, or working-class manner appear in every English dialect, so never pick an accent just from those. In particular, never reach for a Southern American drawl to convey warmth, gruffness, toughness, weariness, or a rural/working-class character: cast it only when the text itself places the character in or from the American South, or writes distinctly Southern dialect ("y'all", "fixin' to", "might could") into their speech. "South"/"southern" in the text means the American South only when it says so - "the south of England" is Southern English, and a compass direction is no accent at all. This is for audiobook narration, so a reasonable, tasteful inference from a name or setting is fine when nothing more explicit is available. When the material gives no signal at all - no name, setting, or dialogue cue to infer from - still name a specific accent rather than omitting one: reach for whatever's most plausible given the story's own general setting (e.g. a General American accent for an otherwise-unmarked contemporary American setting, a standard/neutral British accent for an unmarked British one), falling back to a plain, unremarkable General American accent as the last resort default when the setting itself gives nothing to go on either.
 When a character is a named fantasy/sci-fi race or species, or a non-corporeal/non-biological entity (per the paragraph above) and the text itself gives no accent/regional signal of its own, fall back on the accent (or, for a couple of kinds, deliberate lack of one) audiobook narration conventionally gives that kind, rather than defaulting to an unaccented voice by default: dwarves - a thick Scottish accent; elves - a refined, mid-Atlantic or English RP accent; orcs and goblins - a rough, guttural, working-class or Cockney-inflected accent; giants and trolls - a broad, rustic, rural accent; halflings/hobbits - a warm West Country (English countryside) accent; dragons - a plummy, aristocratic English RP accent; vampires - a refined Eastern European (Transylvanian) or aristocratic RP accent; fairies/pixies - a light, airy Irish lilt; robots/AI/constructs - a flat, neutral, unaccented, precisely-enunciated register with no regional coloring at all, the deliberate absence of an accent being the convention itself; ghosts/spirits - a faint, old-fashioned English accent evoking a bygone era, airy and half-whispered; demons - a refined, urbane, aristocratic English RP accent for anything articulate and menacing-but-composed, or a guttural, growling, non-regional voice for anything more beastly/feral. These are the expected, standard defaults for each kind, not a hesitant last resort - apply them confidently whenever the race/species/entity itself is established and the text is silent on accent specifically, the same way a real casting director would reach for the genre-standard choice rather than leave it vague. An explicit signal actually in the text (a stated nationality, dialect spelling, or described accent) still wins when one is present; absent both that and a race/species match here, fall back to the general rule above (infer from name/setting, or default to a plain General American accent) rather than ever leaving accent out - every character, human or not, ends up with one specific accent named in "instruct".
 When the material signals a more specific non-human texture beyond the broad creature/entity categories above, layer in the matching delivery quality alongside whatever accent/pitch/size choices already apply, applying it with the same confidence as the accent defaults above: a snake-like or reptilian creature - a light sibilant hiss threaded through the delivery; an insectoid or hive-mind entity - a faint buzzing, subtly doubled-voice quality; an angelic or divine being - an airy, reverberant, breathy quality. Apply one of these whenever the material signals that specific kind (a named reptilian/snake race, a swarm/hive framing, an angel/seraph/divine messenger called out as such) - still never invent the underlying kind itself where the text is silent, the same restraint the broader creature/entity rule above already asks for, but don't hedge on the texture once that kind is established.
 Independent of race/species, when the material casts a character in a clearly-stated narrative archetype or role, confidently layer in the delivery convention audiobook narration typically gives that role, on top of (not instead of) whatever gender/age/accent/creature choices already apply: a wizard, sage, or elder mentor figure - slow, breathy, weathered gravitas; a monarch or noble - crisp, poised, unhurried diction, regardless of race; a pirate or sailor - a gruff, weathered, seafaring drawl; a story's clearly-established villain or antagonist - a lower-pitched, unhurried, deliberate menace. Apply the villain convention only when the material explicitly frames the character as the story's antagonist or an established evildoer (a stated role like "the villain" or "the Dark Lord", or a clear pattern of intentional wrongdoing directed at the protagonist(s)) - never for a character who is merely morally gray, rude, or on the opposite side of an ordinary disagreement; skip the convention entirely rather than guess when it's unclear. As with every other convention above, an explicit voice/accent/personality signal actually in the text still wins over the archetype default when present - but once the role itself is clearly established, apply its convention rather than leaving the delivery generic.
 You may be given source material under two separate headings: "Their dialogue" (lines they actually say) and "Description of them" (narration about their appearance/personality, not spoken by them - not their own words). When "Description of them" is present, it's usually the most reliable source for apparent gender/age, physical/vibe impression, and creature/species/entity type - lean on it directly for those rather than guessing from dialogue alone. Base personality and tone primarily on how they actually talk (dialogue) and on any personality/temperament the description narration itself states, not on assumptions from their name in either section.
 Some dialogue lines end with a bracketed [narrator: ...] note - that's the surrounding narration right after that line, the same kind of physical/gender/age/accent signal as a "Description of them" entry, and can be mined the same way (a crossed-arm stance, a tired slump, a booming gesture, a described accent). Never use narration, bracketed or in its own section, to infer personality or tone beyond what it or the dialogue actually shows.
-If, and only if, no dialogue or description gives any gender signal at all, omit that word and describe the voice without committing to a gender rather than guessing one.
+The user turn may include a "Pronouns:" line - the pronouns the book itself uses for this character. Treat it as the authoritative gender signal, over anything the sample seems to imply: "he/him" means male ("male"/"man"/"boy"), "she/her" means female ("female"/"woman"/"girl"), and state it in the opening clause as above. "they/them" means do NOT commit to a gender word unless the description explicitly gives one; "it/its" usually marks a creature, construct, or other entity rather than a person - cast it per the creature/entity rules above, again without a gender word unless the material explicitly gives one.
+If, and only if, no pronouns, dialogue, or description give any gender signal at all, omit that word and describe the voice without committing to a gender rather than guessing one.
 The user turn may open with a note that this name is a generic ROLE/TYPE label (e.g. "Guard", "Thug", "Merchant"), not one consistent individual - when present, the dialogue/description sample below may be pooled from several different unnamed people who happened to share that label at different points in the story, not one person's own consistent voice. In that case, cast the general TYPE the label names rather than any one line's specific personality quirks: base gender/age/accent/archetype conventions on whatever the label and the pooled sample suggest about that kind of person in general (a "Guard" reads as a stern, dutiful, working-class voice; a "Merchant" reads as an affable, transactional patter), and favor whichever traits recur across multiple sample lines over a single outlier line's own idiosyncrasy. Still follow every rule above exactly the same way - a role gets a full, specific casting instruction and reference passage, just one aimed at the type rather than a unique individual.
 For "refLine", write a separate short passage (roughly 30-50 words, two or three sentences - short, deliberately: this becomes a rendered audio reference clip, and a longer passage risks pushing that render past what generation can handle) of plain, generic narration - NOT the character's own dialogue and NOT specific to their story - written purely to give a voice-design tool something to perform "instruct"'s voice with. Match its sentence rhythm and punctuation to the voice "instruct" describes: short, direct sentences or exclamations/questions for an energetic, intense, or commanding voice; longer, smooth, descriptive sentences for a calm or measured one - whatever best fits the pace and energy "instruct" itself calls for, within that same 30-50 word budget. A flat, neutral sentence undersells an energetic voice description just as much as a breathless one undersells a calm narrator, so the passage's own rhythm needs to actually invite the delivery "instruct" asks for. Still use a real variety of words and sounds across the passage, not one repeated phrase or sound, so it works well as a general-purpose voice reference rather than just for one moment - think of it as a short scene-setting passage a narrator would read as a warm-up in that voice, not a line of the character's own dialogue.
-Actively write toward whatever specific accent "instruct" names, not just toward its pace/energy: spell words the way that accent is conventionally rendered in prose (eye dialect/phonetic respelling - e.g. "dinnae"/"cannae"/"wee" for Scottish, dropped g's and "y'all" for a Southern American drawl, "gonna"/"innit"/dropped h's for a Cockney accent, "da"/"dis"/"dat" for a heavy Eastern European accent), and reach for that accent's own typical sentence structure and phrasing habits (word order, contractions, characteristic filler words/interjections), not just its vocabulary in isolation. Layer the same treatment on top for any other speech-pattern trait "instruct" calls out beyond accent - a stammer, a verbal tic ("y'know", "if you catch my meaning"), unusually formal/archaic phrasing for nobility or an old-fashioned character, clipped fragment-heavy speech for a curt/military voice, and so on - so the passage reads as that specific character's own speech pattern, not neutral prose with an accent label attached. Keep it legible and performable rather than a parody-thick wall of apostrophes: respell/restructure enough that the accent and speech pattern are unmistakable on the page, without tipping into being hard to actually read aloud.
+Actively write toward whatever specific accent "instruct" names, not just toward its pace/energy: spell words the way that accent is conventionally rendered in prose (eye dialect/phonetic respelling - e.g. "dinnae"/"cannae"/"wee" for Scottish, "y'all"/"fixin' to" for a Southern American drawl, "gonna"/"innit"/dropped h's for a Cockney accent, "da"/"dis"/"dat" for a heavy Eastern European accent), and reach for that accent's own typical sentence structure and phrasing habits (word order, contractions, characteristic filler words/interjections), not just its vocabulary in isolation. Layer the same treatment on top for any other speech-pattern trait "instruct" calls out beyond accent - a stammer, a verbal tic ("y'know", "if you catch my meaning"), unusually formal/archaic phrasing for nobility or an old-fashioned character, clipped fragment-heavy speech for a curt/military voice, and so on - so the passage reads as that specific character's own speech pattern, not neutral prose with an accent label attached. Keep it legible and performable rather than a parody-thick wall of apostrophes: respell/restructure enough that the accent and speech pattern are unmistakable on the page, without tipping into being hard to actually read aloud.
 Neither field should repeat the character's name or include a heading.`
 
 // CharacterizeVoice asks the LLM to describe how name should sound, from a
@@ -1274,7 +1309,11 @@ Neither field should repeat the character's name or include a heading.`
 // than a second system-prompt variant, the same NoThink/no_think shape
 // AttributeChapter's own Config.NoThink already uses, since it's a
 // per-call fact about this one character, not a global prompting choice.
-func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool, quotes []QuoteContext, descriptions []DescriptionContext) (instruct string, refLine string, err error) {
+//
+// pronouns (see store.Character.Pronouns; "" when unknown) goes on the
+// user turn the same way - characterizeSystemPrompt treats it as the
+// authoritative gender signal.
+func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool, pronouns string, quotes []QuoteContext, descriptions []DescriptionContext) (instruct string, refLine string, err error) {
 	if len(quotes) > maxCharacterizeQuotes {
 		quotes = quotes[:maxCharacterizeQuotes]
 	}
@@ -1284,6 +1323,9 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 
 	var user strings.Builder
 	fmt.Fprintf(&user, "Character: %s\n", name)
+	if pronouns != "" {
+		fmt.Fprintf(&user, "Pronouns: %s\n", pronouns)
+	}
 	if isRole {
 		fmt.Fprintf(&user, "Note: %q is a generic role/type label, not one consistent individual - the sample below may be pooled from several different unnamed people who shared it.\n", name)
 	}
@@ -1464,5 +1506,6 @@ func SystemPrompts() []string {
 		scareQuoteSystemPrompt,
 		musicSystemPrompt,
 		musicDescribeSystemPrompt,
+		lightingSystemPrompt,
 	}
 }

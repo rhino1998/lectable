@@ -36,7 +36,7 @@ const (
 	bulkScareQuote       bulkAction = "scare_quote"
 	bulkDirection        bulkAction = "direction"
 	bulkPronunciation    bulkAction = "pronunciation"
-	bulkMusicScoring     bulkAction = "music_scoring"
+	bulkAmbience         bulkAction = "ambience"
 	bulkMusicGeneration  bulkAction = "music_generation"
 	bulkGenerate         bulkAction = "generate"
 	bulkCharacterization bulkAction = "characterization"
@@ -54,9 +54,12 @@ const (
 	resetScareQuote      = resetPass(bulkScareQuote)
 	resetDirection       = resetPass(bulkDirection)
 	resetPronunciation   = resetPass(bulkPronunciation)
-	resetMusicScoring    = resetPass(bulkMusicScoring)
+	resetAmbience        = resetPass(bulkAmbience)
 	resetMusicGeneration = resetPass(bulkMusicGeneration)
 	resetGenerate        = resetPass(bulkGenerate)
+	// resetLighting has no bulk action of its own: the next "ambience" run
+	// re-lights every chapter it clears, without re-scoring its music.
+	resetLighting resetPass = "lighting"
 )
 
 // chapterBulkPass is one per-chapter pass the Speakers page can run across
@@ -121,12 +124,12 @@ var chapterBulkPasses = map[bulkAction]chapterBulkPass{
 			return err
 		},
 	},
-	bulkMusicScoring: {
-		kind: jobs.KindMusicScoring,
-		done: func(p store.Passes) bool { return p.Music },
+	bulkAmbience: {
+		kind: jobs.KindAmbience,
+		done: func(p store.Passes) bool { return p.AmbienceDone() },
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
-			_, err := s.Jobs.RunMusicScoring(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
-				return s.scoreChapterMusic(ctx, book, ch)
+			_, err := s.Jobs.RunAmbience(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
+				return s.ambienceChapter(ctx, book, ch)
 			})
 			return err
 		},
@@ -347,8 +350,10 @@ func (s *Server) voicesBulkRun(book *store.Book, scope bulkScope, group *jobs.Bu
 //     store.PassResets), invalidating audio for just the paragraphs whose
 //     narration it changed (and their scare-quote merge groups). The
 //     character roster is left alone - "Delete speaker data" covers that.
-//   - "music_scoring": every music region (and its clip), unsetting
-//     passes.music
+//   - "ambience": every music region (and its clip, and its lighting),
+//     unsetting passes.ambience and passes.lighting
+//   - "lighting": every music region's lighting cue, unsetting
+//     passes.lighting - the music is kept
 //   - "music_generation": every music region's clip, back to pending
 //   - "generate": every narration clip - handleDeleteBookAudio's action
 //
@@ -358,7 +363,7 @@ func (s *Server) voicesBulkRun(book *store.Book, scope bulkScope, group *jobs.Bu
 // Doesn't cancel an in-flight run of the same pass, which would set its
 // flag again as it finishes - the Speakers page disables a reset while its
 // pass is running. 200 {"invalidated": n}, n = paragraphs whose audio was
-// deleted (0 for the music/generate resets).
+// deleted (0 for the music/lighting/generate resets).
 func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 	pass := resetPass(r.PathValue("pass"))
 	book, err := s.Store.GetBook(r.PathValue("id"))
@@ -410,11 +415,13 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			err = removeMusicDirs()
 		}
-	case resetMusicScoring:
+	case resetAmbience:
 		err = s.Store.ClearBookMusicRegions(book.ID)
 		if err == nil {
 			err = removeMusicDirs()
 		}
+	case resetLighting:
+		err = s.Store.ClearBookLighting(book.ID)
 	default:
 		if _, ok := store.PassResets[string(pass)]; !ok {
 			writeError(w, http.StatusNotFound, "unknown pass "+string(pass))

@@ -12,6 +12,7 @@ import {
   RiEqualizerLine,
   RiForbidLine,
   RiGitMergeLine,
+  RiLightbulbLine,
   RiMusic2Line,
   RiPauseFill,
   RiPlayFill,
@@ -55,12 +56,13 @@ import {
   useRegenerateVariant,
   useSetCharacterInvalid,
   useSetCharacterAliases,
+  useSetCharacterPronouns,
   useRegenerateParagraph,
   useRetagDescriptions,
   useRetagScareQuotes,
   useScareQuotingChapters,
-  useScoreChapterMusic,
-  useScoringMusicChapters,
+  useRunChapterAmbience,
+  useAmbienceChapters,
   useSetCharacterVoice,
   useSetParagraphDescription,
   useSetParagraphSpeaker,
@@ -119,7 +121,7 @@ export function SpeakersPage() {
   const retagScareQuotes = useRetagScareQuotes(bookId)
   const tagDirections = useTagDirections(bookId)
   const resolvePronunciation = useResolvePronunciation(bookId)
-  const scoreChapterMusic = useScoreChapterMusic(bookId)
+  const runChapterAmbience = useRunChapterAmbience(bookId)
   const generateChapterMusic = useGenerateChapterMusic(bookId)
   const generateChapter = useGenerateChapter(bookId)
   const characterizeSpeaker = useCharacterizeSpeaker(bookId)
@@ -151,17 +153,17 @@ export function SpeakersPage() {
   const [reimportError, setReimportError] = useState<string | null>(null)
   const { run: runReimport, reimportingIdx } = useReimportChapterAction(bookId, setReimportError)
   // Same job-queue-derived tracking as attributingIdxs/directingIdxs, for
-  // background-music tone-region scoring - see useScoringMusicChapters'
+  // background-music tone-region scoring - see useAmbienceChapters'
   // own doc comment.
-  const scoringMusicIdxs = useScoringMusicChapters(bookId)
+  const ambienceIdxs = useAmbienceChapters(bookId)
   const generatingMusicIdxs = useGeneratingMusicChapters(bookId)
   const [musicScoreError, setMusicScoreError] = useState<string | null>(null)
   const [musicGenerateError, setMusicGenerateError] = useState<string | null>(null)
   // Same job-queue-derived tracking as attributingIdxs/directingIdxs/
-  // scoringMusicIdxs, for a chapter's own narration audio generation - see
+  // ambienceIdxs, for a chapter's own narration audio generation - see
   // useGeneratingChapters' own doc comment. Generating a chapter's voice
   // now also triggers background-music scoring for it automatically
-  // (backend jobs.Manager.maybeScoreChapterMusic), so this button doubles
+  // (backend jobs.Manager.maybeRunChapterAmbience), so this button doubles
   // as "generate everything for this chapter" once music is turned on.
   const generatingIdxs = useGeneratingChapters(bookId)
   const [generateError, setGenerateError] = useState<string | null>(null)
@@ -311,13 +313,11 @@ export function SpeakersPage() {
     })
   }
 
-  const runScoreMusic = (idx: number) => {
+  const runAmbience = (idx: number) => {
     setMusicScoreError(null)
-    scoreChapterMusic.mutate(idx, {
+    runChapterAmbience.mutate(idx, {
       onError: (err) =>
-        setMusicScoreError(
-          err instanceof ApiError ? err.message : 'Background-music scoring failed',
-        ),
+        setMusicScoreError(err instanceof ApiError ? err.message : 'Ambience pass failed'),
     })
   }
 
@@ -526,10 +526,10 @@ export function SpeakersPage() {
   const runPronunciationUnresolved = () => runBulk('pronunciation', 'rest')
   const hasUnresolvedPronunciation = book.chapters.some((c) => !c.passes.pronunciation)
   // Always allowed regardless of the book-wide musicEnabled toggle - see
-  // api.scoreChapterMusic.
-  const runScoreMusicAll = () => runBulk('music_scoring', 'all')
-  const runScoreMusicUnscored = () => runBulk('music_scoring', 'rest')
-  const hasUnscoredMusic = book.chapters.some((c) => !c.passes.music)
+  // api.runChapterAmbience.
+  const runAmbienceAll = () => runBulk('ambience', 'all')
+  const runAmbienceRest = () => runBulk('ambience', 'rest')
+  const hasAmbienceRest = book.chapters.some((c) => !(c.passes.ambience && c.passes.lighting))
 
   // A chapter's narration audio is done once every paragraph is ready - see
   // PlayerBar's identical "c.readyCount < c.paragraphCount" check.
@@ -709,7 +709,7 @@ export function SpeakersPage() {
               <th>Scare quotes</th>
               <th>Emotion</th>
               <th>Pronunciation</th>
-              <th>Music</th>
+              <th>Ambience</th>
               <th>Audio</th>
               <th>Music audio</th>
             </tr>
@@ -771,10 +771,10 @@ export function SpeakersPage() {
               <td>
                 <BulkActionButton
                   icon={RiMusic2Line}
-                  busy={bulkRunning.has('music_scoring')}
-                  disabled={!hasUnscoredMusic}
-                  onClick={runScoreMusicUnscored}
-                  title="Score unscored music — every chapter that isn't scored yet, skipping ones already done"
+                  busy={bulkRunning.has('ambience')}
+                  disabled={!hasAmbienceRest}
+                  onClick={runAmbienceRest}
+                  title="Run ambience where missing — music scoring and lighting for every chapter that doesn't have both yet (a scored chapter only gets lit)"
                 />
               </td>
               <td>
@@ -843,9 +843,9 @@ export function SpeakersPage() {
               <td>
                 <BulkActionButton
                   icon={RiMusic2Line}
-                  busy={bulkRunning.has('music_scoring')}
-                  onClick={runScoreMusicAll}
-                  title="Score all music — every chapter, including ones already done"
+                  busy={bulkRunning.has('ambience')}
+                  onClick={runAmbienceAll}
+                  title="Re-run all ambience — re-score music and re-light every chapter, including ones already done"
                 />
               </td>
               <td>
@@ -908,9 +908,15 @@ export function SpeakersPage() {
               <td>
                 <BulkActionButton
                   icon={RiMusic2Line}
-                  disabled={bulkRunning.has('music_scoring') || resetPass.isPending}
-                  onClick={() => runReset('music_scoring', 'music scoring')}
-                  title="Reset music scoring — delete every music region and its generated music"
+                  disabled={bulkRunning.has('ambience') || resetPass.isPending}
+                  onClick={() => runReset('ambience', 'ambience')}
+                  title="Reset ambience — delete every music region, its generated music, and its lighting"
+                />
+                <BulkActionButton
+                  icon={RiLightbulbLine}
+                  disabled={bulkRunning.has('ambience') || resetPass.isPending}
+                  onClick={() => runReset('lighting', 'lighting')}
+                  title="Reset lighting — clear every region's lighting cue, keeping the music (run ambience again to re-light)"
                 />
               </td>
               <td>
@@ -936,7 +942,7 @@ export function SpeakersPage() {
               const retaggingScareQuotes = scareQuotingIdxs.has(c.idx)
               const directing = directingIdxs.has(c.idx)
               const pronouncing = pronouncingIdxs.has(c.idx)
-              const scoringMusic = scoringMusicIdxs.has(c.idx)
+              const scoringMusic = ambienceIdxs.has(c.idx)
               const generating =
                 generatingIdxs.has(c.idx) || (bulkRunning.has('generate') && !isGenerated(c))
               const generatingMusic = generatingMusicIdxs.has(c.idx)
@@ -1057,18 +1063,27 @@ export function SpeakersPage() {
                       <button
                         className="icon-action-button"
                         disabled={scoringMusic}
-                        onClick={() => runScoreMusic(c.idx)}
+                        onClick={() => runAmbience(c.idx)}
                         title={
                           scoringMusic
-                            ? 'Scoring…'
-                            : c.passes.music
-                              ? 'Re-score background music for this chapter'
-                              : 'Score background music for this chapter'
+                            ? 'Running ambience…'
+                            : c.passes.ambience && c.passes.lighting
+                              ? 'Re-run ambience (re-score music and re-light) for this chapter'
+                              : c.passes.ambience
+                                ? 'Light this chapter (its music is already scored)'
+                                : 'Run ambience (music + lighting) for this chapter'
                         }
                       >
                         <RiMusic2Line className={scoringMusic ? 'spin' : undefined} />
                       </button>
-                      <PassStatus done={c.passes.music} label="Music scoring" />
+                      <PassStatus
+                        done={c.passes.ambience && c.passes.lighting}
+                        label={
+                          c.passes.ambience && !c.passes.lighting
+                            ? 'Ambience (music scored, not lit yet)'
+                            : 'Ambience'
+                        }
+                      />
                     </div>
                   </td>
                   <td>
@@ -1371,6 +1386,54 @@ function SpeakerAliases({
   )
 }
 
+const PRONOUN_OPTIONS = ['he/him', 'she/her', 'they/them', 'it/its']
+
+// A character's pronouns (Speaker.pronouns) - filled in by attribution,
+// correctable here. Characterization reads them as the voice's gender, so
+// a change only reaches the voice after "Regenerate".
+function SpeakerPronouns({
+  bookId,
+  characterId,
+  pronouns,
+}: {
+  bookId: string
+  characterId: string
+  pronouns: string
+}) {
+  const setPronouns = useSetCharacterPronouns(bookId)
+  const [error, setError] = useState<string | null>(null)
+  return (
+    <div className="speaker-aliases muted">
+      <label>
+        Pronouns{' '}
+        <select
+          value={pronouns}
+          disabled={setPronouns.isPending}
+          title="Used by speaker attribution and voice characterization - Regenerate the voice to apply a change"
+          onChange={(e) => {
+            setError(null)
+            setPronouns.mutate(
+              { characterId, pronouns: e.target.value },
+              {
+                onError: (err) =>
+                  setError(err instanceof ApiError ? err.message : 'Could not save pronouns'),
+              },
+            )
+          }}
+        >
+          <option value="">Not set</option>
+          {PRONOUN_OPTIONS.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+      </label>
+      {error && <p className="error-text">{error}</p>}
+    </div>
+  )
+}
+
 function SpeakerEmotions({
   bookId,
   speakerName,
@@ -1562,7 +1625,18 @@ function SpeakerRow({
       </div>
 
       {!isNarrator && (
-        <SpeakerAliases bookId={bookId} characterId={speaker.id} aliases={speaker.aliases ?? []} />
+        <>
+          <SpeakerPronouns
+            bookId={bookId}
+            characterId={speaker.id}
+            pronouns={speaker.pronouns ?? ''}
+          />
+          <SpeakerAliases
+            bookId={bookId}
+            characterId={speaker.id}
+            aliases={speaker.aliases ?? []}
+          />
+        </>
       )}
       {speaker.summary && <p className="muted speaker-row-summary">{speaker.summary}</p>}
       {speaker.refLine && (

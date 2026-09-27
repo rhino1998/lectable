@@ -262,11 +262,31 @@ compiled-in default in place if nothing answers in time.
   long-press opens `MusicVolumeSheet` - a device-local volume,
   `PlaybackSettingsRepository.musicVolume`, default 0.22, multiplied into
   `applyVolume`) is on; `onChapterMusic` feeds each value to the player
-  via `setChapterMusic` and lazily triggers `POST .../score-music` once
-  per chapter (`scoringMusicChapters` plus a job-queue check guard against
+  via `setChapterMusic` and lazily triggers `POST .../run-ambience` (the
+  ambience pass) once per chapter (`scoringMusicChapters` plus a job-queue check guard against
   re-triggering it). The reader's own per-region "Generate"/
   "Regenerate" and preview-clip actions live in annotations mode's
   `MusicRegionBoundaryRow` (`ui/reader/ReaderScreen.kt`) - see below.
+- `playback/lighting/` - Philips Hue room lighting, the Kotlin twin of
+  `../frontend/src/lighting/` (see `../frontend/CLAUDE.md` for the
+  engine's rate-limit design; keep the two in step): `HueColor.kt`
+  (hex → xy, brightness cap), `HueBridgeClient.kt` (local v1 API over
+  HTTPS - the bridge 301-redirects plain HTTP - on its *own* OkHttpClient,
+  since the shared one's DynamicBaseUrlInterceptor would rewrite the
+  bridge's host to the backend; the bridge's cert comes from Philips'
+  "root-bridge" CA, not a public one, so `BridgeTrust` accepts only that
+  issuer while pairing and pins the certificate's public key
+  (`LightingSettings.certPin`) for every later call, with hostname checks
+  off since the cert names the bridge id, not its IP), `LightingEngine.kt`, and
+  `HueLightingController` - app-scoped like `BackgroundMusicPlayer`, fed
+  regions via `ReaderViewModel.onChapterMusic` and observing
+  `ParagraphPlayer.state`, so lights follow the book with the screen off.
+  Settings (`data/settings/LightingSettingsRepository.kt`, DataStore) are
+  edited in Settings' "Room lighting (Philips Hue)" section: find (cloud
+  discovery) or type the bridge IP, Pair (polls for the link button),
+  pick a room, brightness cap, restore on stop. `ReaderViewModel` keeps
+  `chapterMusic` subscriptions while music *or* lighting is on and lazily
+  runs the ambience pass until a chapter is both `scored` and `lit`.
 - `playback/PlaybackService.kt` - a `MediaSessionService` hosting
   `ParagraphPlayer`'s session as a foreground service, so playback
   survives backgrounding/screen-off and exposes system-level play/pause
@@ -299,7 +319,7 @@ compiled-in default in place if nothing answers in time.
   "jump to chapter" sheet (each row itself long-press-able for a
   chapter-scoped menu: "Generate chapter audio", then one item per LLM pass
   - "Tag scare quotes", "Attribute speakers", "Tag descriptions", "Label
-  emotions", "Score background music" -
+  emotions", "Run ambience (music + lighting)" -
   `ReaderViewModel.generateChapter`/`runChapterPass(idx, ChapterPass)` - and, once
   something's downloaded, "Delete downloaded data"), bookmarks/search
   sheets, and a long-press paragraph menu (regenerate/bookmark/copy/set

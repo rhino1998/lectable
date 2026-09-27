@@ -3,6 +3,7 @@ package musicgen
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"math"
 	"testing"
 
@@ -14,7 +15,9 @@ import (
 // latentsFake returns silence of the requested length and latents of dim 1
 // whose every frame is labelled: a seeded window's first frames copy the
 // seed's labels, and each new frame gets the next label - so the region's
-// timeline is labels 1, 2, 3, ... when seeding is exact.
+// timeline is labels 1, 2, 3, ... when seeding is exact. Like the worker,
+// it stamps what it returns with a codec_model and rejects init latents
+// that don't carry it.
 type latentsFake struct {
 	next  float32
 	calls []ttsproto.StableAudioRequest
@@ -26,6 +29,9 @@ func (f *latentsFake) StableAudioMedium(context.Context, ttsproto.StableAudioReq
 
 func (f *latentsFake) StableAudioMediumLatents(_ context.Context, req ttsproto.StableAudioRequest) ([]byte, *ttsproto.Latents, error) {
 	f.calls = append(f.calls, req)
+	if req.InitLatents != nil && req.InitLatents.Meta["codec_model"] != fakeCodecModel {
+		return nil, nil, errors.New(ttsproto.ErrLatentsModelMismatch)
+	}
 	samples := int(req.DurationSeconds * latentRate)
 	frames := (samples + latentHop - 1) / latentHop
 	data := make([]byte, 4*frames)
@@ -45,8 +51,11 @@ func (f *latentsFake) StableAudioMediumLatents(_ context.Context, req ttsproto.S
 		binary.LittleEndian.PutUint32(data[4*i:], math.Float32bits(v))
 	}
 	w, _ := wav.Encode(make([]float32, samples*2), latentRate, 2)
-	return w, &ttsproto.Latents{Kind: latents.KindLatents, Frames: frames, Dim: 1, HopSamples: latentHop, SampleRate: latentRate, Data: data}, nil
+	return w, &ttsproto.Latents{Kind: latents.KindLatents, Frames: frames, Dim: 1, HopSamples: latentHop, SampleRate: latentRate, Data: data,
+		Meta: map[string]string{"codec_model": fakeCodecModel}}, nil
 }
+
+const fakeCodecModel = "fake.gguf:1"
 
 func labels(l *ttsproto.Latents) []float32 {
 	out := make([]float32, l.Frames)
@@ -68,6 +77,9 @@ func TestGenerateRegionLatentsSeedsExactly(t *testing.T) {
 	}
 	n := seedFramesFor()
 	for i, c := range f.calls[1:] {
+		if c.InitLatents == nil {
+			t.Fatalf("chunk %d unseeded", i+2)
+		}
 		got := labels(c.InitLatents)
 		for j := 1; j < len(got); j++ {
 			if got[j] != got[j-1]+1 {
@@ -99,6 +111,9 @@ func TestGenerateRegionLatentsSeedsExactly(t *testing.T) {
 	f.calls = nil
 	if _, err := GenerateRegion(t.Context(), f, Region{Prompt: "p", TargetDurationSeconds: 20, SeedLatents: res.SeedLatents}); err != nil {
 		t.Fatal(err)
+	}
+	if len(f.calls) != 1 || f.calls[0].InitLatents == nil {
+		t.Fatalf("next region: %d calls, first seeded %v", len(f.calls), len(f.calls) > 0 && f.calls[0].InitLatents != nil)
 	}
 	if got := labels(f.calls[0].InitLatents); got[0] != seed[0] || len(got) != n {
 		t.Fatalf("next region seeded from %v", got)

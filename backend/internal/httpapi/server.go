@@ -119,13 +119,13 @@ func NewRouter(s *Server) http.Handler {
 			s.Jobs.SetChapterAttributor(s.attributeChapterForJob)
 			s.Jobs.SetChapterScareQuoter(s.scareQuoteChapterForJob)
 			s.Jobs.SetChapterPronouncer(s.pronounceChapterForJob)
-			// scoreChapterMusic itself calls s.Speaker.ScoreMusic - same
+			// ambienceChapter itself calls s.Speaker.ScoreMusic - same
 			// s.Speaker-configured gate as the three above, and the same
-			// reason jobs.Manager.maybeScoreChapterMusic's own nil-scorer
+			// reason jobs.Manager.maybeRunChapterAmbience's own nil-scorer
 			// check must stay correct rather than panicking the worker
 			// goroutine the first time a chapter generates with MusicEnabled
 			// on but no speaker LLM configured.
-			s.Jobs.SetMusicScorer(s.scoreChapterMusic)
+			s.Jobs.SetAmbienceRunner(s.ambienceChapter)
 		}
 	}
 
@@ -181,7 +181,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/tag-directions", s.handleTagDirections)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/resolve-pronunciation", s.handleResolvePronunciation)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/music", s.handleGetChapterMusic)
-	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/score-music", s.handleScoreChapterMusic)
+	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/run-ambience", s.handleRunChapterAmbience)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/generate-music", s.handleGenerateChapterMusic)
 	mux.HandleFunc("GET /api/music-regions/{id}/audio", s.handleGetMusicRegionAudio)
 	mux.HandleFunc("POST /api/music-regions/{id}/regenerate", s.handleRegenerateMusicRegion)
@@ -200,6 +200,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/voice", s.handleSetCharacterVoice)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/invalid", s.handleSetCharacterInvalid)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/aliases", s.handleSetCharacterAliases)
+	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/pronouns", s.handleSetCharacterPronouns)
 	mux.HandleFunc("DELETE /api/books/{id}/characters/{characterId}", s.handleDeleteCharacter)
 	mux.HandleFunc("POST /api/books/{id}/characters/{characterId}/merge", s.handleMergeCharacter)
 	mux.HandleFunc("POST /api/books/{id}/characters/{characterId}/generate-voice", s.handleGenerateCharacterVoice)

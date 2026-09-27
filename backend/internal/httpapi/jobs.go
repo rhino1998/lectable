@@ -14,11 +14,11 @@ type queueTaskDTO struct {
 	ID string `json:"id"`
 	// Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
 	// | "voice_provision" | "speaker_attribution" | "speaker_characterization"
-	// | "speech_direction" | "music_scoring" | "scare_quote_tagging" |
+	// | "speech_direction" | "ambience" | "scare_quote_tagging" |
 	// "description_tagging" (per-item work, see jobs.Kind) or
 	// "pipeline_scare_quote" | "pipeline_attribution" |
 	// "pipeline_description" | "pipeline_characterization" |
-	// "pipeline_voice_provision" | "pipeline_direction" | "pipeline_music"
+	// "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
 	// (one of a book's own preprocessing phases - see
 	// jobs.EnqueuePipeline/toPipelineQueueTask; deliberately "pipeline_"-
 	// prefixed so these can never collide with the per-item kind sharing a

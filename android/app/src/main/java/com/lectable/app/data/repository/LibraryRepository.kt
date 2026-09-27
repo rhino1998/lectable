@@ -147,8 +147,8 @@ class LibraryRepository @Inject constructor(
     /** [LectableApi.getChapterMusic] - this chapter's own background-music regions. */
     suspend fun getChapterMusic(bookId: String, chapterIdx: Int): ChapterMusicDto = api.getChapterMusic(bookId, chapterIdx)
 
-    /** [LectableApi.scoreChapterMusic] - see its own doc comment. */
-    suspend fun scoreChapterMusic(bookId: String, chapterIdx: Int): Boolean = api.scoreChapterMusic(bookId, chapterIdx).queued > 0
+    /** [LectableApi.runChapterAmbience] - music scoring plus lighting; see its own doc comment. */
+    suspend fun runChapterAmbience(bookId: String, chapterIdx: Int): Boolean = api.runChapterAmbience(bookId, chapterIdx).queued > 0
 
     /** [LectableApi.regenerateMusicRegion] - see its own doc comment. */
     suspend fun regenerateMusicRegion(regionId: String): Boolean = api.regenerateMusicRegion(regionId).queued > 0

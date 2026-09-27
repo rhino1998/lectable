@@ -18,13 +18,16 @@ import {
   RiVoiceprintLine,
   RiVolumeUpLine,
   RiWindyLine,
+  RiLightbulbLine,
 } from 'react-icons/ri'
-import type { ChapterDetail, ContentItem, MusicRegion, Paragraph } from '../api/types'
+import type { ChapterDetail, ContentItem, Lighting, MusicRegion, Paragraph } from '../api/types'
+import { LIGHT_EFFECT_LABELS } from '../api/types'
 import { hasActiveTextSelection } from '../utils/selection'
 import { emotionIcon, emotionLabel } from '../utils/emotions'
 import { annotationKind, annotationTitle, matchesSelectedSpeaker } from '../utils/annotations'
 import { resolveGenerationText } from '../utils/resolveGenerationText'
 import { ParagraphText } from './ParagraphText'
+import { LightingSwatch } from './LightingSwatch'
 
 // One rendered visual block: either a single image, or one or more
 // paragraphs joined with no break between them - a non-inline paragraph
@@ -533,7 +536,14 @@ function MusicRegionBoundary({
   // The ambience prompt goes on its own line (the tooltip is pre-line) so
   // it doesn't read as a continuation of the music prompt itself.
   const musicText = durationLabel ? `${region.prompt} (${durationLabel})` : region.prompt
-  const tooltipText = region.ambience ? `${musicText}\nAmbience: ${region.ambience}` : musicText
+  const lighting = region.lighting
+  const tooltipText = [
+    musicText,
+    region.ambience && `Ambience: ${region.ambience}`,
+    lighting && `Lighting: ${lightingSummary(lighting)}`,
+  ]
+    .filter(Boolean)
+    .join('\n')
   const busy = region.status === 'generating'
   return (
     <div
@@ -564,6 +574,18 @@ function MusicRegionBoundary({
           <span className="chapter-music-boundary-ambience-text">{region.ambience}</span>
         </span>
       )}
+      {/* The region's room-lighting cue (the ambience pass's lighting
+          sub-pass): a swatch animated like the effect the lights play,
+          plus the start of its description; the rest is in the tooltip. */}
+      {lighting && (
+        <span className="chapter-music-boundary-lighting">
+          <RiLightbulbLine />
+          <LightingSwatch lighting={lighting} />
+          <span className="chapter-music-boundary-ambience-text">
+            {lighting.description || LIGHT_EFFECT_LABELS[lighting.effect]}
+          </span>
+        </span>
+      )}
       {region.status === 'ready' && region.audioUrl && (
         <MusicRegionPreviewButton audioUrl={region.audioUrl} />
       )}
@@ -586,6 +608,14 @@ function MusicRegionBoundary({
       </button>
     </div>
   )
+}
+
+// lightingSummary is a lighting cue as one tooltip line: "dim candlelight
+// in a cellar - flickering, 30% (#ff9a3c -> #ffd27a)".
+function lightingSummary(l: Lighting): string {
+  const colors = l.accent ? `${l.color} -> ${l.accent}` : l.color
+  const what = l.description ? `${l.description} - ` : ''
+  return `${what}${LIGHT_EFFECT_LABELS[l.effect]}, ${l.brightness}% (${colors})`
 }
 
 // A standalone, isolated preview of one region's own generated clip - its
@@ -650,15 +680,15 @@ interface ChapterSectionProps {
   // per-chapter row, mirrored here so a reader can run any of these
   // without leaving the reader for the Speakers page. All job-queue-
   // derived (see useDescribingChapters/useScareQuotingChapters/
-  // useDirectingChapters/useScoringMusicChapters/useGeneratingChapters),
+  // useDirectingChapters/useAmbienceChapters/useGeneratingChapters),
   // the same as SpeakersPage's own per-row booleans.
   chapterRetaggingDescriptions: boolean
   chapterRetaggingScareQuotes: boolean
   chapterDirecting: boolean
   chapterPronouncing: boolean
-  chapterScoringMusic: boolean
+  chapterRunningAmbience: boolean
   chapterGenerating: boolean
-  // Passes.direction/Passes.pronunciation/Passes.music - only used for the
+  // Passes.direction/Passes.pronunciation/Passes.ambience - only used for the
   // direction/pronunciation/music buttons' own "Tag"/"Re-tag"-style title
   // wording, the same way hasAttribution already does for the attribute
   // button.
@@ -695,7 +725,7 @@ interface ChapterSectionProps {
   onRetagScareQuotes: (idx: number) => void
   onTagDirections: (idx: number) => void
   onResolvePronunciation: (idx: number) => void
-  onScoreMusic: (idx: number) => void
+  onRunAmbience: (idx: number) => void
   onGenerate: (idx: number) => void
   // This chapter's own background-music regions (see backend
   // store.MusicRegion) - annotations view uses these to mark each region's
@@ -744,7 +774,7 @@ export const ChapterSection = memo(function ChapterSection({
   chapterRetaggingScareQuotes,
   chapterDirecting,
   chapterPronouncing,
-  chapterScoringMusic,
+  chapterRunningAmbience,
   chapterGenerating,
   hasDirection,
   hasPronunciation,
@@ -765,7 +795,7 @@ export const ChapterSection = memo(function ChapterSection({
   onRetagScareQuotes,
   onTagDirections,
   onResolvePronunciation,
-  onScoreMusic,
+  onRunAmbience,
   onGenerate,
   musicRegions,
   onRegenerateMusic,
@@ -900,17 +930,17 @@ export const ChapterSection = memo(function ChapterSection({
           </button>
           <button
             className="icon-action-button"
-            onClick={() => onScoreMusic(idx)}
-            disabled={chapterScoringMusic}
+            onClick={() => onRunAmbience(idx)}
+            disabled={chapterRunningAmbience}
             title={
-              chapterScoringMusic
-                ? 'Scoring…'
+              chapterRunningAmbience
+                ? 'Running ambience…'
                 : hasMusic
-                  ? 'Re-score background music for this chapter'
-                  : 'Score background music for this chapter'
+                  ? 'Re-run ambience (music + lighting) for this chapter'
+                  : 'Run ambience (music + lighting) for this chapter'
             }
           >
-            <RiMusic2Line className={chapterScoringMusic ? 'spin' : undefined} />
+            <RiMusic2Line className={chapterRunningAmbience ? 'spin' : undefined} />
           </button>
           <button
             className="icon-action-button"

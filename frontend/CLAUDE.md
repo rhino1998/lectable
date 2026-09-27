@@ -80,6 +80,37 @@ byte-for-byte.
   Effects are keyed on the *resolved ready audio URL* (a string), not the
   whole chapter object, specifically so a live chapter patch (another
   paragraph finishing) doesn't restart playback.
+- `src/lighting/` + `src/hooks/useLighting.ts` + `src/components/LightingPanel.tsx`
+  — Philips Hue room lighting from the ambience pass's per-region
+  `lighting` cues (backend `store.Lighting`). The browser talks to the
+  bridge directly over its local **v1** API (`hue.ts`: cloud discovery via
+  discovery.meethue.com, link-button pairing, rooms/lights, light/group
+  PUTs) **over HTTPS** - current bridge firmware 301-redirects plain HTTP
+  there. Deliberately direct from the browser, not relayed: the bridge is on
+  the listener's own network, which only their browser can reach wherever
+  the app is served from. Two one-time, per-browser steps, both surfacing
+  as the same bare fetch failure (`HUE_UNREACHABLE`): accepting the
+  bridge's certificate (Philips' own "root-bridge" CA - no browser trusts
+  it, page code can't pin it) at `https://<bridge>/api/config`, and, for a
+  page served from the internet, Chrome's Local Network Access permission
+  prompt. `LightingPanel` walks through both (open bridge → Test
+  connection → Pair); `explainUnreachable` reads the
+  `local-network-access` permission to tell a blocked/pending permission
+  from a certificate problem; probe and pair wait 60s, since the request
+  hangs on that prompt (routine calls keep 4s). CORS is `*`.
+  `engine.ts` sends a new cue as one group command (fast into a `cut`
+  region, slow into a `continuation`) and animates flicker/pulse/shimmer
+  one light per 125ms tick round-robin (inside Hue's ~10 light cmds/s,
+  ~1 group cmd/s limits); lightning is an occasional flash-and-back group
+  pair; effects run only while playing. `controller.ts` is a module
+  singleton holding the per-browser settings (localStorage
+  `lectable.lighting`: bridge, username, room, brightness cap, restore on
+  stop) and the engine lifecycle; it snapshots the room's lights on start
+  and restores them on stop. `useLighting` (ReaderPage) picks the region
+  under the current paragraph from the `chapterMusic` topic; the reader
+  also lazily runs the ambience pass when lights are on, even with music
+  off. PlayerBar's "Lights" button opens `LightingPanel`. Mirrored by
+  android's `playback/lighting/` - keep the two in step.
 - `src/hooks/useSleepTimer.ts` — sleep timer for `PlayerBar`'s
   `SleepTimerButton.tsx`: either a real-wall-clock countdown (5/10/15/30/
   45/60 min, ticks regardless of play/pause, same as e.g. Audible's) that

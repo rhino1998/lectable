@@ -281,7 +281,7 @@ func (w *Worker) GenerateFull(req GenerateRequest) (GenerateResult, error) {
 	out := GenerateResult{Audio: audio}
 	if wantLatents {
 		switch fam.family {
-		case "higgs_audio_tts":
+		case "higgs_audio_tts", "breeze_tts":
 			codes, err := result.Codes("codes")
 			if err != nil {
 				return GenerateResult{}, fmt.Errorf("read codes: %w", err)

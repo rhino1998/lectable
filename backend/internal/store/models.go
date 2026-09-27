@@ -62,14 +62,14 @@ type Book struct {
 	// MusicEnabled is the reader-facing background-music toggle - book-
 	// wide, not per-chapter (unlike attribution/direction, which a reader
 	// triggers chapter by chapter): scoring/generation are still inherently
-	// chapter-scoped work (see MusicRegion/Passes.Music), but whether the
+	// chapter-scoped work (see MusicRegion/Passes.Ambience), but whether the
 	// feature runs at all is one setting for the whole book, set via the
 	// same PUT .../voice endpoint SpeechDirection above uses. Off by
 	// default, so uploading or reading a book never triggers Stable Audio
 	// work on its own. Flipping it on doesn't eagerly score every chapter
 	// at once - jobs.Manager.MaybeAdvanceChapterMusic only ever advances a
 	// chapter that's actually been asked to score (see httpapi's
-	// handleScoreChapterMusic, triggered explicitly per chapter - the
+	// handleRunChapterAmbience, triggered explicitly per chapter - the
 	// Speakers page's own per-row/bulk buttons, or the reader lazily
 	// triggering the chapter it's currently on). Flipping it off doesn't
 	// delete anything already scored/generated - MaybeAdvanceChapterMusic
@@ -220,22 +220,37 @@ type Passes struct {
 	// completed a full pass over the chapter - Direction's own contract,
 	// but its own pass.
 	Pronunciation bool `json:"pronunciation"`
-	// Music is set once internal/speakerattr.Client.ScoreMusic has
-	// completed a full, uninterrupted pass over this chapter (never on a
-	// pause or a genuine failure partway through) - Direction's own "full
-	// pass, not a pause/failure" contract, and just as independent of
+	// Ambience is set once the ambience pass's music sub-pass
+	// (internal/speakerattr.Client.ScoreMusic, via httpapi.ambienceChapter)
+	// has completed a full, uninterrupted pass over this chapter (never on
+	// a pause or a genuine failure partway through) - Direction's own
+	// "full pass, not a pause/failure" contract, and just as independent of
 	// Attribution/Description/Direction as Direction itself is: a reader
-	// can trigger background-music scoring for a chapter regardless of
-	// whether it's ever been attributed/direction-tagged. Triggered by
-	// httpapi.handleScoreChapterMusic (the Speakers page's per-chapter
-	// button/bulk actions, book preprocessing's own music phase, or the
-	// reader lazily scoring whichever chapter it's currently on) -
+	// can trigger the ambience pass for a chapter regardless of whether
+	// it's ever been attributed/direction-tagged. Triggered by
+	// httpapi.handleRunChapterAmbience (the Speakers page's per-chapter
+	// button/bulk actions, book preprocessing's own ambience phase, or the
+	// reader lazily running whichever chapter it's currently on) -
 	// deliberately NOT gated on store.Book.MusicEnabled: that toggle only
 	// controls whether a scored region's audio actually gets generated
 	// (jobs.Manager.MaybeAdvanceChapterMusic), not whether scoring itself
-	// can run (see Book.MusicEnabled's own doc comment).
-	Music bool `json:"music"`
+	// can run (see Book.MusicEnabled's own doc comment). Stored as
+	// "music" until the pass was renamed (and backfilled by hand).
+	Ambience bool `json:"ambience"`
+	// Lighting is set once the ambience pass's lighting sub-pass
+	// (internal/speakerattr.Client.DescribeLighting, via
+	// httpapi.lightChapter) has given every one of the chapter's music
+	// regions a MusicRegion.Lighting cue. Runs after the music sub-pass in
+	// the same task (it lights the regions scoring produced), but is its
+	// own flag so a chapter scored before lighting existed - Ambience set,
+	// Lighting not - gets just the lighting sub-pass on its next ambience
+	// run, without re-scoring its music.
+	Lighting bool `json:"lighting"`
 }
+
+// AmbienceDone reports whether the whole ambience pass - music scoring and
+// its lighting sub-pass - has finished for the chapter.
+func (p Passes) AmbienceDone() bool { return p.Ambience && p.Lighting }
 
 // scanJSON is the shared implementation behind every native-JSON column's
 // own Scan method in this package (Passes, DescribesCharacterList,
@@ -349,6 +364,11 @@ type MusicRegion struct {
 	// separately and mixed under the music - "" means music only.
 	Ambience   string
 	Transition MusicTransition
+	// Lighting is the region's room-lighting cue from the ambience pass's
+	// lighting sub-pass (Passes.Lighting) - the zero value (IsSet false)
+	// until that sub-pass has reached this region. The backend only
+	// stores it; clients drive the actual lights (Philips Hue) themselves.
+	Lighting Lighting
 	// Status is one of AudioPending/AudioGenerating/AudioReady/AudioError -
 	// the same four-state vocabulary paragraph/SFX audio already uses,
 	// reused here rather than inventing a parallel one.
@@ -375,6 +395,66 @@ const (
 	// crossfades every region switch the same way regardless of this value.
 	MusicTransitionContinuation MusicTransition = "continuation"
 )
+
+// Lighting is one music region's room-lighting cue (music_regions.lighting,
+// a native JSON column - NULL until the lighting sub-pass reaches the
+// region). Deliberately device-agnostic: an sRGB color plus a brightness
+// and a named effect, which a client maps onto whatever lights it drives.
+type Lighting struct {
+	// Description is the lighting sub-pass's own short description of the
+	// light ("dim flickering candlelight in a stone cellar") - display only.
+	Description string `json:"description,omitempty"`
+	// Color is the base color, "#rrggbb".
+	Color string `json:"color"`
+	// Accent is a second "#rrggbb" color the effect moves toward (a
+	// shimmer's other color, a lightning flash's tint) - "" for none.
+	Accent string `json:"accent,omitempty"`
+	// Brightness is 1-100, a fraction of the client's own brightness cap
+	// rather than an absolute level.
+	Brightness int `json:"brightness"`
+	// Effect is how the light moves over time - see LightEffect.
+	Effect LightEffect `json:"effect"`
+}
+
+// IsSet reports whether the lighting sub-pass has filled l in.
+func (l Lighting) IsSet() bool { return l.Color != "" }
+
+// Scan implements sql.Scanner for the music_regions.lighting JSON column -
+// see scanJSON. NULL scans to the zero value.
+func (l *Lighting) Scan(v any) error { return scanJSON(v, l) }
+
+// Value implements driver.Valuer, storing the zero value as NULL.
+func (l Lighting) Value() (driver.Value, error) {
+	if !l.IsSet() {
+		return nil, nil
+	}
+	return jsonValue(l)
+}
+
+// LightEffect is Lighting.Effect's own type. Clients animate these
+// themselves (see frontend/src/lighting and android's playback/lighting) -
+// the backend never talks to a light.
+type LightEffect string
+
+const (
+	// LightEffectSteady holds the color.
+	LightEffectSteady LightEffect = "steady"
+	// LightEffectFlicker jitters brightness around the base like a flame -
+	// firelight, candles, torches.
+	LightEffectFlicker LightEffect = "flicker"
+	// LightEffectPulse breathes slowly up and down - dread, a heartbeat,
+	// magic, an alarm's glow.
+	LightEffectPulse LightEffect = "pulse"
+	// LightEffectLightning holds the base with occasional brief flashes of
+	// the accent - a thunderstorm.
+	LightEffectLightning LightEffect = "lightning"
+	// LightEffectShimmer drifts slowly between Color and Accent - water,
+	// aurora, moonlight through leaves.
+	LightEffectShimmer LightEffect = "shimmer"
+)
+
+// LightEffects lists every LightEffect, in display order.
+var LightEffects = []LightEffect{LightEffectSteady, LightEffectFlicker, LightEffectPulse, LightEffectLightning, LightEffectShimmer}
 
 type ChapterSummary struct {
 	Chapter
@@ -606,6 +686,14 @@ type Character struct {
 	// added automatically when another character is merged into this one
 	// (the merged-away name becomes an alias). Sorted.
 	Aliases AliasList
+	// Pronouns are the pronouns the text uses for this character - one of
+	// "he/him", "she/her", "they/them", "it/its", or "" when never
+	// established. Filled in by speaker attribution (the majority answer
+	// across a chapter's lines, only while still "" - never overwriting
+	// an existing value), editable from the Speakers page, and handed to
+	// characterization as its gender signal
+	// (speakerattr.Client.CharacterizeVoice).
+	Pronouns string
 	// Invalid marks this name as not a real speaker at all (a stray
 	// pronoun, a vocative, a generic phrase the LLM keeps latching onto) -
 	// set explicitly from the Speakers page or by an "Auto Split" of this

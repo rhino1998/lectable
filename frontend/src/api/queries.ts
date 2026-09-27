@@ -154,11 +154,11 @@ export function useChapterMusicRange(
 }
 
 // Triggers background-music tone-region scoring for one chapter - fire and
-// forget (see api.scoreChapterMusic/useScoringMusicChapters for tracking
+// forget (see api.runChapterAmbience/useAmbienceChapters for tracking
 // completion).
-export function useScoreChapterMusic(bookId: string) {
+export function useRunChapterAmbience(bookId: string) {
   return useMutation({
-    mutationFn: (chapterIdx: number) => api.scoreChapterMusic(bookId, chapterIdx),
+    mutationFn: (chapterIdx: number) => api.runChapterAmbience(bookId, chapterIdx),
   })
 }
 
@@ -461,12 +461,12 @@ export function useDescribingChapters(bookId: string): Set<number> {
   return useChapterIdxSet(bookId, 'description_tagging')
 }
 
-// useAttributingChapters' own counterpart for background-music tone-region
-// scoring. Doesn't track "music_generation" - that's region-scoped, not
+// useAttributingChapters' own counterpart for the ambience pass (music
+// scoring plus lighting). Doesn't track "music_generation" - that's region-scoped, not
 // chapter-scoped, and its progress is already visible on the chapterMusic
 // topic wherever that's mounted (the reader).
-export function useScoringMusicChapters(bookId: string): Set<number> {
-  return useChapterIdxSet(bookId, 'music_scoring')
+export function useAmbienceChapters(bookId: string): Set<number> {
+  return useChapterIdxSet(bookId, 'ambience')
 }
 
 // Chapters with background-music clips being generated right now - either
@@ -504,6 +504,14 @@ export function useSetCharacterAliases(bookId: string) {
   return useMutation({
     mutationFn: ({ characterId, aliases }: { characterId: string; aliases: string[] }) =>
       api.setCharacterAliases(bookId, characterId, aliases),
+  })
+}
+
+// See api.setCharacterPronouns.
+export function useSetCharacterPronouns(bookId: string) {
+  return useMutation({
+    mutationFn: ({ characterId, pronouns }: { characterId: string; pronouns: string }) =>
+      api.setCharacterPronouns(bookId, characterId, pronouns),
   })
 }
 

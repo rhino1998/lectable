@@ -49,7 +49,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pipeline_characterization: 'Preprocess: Characterization',
   pipeline_voice_provision: 'Preprocess: Voice Provision',
   pipeline_direction: 'Preprocess: Direction Tagging',
-  pipeline_music: 'Preprocess: Music Scoring',
+  pipeline_ambience: 'Preprocess: Ambience',
   pipeline_pronunciation: 'Preprocess: Pronunciation',
   // "Generate audio" (library page's All/Remaining, and the reader's
   // per-chapter action) - see backend jobs.Manager.EnqueueChapter/
@@ -67,7 +67,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pipeline_bulk_scare_quote: 'Bulk: Scare Quote Tagging',
   pipeline_bulk_direction: 'Bulk: Emotion Labeling',
   pipeline_bulk_pronunciation: 'Bulk: Pronunciation',
-  pipeline_bulk_music_scoring: 'Bulk: Music Scoring',
+  pipeline_bulk_ambience: 'Bulk: Ambience',
   pipeline_bulk_music_generation: 'Bulk: Music Generation',
   pipeline_bulk_characterization: 'Bulk: Characterization',
   pipeline_bulk_voices: 'Bulk: Voices',
@@ -77,7 +77,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   sfx_generation: 'SFX',
   sfx_preview: 'SFX/Music Preview',
   llm_preview: 'LLM Preview',
-  music_scoring: 'Background Music: Scoring',
+  ambience: 'Ambience: Music + Lighting',
   music_generation: 'Background Music: Generation',
   music_live_generation: 'Background Music: Live',
 }

@@ -90,7 +90,7 @@ func TestAttributeChapterAsksOnlyDialogueInParallel(t *testing.T) {
 	}
 	llm := &recordingLLM{}
 	c := NewClient(Config{}, llm)
-	out, _, remaining, err := c.AttributeChapter(context.Background(), "Book", "Ch", Roster{Names: []string{"Bert"}}, paras, nil)
+	out, _, _, remaining, err := c.AttributeChapter(context.Background(), "Book", "Ch", Roster{Names: []string{"Bert"}}, paras, nil)
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("err=%v remaining=%d", err, len(remaining))
 	}

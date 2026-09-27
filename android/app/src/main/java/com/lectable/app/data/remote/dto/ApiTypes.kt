@@ -48,12 +48,12 @@ object BulkActions {
     const val SCARE_QUOTE: BulkAction = "scare_quote"
     const val DIRECTION: BulkAction = "direction"
     const val PRONUNCIATION: BulkAction = "pronunciation"
-    const val MUSIC_SCORING: BulkAction = "music_scoring"
+    const val AMBIENCE: BulkAction = "ambience"
     const val MUSIC_GENERATION: BulkAction = "music_generation"
     const val GENERATE: BulkAction = "generate"
     const val CHARACTERIZATION: BulkAction = "characterization"
     const val VOICES: BulkAction = "voices"
-    val VALUES: List<BulkAction> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, MUSIC_SCORING, MUSIC_GENERATION, GENERATE, CHARACTERIZATION, VOICES)
+    val VALUES: List<BulkAction> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, AMBIENCE, MUSIC_GENERATION, GENERATE, CHARACTERIZATION, VOICES)
 }
 
 /**
@@ -151,6 +151,28 @@ object JobTiers {
 }
 
 /**
+ * LightEffect is Lighting.Effect's own type. Clients animate these
+ * themselves (see frontend/src/lighting and android's playback/lighting) -
+ * the backend never talks to a light.
+ *
+ *
+ * Values: see [LightEffects].
+ */
+typealias LightEffect = String
+
+/**
+ * [LightEffect]'s wire values, in declaration order.
+ */
+object LightEffects {
+    const val STEADY: LightEffect = "steady"
+    const val FLICKER: LightEffect = "flicker"
+    const val PULSE: LightEffect = "pulse"
+    const val LIGHTNING: LightEffect = "lightning"
+    const val SHIMMER: LightEffect = "shimmer"
+    val VALUES: List<LightEffect> = listOf(STEADY, FLICKER, PULSE, LIGHTNING, SHIMMER)
+}
+
+/**
  * resetPass is a pass the Speakers page can reset across a whole book
  * (POST /api/books/{id}/reset/{pass}) - every bulkAction except the
  * character-scoped ones.
@@ -169,10 +191,11 @@ object ResetPasses {
     const val SCARE_QUOTE: ResetPass = "scare_quote"
     const val DIRECTION: ResetPass = "direction"
     const val PRONUNCIATION: ResetPass = "pronunciation"
-    const val MUSIC_SCORING: ResetPass = "music_scoring"
+    const val AMBIENCE: ResetPass = "ambience"
     const val MUSIC_GENERATION: ResetPass = "music_generation"
     const val GENERATE: ResetPass = "generate"
-    val VALUES: List<ResetPass> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, MUSIC_SCORING, MUSIC_GENERATION, GENERATE)
+    const val LIGHTING: ResetPass = "lighting"
+    val VALUES: List<ResetPass> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, AMBIENCE, MUSIC_GENERATION, GENERATE, LIGHTING)
 }
 
 /**
@@ -483,7 +506,14 @@ data class ChapterHashDto(
 @Serializable
 data class ChapterMusicDto(
     val enabled: Boolean = false,
+    /**
+     * Scored is passes.ambience - the ambience pass's music sub-pass.
+     */
     val scored: Boolean = false,
+    /**
+     * Lit is passes.lighting - every region has its Lighting cue.
+     */
+    val lit: Boolean = false,
     val regions: List<MusicRegionDto> = emptyList(),
 )
 
@@ -872,6 +902,39 @@ data class LanguagesResponseDto(
     val languages: List<String> = emptyList(),
 )
 
+/**
+ * Lighting is one music region's room-lighting cue (music_regions.lighting,
+ * a native JSON column - NULL until the lighting sub-pass reaches the
+ * region). Deliberately device-agnostic: an sRGB color plus a brightness
+ * and a named effect, which a client maps onto whatever lights it drives.
+ */
+@Serializable
+data class LightingDto(
+    /**
+     * Description is the lighting sub-pass's own short description of the
+     * light ("dim flickering candlelight in a stone cellar") - display only.
+     */
+    val description: String? = null,
+    /**
+     * Color is the base color, "#rrggbb".
+     */
+    val color: String = "",
+    /**
+     * Accent is a second "#rrggbb" color the effect moves toward (a
+     * shimmer's other color, a lightning flash's tint) - "" for none.
+     */
+    val accent: String? = null,
+    /**
+     * Brightness is 1-100, a fraction of the client's own brightness cap
+     * rather than an absolute level.
+     */
+    val brightness: Int = 0,
+    /**
+     * Effect is how the light moves over time - see LightEffect.
+     */
+    val effect: LightEffect = "",
+)
+
 @Serializable
 data class LlmTestResponseDto(
     val text: String = "",
@@ -930,6 +993,12 @@ data class MusicRegionDto(
      * "cut" or "continuation" - see store.MusicTransition
      */
     val transition: String = "",
+    /**
+     * Lighting is the region's room-lighting cue from the ambience pass's
+     * lighting sub-pass - absent until that sub-pass reaches the region.
+     * Clients drive the actual lights (Philips Hue) from it themselves.
+     */
+    val lighting: LightingDto? = null,
     val status: AudioStatus = "",
     val error: String? = null,
     val durationSeconds: Double = 0.0,
@@ -1119,22 +1188,35 @@ data class PassesDto(
      */
     val pronunciation: Boolean = false,
     /**
-     * Music is set once internal/speakerattr.Client.ScoreMusic has
-     * completed a full, uninterrupted pass over this chapter (never on a
-     * pause or a genuine failure partway through) - Direction's own "full
-     * pass, not a pause/failure" contract, and just as independent of
+     * Ambience is set once the ambience pass's music sub-pass
+     * (internal/speakerattr.Client.ScoreMusic, via httpapi.ambienceChapter)
+     * has completed a full, uninterrupted pass over this chapter (never on
+     * a pause or a genuine failure partway through) - Direction's own
+     * "full pass, not a pause/failure" contract, and just as independent of
      * Attribution/Description/Direction as Direction itself is: a reader
-     * can trigger background-music scoring for a chapter regardless of
-     * whether it's ever been attributed/direction-tagged. Triggered by
-     * httpapi.handleScoreChapterMusic (the Speakers page's per-chapter
-     * button/bulk actions, book preprocessing's own music phase, or the
-     * reader lazily scoring whichever chapter it's currently on) -
+     * can trigger the ambience pass for a chapter regardless of whether
+     * it's ever been attributed/direction-tagged. Triggered by
+     * httpapi.handleRunChapterAmbience (the Speakers page's per-chapter
+     * button/bulk actions, book preprocessing's own ambience phase, or the
+     * reader lazily running whichever chapter it's currently on) -
      * deliberately NOT gated on store.Book.MusicEnabled: that toggle only
      * controls whether a scored region's audio actually gets generated
      * (jobs.Manager.MaybeAdvanceChapterMusic), not whether scoring itself
-     * can run (see Book.MusicEnabled's own doc comment).
+     * can run (see Book.MusicEnabled's own doc comment). Stored as
+     * "music" until the pass was renamed (and backfilled by hand).
      */
-    val music: Boolean = false,
+    val ambience: Boolean = false,
+    /**
+     * Lighting is set once the ambience pass's lighting sub-pass
+     * (internal/speakerattr.Client.DescribeLighting, via
+     * httpapi.lightChapter) has given every one of the chapter's music
+     * regions a MusicRegion.Lighting cue. Runs after the music sub-pass in
+     * the same task (it lights the regions scoring produced), but is its
+     * own flag so a chapter scored before lighting existed - Ambience set,
+     * Lighting not - gets just the lighting sub-pass on its next ambience
+     * run, without re-scoring its music.
+     */
+    val lighting: Boolean = false,
 )
 
 /**
@@ -1155,6 +1237,11 @@ data class PositionDto(
     val chapterIdx: Int = 0,
     val paragraphIdx: Int = 0,
     val seconds: Double = 0.0,
+)
+
+@Serializable
+data class PronounsResponseDto(
+    val pronouns: String = "",
 )
 
 /**
@@ -1197,11 +1284,11 @@ data class QueueTaskDto(
     /**
      * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
      * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
-     * | "speech_direction" | "music_scoring" | "scare_quote_tagging" |
+     * | "speech_direction" | "ambience" | "scare_quote_tagging" |
      * "description_tagging" (per-item work, see jobs.Kind) or
      * "pipeline_scare_quote" | "pipeline_attribution" |
      * "pipeline_description" | "pipeline_characterization" |
-     * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_music"
+     * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
      * (one of a book's own preprocessing phases - see
      * jobs.EnqueuePipeline/toPipelineQueueTask; deliberately "pipeline_"-
      * prefixed so these can never collide with the per-item kind sharing a
@@ -1317,6 +1404,16 @@ data class SetCharacterInvalidRequestDto(
 )
 
 @Serializable
+data class SetCharacterPronounsRequestDto(
+    /**
+     * Pronouns is "he/him", "she/her", "they/them", "it/its" (or a
+     * recognizable variant, see speakerattr.NormalizePronouns), or "" to
+     * clear them.
+     */
+    val pronouns: String = "",
+)
+
+@Serializable
 data class SetCharacterVoiceRequestDto(
     val voicePresetId: String = "",
 )
@@ -1429,6 +1526,11 @@ data class SpeakerDto(
      * goes by.
      */
     val aliases: List<String> = emptyList(),
+    /**
+     * Pronouns mirrors store.Character.Pronouns - "he/him", "she/her",
+     * "they/them", "it/its", or omitted when not established.
+     */
+    val pronouns: String? = null,
     /**
      * Emotions is every emotion this speaker's dialogue in this book
      * actually uses (store.Paragraph.EffectiveEmotion), in internal/emotions
@@ -1678,7 +1780,7 @@ data class VoiceSettingsDto(
     /**
      * MusicEnabled is the reader-facing background-music toggle - see
      * store.Book.MusicEnabled's own doc comment for why this is book-wide
-     * rather than per-chapter like Passes.Music itself. Off by default.
+     * rather than per-chapter like Passes.Ambience itself. Off by default.
      */
     val musicEnabled: Boolean = false,
     val seed: Int = 0,
@@ -1726,7 +1828,7 @@ data class VoiceSettingsUpdateDto(
     /**
      * MusicEnabled is the reader-facing background-music toggle - see
      * store.Book.MusicEnabled's own doc comment for why this is book-wide
-     * rather than per-chapter like Passes.Music itself. Off by default.
+     * rather than per-chapter like Passes.Ambience itself. Off by default.
      */
     val musicEnabled: Boolean = false,
 )

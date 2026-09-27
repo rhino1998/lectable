@@ -141,7 +141,11 @@ func main() {
 			if *useRoster {
 				r.Prominent = append(append([]string(nil), roster.Prominent...), recentSpeakers(db, *bookID, ch.idx)...)
 			}
-			speakers, _, remaining, attrErr = client.AttributeChapter(context.Background(), bookTitle, ch.title, r, paras, nil)
+			var pronouns map[string]string
+			speakers, _, pronouns, remaining, attrErr = client.AttributeChapter(context.Background(), bookTitle, ch.title, r, paras, nil)
+			if len(pronouns) > 0 {
+				fmt.Printf("pronouns: %v\n", pronouns)
+			}
 		}
 		elapsed := time.Since(start)
 		totalElapsed += elapsed
@@ -238,18 +242,21 @@ func addKnownLocal(known []string, name string) []string {
 // real attribution run: valid characters, their aliases, and the most
 // frequent speakers as Prominent.
 func loadRoster(db *sql.DB, bookID string) speakerattr.Roster {
-	r := speakerattr.Roster{Aliases: map[string][]string{}, Roles: map[string]bool{}}
-	rows, err := db.Query(`SELECT c.name, c.is_role, CAST(c.aliases AS VARCHAR) FROM characters c JOIN books b ON c.scope = CASE WHEN b.series_name = '' THEN 'book:' || b.id ELSE 'series:' || b.series_name END WHERE b.id = ? AND NOT c.invalid ORDER BY c.created_at`, bookID)
+	r := speakerattr.Roster{Aliases: map[string][]string{}, Roles: map[string]bool{}, Pronouns: map[string]string{}}
+	rows, err := db.Query(`SELECT c.name, c.is_role, CAST(c.aliases AS VARCHAR), c.pronouns FROM characters c JOIN books b ON c.scope = CASE WHEN b.series_name = '' THEN 'book:' || b.id ELSE 'series:' || b.series_name END WHERE b.id = ? AND NOT c.invalid ORDER BY c.created_at`, bookID)
 	if err != nil {
 		log.Fatalf("roster: %v", err)
 	}
 	for rows.Next() {
-		var name, aliases string
+		var name, aliases, pronouns string
 		var role bool
-		if err := rows.Scan(&name, &role, &aliases); err != nil {
+		if err := rows.Scan(&name, &role, &aliases, &pronouns); err != nil {
 			log.Fatal(err)
 		}
 		r.Names = append(r.Names, name)
+		if pronouns != "" {
+			r.Pronouns[name] = pronouns
+		}
 		if role {
 			r.Roles[name] = true
 		}

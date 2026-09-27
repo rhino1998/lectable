@@ -1,6 +1,13 @@
 package com.lectable.app.ui.settings
 
 import androidx.compose.foundation.layout.Arrangement
+import com.lectable.app.playback.lighting.LightingStatus
+import com.lectable.app.data.settings.MIN_LIGHT_BRIGHTNESS_CAP
+import androidx.compose.material3.Switch
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -198,6 +205,8 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
 
+            HueLightingSection(viewModel)
+
             Text("Voices", style = MaterialTheme.typography.titleMedium)
             Button(onClick = onOpenVoices) {
                 Text("Manage custom voices")
@@ -232,6 +241,102 @@ fun SettingsScreen(
             }
         }
     }
+}
+
+/** Philips Hue room lighting driven by the book's ambience pass - pair a bridge, pick a room, cap
+ *  brightness. The lights themselves are driven by HueLightingController, which follows playback
+ *  whether or not this screen is open. */
+@Composable
+private fun HueLightingSection(viewModel: SettingsViewModel) {
+    val uiState by viewModel.uiState.collectAsState()
+    val settings by viewModel.lightingSettings.collectAsState()
+    val lighting by viewModel.lightingState.collectAsState()
+
+    Text("Room lighting (Philips Hue)", style = MaterialTheme.typography.titleMedium)
+    Text(
+        "Colors and effects come from each chapter's ambience pass. The phone talks to your Hue " +
+            "bridge directly over the local network.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Switch(
+            checked = settings.enabled,
+            enabled = settings.configured,
+            onCheckedChange = viewModel::setLightingEnabled,
+        )
+        Spacer(Modifier.width(12.dp))
+        val status = when (lighting.status) {
+            LightingStatus.OFF -> "Off"
+            LightingStatus.UNCONFIGURED -> "Pick a bridge and room below"
+            LightingStatus.CONNECTING -> "Connecting..."
+            LightingStatus.ACTIVE -> "Lighting the room" + (lighting.cue?.description?.let { " - $it" } ?: "")
+            LightingStatus.ERROR -> "Error: ${lighting.message ?: "unknown"}"
+        }
+        Text(status, style = MaterialTheme.typography.bodyMedium)
+    }
+
+    if (!settings.paired) {
+        OutlinedTextField(
+            value = uiState.hueBridgeIp,
+            onValueChange = viewModel::onHueBridgeIpChanged,
+            label = { Text("Bridge IP address") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = viewModel::discoverHueBridges, enabled = uiState.hueBusy == null) {
+                Text(if (uiState.hueBusy == HueBusy.DISCOVERING) "Searching..." else "Find bridge")
+            }
+            Button(
+                onClick = viewModel::pairHueBridge,
+                enabled = uiState.hueBusy == null && uiState.hueBridgeIp.isNotBlank(),
+            ) {
+                Text(if (uiState.hueBusy == HueBusy.PAIRING) "Press the bridge's link button..." else "Pair")
+            }
+        }
+        if (uiState.hueFound.size > 1) {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(uiState.hueFound, key = { it.id }) { bridge ->
+                    AssistChip(onClick = { viewModel.onHueBridgeIpChanged(bridge.ip) }, label = { Text(bridge.ip) })
+                }
+            }
+        }
+    } else {
+        Text("Room", style = MaterialTheme.typography.bodyMedium)
+        val groups = uiState.hueGroups
+        if (groups == null) {
+            Text("Loading rooms...", style = MaterialTheme.typography.bodySmall)
+        } else {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(groups, key = { it.id }) { group ->
+                    FilterChip(
+                        selected = settings.groupId == group.id,
+                        onClick = { viewModel.setHueGroup(group.id) },
+                        label = { Text("${group.name} (${group.lights.size})") },
+                    )
+                }
+            }
+        }
+        Text("Brightness cap (${(settings.brightnessCap * 100).roundToInt()}%)", style = MaterialTheme.typography.bodyMedium)
+        CleanSlider(
+            value = settings.brightnessCap,
+            onValueChange = viewModel::setLightBrightnessCap,
+            valueRange = MIN_LIGHT_BRIGHTNESS_CAP..1f,
+            steps = 17,
+            startLabel = "${(MIN_LIGHT_BRIGHTNESS_CAP * 100).roundToInt()}%",
+            endLabel = "100%",
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = settings.restoreOnStop, onCheckedChange = viewModel::setRestoreLightsOnStop)
+            Spacer(Modifier.width(12.dp))
+            Text("Restore the lights when lighting turns off", style = MaterialTheme.typography.bodyMedium)
+        }
+        OutlinedButton(onClick = viewModel::forgetHueBridge) {
+            Text("Forget bridge ${settings.bridgeIp}")
+        }
+    }
+    uiState.hueError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
 }
 
 /** e.g. "128 MB" / "1.4 GB" - no existing formatter in this codebase to reuse (chapter download

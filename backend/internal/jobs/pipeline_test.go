@@ -36,7 +36,7 @@ func TestPipelinePhasesRunInDependencyOrder(t *testing.T) {
 	}
 
 	if err := mgr.EnqueuePipeline("book-1", [pipelinePhaseCount]PipelinePhaseFunc{
-		phase(pipelinePhaseAttribution), phase(pipelinePhaseCharacterization), phase(pipelinePhaseVoiceProvision), phase(pipelinePhaseDirection), phase(pipelinePhaseMusic),
+		phase(pipelinePhaseAttribution), phase(pipelinePhaseCharacterization), phase(pipelinePhaseVoiceProvision), phase(pipelinePhaseDirection), phase(pipelinePhaseAmbience),
 		phase(pipelinePhaseScareQuote), phase(pipelinePhaseDescription), phase(pipelinePhasePronunciation),
 	}); err != nil {
 		t.Fatalf("EnqueuePipeline: %v", err)
@@ -102,7 +102,7 @@ func TestDirectionPhaseRunsWithoutWaitingOnEarlierPhases(t *testing.T) {
 		pipelinePhaseCharacterization: func(context.Context, func() int) error { return nil },
 		pipelinePhaseVoiceProvision:   func(context.Context, func() int) error { return nil },
 		pipelinePhaseDirection:        direction,
-		pipelinePhaseMusic:            func(context.Context, func() int) error { return nil },
+		pipelinePhaseAmbience:         func(context.Context, func() int) error { return nil },
 	}); err != nil {
 		t.Fatalf("EnqueuePipeline: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestCancelPipelineCancelsInFlightAndRemovesQueuedPhases(t *testing.T) {
 		pipelinePhaseCharacterization: later,
 		pipelinePhaseVoiceProvision:   later,
 		pipelinePhaseDirection:        noop,
-		pipelinePhaseMusic:            noop,
+		pipelinePhaseAmbience:         noop,
 	}); err != nil {
 		t.Fatalf("EnqueuePipeline: %v", err)
 	}

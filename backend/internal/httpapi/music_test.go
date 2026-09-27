@@ -17,7 +17,7 @@ func TestResumeMusicScoringFirstAttempt(t *testing.T) {
 }
 
 // TestResumeMusicScoringResumesPartialRun is the case the resume fix exists
-// for: some regions already persisted, Passes.Music still false (a paused,
+// for: some regions already persisted, Passes.Ambience still false (a paused,
 // not finished, run) - must resume just past the last region's own EndIdx,
 // and must not wipe what's already there.
 func TestResumeMusicScoringResumesPartialRun(t *testing.T) {
@@ -33,8 +33,8 @@ func TestResumeMusicScoringResumesPartialRun(t *testing.T) {
 
 // TestResumeMusicScoringRescoresFullyScoredChapter covers the deliberate
 // "re-score a chapter that's already fully scored" button
-// (handleScoreChapterMusic's own doc comment) - existing regions are
-// present, but Passes.Music is true, so this must wipe and restart from
+// (handleRunChapterAmbience's own doc comment) - existing regions are
+// present, but Passes.Ambience is true, so this must wipe and restart from
 // scratch rather than resume from what's already a stale/prior complete
 // scoring.
 func TestResumeMusicScoringRescoresFullyScoredChapter(t *testing.T) {

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -32,17 +33,24 @@ type musicRegionDTO struct {
 	Prompt string `json:"prompt"`
 	// Ambience is the region's ambient-soundscape prompt
 	// (store.MusicRegion.Ambience), mixed under the music - "" for none.
-	Ambience        string      `json:"ambience,omitempty"`
-	Transition      string      `json:"transition" tstype:"'cut' | 'continuation'"` // "cut" or "continuation" - see store.MusicTransition
-	Status          audioStatus `json:"status"`
-	Error           string      `json:"error,omitempty"`
-	DurationSeconds float64     `json:"durationSeconds"`
-	AudioURL        string      `json:"audioUrl,omitempty"`
+	Ambience   string `json:"ambience,omitempty"`
+	Transition string `json:"transition" tstype:"'cut' | 'continuation'"` // "cut" or "continuation" - see store.MusicTransition
+	// Lighting is the region's room-lighting cue from the ambience pass's
+	// lighting sub-pass - absent until that sub-pass reaches the region.
+	// Clients drive the actual lights (Philips Hue) from it themselves.
+	Lighting        *store.Lighting `json:"lighting,omitempty"`
+	Status          audioStatus     `json:"status"`
+	Error           string          `json:"error,omitempty"`
+	DurationSeconds float64         `json:"durationSeconds"`
+	AudioURL        string          `json:"audioUrl,omitempty"`
 }
 
 type chapterMusicDTO struct {
-	Enabled bool             `json:"enabled"`
-	Scored  bool             `json:"scored"`
+	Enabled bool `json:"enabled"`
+	// Scored is passes.ambience - the ambience pass's music sub-pass.
+	Scored bool `json:"scored"`
+	// Lit is passes.lighting - every region has its Lighting cue.
+	Lit     bool             `json:"lit"`
 	Regions []musicRegionDTO `json:"regions"`
 }
 
@@ -59,6 +67,10 @@ func musicRegionDTOFrom(r store.MusicRegion) musicRegionDTO {
 		Error:           r.Error,
 		DurationSeconds: r.DurationSeconds,
 	}
+	if r.Lighting.IsSet() {
+		l := r.Lighting
+		d.Lighting = &l
+	}
 	if r.Status == store.AudioReady {
 		d.AudioURL = "/api/music-regions/" + r.ID + "/audio"
 	}
@@ -68,7 +80,7 @@ func musicRegionDTOFrom(r store.MusicRegion) musicRegionDTO {
 // handleGetChapterMusic serves GET .../chapters/{idx}/music - the reader's
 // own background-music mixer watches the same data live as the
 // "chapterMusic" topic (see registerLiveTopics), and the Speakers page's chapter
-// table reads book.chapters[idx].passes.music/store.Book.MusicEnabled
+// table reads book.chapters[idx].passes.ambience/store.Book.MusicEnabled
 // directly (already part of the book fetch it already has) rather than
 // this endpoint, which exists for the regions themselves.
 func (s *Server) handleGetChapterMusic(w http.ResponseWriter, r *http.Request) {
@@ -100,7 +112,7 @@ func (s *Server) buildChapterMusic(bookID string, chapterIdx int) (chapterMusicD
 	if err != nil {
 		return chapterMusicDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
-	dto := chapterMusicDTO{Enabled: book.MusicEnabled, Scored: ch.Passes.Music, Regions: make([]musicRegionDTO, len(regions))}
+	dto := chapterMusicDTO{Enabled: book.MusicEnabled, Scored: ch.Passes.Ambience, Lit: ch.Passes.Lighting, Regions: make([]musicRegionDTO, len(regions))}
 	for i, region := range regions {
 		// "generating" is tracked in memory, never stored (see
 		// jobs.Manager.MusicRegionGenerating) - overlay it here so the
@@ -113,8 +125,10 @@ func (s *Server) buildChapterMusic(bookID string, chapterIdx int) (chapterMusicD
 	return dto, nil
 }
 
-// handleScoreChapterMusic is POST .../chapters/{idx}/score-music - triggers
-// internal/speakerattr.Client.ScoreMusic for one chapter, handleAttributeSpeakers/
+// handleRunChapterAmbience is POST .../chapters/{idx}/run-ambience - runs the
+// ambience pass (ambienceChapter: music scoring via
+// internal/speakerattr.Client.ScoreMusic, then the lighting sub-pass) for
+// one chapter, handleAttributeSpeakers/
 // handleTagDirections' own exact fire-and-forget shape. Explicit and
 // always allowed regardless of store.Book.MusicEnabled (the Speakers
 // page's per-row/bulk buttons can score a chapter's music the same way
@@ -123,15 +137,15 @@ func (s *Server) buildChapterMusic(bookID string, chapterIdx int) (chapterMusicD
 // jobs.Manager.MaybeAdvanceChapterMusic goes on to actually *generate* a
 // scored region's audio, not whether scoring itself can run. Re-running
 // this for an already-scored chapter re-scores it from scratch
-// (scoreChapterMusic's own Store.ClearMusicRegions), the same "always
+// (ambienceChapter's own Store.ClearMusicRegions), the same "always
 // allow a fresh run" shape the direction-tagging button already has - but
-// re-running (or auto-retriggering, e.g. maybeScoreChapterMusic) a chapter
+// re-running (or auto-retriggering, e.g. maybeRunChapterAmbience) a chapter
 // that's only partially scored resumes from where the last attempt left
 // off instead, rather than wiping and redoing that real work; see
-// scoreChapterMusic's own doc comment for why.
-func (s *Server) handleScoreChapterMusic(w http.ResponseWriter, r *http.Request) {
+// ambienceChapter's own doc comment for why.
+func (s *Server) handleRunChapterAmbience(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "background music scoring is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "the ambience pass is not configured (set SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
 	bookID := r.PathValue("id")
@@ -159,8 +173,8 @@ func (s *Server) handleScoreChapterMusic(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	s.Jobs.EnqueueMusicScoring(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
-		return s.scoreChapterMusic(ctx, book, ch)
+	s.Jobs.EnqueueAmbience(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
+		return s.ambienceChapter(ctx, book, ch)
 	})
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
@@ -214,12 +228,12 @@ func musicTransitionFromString(s string) store.MusicTransition {
 	return store.MusicTransitionCut
 }
 
-// resumeMusicScoring is scoreChapterMusic's own resume-vs-restart decision,
+// resumeMusicScoring is ambienceChapter's own resume-vs-restart decision,
 // pulled out as a pure function purely so it's cheaply unit-testable
-// without a real Store/Speaker - see scoreChapterMusic's own doc comment
+// without a real Store/Speaker - see ambienceChapter's own doc comment
 // for the full reasoning. existing is that chapter's own currently-
 // persisted regions (empty for a true first-ever attempt); alreadyFullyScored
-// is ch.Passes.Music. Returns resumeFrom (the paragraph Idx to start
+// is ch.Passes.Ambience. Returns resumeFrom (the paragraph Idx to start
 // scoring from - 0 means "the very beginning") and wipeExisting (whether
 // the caller should clear existing regions before scoring at all).
 func resumeMusicScoring(existing []store.MusicRegion, alreadyFullyScored bool) (resumeFrom int, wipeExisting bool) {
@@ -232,15 +246,149 @@ func resumeMusicScoring(existing []store.MusicRegion, alreadyFullyScored bool) (
 	return existing[len(existing)-1].EndIdx + 1, false
 }
 
-// scoreChapterMusic is the KindMusicScoring task's actual work (see
-// jobs.MusicScoreFunc), supplied as a closure from handleScoreChapterMusic.
+// ambienceChapter is the KindAmbience task's actual work (see
+// jobs.AmbienceFunc), supplied as a closure from handleRunChapterAmbience
+// (and the bulk/preprocess/lazy paths): the music sub-pass
+// (scoreChapterMusic), then the lighting sub-pass (lightChapter) over the
+// regions it produced. A chapter whose music is already scored but not yet
+// lit (Passes.Ambience without Passes.Lighting - e.g. scored before lighting
+// existed) gets only the lighting sub-pass; an explicit re-run of a chapter
+// with both done re-scores from scratch, which clears the lighting with the
+// regions. Lighting only runs once the music sub-pass finished the whole
+// chapter - a partial run's regions would just be lit again on resume.
+func (s *Server) ambienceChapter(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
+	if !ch.Passes.Ambience || ch.Passes.Lighting {
+		n, requeue, err := s.scoreChapterMusic(ctx, book, ch)
+		if err != nil {
+			return n, requeue, err
+		}
+		fresh, err := s.Store.GetChapterByID(ch.ID)
+		if err != nil {
+			return n, nil, err
+		}
+		if fresh == nil || !fresh.Passes.Ambience {
+			return n, requeue, nil
+		}
+	}
+	return s.lightChapter(ctx, book, ch)
+}
+
+// musicRegionsShareLighting reports whether region b continues a's lighting
+// call: the same describe call's output (identical mood/prompt/ambience -
+// the length-only splits speakerattr.ScoreMusic hands one description) and
+// not a cut. Such a group is lit by one DescribeLighting call over its
+// whole span, capped at lightingGroupRegions.
+func musicRegionsShareLighting(a, b store.MusicRegion) bool {
+	return b.Transition != store.MusicTransitionCut && a.Mood == b.Mood && a.Prompt == b.Prompt && a.Ambience == b.Ambience
+}
+
+// lightingGroupRegions caps one lighting call's span, like
+// speakerattr's musicDescribeGroupRegions (which already caps how many
+// regions share a description, so this rarely binds).
+const lightingGroupRegions = 3
+
+// lightChapter is the ambience pass's lighting sub-pass: one
+// speakerattr.Client.DescribeLighting call per described region group, in
+// order, each shown the previous group's cue, persisted as it goes
+// (Store.SetMusicRegionLighting) so an interrupted run resumes past
+// whatever it already lit. Sets passes.lighting once every region has a
+// cue. Returns how many regions it lit.
+func (s *Server) lightChapter(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
+	regions, err := s.Store.ListMusicRegions(ch.ID)
+	if err != nil {
+		return 0, nil, err
+	}
+	var paragraphs []speakerattr.ParagraphInput
+	if len(regions) > 0 {
+		all, err := s.Store.ListParagraphsRaw(ch.ID)
+		if err != nil {
+			return 0, nil, err
+		}
+		paragraphs = make([]speakerattr.ParagraphInput, len(all))
+		for i, p := range all {
+			paragraphs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote}
+		}
+	}
+
+	opening := speakerattr.ChapterOpening(paragraphs)
+	lit := 0
+	var prev *speakerattr.Lighting
+	prevMood := ""
+	for i := 0; i < len(regions); {
+		n := 1
+		for i+n < len(regions) && n < lightingGroupRegions && musicRegionsShareLighting(regions[i], regions[i+n]) {
+			n++
+		}
+		group := regions[i : i+n]
+		i += n
+		if last := group[len(group)-1]; last.Lighting.IsSet() {
+			l := speakerattrLighting(last.Lighting)
+			prev = &l
+			prevMood = last.Mood
+			continue // already lit by an earlier, interrupted run
+		}
+		if err := ctx.Err(); err != nil {
+			return lit, nil, err
+		}
+		var span []speakerattr.ParagraphInput
+		for _, p := range paragraphs {
+			if p.Idx >= group[0].StartIdx && p.Idx <= group[len(group)-1].EndIdx {
+				span = append(span, p)
+			}
+		}
+		var l speakerattr.Lighting
+		if !speakerattr.NeedsLighting(span) {
+			// Too little to read a scene from (a title page, a bare
+			// heading) - carry the previous light, or a neutral one, rather
+			// than let the model invent a scene.
+			l = speakerattr.NeutralLighting
+			if prev != nil {
+				l = *prev
+			}
+		} else {
+			l, err = s.Speaker.DescribeLighting(ctx, book.Title, ch.Title, speakerattr.LightingInput{
+				Paragraphs: span,
+				Mood:       group[0].Mood,
+				NewScene:   group[0].Transition == store.MusicTransitionCut,
+				Prev:       prev,
+				PrevMood:   prevMood,
+				Opening:    opening,
+			})
+			if err != nil {
+				return lit, nil, fmt.Errorf("lighting region starting at %d: %w", group[0].StartIdx, err)
+			}
+		}
+		cue := store.Lighting{Description: l.Description, Color: l.Color, Accent: l.Accent, Brightness: l.Brightness, Effect: store.LightEffect(l.Effect)}
+		updates := make(map[string]store.Lighting, len(group))
+		for _, r := range group {
+			updates[r.ID] = cue
+		}
+		if err := s.Store.SetMusicRegionLighting(updates); err != nil {
+			return lit, nil, err
+		}
+		lit += len(group)
+		prev = &l
+		prevMood = group[0].Mood
+	}
+	if err := s.Store.SetChapterLit(ch.ID); err != nil {
+		return lit, nil, err
+	}
+	return lit, nil, nil
+}
+
+func speakerattrLighting(l store.Lighting) speakerattr.Lighting {
+	return speakerattr.Lighting{Description: l.Description, Color: l.Color, Accent: l.Accent, Brightness: l.Brightness, Effect: string(l.Effect)}
+}
+
+// scoreChapterMusic is the ambience pass's music sub-pass - see
+// ambienceChapter.
 //
 // Wipes and restarts from scratch (Store.ClearMusicRegions) only for an
 // explicit, deliberate re-score of a chapter that's already fully scored
-// (Passes.Music already true - handleScoreChapterMusic's own doc comment
+// (Passes.Ambience already true - handleRunChapterAmbience's own doc comment
 // documents this as the "always allow a fresh run" button behavior) -
 // otherwise, a chapter with some already-persisted regions but
-// Passes.Music still false is a genuinely partial run from an earlier
+// Passes.Ambience still false is a genuinely partial run from an earlier
 // interruption, and resumes from just past the last persisted region's
 // own EndIdx instead of wiping and redoing that real, already-completed
 // work.
@@ -287,7 +435,7 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 		return 0, nil, err
 	}
 
-	resumeFrom, wipeExisting := resumeMusicScoring(existing, ch.Passes.Music)
+	resumeFrom, wipeExisting := resumeMusicScoring(existing, ch.Passes.Ambience)
 	if wipeExisting {
 		// Already fully scored - an explicit reader-triggered rescore
 		// wants a genuinely fresh result, not a resume of a run that
@@ -312,7 +460,7 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 		return 0, nil, err
 	}
 	if len(all) == 0 {
-		if err := s.Store.SetChapterMusicScored(ch.ID); err != nil {
+		if err := s.Store.SetChapterAmbienceScored(ch.ID); err != nil {
 			return 0, nil, err
 		}
 		return 0, nil, nil
@@ -327,10 +475,10 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 		}
 		if len(toScore) == 0 {
 			// Every paragraph is already covered by a persisted region,
-			// yet Passes.Music was somehow never set - shouldn't happen,
+			// yet Passes.Ambience was somehow never set - shouldn't happen,
 			// but finish cleanly rather than looping forever on an empty
 			// ScoreMusic call.
-			if err := s.Store.SetChapterMusicScored(ch.ID); err != nil {
+			if err := s.Store.SetChapterAmbienceScored(ch.ID); err != nil {
 				return 0, nil, err
 			}
 			return 0, nil, nil
@@ -384,7 +532,7 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 		log.Printf("httpapi: music scoring for chapter %s paused with %d paragraph(s) remaining - will resume from where it left off next time it's triggered", ch.ID, len(remaining))
 		return len(regions), nil, nil
 	}
-	if err := s.Store.SetChapterMusicScored(ch.ID); err != nil {
+	if err := s.Store.SetChapterAmbienceScored(ch.ID); err != nil {
 		return len(regions), nil, err
 	}
 	return len(regions), nil, nil

@@ -463,7 +463,7 @@ func mergeShortRegions(regions []musicBoundary) []musicBoundary {
 // own regions run long enough takes long enough to fully score that a
 // higher-priority poolLLM task showing up mid-run (HasHigherPriorityWork)
 // pauses it before AppendMusicRegions ever persists anything past whatever
-// region was in progress, and (see scoreChapterMusic's own doc comment)
+// region was in progress, and (see ambienceChapter's own doc comment)
 // every retry starts over from paragraph 0 - so a chapter stuck with a few
 // very long regions can end up making close to zero net progress, retry
 // after retry, on a busy box. Smaller, more numerous regions checkpoint
@@ -845,7 +845,7 @@ const musicDescribeGroupRegions = 3
 // (from pass 1's own leftover batches, or from wherever pass 2 stopped,
 // whichever is later) weren't turned into a finished region - the same
 // "out reflects real, finished work" contract AttributeChapter documents
-// in full. httpapi.scoreChapterMusic never auto-resumes a paused run (see
+// in full. httpapi.ambienceChapter never auto-resumes a paused run (see
 // its own doc comment) - remaining is informational there, not something
 // this call itself needs to get perfectly minimal.
 func (c *Client) ScoreMusic(ctx context.Context, bookTitle, chapterTitle string, paragraphs []ParagraphInput, shouldPause func() bool) (out []MusicRegionResult, remaining []ParagraphInput, err error) {

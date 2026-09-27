@@ -1120,10 +1120,10 @@ func TestEffectiveEmotion(t *testing.T) {
 
 // TestClearMusicRegionsResetsPassesMusic is the regression test for a
 // real, observed bug: ClearMusicRegions used to delete music_regions rows
-// only, never touching chapters.passes.music - so a chapter already
-// marked fully scored (SetChapterMusicScored) that then got wiped for a
-// fresh rescore kept reporting Passes.Music == true even with zero
-// regions left. httpapi.scoreChapterMusic's own "resume vs wipe" decision
+// only, never touching chapters.passes.ambience - so a chapter already
+// marked fully scored (SetChapterAmbienceScored) that then got wiped for a
+// fresh rescore kept reporting Passes.Ambience == true even with zero
+// regions left. httpapi.ambienceChapter's own "resume vs wipe" decision
 // (resumeMusicScoring) branches on exactly that flag, so a stuck true
 // value meant every subsequent rescore attempt re-took the wipe-and-
 // restart-from-paragraph-0 branch instead of ever reaching the resume
@@ -1138,16 +1138,16 @@ func TestClearMusicRegionsResetsPassesMusic(t *testing.T) {
 	if _, err := s.AppendMusicRegions(chapterID, []MusicRegionInput{{StartIdx: 0, Mood: "calm", Prompt: "calm music"}}, 1); err != nil {
 		t.Fatalf("AppendMusicRegions: %v", err)
 	}
-	if err := s.SetChapterMusicScored(chapterID); err != nil {
-		t.Fatalf("SetChapterMusicScored: %v", err)
+	if err := s.SetChapterAmbienceScored(chapterID); err != nil {
+		t.Fatalf("SetChapterAmbienceScored: %v", err)
 	}
 
 	ch, err := s.GetChapterByID(chapterID)
 	if err != nil {
 		t.Fatalf("GetChapterByID: %v", err)
 	}
-	if !ch.Passes.Music {
-		t.Fatalf("expected Passes.Music true before ClearMusicRegions")
+	if !ch.Passes.Ambience {
+		t.Fatalf("expected Passes.Ambience true before ClearMusicRegions")
 	}
 
 	if _, err := s.ClearMusicRegions(chapterID); err != nil {
@@ -1158,8 +1158,8 @@ func TestClearMusicRegionsResetsPassesMusic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChapterByID: %v", err)
 	}
-	if ch.Passes.Music {
-		t.Fatalf("expected Passes.Music false after ClearMusicRegions, got true")
+	if ch.Passes.Ambience {
+		t.Fatalf("expected Passes.Ambience false after ClearMusicRegions, got true")
 	}
 
 	regions, err := s.ListMusicRegions(chapterID)
@@ -1411,5 +1411,57 @@ func TestResetBookPass(t *testing.T) {
 
 	if _, err := s.ResetBookPass(bookID, "bogus", 0); err == nil {
 		t.Fatalf("expected an error for an unknown pass")
+	}
+}
+
+// TestMusicRegionLighting covers the lighting sub-pass's storage: a new
+// region scans with no cue, SetMusicRegionLighting round-trips one through
+// the JSON column, and ClearBookLighting drops the cues and passes.lighting
+// while leaving the regions and passes.ambience alone.
+func TestMusicRegionLighting(t *testing.T) {
+	s := openTestStore(t)
+	bookID, chapterID := oneChapterBook(t, s, "", 0, "Paragraph one.", "Paragraph two.")
+
+	regions, err := s.AppendMusicRegions(chapterID, []MusicRegionInput{{StartIdx: 0, Mood: "calm", Prompt: "calm music"}}, 1)
+	if err != nil {
+		t.Fatalf("AppendMusicRegions: %v", err)
+	}
+	if regions[0].Lighting.IsSet() {
+		t.Fatalf("new region already has lighting: %+v", regions[0].Lighting)
+	}
+	want := Lighting{Color: "#ff9a3c", Accent: "#ffd27a", Brightness: 40, Effect: LightEffectFlicker}
+	if err := s.SetMusicRegionLighting(map[string]Lighting{regions[0].ID: want}); err != nil {
+		t.Fatalf("SetMusicRegionLighting: %v", err)
+	}
+	if err := s.SetChapterAmbienceScored(chapterID); err != nil {
+		t.Fatalf("SetChapterAmbienceScored: %v", err)
+	}
+	if err := s.SetChapterLit(chapterID); err != nil {
+		t.Fatalf("SetChapterLit: %v", err)
+	}
+	got, err := s.GetMusicRegion(regions[0].ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetMusicRegion: %v, %v", got, err)
+	}
+	if got.Lighting != want {
+		t.Fatalf("lighting = %+v, want %+v", got.Lighting, want)
+	}
+
+	if err := s.ClearBookLighting(bookID); err != nil {
+		t.Fatalf("ClearBookLighting: %v", err)
+	}
+	list, err := s.ListMusicRegions(chapterID)
+	if err != nil {
+		t.Fatalf("ListMusicRegions: %v", err)
+	}
+	if len(list) != 1 || list[0].Lighting.IsSet() {
+		t.Fatalf("after ClearBookLighting: regions = %+v", list)
+	}
+	ch, err := s.GetChapterByID(chapterID)
+	if err != nil {
+		t.Fatalf("GetChapterByID: %v", err)
+	}
+	if !ch.Passes.Ambience || ch.Passes.Lighting {
+		t.Fatalf("after ClearBookLighting: passes = %+v, want ambience only", ch.Passes)
 	}
 }

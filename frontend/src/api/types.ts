@@ -12,6 +12,7 @@ import {
   type CloneModel,
   type DesignModel,
   type ExportFormat,
+  type LightEffect,
   type SFXEngine,
 } from './generated'
 
@@ -22,6 +23,16 @@ export type LiveOp =
   | { op: 'set'; path: LivePath; value: unknown }
   | { op: 'del'; path: LivePath }
   | { op: 'arr'; path: LivePath; items: LiveArrItem[] }
+
+// How each lighting effect (backend store.LightEffect) reads in the UI -
+// the reader's region markers and the Lights panel.
+export const LIGHT_EFFECT_LABELS: Record<LightEffect, string> = {
+  steady: 'steady',
+  flicker: 'flickering',
+  pulse: 'pulsing',
+  lightning: 'lightning',
+  shimmer: 'shimmering',
+}
 
 export const SFX_ENGINE_LABELS: Record<SFXEngine, string> = {
   ace_step: 'ACE-Step (music)',

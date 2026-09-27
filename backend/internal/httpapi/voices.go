@@ -93,7 +93,7 @@ type voiceSettingsUpdate struct {
 	SpeechDirection bool `json:"speechDirection"`
 	// MusicEnabled is the reader-facing background-music toggle - see
 	// store.Book.MusicEnabled's own doc comment for why this is book-wide
-	// rather than per-chapter like Passes.Music itself. Off by default.
+	// rather than per-chapter like Passes.Ambience itself. Off by default.
 	MusicEnabled bool `json:"musicEnabled"`
 }
 

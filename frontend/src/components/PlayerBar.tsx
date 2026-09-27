@@ -7,6 +7,7 @@ import {
   RiEmotionLine,
   RiFileTextLine,
   RiFontSize,
+  RiLightbulbLine,
   RiGitMergeLine,
   RiIndentIncrease,
   RiPaletteLine,
@@ -24,6 +25,8 @@ import type { AnnotationKind, ChapterDetail, ChapterSummary, Speaker } from '../
 import { DIRECTION_TAG_CATEGORY_LABELS, type DirectionTagCategory } from '../utils/directionTags'
 import { VoicePanel } from './VoicePanel'
 import { ReaderTypographyPanel } from './ReaderTypographyPanel'
+import { LightingPanel } from './LightingPanel'
+import { useLightingState } from '../lighting/controller'
 import { BookSearch } from './BookSearch'
 import { BookmarksPanel } from './BookmarksPanel'
 import { SleepTimerButton } from './SleepTimerButton'
@@ -111,6 +114,12 @@ export function PlayerBar({
     () => setTypographyOpen(false),
     typographyOpen,
   )
+
+  const [lightsOpen, setLightsOpen] = useState(false)
+  const lightsButtonRef = useRef<HTMLButtonElement>(null)
+  const lightsPopoverRef = useRef<HTMLDivElement>(null)
+  useClickOutside([lightsButtonRef, lightsPopoverRef], () => setLightsOpen(false), lightsOpen)
+  const lighting = useLightingState()
 
   const sleepTimer = useSleepTimer(playback.chapterIdx, playback.pause)
 
@@ -341,6 +350,12 @@ export function PlayerBar({
             onFontSizeChange={onReaderFontSizeChange}
             onFontFamilyChange={onReaderFontFamilyChange}
           />
+        </div>
+      )}
+
+      {lightsOpen && (
+        <div className="bottom-popover" ref={lightsPopoverRef}>
+          <LightingPanel />
         </div>
       )}
 
@@ -638,6 +653,18 @@ export function PlayerBar({
           title="Reader text size and font"
         >
           <RiFontSize /> Text size
+        </button>
+
+        <button
+          ref={lightsButtonRef}
+          className={
+            'text-button-icon' +
+            (lightsOpen || lighting.status === 'active' ? ' text-button-icon-active' : '')
+          }
+          onClick={() => setLightsOpen((v) => !v)}
+          title="Philips Hue lighting driven by the book's ambience"
+        >
+          <RiLightbulbLine /> Lights
         </button>
 
         <button

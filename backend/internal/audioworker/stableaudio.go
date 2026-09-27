@@ -231,14 +231,15 @@ func (w *Worker) CodecEncode(req ttsproto.CodecEncodeRequest) (*ttsproto.Latents
 var codecEngines = map[string]string{
 	"stable_audio_medium": "stable_audio_medium_codec",
 	"higgs_audio_tts":     "higgs_codec",
+	"breeze_tts":          "breeze_codec",
 	"pocket_tts":          "pocket_codec",
 }
 
 // CodecDecode decodes latents or codes with a family's standalone codec
-// ("stable_audio_medium", "higgs_audio_tts", "pocket_tts"), honoring their
-// meta (decode_*, chunk_frames) - so what a generation returned decodes to
-// that generation's audio (exactly, on the same backend). Rejects input
-// from another checkpoint.
+// ("stable_audio_medium", "higgs_audio_tts", "breeze_tts", "pocket_tts"),
+// honoring their meta (decode_*, chunk_frames) - so what a generation
+// returned decodes to that generation's audio (exactly, on the same
+// backend). Rejects input from another checkpoint.
 func (w *Worker) CodecDecode(req ttsproto.CodecDecodeRequest) (*audiocpp.AudioBuffer, error) {
 	w.touch()
 	key, ok := codecEngines[req.Family]
