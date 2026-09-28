@@ -1,4 +1,4 @@
-import { Outlet, createRootRoute, createRoute, createRouter, Link } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import { LibraryPage } from './pages/LibraryPage'
 import { ReaderPage } from './pages/ReaderPage'
 import { VoicesPage } from './pages/VoicesPage'
@@ -7,61 +7,7 @@ import { LLMPage } from './pages/LLMPage'
 import { SpeakersPage } from './pages/SpeakersPage'
 import { JobsPage } from './pages/JobsPage'
 import { ExportPage } from './pages/ExportPage'
-import { ThemeToggle } from './components/ThemeToggle'
-
-function RootLayout() {
-  return (
-    <div className="app-shell-sidebar">
-      <nav className="app-sidebar">
-        <div className="app-title">
-          <img src="/favicon.svg" alt="" width="22" height="22" />
-          Lectable
-        </div>
-        <Link
-          to="/"
-          className="sidebar-tab"
-          activeOptions={{ exact: true }}
-          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
-        >
-          Library
-        </Link>
-        <Link
-          to="/voices"
-          className="sidebar-tab"
-          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
-        >
-          Voices
-        </Link>
-        <Link
-          to="/sfx"
-          className="sidebar-tab"
-          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
-        >
-          SFX
-        </Link>
-        <Link
-          to="/llm"
-          className="sidebar-tab"
-          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
-        >
-          LLM
-        </Link>
-        <Link
-          to="/jobs"
-          className="sidebar-tab"
-          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
-        >
-          Jobs
-        </Link>
-        <div className="app-sidebar-spacer" />
-        <ThemeToggle />
-      </nav>
-      <main className="app-main">
-        <Outlet />
-      </main>
-    </div>
-  )
-}
+import { RootLayout } from './components/RootLayout'
 
 const rootRoute = createRootRoute({ component: RootLayout })
 

@@ -27,3 +27,11 @@ func (m *Manager) lexiconFor(bookID string) []pronounce.LexiconEntry {
 	}
 	return store.PronounceLexicon(entries)
 }
+
+// snapshotLexicon looks up t's lexicon for generate and records it on t
+// (see task.genLexicon).
+func (m *Manager) snapshotLexicon(t *task) []pronounce.LexiconEntry {
+	lexicon := m.lexiconFor(t.bookID)
+	t.genLexicon, t.genLexiconSet = lexicon, true
+	return lexicon
+}

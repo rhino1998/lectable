@@ -33,7 +33,8 @@ import {
   type CustomVoicePreset,
   type DesignModel,
 } from '../api/types'
-import { DEFAULT_REF_TEXT, VoiceEditorForm, randomSeed } from '../components/VoiceEditorForm'
+import { VoiceEditorForm } from '../components/VoiceEditorForm'
+import { DEFAULT_REF_TEXT, randomSeed } from '../utils/voiceRecipe'
 import { withCacheBust } from '../utils/cacheBust'
 
 // "Regenerate" control for a single list row - built-in and custom preset

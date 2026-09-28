@@ -53,6 +53,26 @@ const RENDER_WINDOW_RADIUS = 2
 // reasoning the stable-identity useStableCallback wrappers below exist for.
 const EMPTY_MUSIC_REGIONS: MusicRegion[] = []
 
+const ANNOTATIONS_VIEW_KEY = 'lectable.annotationsView'
+
+// Storage can be unavailable (private window, blocked site data) - the
+// toggle then just starts off each visit, as it always used to.
+function loadAnnotationsView(): boolean {
+  try {
+    return window.localStorage.getItem(ANNOTATIONS_VIEW_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+function saveAnnotationsView(on: boolean) {
+  try {
+    window.localStorage.setItem(ANNOTATIONS_VIEW_KEY, on ? '1' : '0')
+  } catch {
+    // Not remembered this time - nothing else depends on it.
+  }
+}
+
 export function ReaderPage() {
   const { bookId } = useParams({ from: '/books/$bookId' })
   const bookQuery = useBook(bookId)
@@ -132,7 +152,10 @@ export function ReaderPage() {
   // instead of leaving that distinction to the speaker-hint badge alone
   // (see annotationKind above) - off by default since the coloring adds
   // visual noise a reader may not want while just listening.
-  const [annotationsView, setAnnotationsView] = useState(false)
+  // Remembered per browser across reader visits/reloads (see
+  // loadAnnotationsView) - android keeps the same toggle in its reading
+  // settings.
+  const [annotationsView, setAnnotationsView] = useState(loadAnnotationsView)
   // Clicking a name in PlayerBar's speaker list selects it here, which
   // adds an extra highlight (on top of the normal narrator/speaker/
   // description coloring) to every segment attributed to them - lets a
@@ -739,6 +762,7 @@ export function ReaderPage() {
         onToggleAnnotationsView={() =>
           setAnnotationsView((v) => {
             if (v) setSelectedSpeaker(null)
+            saveAnnotationsView(!v)
             return !v
           })
         }

@@ -77,6 +77,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Spellcheck
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -160,6 +161,7 @@ import com.lectable.app.data.remote.dto.MusicRegionDto
 import com.lectable.app.data.remote.dto.ParagraphDto
 import com.lectable.app.data.remote.dto.PronunciationMarkDto
 import com.lectable.app.data.remote.dto.SearchResultDto
+import com.lectable.app.playback.lighting.LightingStatus
 import com.lectable.app.data.remote.dto.SpeakerDto
 import com.lectable.app.data.remote.dto.VoicePresetDto
 import com.lectable.app.data.remote.dto.WordTimingDto
@@ -172,7 +174,6 @@ import com.lectable.app.ui.components.CleanSlider
 import com.lectable.app.ui.components.ConfirmDialog
 import com.lectable.app.ui.formatDurationLong
 import com.lectable.app.ui.formatTime
-import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -199,6 +200,8 @@ fun ReaderScreen(
     onBack: () -> Unit,
     onOpenVoices: () -> Unit,
     onOpenSpeakers: () -> Unit,
+    onOpenLexicon: () -> Unit,
+    onOpenLighting: () -> Unit,
     onOpenJobs: () -> Unit,
     viewModel: ReaderViewModel = hiltViewModel(),
 ) {
@@ -219,7 +222,8 @@ fun ReaderScreen(
     // Underlines dialogue segments and caret-marks descriptive ones (see annotationKind) -
     // purely a display toggle, not persisted, and deliberately minimal for now: no background
     // color-coding, no legend, no "select a speaker to highlight their lines" - just the marks.
-    var annotationsMode by remember { mutableStateOf(false) }
+    // Persisted across visits - see ReaderViewModel.setAnnotationsMode.
+    val annotationsMode = uiState.annotationsMode
     val sleepTimerState by viewModel.player.sleepTimer.collectAsState()
     val musicVolume by viewModel.musicVolume.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -339,9 +343,19 @@ fun ReaderScreen(
                             onClick = { showSleepTimerSheet = true; showMenu = false },
                         )
                         DropdownMenuItem(
+                            text = { Text("Search") },
+                            leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                            onClick = { showSearchSheet = true; showMenu = false },
+                        )
+                        DropdownMenuItem(
                             text = { Text("Speakers") },
                             leadingIcon = { Icon(Icons.Filled.RecordVoiceOver, contentDescription = null) },
                             onClick = { onOpenSpeakers(); showMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Pronunciations") },
+                            leadingIcon = { Icon(Icons.Filled.Spellcheck, contentDescription = null) },
+                            onClick = { onOpenLexicon(); showMenu = false },
                         )
                         DropdownMenuItem(
                             text = { Text("Job queue") },
@@ -525,12 +539,15 @@ fun ReaderScreen(
                 onSpeedClick = { showSpeedPicker = true },
                 onChapterInfoClick = { showChapterPicker = true },
                 onBookmarksClick = { showBookmarksSheet = true },
-                onSearchClick = { showSearchSheet = true },
+                lightingEnabled = uiState.lightingEnabled,
+                lightingStatus = uiState.lightingStatus,
+                onToggleLighting = { if (!viewModel.toggleLighting()) onOpenLighting() },
+                onLightingSettings = onOpenLighting,
                 musicEnabled = uiState.musicEnabled,
                 onToggleMusic = { viewModel.setMusicEnabled(!uiState.musicEnabled) },
                 onMusicVolumeClick = { showMusicVolumeSheet = true },
                 annotationsMode = annotationsMode,
-                onToggleAnnotationsMode = { annotationsMode = !annotationsMode },
+                onToggleAnnotationsMode = { viewModel.setAnnotationsMode(!annotationsMode) },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) { Snackbar(it) } },
@@ -579,7 +596,7 @@ fun ReaderScreen(
             onDismiss = { speakerPickerTarget = null },
             fetchSpeakers = viewModel::availableSpeakers,
             currentSpeaker = target.currentSpeaker,
-            nearbySpeakers = nearbySpeakersFor(uiState.loadedChapters[target.chapterIdx], target.paragraphIndices),
+            chapterNames = chapterCharacterNames(uiState.loadedChapters[target.chapterIdx]),
             onSelect = { name ->
                 viewModel.setParagraphSpeaker(target.chapterIdx, target.paragraphIndices, name)
                 speakerPickerTarget = null
@@ -592,6 +609,7 @@ fun ReaderScreen(
             onDismiss = { descriptionPickerTarget = null },
             fetchSpeakers = viewModel::availableSpeakers,
             fromName = target.fromName,
+            chapterNames = chapterCharacterNames(uiState.loadedChapters[target.chapterIdx]),
             onSelect = { name ->
                 viewModel.reassignDescription(target.chapterIdx, target.paragraphIndices, target.fromName, name)
                 descriptionPickerTarget = null
@@ -739,25 +757,31 @@ private data class DescriptionPickerTarget(
     val fromName: String,
 )
 
-/** Speakers already narrating paragraphs near [paragraphIndices] within the same chapter (the
- *  same scene/conversation), closest occurrence first - surfaced ahead of the rest of the book's
- *  full character roster in [SpeakerPickerSheet], since a misattributed line is usually meant for
- *  whoever else is already talking around it, not some character from a completely different part
- *  of the book. Distance is measured in paragraph index from the *closest* of [paragraphIndices]
- *  (a multi-segment block's own quote segments) to each candidate paragraph, in either direction
- *  (before or after). Excludes [paragraphIndices]'s own paragraphs and Narrator/blank - Narrator
- *  already leads the picker unconditionally, and a paragraph's own current speaker isn't a
- *  "different" one to suggest. */
-private fun nearbySpeakersFor(chapter: ChapterDetailDto?, paragraphIndices: List<Int>): List<String> {
-    if (chapter == null || paragraphIndices.isEmpty()) return emptyList()
-    return chapter.paragraphs
-        .asSequence()
-        .filterNot { it.idx in paragraphIndices }
-        .filter { !it.speaker.isNullOrEmpty() && it.speaker != "Narrator" }
-        .sortedBy { p -> paragraphIndices.minOf { target -> abs(p.idx - target) } }
-        .map { it.speaker!! }
+/** Everyone who speaks or is described anywhere in [chapter] - the reassign pickers' "This
+ *  chapter" section, since a misattributed line or description usually belongs to someone
+ *  already in the scene. Narrator/blank excluded (Narrator always leads the speaker picker).
+ *  Mirrors frontend's ParagraphContextMenu chapterNames. */
+private fun chapterCharacterNames(chapter: ChapterDetailDto?): Set<String> {
+    if (chapter == null) return emptySet()
+    val out = mutableSetOf<String>()
+    for (p in chapter.paragraphs) {
+        p.speaker?.takeIf { it.isNotEmpty() && it != "Narrator" }?.let(out::add)
+        out.addAll(p.describesCharacters)
+    }
+    return out
+}
+
+/** A reassign picker's two sections: the roster's names in [chapterNames] (local), then the whole
+ *  roster (all) - both alphabetical, Narrator/blank, invalid characters and [exclude] left out. */
+internal fun pickerSections(speakers: List<SpeakerDto>, chapterNames: Set<String>, exclude: String?): Pair<List<String>, List<String>> {
+    val all = speakers.asSequence()
+        .filterNot { it.invalid }
+        .map { it.name }
+        .filter { it.isNotEmpty() && it != "Narrator" && it != exclude }
         .distinct()
+        .sortedWith(String.CASE_INSENSITIVE_ORDER)
         .toList()
+    return all.filter { it in chapterNames } to all
 }
 
 private sealed class ReaderListEntry {
@@ -1860,7 +1884,10 @@ private fun PlaybackBar(
     onSpeedClick: () -> Unit,
     onChapterInfoClick: () -> Unit,
     onBookmarksClick: () -> Unit,
-    onSearchClick: () -> Unit,
+    lightingEnabled: Boolean,
+    lightingStatus: LightingStatus,
+    onToggleLighting: () -> Unit,
+    onLightingSettings: () -> Unit,
     musicEnabled: Boolean,
     onToggleMusic: () -> Unit,
     onMusicVolumeClick: () -> Unit,
@@ -1924,7 +1951,7 @@ private fun PlaybackBar(
                     contentDescription = if (isPlaying) "Pause" else "Play",
                 )
             }
-            // Annotations/Music/Bookmarks on the left, sized down from IconButton's own 48dp
+            // Annotations/Music/Lighting on the left, sized down from IconButton's own 48dp
             // default touch target so all three plus Play/Pause's own footprint leave clear
             // room in the middle.
             Row(
@@ -1960,17 +1987,44 @@ private fun PlaybackBar(
                         tint = if (musicEnabled) MaterialTheme.colorScheme.primary else LocalContentColor.current,
                     )
                 }
-                IconButton(onClick = onBookmarksClick, modifier = Modifier.size(SecondaryIconButtonSize)) {
-                    Icon(Icons.Filled.Bookmarks, contentDescription = "Bookmarks")
+                // Hue room lighting: tap toggles it (opening the lighting screen instead if no
+                // bridge/room is set up yet), long-press opens the lighting screen - same
+                // combinedClickable shape as the music button beside it.
+                Box(
+                    modifier = Modifier
+                        .size(SecondaryIconButtonSize)
+                        .clip(CircleShape)
+                        .combinedClickable(
+                            role = Role.Button,
+                            onClickLabel = if (lightingEnabled) "Turn off room lighting" else "Turn on room lighting",
+                            onLongClickLabel = "Lighting settings",
+                            onClick = onToggleLighting,
+                            onLongClick = onLightingSettings,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (lightingEnabled) Icons.Filled.Lightbulb else Icons.Outlined.Lightbulb,
+                        contentDescription = when {
+                            !lightingEnabled -> "Room lighting off"
+                            lightingStatus == LightingStatus.ERROR -> "Room lighting error"
+                            else -> "Room lighting on"
+                        },
+                        tint = when {
+                            !lightingEnabled -> LocalContentColor.current
+                            lightingStatus == LightingStatus.ERROR -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.primary
+                        },
+                    )
                 }
             }
-            // Search/chapter selector/speed selector on the right.
+            // Bookmarks/chapter selector/speed selector on the right.
             Row(
                 modifier = Modifier.align(Alignment.CenterEnd),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onSearchClick, modifier = Modifier.size(SecondaryIconButtonSize)) {
-                    Icon(Icons.Filled.Search, contentDescription = "Search this book")
+                IconButton(onClick = onBookmarksClick, modifier = Modifier.size(SecondaryIconButtonSize)) {
+                    Icon(Icons.Filled.Bookmarks, contentDescription = "Bookmarks")
                 }
                 IconButton(onClick = onChapterInfoClick, modifier = Modifier.size(SecondaryIconButtonSize)) {
                     Icon(Icons.Filled.FormatListNumbered, contentDescription = "Jump to chapter")
@@ -1992,7 +2046,7 @@ private fun PlaybackBar(
     }
 }
 
-// PlaybackBar's own secondary icon buttons (annotations/music/bookmarks/search/chapter selector)
+// PlaybackBar's own secondary icon buttons (annotations/music/lighting/bookmarks/chapter selector)
 // - smaller than IconButton's own 48dp default touch target, see its call sites' own comment.
 private val SecondaryIconButtonSize = 40.dp
 
@@ -2432,23 +2486,16 @@ private fun SpeakerPickerSheet(
     onDismiss: () -> Unit,
     fetchSpeakers: ((List<SpeakerDto>) -> Unit) -> Unit,
     currentSpeaker: String,
-    // Closest-occurrence-first - see nearbySpeakersFor. Hoisted ahead of the rest of the roster
-    // below, under its own section header, so long as there's actually a "rest" to distinguish it
-    // from; with none nearby this just falls back to the flat full-roster list it always was.
-    nearbySpeakers: List<String>,
+    // Everyone who speaks or is described in this segment's own chapter - see
+    // chapterCharacterNames. Listed first, under "This chapter", ahead of the whole roster.
+    chapterNames: Set<String>,
     onSelect: (name: String) -> Unit,
 ) {
     var speakers by remember { mutableStateOf<List<SpeakerDto>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { fetchSpeakers { speakers = it; loaded = true } }
 
-    val nearby = remember(speakers, nearbySpeakers) {
-        val roster = speakers.map { it.name }.filter { it.isNotEmpty() && it != "Narrator" }.toSet()
-        nearbySpeakers.filter { it in roster }
-    }
-    val rest = remember(speakers, nearby) {
-        speakers.map { it.name }.filter { it.isNotEmpty() && it != "Narrator" && it !in nearby }.distinct()
-    }
+    val (local, all) = remember(speakers, chapterNames) { pickerSections(speakers, chapterNames, exclude = null) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(modifier = Modifier.padding(bottom = 24.dp)) {
@@ -2463,12 +2510,12 @@ private fun SpeakerPickerSheet(
                 item { CircularProgressIndicator(modifier = Modifier.padding(24.dp)) }
             } else {
                 item { SpeakerRow("Narrator", currentSpeaker, onSelect) }
-                if (nearby.isNotEmpty()) {
-                    item { VoiceSectionHeader("Nearby") }
-                    items(nearby, key = { "nearby-$it" }) { name -> SpeakerRow(name, currentSpeaker, onSelect) }
+                if (local.isNotEmpty()) {
+                    item { VoiceSectionHeader("This chapter") }
+                    items(local, key = { "local-$it" }) { name -> SpeakerRow(name, currentSpeaker, onSelect) }
                     item { VoiceSectionHeader("All characters") }
                 }
-                items(rest, key = { "rest-$it" }) { name -> SpeakerRow(name, currentSpeaker, onSelect) }
+                items(all, key = { "all-$it" }) { name -> SpeakerRow(name, currentSpeaker, onSelect) }
             }
         }
     }
@@ -2504,15 +2551,15 @@ private fun DescriptionPickerSheet(
     onDismiss: () -> Unit,
     fetchSpeakers: ((List<SpeakerDto>) -> Unit) -> Unit,
     fromName: String,
+    // See SpeakerPickerSheet's own chapterNames.
+    chapterNames: Set<String>,
     onSelect: (targetName: String) -> Unit,
 ) {
     var speakers by remember { mutableStateOf<List<SpeakerDto>>(emptyList()) }
     var loaded by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { fetchSpeakers { speakers = it; loaded = true } }
 
-    val targets = remember(speakers, fromName) {
-        speakers.map { it.name }.filter { it.isNotEmpty() && it != "Narrator" && it != fromName }.distinct()
-    }
+    val (local, all) = remember(speakers, chapterNames, fromName) { pickerSections(speakers, chapterNames, exclude = fromName) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(modifier = Modifier.padding(bottom = 24.dp)) {
@@ -2527,7 +2574,12 @@ private fun DescriptionPickerSheet(
                 item { CircularProgressIndicator(modifier = Modifier.padding(24.dp)) }
             } else {
                 item { DescriptionTargetRow("Remove", onSelect = { onSelect("") }) }
-                items(targets, key = { it }) { name -> DescriptionTargetRow(name, onSelect = { onSelect(name) }) }
+                if (local.isNotEmpty()) {
+                    item { VoiceSectionHeader("This chapter") }
+                    items(local, key = { "local-$it" }) { name -> DescriptionTargetRow(name, onSelect = { onSelect(name) }) }
+                    item { VoiceSectionHeader("All characters") }
+                }
+                items(all, key = { "all-$it" }) { name -> DescriptionTargetRow(name, onSelect = { onSelect(name) }) }
             }
         }
     }

@@ -32,6 +32,14 @@ fun narrationEta(snapshot: JobsSnapshotDto?): NarrationEta? {
     return NarrationEta(rate, books.sumOf { it.chars } / rate, books)
 }
 
+/** The speed to estimate not-yet-queued work at: the live rate while narration runs, else the
+ *  last run's; 0 when nothing has been measured since the backend started. Mirrors frontend's
+ *  narrationRate. */
+fun narrationRate(snapshot: JobsSnapshotDto?): Double {
+    val live = snapshot?.narrationCharsPerSecond ?: 0.0
+    return if (live > 0) live else snapshot?.lastNarrationCharsPerSecond ?: 0.0
+}
+
 /** "<1m", "38m", "2h", "1h 25m". */
 fun formatEta(seconds: Double): String {
     if (seconds < 60) return "<1m"

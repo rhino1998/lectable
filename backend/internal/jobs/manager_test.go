@@ -1474,6 +1474,53 @@ func TestHandleResultDiscardsStaleGenerationText(t *testing.T) {
 	}
 }
 
+// TestHandleResultDiscardsClipRenderedWithOldLexicon covers a lexicon
+// rule saved while a matching clip rendered: the paragraph's own text is
+// unchanged, but the clip used the old rules, so it must not be saved over
+// the edit's invalidation.
+func TestHandleResultDiscardsClipRenderedWithOldLexicon(t *testing.T) {
+	s := openTestStore(t)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "Nyx waved.")
+	bookID := book.ID
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil || len(paragraphs) != 1 {
+		t.Fatalf("ListParagraphsRaw: %v (n=%d)", err, len(paragraphs))
+	}
+	mgr := newTestManagerWithStore(s)
+	tk := &task{kind: KindVoiceClone, bookID: bookID, paragraph: paragraphs[0], voiceID: "voice-1"}
+	mgr.pushTask(tk)
+	if got, ok := mgr.queue.Pop(); !ok || got.(*task) != tk {
+		t.Fatal("test setup: expected to dispatch the task just pushed")
+	}
+	mgr.snapshotLexicon(tk) // what generate does: renders with no rules yet
+
+	if _, _, err := mgr.store.UpsertLexiconEntry(store.SeriesScope(book), pronounce.LexiconEntry{Term: "Nyx", Replacement: "Nicks"}); err != nil {
+		t.Fatal(err)
+	}
+	mgr.handleResult(tk, taskResult{audio: []byte("old pronunciation")})
+
+	got := queuedTasks(mgr)
+	if len(got) != 1 {
+		t.Fatalf("expected the paragraph to be requeued, got %d queued tasks", len(got))
+	}
+	if got[0].genLexiconSet {
+		t.Error("requeued task still carries the old render's lexicon snapshot")
+	}
+	if st, err := s.GetParagraphAudioStatus(paragraphs[0].ID, "voice-1"); err == nil && st == store.AudioReady {
+		t.Errorf("audio rendered with the old lexicon was saved as ready")
+	}
+
+	// Without an edit in between, the same result is kept.
+	mgr2 := newTestManagerWithStore(s)
+	tk2 := &task{kind: KindVoiceClone, bookID: bookID, paragraph: paragraphs[0], voiceID: "voice-1"}
+	mgr2.pushTask(tk2)
+	mgr2.queue.Pop()
+	mgr2.snapshotLexicon(tk2)
+	if _, stale := mgr2.refreshStaleGeneration(tk2); stale {
+		t.Error("unchanged lexicon reported stale")
+	}
+}
+
 // TestUrgentGenerationDispatchesDespitePoolLLMBacklog is a real end-to-end
 // regression test (driven through Manager.Start's actual worker loop, not
 // just handleResult in isolation the way the tests above check it) for a

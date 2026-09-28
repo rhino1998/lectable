@@ -1,5 +1,6 @@
 package com.lectable.app.ui.library
 
+import com.lectable.app.ui.jobs.narrationRate
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.content.ContentResolver
@@ -52,6 +53,9 @@ data class LibraryUiState(
     // same reasoning as ReaderScreen.kt's own download-done icon only offering it once
     // something's actually there to remove.
     val downloadedBookIds: Set<String> = emptySet(),
+    // Measured narration speed in chars/s for each row's "to go" estimate - see
+    // ui/jobs/NarrationEta.kt's narrationRate. 0 until anything has been measured.
+    val narrationRate: Double = 0.0,
 )
 
 @HiltViewModel
@@ -75,6 +79,12 @@ class LibraryViewModel @Inject constructor(
         viewModelScope.launch {
             autoConfigureServerIfNeeded()
             refresh()
+        }
+        viewModelScope.launch {
+            liveStore.jobs().collect { result ->
+                val rate = narrationRate(result.data)
+                if (rate != _uiState.value.narrationRate) _uiState.update { it.copy(narrationRate = rate) }
+            }
         }
         viewModelScope.launch {
             downloadRepository.observeDownloadedBooks().collect { downloaded ->

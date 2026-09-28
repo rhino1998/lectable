@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { JobsSnapshot, QueueTask } from '../api/types'
-import { formatEta, narrationEta } from './narrationEta'
+import { formatEta, narrationEta, narrationRate } from './narrationEta'
 
 const task = (over: Partial<QueueTask>): QueueTask =>
   ({
@@ -49,6 +49,17 @@ describe('narrationEta', () => {
         { bookId: 'a', bookTitle: 'A', chars: 600, seconds: 30 },
       ],
     })
+  })
+})
+
+describe('narrationRate', () => {
+  it('prefers the live rate, then the last run, else 0', () => {
+    expect(narrationRate(undefined)).toBe(0)
+    expect(narrationRate(snap({}))).toBe(0)
+    expect(narrationRate(snap({ lastNarrationCharsPerSecond: 12 }))).toBe(12)
+    expect(
+      narrationRate(snap({ narrationCharsPerSecond: 20, lastNarrationCharsPerSecond: 12 })),
+    ).toBe(20)
   })
 })
 

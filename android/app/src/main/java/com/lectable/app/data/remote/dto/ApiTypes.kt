@@ -322,6 +322,12 @@ data class BookDetailDto(
     val estimateCalibrated: Boolean = false,
     val generatedPercent: Double = 0.0,
     /**
+     * PendingNarrationChars is how much of the book's text (in its current
+     * voices) has no generated audio yet - divided by the jobs snapshot's
+     * narration rate, the clients' "time to finish narrating" estimate.
+     */
+    val pendingNarrationChars: Long = 0L,
+    /**
      * Preprocessing mirrors jobs.Manager.IsPipelineRunning - true while the
      * preprocessing pipeline (POST .../preprocess) is still working
      * through this book's attribution/characterization/voice-provisioning/
@@ -448,6 +454,12 @@ data class BookSummaryDto(
     val estimatedTotalSeconds: Double = 0.0,
     val estimateCalibrated: Boolean = false,
     val generatedPercent: Double = 0.0,
+    /**
+     * PendingNarrationChars is how much of the book's text (in its current
+     * voices) has no generated audio yet - divided by the jobs snapshot's
+     * narration rate, the clients' "time to finish narrating" estimate.
+     */
+    val pendingNarrationChars: Long = 0L,
     /**
      * Preprocessing mirrors jobs.Manager.IsPipelineRunning - true while the
      * preprocessing pipeline (POST .../preprocess) is still working
@@ -903,6 +915,13 @@ data class JobsSnapshotDto(
      * estimate is better than a wild one.
      */
     val narrationCharsPerSecond: Double? = null,
+    /**
+     * LastNarrationCharsPerSecond is the same measurement for the most
+     * recent run even after it ended (jobs.Manager.LastThroughput) - the
+     * library's "time to finish narrating" estimate for books with nothing
+     * queued. Omitted (0) until anything has been measured since startup.
+     */
+    val lastNarrationCharsPerSecond: Double? = null,
 )
 
 @Serializable
@@ -925,6 +944,25 @@ data class LexiconEntryDto(
      * Matches is how many paragraphs in this book the rule applies to.
      */
     val matches: Int = 0,
+)
+
+/**
+ * lexiconSuggestionDTO is a word from the character roster that might want
+ * a pronunciation rule.
+ */
+@Serializable
+data class LexiconSuggestionDto(
+    val term: String = "",
+    /**
+     * Lines is how many dialogue lines in this book the character whose
+     * name contains Term speaks - the ranking.
+     */
+    val lines: Int = 0,
+    /**
+     * Unusual is a spelling heuristic (see unusualSpelling): letter
+     * combinations TTS models tend to guess at. Unusual words sort first.
+     */
+    val unusual: Boolean = false,
 )
 
 /**

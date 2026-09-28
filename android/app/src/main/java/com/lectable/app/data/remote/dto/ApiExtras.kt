@@ -19,6 +19,7 @@ fun BookDetailDto.toSummary() = BookSummaryDto(
     estimatedTotalSeconds = estimatedTotalSeconds,
     estimateCalibrated = estimateCalibrated,
     generatedPercent = generatedPercent,
+    pendingNarrationChars = pendingNarrationChars,
     preprocessing = preprocessing,
     musicEnabled = musicEnabled,
 )

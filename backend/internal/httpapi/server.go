@@ -162,6 +162,8 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/books/{id}/lexicon", s.handleListLexicon)
 	mux.HandleFunc("PUT /api/books/{id}/lexicon", s.handleUpsertLexicon)
 	mux.HandleFunc("DELETE /api/books/{id}/lexicon/{entryId}", s.handleDeleteLexicon)
+	mux.HandleFunc("POST /api/books/{id}/lexicon/preview", s.handlePreviewLexicon)
+	mux.HandleFunc("GET /api/books/{id}/lexicon/suggestions", s.handleLexiconSuggestions)
 	mux.HandleFunc("GET /api/books/{id}/bookmarks", s.handleListBookmarks)
 	mux.HandleFunc("POST /api/books/{id}/bookmarks", s.handleCreateBookmark)
 	mux.HandleFunc("PUT /api/bookmarks/{id}", s.handleUpdateBookmark)

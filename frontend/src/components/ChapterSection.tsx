@@ -1,4 +1,4 @@
-import { Fragment, createElement, memo, useEffect, useRef, useState } from 'react'
+import { Fragment, createElement, memo, useEffect, useState } from 'react'
 import {
   RiBookmarkFill,
   RiBookmarkLine,
@@ -628,15 +628,15 @@ function lightingSummary(l: Lighting): string {
 // pause/duck narration or the live background-music mix - both keep
 // running underneath, exactly like clicking the SFX panel's preview does.
 function MusicRegionPreviewButton({ audioUrl }: { audioUrl: string }) {
-  const audioRef = useRef<HTMLAudioElement | null>(null)
   const [playing, setPlaying] = useState(false)
-
-  if (!audioRef.current) {
-    const audio = new Audio(audioUrl)
-    audio.addEventListener('ended', () => setPlaying(false))
-    audio.addEventListener('pause', () => setPlaying(false))
-    audioRef.current = audio
-  }
+  // Created once, on first render - like the ref it replaces, the clip
+  // stays the one this button first mounted with.
+  const [audio] = useState(() => {
+    const a = new Audio(audioUrl)
+    a.addEventListener('ended', () => setPlaying(false))
+    a.addEventListener('pause', () => setPlaying(false))
+    return a
+  })
 
   // Stops playback if this marker's own chapter scrolls out of the render
   // window (ChapterSection's renderFull/placeholderHeight) and unmounts
@@ -644,16 +644,15 @@ function MusicRegionPreviewButton({ audioUrl }: { audioUrl: string }) {
   // way left on screen to stop it.
   useEffect(() => {
     return () => {
-      audioRef.current?.pause()
+      audio.pause()
     }
-  }, [])
+  }, [audio])
 
   return (
     <button
       className="chapter-music-boundary-preview"
       onClick={(e) => {
         e.stopPropagation()
-        const audio = audioRef.current!
         if (playing) {
           audio.pause()
         } else {

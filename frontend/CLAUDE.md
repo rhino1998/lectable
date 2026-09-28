@@ -156,7 +156,11 @@ byte-for-byte.
   paused - own saves are remembered so their echoes don't trigger it;
   mirrored in android's `ui/reader/RemotePosition.kt`), and
   `components/ParagraphContextMenu` (the annotations-view right-click menu,
-  opened imperatively like `AnnotationTooltip`).
+  opened imperatively like `AnnotationTooltip`; its reassign lists are
+  "This chapter" then "All characters", alphabetical - `utils/speakerOrder`,
+  shared with the Speakers page's Narrator-first alphabetical roster).
+  The annotations-view toggle is remembered in `localStorage`
+  (`lectable.annotationsView`).
 - `src/pages/SpeakersPage.tsx` — the roster and its handlers; the rest is
   in `src/components/speakers/`: `SpeakerSettings` (book-wide switches),
   `ChapterPassTable` (per-chapter pass table + whole-book Rest/All/Reset

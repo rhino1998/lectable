@@ -2766,3 +2766,14 @@ label {
   border-left: 3px solid var(--accent);
   background: var(--accent-bg, transparent);
 }
+
+.lexicon-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0 0 0.6rem;
+}
+.lexicon-suggestion-unusual {
+  border-color: var(--accent);
+}

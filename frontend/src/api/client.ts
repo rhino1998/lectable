@@ -550,6 +550,11 @@ export const api = {
   upsertLexiconEntry: (bookId: string, body: UpsertLexiconRequest) =>
     call('PUT /api/books/{id}/lexicon', { path: { id: bookId }, body }),
 
+  // Renders a rule (saved or not) in the book's narrator voice, speaking
+  // the first sentence it matches - see backend handlePreviewLexicon.
+  previewLexiconEntry: (bookId: string, body: UpsertLexiconRequest) =>
+    call('POST /api/books/{id}/lexicon/preview', { path: { id: bookId }, body }),
+
   deleteLexiconEntry: (bookId: string, entryId: string) =>
     call('DELETE /api/books/{id}/lexicon/{entryId}', { path: { id: bookId, entryId } }),
 

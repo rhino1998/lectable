@@ -23,9 +23,13 @@ func TestNarrationThroughput(t *testing.T) {
 		t.Fatalf("rate = %v, %v; want 10 chars/s", got, ok)
 	}
 
-	// Stale once the run ends.
-	if _, ok := nt.rate(t0.Add(30*time.Second + throughputGap + time.Second)); ok {
+	// Stale once the run ends - but still the last known speed.
+	later := t0.Add(30*time.Second + throughputGap + time.Second)
+	if _, ok := nt.rate(later); ok {
 		t.Fatal("after a long idle gap: want !ok")
+	}
+	if got, ok := nt.lastRate(later); !ok || got != 10 {
+		t.Fatalf("lastRate = %v, %v; want the ended run's 10 chars/s", got, ok)
 	}
 
 	// A new run after a gap is measured on its own, not averaged across

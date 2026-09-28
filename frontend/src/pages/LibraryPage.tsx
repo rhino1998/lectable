@@ -14,12 +14,14 @@ import {
   useDeleteBook,
   useGenerateBook,
   useGenerateRemaining,
+  useJobsSnapshot,
   usePreprocessBook,
   useUploadBook,
 } from '../api/queries'
 import { useClickOutside } from '../hooks/useClickOutside'
 import { ApiError } from '../api/client'
 import { formatDurationLong } from '../utils/time'
+import { formatEta, narrationRate as measuredNarrationRate } from '../utils/narrationEta'
 import type { BookSummary } from '../api/types'
 
 // One library grid entry: either a run of consecutive standalone books (no
@@ -65,9 +67,12 @@ function BookCard({
   book,
   onDelete,
   showSeriesName,
+  narrationRate,
 }: {
   book: BookSummary
   onDelete: () => void
+  // Measured narration speed in chars/s (utils/narrationEta), 0 if unknown.
+  narrationRate: number
   // Inside a series section the heading already names the series, so the
   // card itself only needs its own index within it.
   showSeriesName: boolean
@@ -141,6 +146,9 @@ function BookCard({
             {book.finished ? 'Finished' : percent > 0 ? `${percent}% read` : 'Not started'}
             {' · '}
             {generatedPercent}% generated
+            {book.pendingNarrationChars > 0 &&
+              narrationRate > 0 &&
+              ` (~${formatEta(book.pendingNarrationChars / narrationRate)} to go)`}
             {' · '}
             {formatDurationLong(remainingSeconds)}
             {!book.estimateCalibrated && ' (est.)'}
@@ -208,6 +216,8 @@ function BookCard({
 
 export function LibraryPage() {
   const booksQuery = useBooks()
+  // Only the rate is read - for each card's "to go" estimate.
+  const rate = measuredNarrationRate(useJobsSnapshot().data)
   const uploadBook = useUploadBook()
   const deleteBook = useDeleteBook()
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -293,6 +303,7 @@ export function LibraryPage() {
                   book={book}
                   onDelete={() => confirmDelete(book)}
                   showSeriesName={false}
+                  narrationRate={rate}
                 />
               ))}
             </div>
@@ -305,6 +316,7 @@ export function LibraryPage() {
                 book={book}
                 onDelete={() => confirmDelete(book)}
                 showSeriesName={true}
+                narrationRate={rate}
               />
             ))}
           </div>

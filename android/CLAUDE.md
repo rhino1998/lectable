@@ -282,9 +282,11 @@ compiled-in default in place if nothing answers in time.
   regions via `ReaderViewModel.onChapterMusic` and observing
   `ParagraphPlayer.state`, so lights follow the book with the screen off.
   Settings (`data/settings/LightingSettingsRepository.kt`, DataStore) are
-  edited in Settings' "Room lighting (Philips Hue)" section: find (cloud
-  discovery) or type the bridge IP, Pair (polls for the link button),
-  pick a room, brightness cap, restore on stop. `ReaderViewModel` keeps
+  edited on `ui/settings/LightingScreen.kt` (the `HueLightingSection`,
+  linked from Settings and opened by long-pressing the reader's lightbulb
+  button; tapping it toggles lighting, or opens the screen if nothing is
+  set up yet): find (cloud discovery) or type the bridge IP, Pair (polls
+  for the link button), pick a room, brightness cap, restore on stop. `ReaderViewModel` keeps
   `chapterMusic` subscriptions while music *or* lighting is on and lazily
   runs the ambience pass until a chapter is both `scored` and `lit`.
 - `playback/PlaybackService.kt` - a `MediaSessionService` hosting
@@ -325,10 +327,16 @@ compiled-in default in place if nothing answers in time.
   sheets, and a long-press paragraph menu (regenerate/bookmark/copy/set
   speaker). Book-level
   settings (Narrator voice, a Background music switch - the same toggle
-  `VoicePickerSheet` has, Speakers, offline-download controls) live
-  behind one `⋮` overflow menu rather than always-visible icons - occasional
+  `VoicePickerSheet` has, Search, Speakers, Pronunciations - the series
+  lexicon, `ui/lexicon/`, also on the library's long-press menu - offline-
+  download controls) live behind one `⋮` overflow menu rather than always-visible icons - occasional
   settings a reader dips into, unlike Play/Pause which stays in the bottom
-  `PlaybackBar`. `ReaderViewModel` subscribes to the book, voice,
+  `PlaybackBar` (annotations/music/lighting left of Play, bookmarks/chapter/
+  speed right; annotations mode is persisted in `ReadingSettingsRepository`).
+  The set-speaker/description pickers list "This chapter" (everyone who
+  speaks or is described in the chapter) then "All characters", both
+  alphabetical (`pickerSections`); the Speakers roster is Narrator-first,
+  then alphabetical (`sortedRoster`). `ReaderViewModel` subscribes to the book, voice,
   bookmarks, every loaded chapter (`subscribeChapter`/`awaitChapter` -
   jumps cancel and resubscribe, which replays the lingering value) and,
   while music is on, every loaded chapter's music; it also owns throttled

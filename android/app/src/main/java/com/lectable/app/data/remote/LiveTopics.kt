@@ -52,6 +52,15 @@ object LiveTopics {
     fun lexicon(bookId: String): LiveTopic<List<LexiconEntryDto>> =
         LiveTopic("lexicon", mapOf("bookId" to bookId), serializer<List<LexiconEntryDto>>())
 
+    /**
+     * buildLexiconSuggestions offers the words of the series roster's names
+     * and aliases that have no rule yet, unusual spellings first, then by how
+     * much the character speaks in this book - the names a listener is most
+     * likely to hear mispronounced, one click from a rule.
+     */
+    fun lexiconSuggestions(bookId: String): LiveTopic<List<LexiconSuggestionDto>> =
+        LiveTopic("lexiconSuggestions", mapOf("bookId" to bookId), serializer<List<LexiconSuggestionDto>>())
+
     fun bookExports(bookId: String): LiveTopic<List<BookExportDto>> =
         LiveTopic("bookExports", mapOf("bookId" to bookId), serializer<List<BookExportDto>>())
 

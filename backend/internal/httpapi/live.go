@@ -61,6 +61,7 @@ func withDeps(base []string, extra ...string) []string {
 //	characterDescriptions {bookId, characterId}
 //	bookmarks      {bookId}               GET /api/books/{id}/bookmarks
 //	lexicon        {bookId}               GET /api/books/{id}/lexicon
+//	lexiconSuggestions {bookId}           GET /api/books/{id}/lexicon/suggestions
 //	bookExports    {bookId}               GET /api/books/{id}/exports
 //	jobs                                  GET /api/jobs
 //	voicePresets                          GET /api/voices/presets
@@ -90,6 +91,7 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("bookmarks", bookTopic("bookmarks", dbDeps("bookmarks", "books", "chapters", "paragraphs"), 0, s.buildBookmarks))
 	// Match counts scan the book's paragraphs, hence the interval.
 	h.Register("lexicon", bookTopic("lexicon", dbDeps("pronunciation_lexicon", "books", "paragraphs"), 2*time.Second, s.buildLexicon))
+	h.Register("lexiconSuggestions", bookTopic("lexiconSuggestions", dbDeps("pronunciation_lexicon", "characters", "books", "paragraphs"), 2*time.Second, s.buildLexiconSuggestions))
 	// Staleness is a whole-book fingerprint query, so this is rate-limited
 	// like the other whole-book topics; a build's progress still lands
 	// every couple of seconds.

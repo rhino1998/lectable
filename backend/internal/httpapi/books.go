@@ -35,6 +35,10 @@ type bookSummaryDTO struct {
 	EstimatedTotalSeconds float64 `json:"estimatedTotalSeconds"`
 	EstimateCalibrated    bool    `json:"estimateCalibrated"`
 	GeneratedPercent      float64 `json:"generatedPercent"`
+	// PendingNarrationChars is how much of the book's text (in its current
+	// voices) has no generated audio yet - divided by the jobs snapshot's
+	// narration rate, the clients' "time to finish narrating" estimate.
+	PendingNarrationChars int64 `json:"pendingNarrationChars"`
 	// Preprocessing mirrors jobs.Manager.IsPipelineRunning - true while the
 	// preprocessing pipeline (POST .../preprocess) is still working
 	// through this book's attribution/characterization/voice-provisioning/
@@ -134,6 +138,7 @@ func toBookSummary(b store.Book, chapters []store.ChapterSummary, stats store.Na
 
 	dto.EstimatedTotalSeconds, dto.EstimateCalibrated = estimateTotalSeconds(stats, b.EstimateSecPerChar)
 
+	dto.PendingNarrationChars = max(stats.TotalChars-stats.ReadyChars, 0)
 	if stats.TotalChars > 0 {
 		dto.GeneratedPercent = float64(stats.ReadyChars) / float64(stats.TotalChars) * 100
 		if dto.GeneratedPercent > 100 {

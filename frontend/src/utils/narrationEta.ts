@@ -42,6 +42,13 @@ export function narrationEta(snapshot: JobsSnapshot | undefined): NarrationEta |
   return { charsPerSecond: rate, totalSeconds: totalChars / rate, books }
 }
 
+// narrationRate is the speed to estimate not-yet-queued work at: the live
+// rate while narration is running, else the last run's (the backend keeps
+// it after the run ends); 0 when nothing has been measured since startup.
+export function narrationRate(snapshot: JobsSnapshot | undefined): number {
+  return snapshot?.narrationCharsPerSecond || snapshot?.lastNarrationCharsPerSecond || 0
+}
+
 // formatEta is formatDurationLong with a floor: anything under a minute
 // reads "<1m" rather than "0m".
 export function formatEta(seconds: number): string {

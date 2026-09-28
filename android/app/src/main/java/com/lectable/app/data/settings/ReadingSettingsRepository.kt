@@ -2,6 +2,7 @@ package com.lectable.app.data.settings
 
 import android.content.Context
 import androidx.compose.ui.text.font.FontFamily
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -43,6 +44,7 @@ private val Context.readingDataStore by preferencesDataStore(name = "reading_set
 // gets (see backend/CLAUDE.md) - nothing here is worth preserving across that change.
 private val FONT_SIZE_KEY = intPreferencesKey("font_size")
 private val FONT_FAMILY_KEY = stringPreferencesKey("font_family")
+private val ANNOTATIONS_MODE_KEY = booleanPreferencesKey("annotations_mode")
 
 /** Reader typography preferences (font size/family for paragraph text in ReaderScreen) -
  *  same DataStore-backed pattern as [ThemeSettingsRepository], kept in its own file since
@@ -63,6 +65,15 @@ class ReadingSettingsRepository @Inject constructor(
 
     suspend fun setFontSize(sizeSp: Int) {
         context.readingDataStore.edit { prefs -> prefs[FONT_SIZE_KEY] = sizeSp.coerceIn(MIN_FONT_SIZE_SP, MAX_FONT_SIZE_SP) }
+    }
+
+    /** The reader's annotations mode (speaker/description coloring and markers) - remembered
+     *  across reader visits and app restarts rather than resetting each time. Mirrors the web
+     *  reader's localStorage-backed toggle. */
+    val annotationsMode: Flow<Boolean> = context.readingDataStore.data.map { prefs -> prefs[ANNOTATIONS_MODE_KEY] ?: false }
+
+    suspend fun setAnnotationsMode(on: Boolean) {
+        context.readingDataStore.edit { prefs -> prefs[ANNOTATIONS_MODE_KEY] = on }
     }
 
     suspend fun setFontFamily(family: ReaderFontFamily) {

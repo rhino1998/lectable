@@ -84,6 +84,11 @@ type jobsSnapshotDTO struct {
 	// Omitted (0) until there's a recent continuous run to measure - no
 	// estimate is better than a wild one.
 	NarrationCharsPerSecond float64 `json:"narrationCharsPerSecond,omitempty"`
+	// LastNarrationCharsPerSecond is the same measurement for the most
+	// recent run even after it ended (jobs.Manager.LastThroughput) - the
+	// library's "time to finish narrating" estimate for books with nothing
+	// queued. Omitted (0) until anything has been measured since startup.
+	LastNarrationCharsPerSecond float64 `json:"lastNarrationCharsPerSecond,omitempty"`
 }
 
 // buildJobsSnapshot reports the job queue's live state - what's dispatched
@@ -154,6 +159,9 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 	out := jobsSnapshotDTO{InFlight: []queueTaskDTO{}, Queued: []queueTaskDTO{}, Paused: s.Jobs.Paused()}
 	if rate, ok := s.Jobs.Throughput(); ok {
 		out.NarrationCharsPerSecond = math.Round(rate*10) / 10
+	}
+	if rate, ok := s.Jobs.LastThroughput(); ok {
+		out.LastNarrationCharsPerSecond = math.Round(rate*10) / 10
 	}
 	for _, t := range inFlight {
 		out.InFlight = append(out.InFlight, toDTO(t))

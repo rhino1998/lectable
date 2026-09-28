@@ -1,5 +1,6 @@
 package com.lectable.app.ui.library
 
+import com.lectable.app.ui.jobs.formatEta
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Spellcheck
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -71,6 +73,7 @@ fun LibraryScreen(
     onOpenBook: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSpeakers: (String) -> Unit,
+    onOpenLexicon: (String) -> Unit,
     viewModel: LibraryViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -174,9 +177,11 @@ fun LibraryScreen(
                                         item = entry.item,
                                         showSeriesName = entry.showSeriesName,
                                         isDownloaded = entry.item.summary.id in uiState.downloadedBookIds,
+                                        narrationRate = uiState.narrationRate,
                                         onClick = { onOpenBook(entry.item.summary.id) },
                                         onPreprocess = { viewModel.preprocessBook(entry.item.summary.id) },
                                         onOpenSpeakers = { onOpenSpeakers(entry.item.summary.id) },
+                                        onOpenLexicon = { onOpenLexicon(entry.item.summary.id) },
                                         onGenerate = { viewModel.generateBook(entry.item.summary.id) },
                                         onGenerateRemaining = { viewModel.generateBookRemaining(entry.item.summary.id) },
                                         onDownload = { viewModel.downloadBook(entry.item.summary.id) },
@@ -253,9 +258,11 @@ private fun BookRow(
     item: BookListItem,
     showSeriesName: Boolean,
     isDownloaded: Boolean,
+    narrationRate: Double,
     onClick: () -> Unit,
     onPreprocess: () -> Unit,
     onOpenSpeakers: () -> Unit,
+    onOpenLexicon: () -> Unit,
     onGenerate: () -> Unit,
     onGenerateRemaining: () -> Unit,
     onDownload: () -> Unit,
@@ -340,7 +347,7 @@ private fun BookRow(
                     color = if (book.finished) Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary,
                 )
                 Text(
-                    bookProgressLabel(book),
+                    bookProgressLabel(book, narrationRate),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -357,6 +364,11 @@ private fun BookRow(
                 text = { Text("Speakers") },
                 leadingIcon = { Icon(Icons.Filled.RecordVoiceOver, contentDescription = null) },
                 onClick = { onOpenSpeakers(); showMenu = false },
+            )
+            DropdownMenuItem(
+                text = { Text("Pronunciations") },
+                leadingIcon = { Icon(Icons.Filled.Spellcheck, contentDescription = null) },
+                onClick = { onOpenLexicon(); showMenu = false },
             )
             // "Generate audio" opens a nested All/Remaining submenu instead of generating
             // directly - mirrors the web frontend's own popover on the library page's
@@ -420,13 +432,16 @@ private fun BookRow(
 
 /** Adapted from frontend/src/pages/LibraryPage.tsx's BookCard progress label - always shows
  *  the bare percentage rather than swapping in "Not started"/"Finished" text at the extremes. */
-private fun bookProgressLabel(book: BookSummaryDto): String {
+private fun bookProgressLabel(book: BookSummaryDto, narrationRate: Double): String {
     val percent = book.progressPercent.roundToInt()
     val generatedPercent = book.generatedPercent.roundToInt()
     val remainingSeconds = (book.estimatedTotalSeconds * (1 - book.progressPercent / 100)).coerceAtLeast(0.0)
     return buildString {
         append("$percent% read")
         append(" · $generatedPercent% generated")
+        if (book.pendingNarrationChars > 0 && narrationRate > 0) {
+            append(" (~${formatEta(book.pendingNarrationChars / narrationRate)} to go)")
+        }
         append(" · ${formatDurationLong(remainingSeconds)}")
         if (!book.estimateCalibrated) append(" (est.)")
     }

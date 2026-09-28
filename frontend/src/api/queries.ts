@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from './client'
 import { useLive, useLiveMany } from './live'
+import { useStableCallback } from '../hooks/useStableCallback'
 import type { LiveResult } from './live'
 import type {
   Bookmark,
@@ -18,6 +19,7 @@ import type {
   CustomVoicePresetInput,
   JobsSnapshot,
   LexiconEntry,
+  LexiconSuggestion,
   UpsertLexiconRequest,
   TestLLMRequest,
   Position,
@@ -599,13 +601,12 @@ export function useCharacterizingCharacters(
 ): Set<string> {
   const characterizing = useLabelSet(bookId, 'speaker_characterization')
   const prevRef = useRef<Set<string>>(characterizing)
-  const onFinishedRef = useRef(onFinished)
-  onFinishedRef.current = onFinished
+  const notifyFinished = useStableCallback((names: string[]) => onFinished?.(names))
   useEffect(() => {
     const finished = [...prevRef.current].filter((name) => !characterizing.has(name))
     prevRef.current = characterizing
-    if (finished.length > 0) onFinishedRef.current?.(finished)
-  }, [characterizing])
+    if (finished.length > 0) notifyFinished(finished)
+  }, [characterizing, notifyFinished])
   return characterizing
 }
 
@@ -682,6 +683,17 @@ export function useLexicon(bookId: string): LiveResult<LexiconEntry[]> {
 export function useUpsertLexiconEntry(bookId: string) {
   return useMutation({
     mutationFn: (body: UpsertLexiconRequest) => api.upsertLexiconEntry(bookId, body),
+  })
+}
+
+// Roster name words without a rule yet, unusual spellings first (live).
+export function useLexiconSuggestions(bookId: string): LiveResult<LexiconSuggestion[]> {
+  return useLive('lexiconSuggestions', { bookId })
+}
+
+export function usePreviewLexiconEntry(bookId: string) {
+  return useMutation({
+    mutationFn: (body: UpsertLexiconRequest) => api.previewLexiconEntry(bookId, body),
   })
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { RiDeleteBinLine, RiUserCommunityLine } from 'react-icons/ri'
 import {
@@ -33,14 +33,17 @@ export function VoicePanel({ bookId }: { bookId: string }) {
   const [dirty, setDirty] = useState(false)
   const [deleteAudioError, setDeleteAudioError] = useState<string | null>(null)
 
-  // Seed local editable state once, from the book's saved voice.
-  useEffect(() => {
-    if (voiceQuery.data && !dirty) {
-      setPresetId(voiceQuery.data.presetId)
-      setLanguage(voiceQuery.data.language || 'Auto')
-      setCloneModel(voiceQuery.data.cloneModel || DEFAULT_CLONE_MODEL)
-    }
-  }, [voiceQuery.data, dirty])
+  // Seed local editable state from the book's saved voice - whenever it
+  // changes, until the listener starts editing. Adjusted during render
+  // (guarded by which value was last seeded from) rather than in an
+  // effect, so the form never paints a frame of stale values first.
+  const [seededFrom, setSeededFrom] = useState<typeof voiceQuery.data>(undefined)
+  if (voiceQuery.data && !dirty && voiceQuery.data !== seededFrom) {
+    setSeededFrom(voiceQuery.data)
+    setPresetId(voiceQuery.data.presetId)
+    setLanguage(voiceQuery.data.language || 'Auto')
+    setCloneModel(voiceQuery.data.cloneModel || DEFAULT_CLONE_MODEL)
+  }
 
   const builtins = presetsQuery.data?.presets ?? []
   const customs = customPresetsQuery.data ?? []

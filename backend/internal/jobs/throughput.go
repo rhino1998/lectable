@@ -53,10 +53,22 @@ func (nt *narrationThroughput) record(at time.Time, chars int) {
 // the last completion is older than throughputGap - the run is over, and
 // whatever starts next may run at a different pace).
 func (nt *narrationThroughput) rate(now time.Time) (charsPerSec float64, ok bool) {
+	return nt.measure(now, true)
+}
+
+// lastRate is rate without the staleness cutoff: the most recent run's
+// speed even after it ended - a "typical speed" for estimating work that
+// hasn't been queued yet. Forgotten once a new run's first completion
+// prunes the old run past throughputWindow.
+func (nt *narrationThroughput) lastRate(now time.Time) (charsPerSec float64, ok bool) {
+	return nt.measure(now, false)
+}
+
+func (nt *narrationThroughput) measure(now time.Time, freshOnly bool) (charsPerSec float64, ok bool) {
 	nt.mu.Lock()
 	defer nt.mu.Unlock()
 	n := len(nt.samples)
-	if n == 0 || now.Sub(nt.samples[n-1].at) > throughputGap {
+	if n == 0 || (freshOnly && now.Sub(nt.samples[n-1].at) > throughputGap) {
 		return 0, false
 	}
 	start := n - 1
@@ -98,4 +110,10 @@ func taskChars(t *task) int {
 // measure.
 func (m *Manager) Throughput() (charsPerSec float64, ok bool) {
 	return m.throughput.rate(time.Now())
+}
+
+// LastThroughput is Throughput for the most recent run even once it has
+// ended (see narrationThroughput.lastRate).
+func (m *Manager) LastThroughput() (charsPerSec float64, ok bool) {
+	return m.throughput.lastRate(time.Now())
 }

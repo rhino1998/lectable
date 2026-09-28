@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react'
+import { useEffect } from 'react'
+import { useStableCallback } from './useStableCallback'
 
 // android's analogue is playback/PlaybackService.kt's MediaSessionService -
 // this is the web equivalent: the browser's own Media Session API
@@ -62,31 +63,26 @@ export function useMediaSession({
   }, [supported, title, artist, album, artworkUrl])
 
   // Action handlers registered once, not re-bound on every render - each
-  // reads through a ref so it always calls whatever the latest callback
-  // is without needing to be in this effect's own deps (the same "latest
-  // ref" pattern ReaderPage's useStableCallback formalizes).
-  const onPlayRef = useRef(onPlay)
-  onPlayRef.current = onPlay
-  const onPauseRef = useRef(onPause)
-  onPauseRef.current = onPause
-  const onNextRef = useRef(onNextTrack)
-  onNextRef.current = onNextTrack
-  const onPrevRef = useRef(onPreviousTrack)
-  onPrevRef.current = onPreviousTrack
+  // is a stable wrapper that always calls whatever the latest callback is
+  // (useStableCallback), so none needs to be in this effect's own deps.
+  const play = useStableCallback(onPlay)
+  const pause = useStableCallback(onPause)
+  const next = useStableCallback(onNextTrack)
+  const prev = useStableCallback(onPreviousTrack)
 
   useEffect(() => {
     if (!supported) return
-    navigator.mediaSession.setActionHandler('play', () => onPlayRef.current())
-    navigator.mediaSession.setActionHandler('pause', () => onPauseRef.current())
-    navigator.mediaSession.setActionHandler('nexttrack', () => onNextRef.current())
-    navigator.mediaSession.setActionHandler('previoustrack', () => onPrevRef.current())
+    navigator.mediaSession.setActionHandler('play', () => play())
+    navigator.mediaSession.setActionHandler('pause', () => pause())
+    navigator.mediaSession.setActionHandler('nexttrack', () => next())
+    navigator.mediaSession.setActionHandler('previoustrack', () => prev())
     return () => {
       navigator.mediaSession.setActionHandler('play', null)
       navigator.mediaSession.setActionHandler('pause', null)
       navigator.mediaSession.setActionHandler('nexttrack', null)
       navigator.mediaSession.setActionHandler('previoustrack', null)
     }
-  }, [supported])
+  }, [supported, play, pause, next, prev])
 
   useEffect(() => {
     if (!supported) return

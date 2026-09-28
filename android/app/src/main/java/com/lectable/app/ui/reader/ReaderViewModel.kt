@@ -34,6 +34,8 @@ import com.lectable.app.data.settings.DEFAULT_FONT_SIZE_SP
 import com.lectable.app.data.settings.DEFAULT_MUSIC_VOLUME
 import com.lectable.app.data.settings.PlaybackSettingsRepository
 import com.lectable.app.data.settings.ReadingSettingsRepository
+import com.lectable.app.data.settings.LightingSettingsRepository
+import com.lectable.app.playback.lighting.LightingStatus
 import com.lectable.app.playback.BackgroundMusicPlayer
 import com.lectable.app.playback.lighting.HueLightingController
 import com.lectable.app.playback.ChapterDownloadWorker
@@ -120,6 +122,12 @@ data class ReaderUiState(
     // The book's saved position when another device moved it while this reader sat paused -
     // see remotePosition. Null otherwise.
     val remotePosition: ParagraphPos? = null,
+    // Persisted (ReadingSettingsRepository.annotationsMode) - see setAnnotationsMode.
+    val annotationsMode: Boolean = false,
+    // Hue room lighting, for the playback bar's lighting toggle - see toggleLighting.
+    val lightingEnabled: Boolean = false,
+    val lightingConfigured: Boolean = false,
+    val lightingStatus: LightingStatus = LightingStatus.OFF,
 )
 
 @HiltViewModel
@@ -133,6 +141,7 @@ class ReaderViewModel @Inject constructor(
     val player: ParagraphPlayer,
     private val backgroundMusicPlayer: BackgroundMusicPlayer,
     private val lightingController: HueLightingController,
+    private val lightingSettingsRepository: LightingSettingsRepository,
     private val liveStore: LiveStore,
     private val downloadRepository: DownloadRepository,
     private val workManager: WorkManager,
@@ -242,6 +251,17 @@ class ReaderViewModel @Inject constructor(
         }
         viewModelScope.launch {
             readingSettingsRepository.fontFamily.collect { family -> _uiState.update { it.copy(fontFamily = family) } }
+        }
+        viewModelScope.launch {
+            readingSettingsRepository.annotationsMode.collect { on -> _uiState.update { it.copy(annotationsMode = on) } }
+        }
+        viewModelScope.launch {
+            lightingSettingsRepository.settings.collect { s ->
+                _uiState.update { it.copy(lightingEnabled = s.enabled, lightingConfigured = s.configured) }
+            }
+        }
+        viewModelScope.launch {
+            lightingController.state.collect { st -> _uiState.update { it.copy(lightingStatus = st.status) } }
         }
 
         viewModelScope.launch {
@@ -1052,6 +1072,21 @@ class ReaderViewModel @Inject constructor(
     fun dismissRemotePosition() {
         dismissedRemotePosition = _uiState.value.remotePosition ?: return
         _uiState.update { withRemotePosition(it) }
+    }
+
+    fun setAnnotationsMode(on: Boolean) {
+        _uiState.update { it.copy(annotationsMode = on) }
+        viewModelScope.launch { readingSettingsRepository.setAnnotationsMode(on) }
+    }
+
+    /** The playback bar's lighting button: flips Hue lighting on/off (HueLightingController
+     *  follows the setting). Returns false - nothing toggled - when no bridge/room is set up
+     *  yet, so the caller can open the lighting screen instead. */
+    fun toggleLighting(): Boolean {
+        val state = _uiState.value
+        if (!state.lightingConfigured) return false
+        viewModelScope.launch { lightingSettingsRepository.setEnabled(!state.lightingEnabled) }
+        return true
     }
 
     fun dismissError() {

@@ -10,32 +10,12 @@ import {
   type DesignModel,
 } from '../api/types'
 
-// Kept identical to tts-service's own DEFAULT_REF_TEXT (voices.py) - the
-// same phonetically-balanced pangram-style line it clones its built-in
-// presets from, so a custom voice's default reference clip samples English
-// phonemes just as broadly instead of whatever a short throwaway line
-// happens to contain.
-export const DEFAULT_REF_TEXT =
-  'The beige hue on the waters of the loch impressed all, including the French queen, ' +
-  'before she heard that symphony again, just as young Arthur wanted.'
-
 // Matches tts-service's WSOLA range (wsola.py's MIN/MAX_PLAYBACK_RATE) -
 // speed_multiplier is applied to the voice's reference clip, not live
 // playback, so it shares the same pitch-preserving time-stretch limits.
-export const SPEED_MIN = 0.5
-export const SPEED_MAX = 4
-export const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4]
-
-// A positive 31-bit seed, same shape as the backend's own store.RandomSeed
-// (doesn't need to match bit-for-bit, just "some positive int"). A brand
-// new voice pins one of these up front rather than leaving it for the
-// server to pick at save time, specifically so a design preview and the
-// eventual create-voice call agree on the same seed - otherwise they'd be
-// unrelated random samples of the same instruct, and saving could never
-// reuse what testing just rendered (see backend voicerefs.DesignConfigHash).
-export function randomSeed(): number {
-  return Math.floor(Math.random() * 0x7fffffff)
-}
+const SPEED_MIN = 0.5
+const SPEED_MAX = 4
+const SPEED_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4]
 
 // Where a speed value sits along the slider, as a 0-100% position - shared
 // by the fill gradient (how far the accent-colored portion extends) and

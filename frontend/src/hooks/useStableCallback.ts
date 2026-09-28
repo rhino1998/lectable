@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback, useLayoutEffect, useRef } from 'react'
 
 // Wraps `fn` in a stable function identity (never changes across renders)
 // that always calls whatever the latest `fn` actually is - the same
@@ -11,6 +11,10 @@ export function useStableCallback<A extends unknown[], R>(
   fn: (...args: A) => R,
 ): (...args: A) => R {
   const fnRef = useRef(fn)
-  fnRef.current = fn
+  // Updated after render (before paint, so before any event can fire)
+  // rather than during it - render must stay free of side effects.
+  useLayoutEffect(() => {
+    fnRef.current = fn
+  })
   return useCallback((...args: A) => fnRef.current(...args), [])
 }

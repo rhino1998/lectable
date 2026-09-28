@@ -276,6 +276,12 @@ export interface BookSummary {
   estimateCalibrated: boolean
   generatedPercent: number
   /**
+   * PendingNarrationChars is how much of the book's text (in its current
+   * voices) has no generated audio yet - divided by the jobs snapshot's
+   * narration rate, the clients' "time to finish narrating" estimate.
+   */
+  pendingNarrationChars: number
+  /**
    * Preprocessing mirrors jobs.Manager.IsPipelineRunning - true while the
    * preprocessing pipeline (POST .../preprocess) is still working
    * through this book's attribution/characterization/voice-provisioning/
@@ -673,6 +679,13 @@ export interface JobsSnapshot {
    * estimate is better than a wild one.
    */
   narrationCharsPerSecond?: number
+  /**
+   * LastNarrationCharsPerSecond is the same measurement for the most
+   * recent run even after it ended (jobs.Manager.LastThroughput) - the
+   * library's "time to finish narrating" estimate for books with nothing
+   * queued. Omitted (0) until anything has been measured since startup.
+   */
+  lastNarrationCharsPerSecond?: number
 }
 
 export interface LanguagesResponse {
@@ -693,6 +706,24 @@ export interface LexiconEntry {
    * Matches is how many paragraphs in this book the rule applies to.
    */
   matches: number
+}
+
+/**
+ * lexiconSuggestionDTO is a word from the character roster that might want
+ * a pronunciation rule.
+ */
+export interface LexiconSuggestion {
+  term: string
+  /**
+   * Lines is how many dialogue lines in this book the character whose
+   * name contains Term speaks - the ranking.
+   */
+  lines: number
+  /**
+   * Unusual is a spelling heuristic (see unusualSpelling): letter
+   * combinations TTS models tend to guess at. Unusual words sort first.
+   */
+  unusual: boolean
 }
 
 /**
@@ -1592,6 +1623,13 @@ export interface LiveTopics {
    * fires is visible).
    */
   lexicon: { params: { bookId: string }; data: LexiconEntry[] }
+  /**
+   * buildLexiconSuggestions offers the words of the series roster's names
+   * and aliases that have no rule yet, unusual spellings first, then by how
+   * much the character speaks in this book - the names a listener is most
+   * likely to hear mispronounced, one click from a rule.
+   */
+  lexiconSuggestions: { params: { bookId: string }; data: LexiconSuggestion[] }
   bookExports: { params: { bookId: string }; data: BookExport[] }
   jobs: { params: Record<never, never>; data: JobsSnapshot }
   voicePresets: { params: Record<never, never>; data: VoicePresets }
@@ -2488,6 +2526,27 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handlePreviewLexicon renders a rule - saved or not yet saved - in the
+   * book's own narrator voice and clone model, so a listener can hear a
+   * respelling before committing to it (and regenerating every line it
+   * matches). Speaks the first sentence in the book the rule matches, with
+   * the rule applied, falling back to the replacement alone.
+   */
+  'POST /api/books/{id}/lexicon/preview': {
+    path: { id: string }
+    query: Record<never, never>
+    body: UpsertLexiconRequest
+    response: Blob
+    errorCode: never
+  }
+  'GET /api/books/{id}/lexicon/suggestions': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: LexiconSuggestion[]
+    errorCode: never
+  }
+  /**
    * handleDeleteLexicon removes a pronunciation rule and clears generated
    * audio for every paragraph in its series that the rule matched.
    */
@@ -3250,6 +3309,8 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/generate-remaining': 'json',
   'GET /api/books/{id}/lexicon': 'json',
   'PUT /api/books/{id}/lexicon': 'json',
+  'POST /api/books/{id}/lexicon/preview': 'binary',
+  'GET /api/books/{id}/lexicon/suggestions': 'json',
   'DELETE /api/books/{id}/lexicon/{entryId}': 'none',
   'POST /api/books/{id}/lookahead': 'json',
   'GET /api/books/{id}/manifest': 'json',

@@ -4,10 +4,15 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
+	"github.com/rhino1998/lectable/backend/internal/textsplit"
 )
 
 // lexiconEntryDTO is one pronunciation rule (store.LexiconEntry) - shared
@@ -177,4 +182,247 @@ func dedupParagraphs(ps []store.Paragraph) []store.Paragraph {
 		}
 	}
 	return out
+}
+
+// lexiconPreviewMaxChars caps the context line a preview renders.
+const lexiconPreviewMaxChars = 240
+
+// handlePreviewLexicon renders a rule - saved or not yet saved - in the
+// book's own narrator voice and clone model, so a listener can hear a
+// respelling before committing to it (and regenerating every line it
+// matches). Speaks the first sentence in the book the rule matches, with
+// the rule applied, falling back to the replacement alone.
+func (s *Server) handlePreviewLexicon(w http.ResponseWriter, r *http.Request) {
+	book, ok := s.lexiconBook(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	var req upsertLexiconRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	rule := pronounce.LexiconEntry{
+		Term: strings.TrimSpace(req.Term), Replacement: strings.TrimSpace(req.Replacement), CaseSensitive: req.CaseSensitive,
+	}
+	if rule.Term == "" || rule.Replacement == "" {
+		writeError(w, http.StatusBadRequest, "term and replacement are required")
+		return
+	}
+	paragraphs, err := s.Store.ListParagraphsRawForBook(book.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	text := lexiconPreviewText(paragraphs, rule)
+
+	voice, err := s.Narration.ForParagraph(book, "")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	refPath, err := s.ensureVoiceRef(r.Context(), voice.PresetID, "", voice.Instruct, voice.Seed, voice.RefText, voice.SpeedMultiplier, voice.DesignModel)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
+		return
+	}
+	refAudio, err := os.ReadFile(refPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	language := voice.Language
+	if language == "" {
+		language = "Auto"
+	}
+	audio, err := s.TTS.GeneratePreview(r.Context(), text, voice.CloneModel, refAudio, voice.RefText, language, nil)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	_, _ = w.Write(audio)
+}
+
+// lexiconPreviewText is the first sentence among paragraphs that rule
+// matches, with rule applied (trimmed to lexiconPreviewMaxChars around the
+// match if it's a long one), or just the replacement if nothing matches.
+func lexiconPreviewText(paragraphs []store.Paragraph, rule pronounce.LexiconEntry) string {
+	rules := []pronounce.LexiconEntry{rule}
+	for _, p := range paragraphs {
+		if len(pronounce.LexiconSubstitutions(p.Text, rules)) == 0 {
+			continue
+		}
+		for _, sentence := range textsplit.SplitSentences(p.Text) {
+			subs := pronounce.LexiconSubstitutions(sentence, rules)
+			if len(subs) == 0 {
+				continue
+			}
+			if len(sentence) > lexiconPreviewMaxChars {
+				// Keep a window around the first match, on rune boundaries.
+				start := max(subs[0].Offset-lexiconPreviewMaxChars/2, 0)
+				for start > 0 && !utf8.RuneStart(sentence[start]) {
+					start--
+				}
+				end := min(start+lexiconPreviewMaxChars, len(sentence))
+				for end < len(sentence) && !utf8.RuneStart(sentence[end]) {
+					end++
+				}
+				sentence = sentence[start:end]
+				subs = pronounce.LexiconSubstitutions(sentence, rules)
+			}
+			return pronounce.Apply(sentence, nil, subs)
+		}
+	}
+	return rule.Replacement
+}
+
+// lexiconSuggestionDTO is a word from the character roster that might want
+// a pronunciation rule.
+type lexiconSuggestionDTO struct {
+	Term string `json:"term"`
+	// Lines is how many dialogue lines in this book the character whose
+	// name contains Term speaks - the ranking.
+	Lines int `json:"lines"`
+	// Unusual is a spelling heuristic (see unusualSpelling): letter
+	// combinations TTS models tend to guess at. Unusual words sort first.
+	Unusual bool `json:"unusual"`
+}
+
+// maxLexiconSuggestions bounds the suggestion list.
+const maxLexiconSuggestions = 24
+
+func (s *Server) handleLexiconSuggestions(w http.ResponseWriter, r *http.Request) {
+	v, err := s.buildLexiconSuggestions(r.PathValue("id"))
+	writeBuilt(w, v, err)
+}
+
+// buildLexiconSuggestions offers the words of the series roster's names
+// and aliases that have no rule yet, unusual spellings first, then by how
+// much the character speaks in this book - the names a listener is most
+// likely to hear mispronounced, one click from a rule.
+func (s *Server) buildLexiconSuggestions(bookID string) ([]lexiconSuggestionDTO, error) {
+	book, err := s.Store.GetBook(bookID)
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	if book == nil {
+		return nil, httpError(http.StatusNotFound, "book not found")
+	}
+	scope := store.SeriesScope(book)
+	characters, err := s.Store.ListCharacters(scope)
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	entries, err := s.Store.ListLexicon(scope)
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	lines, err := s.Store.SpeakerLineCounts(bookID)
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	have := map[string]bool{}
+	for _, e := range entries {
+		have[strings.ToLower(e.Term)] = true
+	}
+	byWord := map[string]*lexiconSuggestionDTO{}
+	for _, c := range characters {
+		if c.Invalid {
+			continue
+		}
+		for _, name := range append([]string{c.Name}, c.Aliases...) {
+			for _, word := range nameWords(name) {
+				key := strings.ToLower(word)
+				if have[key] || commonNameWords[key] {
+					continue
+				}
+				sug := byWord[key]
+				if sug == nil {
+					sug = &lexiconSuggestionDTO{Term: word, Unusual: unusualSpelling(word)}
+					byWord[key] = sug
+				}
+				sug.Lines = max(sug.Lines, lines[c.Name])
+			}
+		}
+	}
+	out := make([]lexiconSuggestionDTO, 0, len(byWord))
+	for _, sug := range byWord {
+		out = append(out, *sug)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.Unusual != b.Unusual {
+			return a.Unusual
+		}
+		if a.Lines != b.Lines {
+			return a.Lines > b.Lines
+		}
+		return a.Term < b.Term
+	})
+	if len(out) > maxLexiconSuggestions {
+		out = out[:maxLexiconSuggestions]
+	}
+	return out, nil
+}
+
+// nameWords splits a character name into its capitalized words ("Lady
+// Aeris Vane" -> Lady, Aeris, Vane), dropping short and lowercase ones.
+func nameWords(name string) []string {
+	var out []string
+	for _, w := range strings.FieldsFunc(name, func(r rune) bool {
+		return !unicode.IsLetter(r) && r != '\'' && r != '’' && r != '-'
+	}) {
+		w = strings.Trim(w, "'’-")
+		first, _ := utf8.DecodeRuneInString(w)
+		if utf8.RuneCountInString(w) < 3 || !unicode.IsUpper(first) {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// commonNameWords are titles and plain words that turn up in character
+// names but never need a rule.
+var commonNameWords = map[string]bool{
+	"the": true, "lord": true, "lady": true, "sir": true, "king": true, "queen": true,
+	"prince": true, "princess": true, "captain": true, "doctor": true, "master": true,
+	"mister": true, "miss": true, "mrs": true, "old": true, "young": true, "big": true,
+	"little": true, "uncle": true, "aunt": true, "father": true, "mother": true,
+	"brother": true, "sister": true, "general": true, "commander": true, "guard": true,
+	"man": true, "woman": true, "boy": true, "girl": true, "voice": true,
+}
+
+// unusualSpelling is a rough "a TTS model might guess wrong" test: letters
+// and clusters rare in plain English words (x/q/z/j/k/y oddities, doubled
+// vowels like "ae"/"ii", apostrophes, diacritics), or three consonants in a
+// row. Deliberately generous - it only orders suggestions.
+func unusualSpelling(word string) bool {
+	lower := strings.ToLower(word)
+	for _, r := range lower {
+		if r > unicode.MaxASCII {
+			return true
+		}
+	}
+	if strings.ContainsAny(lower, "'’xqzj") {
+		return true
+	}
+	for _, s := range []string{"ae", "ii", "uu", "aa", "yy", "kh", "zh", "dh", "yx", "yl", "yr"} {
+		if strings.Contains(lower, s) {
+			return true
+		}
+	}
+	run := 0
+	for _, r := range lower {
+		if strings.ContainsRune("aeiouy", r) {
+			run = 0
+			continue
+		}
+		run++
+		if run >= 3 && !strings.Contains(lower, "ght") && !strings.Contains(lower, "tch") && !strings.Contains(lower, "sch") && !strings.Contains(lower, "chr") && !strings.Contains(lower, "str") {
+			return true
+		}
+	}
+	return false
 }

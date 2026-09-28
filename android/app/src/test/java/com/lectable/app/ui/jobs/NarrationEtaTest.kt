@@ -37,6 +37,17 @@ class NarrationEtaTest {
     }
 
     @Test
+    fun rateFallsBackToLastRun() {
+        assertEquals(0.0, narrationRate(null), 0.0)
+        assertEquals(12.0, narrationRate(JobsSnapshotDto(lastNarrationCharsPerSecond = 12.0)), 0.0)
+        assertEquals(
+            20.0,
+            narrationRate(JobsSnapshotDto(narrationCharsPerSecond = 20.0, lastNarrationCharsPerSecond = 12.0)),
+            0.0,
+        )
+    }
+
+    @Test
     fun formats() {
         assertEquals("<1m", formatEta(20.0))
         assertEquals("2m", formatEta(90.0))

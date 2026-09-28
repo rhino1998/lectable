@@ -155,7 +155,7 @@ class SpeakerViewModel @Inject constructor(
                         bookVoiceName = v?.let { vs -> builtinList.find { it.id == vs.presetId }?.name ?: customList.find { it.id == vs.presetId }?.name },
                         multiVoice = v?.let { it.characterVoiceMode != CharacterVoiceModes.NARRATOR } ?: state.multiVoice,
                         preprocessing = book.data?.preprocessing ?: state.preprocessing,
-                        speakers = speakers.data ?: state.speakers,
+                        speakers = speakers.data?.let(::sortedRoster) ?: state.speakers,
                         builtinPresets = builtinList,
                         customPresets = customList,
                         loading = speakers.loading && state.speakers.isEmpty(),
@@ -361,3 +361,10 @@ class SpeakerViewModel @Inject constructor(
         _uiState.update { it.copy(error = null) }
     }
 }
+
+/** The roster in display order: the Narrator row first, then everyone else alphabetically
+ *  (case-insensitive) - rather than the backend's appearance order, so a name is easy to find.
+ *  Every list derived from it (merge/reassign targets) inherits the order. Mirrors frontend's
+ *  SpeakersPage sortedRoster. */
+internal fun sortedRoster(speakers: List<SpeakerDto>): List<SpeakerDto> =
+    speakers.sortedWith(compareBy<SpeakerDto> { it.id.isNotEmpty() || it.name != "Narrator" }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.name })

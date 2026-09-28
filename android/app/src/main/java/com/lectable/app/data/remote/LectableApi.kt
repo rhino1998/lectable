@@ -865,6 +865,25 @@ interface LectableApi {
     ): IdResponseDto
 
     /**
+     * handlePreviewLexicon renders a rule - saved or not yet saved - in the
+     * book's own narrator voice and clone model, so a listener can hear a
+     * respelling before committing to it (and regenerating every line it
+     * matches). Speaks the first sentence in the book the rule matches, with
+     * the rule applied, falling back to the replacement alone.
+     */
+    @Streaming
+    @POST("api/books/{id}/lexicon/preview")
+    suspend fun previewLexicon(
+        @Path("id") id: String,
+        @Body body: UpsertLexiconRequestDto,
+    ): ResponseBody
+
+    @GET("api/books/{id}/lexicon/suggestions")
+    suspend fun lexiconSuggestions(
+        @Path("id") id: String,
+    ): List<LexiconSuggestionDto>
+
+    /**
      * handleDeleteLexicon removes a pronunciation rule and clears generated
      * audio for every paragraph in its series that the rule matched.
      */

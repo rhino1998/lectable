@@ -7,6 +7,8 @@ import com.lectable.app.data.remote.LiveResult
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.BookSummaryDto
 import com.lectable.app.data.remote.dto.BookmarkDto
+import com.lectable.app.data.remote.dto.LexiconEntryDto
+import com.lectable.app.data.remote.dto.LexiconSuggestionDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
@@ -97,6 +99,11 @@ class LiveStore @Inject constructor(
     fun speakers(bookId: String): StateFlow<LiveResult<List<SpeakerDto>>> = topic(LiveTopics.speakers(bookId))
 
     fun bookmarks(bookId: String): StateFlow<LiveResult<List<BookmarkDto>>> = topic(LiveTopics.bookmarks(bookId))
+
+    fun lexicon(bookId: String): StateFlow<LiveResult<List<LexiconEntryDto>>> = topic(LiveTopics.lexicon(bookId))
+
+    fun lexiconSuggestions(bookId: String): StateFlow<LiveResult<List<LexiconSuggestionDto>>> =
+        topic(LiveTopics.lexiconSuggestions(bookId))
 
     fun chapter(bookId: String, chapterIdx: Int): StateFlow<LiveResult<ChapterDetailDto>> =
         topic(LiveTopics.chapter(bookId, chapterIdx)) { offlineCache.onChapter(bookId, it) }

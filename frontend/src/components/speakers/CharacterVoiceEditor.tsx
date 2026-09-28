@@ -8,7 +8,8 @@ import {
   useUpdateCustomVoicePreset,
 } from '../../api/queries'
 import { ApiError } from '../../api/client'
-import { DEFAULT_REF_TEXT, VoiceEditorForm, randomSeed } from '../../components/VoiceEditorForm'
+import { VoiceEditorForm } from '../VoiceEditorForm'
+import { DEFAULT_REF_TEXT, randomSeed } from '../../utils/voiceRecipe'
 import { DEFAULT_DESIGN_MODEL, INSTRUCTED_CLONE_MODEL } from '../../api/types'
 import type { CustomVoicePreset, Speaker, VoicePreset } from '../../api/types'
 

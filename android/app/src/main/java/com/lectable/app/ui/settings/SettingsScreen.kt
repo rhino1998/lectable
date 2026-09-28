@@ -67,6 +67,7 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onOpenVoices: () -> Unit,
     onOpenJobs: () -> Unit,
+    onOpenLighting: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -205,7 +206,10 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
 
-            HueLightingSection(viewModel)
+            Text("Room lighting", style = MaterialTheme.typography.titleMedium)
+            Button(onClick = onOpenLighting) {
+                Text("Philips Hue lighting")
+            }
 
             Text("Voices", style = MaterialTheme.typography.titleMedium)
             Button(onClick = onOpenVoices) {
@@ -247,7 +251,7 @@ fun SettingsScreen(
  *  brightness. The lights themselves are driven by HueLightingController, which follows playback
  *  whether or not this screen is open. */
 @Composable
-private fun HueLightingSection(viewModel: SettingsViewModel) {
+internal fun HueLightingSection(viewModel: SettingsViewModel) {
     val uiState by viewModel.uiState.collectAsState()
     val settings by viewModel.lightingSettings.collectAsState()
     val lighting by viewModel.lightingState.collectAsState()

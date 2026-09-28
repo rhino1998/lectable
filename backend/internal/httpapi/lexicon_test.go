@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
 
@@ -96,5 +99,65 @@ func TestLexiconUpsertInvalidatesMatchesAndMarksThem(t *testing.T) {
 	}
 	if got := statuses(ps); got[0] == store.AudioReady || got[1] != store.AudioReady {
 		t.Fatalf("after DELETE statuses = %v", got)
+	}
+}
+
+func TestLexiconPreviewText(t *testing.T) {
+	ps := []store.Paragraph{
+		{Text: "Nothing here."},
+		{Text: "The gate opened. Nyx stepped through, blade drawn. Then silence."},
+	}
+	rule := pronounce.LexiconEntry{Term: "nyx", Replacement: "Nicks"}
+	if got, want := lexiconPreviewText(ps, rule), "Nicks stepped through, blade drawn."; got != want {
+		t.Errorf("= %q, want %q", got, want)
+	}
+	if got := lexiconPreviewText(ps[:1], rule); got != "Nicks" {
+		t.Errorf("no match: = %q, want the replacement alone", got)
+	}
+	long := strings.Repeat("word ", 100) + "Nyx " + strings.Repeat("word ", 100) + "end."
+	if got := lexiconPreviewText([]store.Paragraph{{Text: long}}, rule); len(got) > lexiconPreviewMaxChars+10 || !strings.Contains(got, "Nicks") {
+		t.Errorf("long sentence not windowed around the match: %d chars", len(got))
+	}
+}
+
+func TestNameWordsAndUnusualSpelling(t *testing.T) {
+	if got := nameWords("Lady Aeris Vane-Holt, of the Vale"); !reflect.DeepEqual(got, []string{"Lady", "Aeris", "Vane-Holt", "Vale"}) {
+		t.Errorf("nameWords = %q", got)
+	}
+	for _, w := range []string{"Aeris", "Nyx", "Qarth", "Zhao", "Éowyn", "T'Challa"} {
+		if !unusualSpelling(w) {
+			t.Errorf("%q should look unusual", w)
+		}
+	}
+	for _, w := range []string{"Davos", "Knight", "Robert", "Stark", "Alice"} {
+		if unusualSpelling(w) {
+			t.Errorf("%q should look ordinary", w)
+		}
+	}
+}
+
+func TestLexiconSuggestionsSkipCoveredAndCommonWords(t *testing.T) {
+	srv, s, _, _ := newTestServer(t)
+	bookID := createTestBook(t, s, "", 0, "Hello.")
+	book, _ := s.GetBook(bookID)
+	scope := store.SeriesScope(book)
+	for _, name := range []string{"Lady Aeris", "Davos", "Nyx"} {
+		if _, _, err := s.UpsertCharacter(scope, name, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.UpsertLexiconEntry(scope, pronounce.LexiconEntry{Term: "nyx", Replacement: "Nicks"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := srv.buildLexiconSuggestions(bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terms []string
+	for _, g := range got {
+		terms = append(terms, g.Term)
+	}
+	if !reflect.DeepEqual(terms, []string{"Aeris", "Davos"}) {
+		t.Errorf("suggestions = %q, want unusual Aeris first, no Lady (title) or Nyx (has a rule)", terms)
 	}
 }

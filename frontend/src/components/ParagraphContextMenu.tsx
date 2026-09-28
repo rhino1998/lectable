@@ -18,6 +18,7 @@ import { ApiError } from '../api/client'
 import type { ChapterDetail, Paragraph, Speaker } from '../api/types'
 import { EMOTIONS } from '../utils/emotions'
 import { useClickOutside } from '../hooks/useClickOutside'
+import { chapterCharacterNames, pickerSections } from '../utils/speakerOrder'
 
 export interface ParagraphContextMenuHandle {
   open: (chapterIdx: number, p: Paragraph, x: number, y: number) => void
@@ -30,7 +31,7 @@ export interface ParagraphContextMenuHandle {
 // opening and positioning the menu re-renders only this component, not the
 // reader's whole loaded paragraph list. `speakers` backs the "reassign
 // to…" list - a live topic, so a brand-new speaker shows up next time the
-// menu opens without a separate fetch. `chapters` backs the "Nearby"
+// menu opens without a separate fetch. `chapters` backs the "This chapter"
 // section. Failures report through onError into the reader's shared
 // chapter-action error.
 export const ParagraphContextMenu = forwardRef<
@@ -109,15 +110,10 @@ export const ParagraphContextMenu = forwardRef<
     setMenuPos({ left: Math.max(margin, left), top: Math.max(margin, top) })
   }, [contextMenu])
 
-  const reassignTargets = useMemo(
-    () => [
-      ...new Set(
-        speakers
-          .filter((s) => !s.invalid)
-          .map((s) => s.name)
-          .filter((n) => n !== '' && n !== 'Narrator'),
-      ),
-    ],
+  // Every valid character's name - both reassign branches split it into a
+  // "This chapter" section and the full alphabetical roster (pickerSections).
+  const rosterNames = useMemo(
+    () => speakers.filter((s) => !s.invalid).map((s) => s.name),
     [speakers],
   )
 
@@ -199,44 +195,17 @@ export const ParagraphContextMenu = forwardRef<
     [contextMenu, setParagraphEmotion, onError],
   )
 
-  // Speakers already narrating paragraphs near contextMenu's own paragraph,
-  // within the same chapter (the same scene/conversation), closest
-  // occurrence first - mirrors android's nearbySpeakersFor/
-  // SpeakerPickerSheet exactly, including the "Narrator/blank excluded,
-  // dialogue paragraphs only" filter (a misattributed line is usually
-  // meant for whoever else is already talking around it, not some
-  // character from a completely different part of the book). Distance is
-  // measured in paragraph index, either direction. Only ever backs the
-  // "Reassign speaker" branch below - android doesn't do this for
-  // description reassignment either (DescriptionPickerSheet stays a flat
-  // roster list), so neither does this.
-  const nearbySpeakers = useMemo(() => {
-    if (!contextMenu || !contextMenu.isQuote) return []
-    const chapter = chapters.get(contextMenu.chapterIdx)
-    if (!chapter) return []
-    const targetIdx = contextMenu.paragraphIdx
-    return [
-      ...new Set(
-        chapter.paragraphs
-          .filter((p) => p.idx !== targetIdx && p.speaker && p.speaker !== 'Narrator')
-          .sort((a, b) => Math.abs(a.idx - targetIdx) - Math.abs(b.idx - targetIdx))
-          .map((p) => p.speaker as string),
-      ),
-    ]
-  }, [contextMenu, chapters])
-
-  // Hoists nearbySpeakers ahead of the rest of the book's full roster in
-  // the "Reassign speaker" menu, under its own section header - same
-  // "restrict to the known roster, then split into nearby/rest" shape
-  // android's own SpeakerPickerSheet uses. With nothing nearby, this just
-  // falls back to reassignTargets as a flat list, same as it always was.
-  const nearbyReassignTargets = useMemo(
-    () => nearbySpeakers.filter((name) => reassignTargets.includes(name)),
-    [nearbySpeakers, reassignTargets],
+  // Everyone who speaks or is described in the clicked paragraph's own
+  // chapter - listed first in both reassign branches, since a misattributed
+  // line or description usually belongs to someone already in the scene.
+  // Mirrors android's SpeakerPickerSheet/DescriptionPickerSheet.
+  const chapterNames = useMemo(
+    () => chapterCharacterNames(contextMenu ? chapters.get(contextMenu.chapterIdx) : undefined),
+    [contextMenu, chapters],
   )
-  const restReassignTargets = useMemo(
-    () => reassignTargets.filter((name) => !nearbyReassignTargets.includes(name)),
-    [reassignTargets, nearbyReassignTargets],
+  const speakerTargets = useMemo(
+    () => pickerSections(rosterNames, chapterNames),
+    [rosterNames, chapterNames],
   )
 
   if (!contextMenu) return null
@@ -287,32 +256,12 @@ export const ParagraphContextMenu = forwardRef<
               </div>
             </>
           )}
-          {nearbyReassignTargets.length > 0 && (
-            <div className="speaker-context-menu-section">Nearby</div>
-          )}
-          {nearbyReassignTargets.map((name) => (
-            <button
-              key={name}
-              className="speaker-context-menu-item"
-              disabled={name === contextMenu.currentSpeaker}
-              onClick={() => reassignSpeaker(name)}
-            >
-              {name}
-            </button>
-          ))}
-          {nearbyReassignTargets.length > 0 && (
-            <div className="speaker-context-menu-section">All characters</div>
-          )}
-          {restReassignTargets.map((name) => (
-            <button
-              key={name}
-              className="speaker-context-menu-item"
-              disabled={name === contextMenu.currentSpeaker}
-              onClick={() => reassignSpeaker(name)}
-            >
-              {name}
-            </button>
-          ))}
+          <TargetSections
+            sections={speakerTargets}
+            keyPrefix="speaker"
+            isCurrent={(name) => name === contextMenu.currentSpeaker}
+            onPick={reassignSpeaker}
+          />
         </>
       ) : contextMenu.describesCharacters.length > 0 ? (
         <>
@@ -328,17 +277,12 @@ export const ParagraphContextMenu = forwardRef<
               >
                 Remove
               </button>
-              {reassignTargets
-                .filter((name) => name !== from)
-                .map((name) => (
-                  <button
-                    key={name}
-                    className="speaker-context-menu-item"
-                    onClick={() => reassignDescription(from, name)}
-                  >
-                    {name}
-                  </button>
-                ))}
+              <TargetSections
+                sections={pickerSections(rosterNames, chapterNames, from)}
+                keyPrefix={`describes-${from}`}
+                isCurrent={() => false}
+                onPick={(name) => reassignDescription(from, name)}
+              />
             </div>
           ))}
         </>
@@ -357,3 +301,40 @@ export const ParagraphContextMenu = forwardRef<
   )
 })
 ParagraphContextMenu.displayName = 'ParagraphContextMenu'
+
+// A reassign branch's target list: "This chapter" names first (when there
+// are any), then every character - see pickerSections.
+function TargetSections({
+  sections,
+  keyPrefix,
+  isCurrent,
+  onPick,
+}: {
+  sections: { local: string[]; all: string[] }
+  keyPrefix: string
+  isCurrent: (name: string) => boolean
+  onPick: (name: string) => void
+}) {
+  const button = (name: string, section: string) => (
+    <button
+      key={`${keyPrefix}-${section}-${name}`}
+      className="speaker-context-menu-item"
+      disabled={isCurrent(name)}
+      onClick={() => onPick(name)}
+    >
+      {name}
+    </button>
+  )
+  return (
+    <>
+      {sections.local.length > 0 && (
+        <>
+          <div className="speaker-context-menu-section">This chapter</div>
+          {sections.local.map((name) => button(name, 'local'))}
+          <div className="speaker-context-menu-section">All characters</div>
+        </>
+      )}
+      {sections.all.map((name) => button(name, 'all'))}
+    </>
+  )
+}

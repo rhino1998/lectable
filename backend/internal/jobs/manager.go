@@ -770,6 +770,15 @@ type task struct {
 	// feature existed - see generate/handleMergedResult for the two
 	// branches this drives.
 	mergeParagraphs []store.Paragraph
+
+	// genLexicon is the pronunciation lexicon generate actually rendered
+	// with (genLexiconSet once it has run) - refreshStaleGeneration
+	// compares the paragraph's current text against *that*, not the
+	// lexicon as it stands when the clip comes back: resolving both sides
+	// with the current rules would hide a rule edited mid-render, and save
+	// audio of the old pronunciation over the edit's invalidation.
+	genLexicon      []pronounce.LexiconEntry
+	genLexiconSet   bool
 	instruct        string
 	presetID        string
 	language        string
@@ -5651,9 +5660,12 @@ func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []tts
 			v := int64(t.seed)
 			seed = &v
 		}
-		text := t.paragraph.Text
+		// "" clone model: design engines take no Higgs pause tags, but
+		// pronunciation fixes and lexicon rules apply like any narration.
+		lexicon := m.snapshotLexicon(t)
+		text := t.paragraph.ResolveGenerationText("", lexicon)
 		if len(t.mergeParagraphs) > 1 {
-			text = mergedGenerationText(t.mergeParagraphs, "", m.lexiconFor(t.bookID))
+			text = mergedGenerationText(t.mergeParagraphs, "", lexicon)
 		}
 		audio, err := m.tts.Design(ctx, text, t.instruct, t.language, t.designModel, seed)
 		return ttsworker.Audio{WAV: audio}, nil, err
@@ -5694,10 +5706,11 @@ func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []tts
 	// align itself (alignParagraph/handleMergedResult), so the check's own
 	// word timings are reused rather than aligning twice. A length
 	// estimate's throwaway sample is never saved, so it skips the check.
-	text := t.paragraph.ResolveGenerationText(cloneModel, m.lexiconFor(t.bookID))
+	lexicon := m.snapshotLexicon(t)
+	text := t.paragraph.ResolveGenerationText(cloneModel, lexicon)
 	alignText := t.paragraph.Text
 	if len(t.mergeParagraphs) > 1 {
-		text = mergedGenerationText(t.mergeParagraphs, cloneModel, m.lexiconFor(t.bookID))
+		text = mergedGenerationText(t.mergeParagraphs, cloneModel, lexicon)
 		alignText = text
 	}
 	if t.kind == KindLengthEstimate {
@@ -5974,18 +5987,23 @@ func (m *Manager) refreshStaleGeneration(t *task) (fresh *task, stale bool) {
 		cloneModel = voices.DefaultCloneModel
 	}
 	lexicon := m.lexiconFor(t.bookID)
+	rendered := lexicon
+	if t.genLexiconSet {
+		rendered = t.genLexicon
+	}
 	current := func(p store.Paragraph) store.Paragraph {
 		cur, err := m.store.GetParagraph(p.ID)
 		if err != nil || cur == nil {
 			return p
 		}
-		if cur.ResolveGenerationText(cloneModel, lexicon) != p.ResolveGenerationText(cloneModel, lexicon) {
+		if cur.ResolveGenerationText(cloneModel, lexicon) != p.ResolveGenerationText(cloneModel, rendered) {
 			stale = true
 		}
 		return *cur
 	}
 	cp := *t
 	cp.cancel = nil
+	cp.genLexicon, cp.genLexiconSet = nil, false
 	cp.paragraph = current(t.paragraph)
 	if len(t.mergeParagraphs) > 1 {
 		cp.mergeParagraphs = make([]store.Paragraph, len(t.mergeParagraphs))

@@ -28,8 +28,12 @@ import { SpeakerRow } from '../components/speakers/SpeakerRow'
 import { ChapterPassTable } from '../components/speakers/ChapterPassTable'
 import { SpeakerSettings } from '../components/speakers/SpeakerSettings'
 import { LexiconPanel } from '../components/speakers/LexiconPanel'
+import { sortedRoster } from '../utils/speakerOrder'
 import { DEFAULT_CLONE_MODEL } from '../api/types'
-import type { BulkAction, BulkScope } from '../api/types'
+import type { BulkAction, BulkScope, Speaker } from '../api/types'
+
+// A stable empty roster while speakers load, so memos keyed on it hold.
+const NO_SPEAKERS: Speaker[] = []
 
 // Per-book speaker management: run LLM attribution chapter by chapter,
 // review who's been identified so far and how much of their dialogue has
@@ -100,7 +104,12 @@ export function SpeakersPage() {
 
   const builtins = builtinsQuery.data?.presets ?? []
   const customs = customPresetsQuery.data ?? []
-  const speakers = speakersQuery.data ?? []
+  // Narrator first, then alphabetical - see sortedRoster. Everything below
+  // (the filtered list, merge/reassign targets) inherits the order.
+  const speakers = useMemo(
+    () => (speakersQuery.data ? sortedRoster(speakersQuery.data) : NO_SPEAKERS),
+    [speakersQuery.data],
+  )
   // Roster search - matches on name only. Filters just what's displayed;
   // merge/reassign targets still come from the full speakers list.
   const filteredSpeakers = useMemo(() => {
