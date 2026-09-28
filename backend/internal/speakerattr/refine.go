@@ -445,6 +445,7 @@ var nonAnswers = map[string]bool{
 	"everybody": true, "all": true, "both": true, "yes": true, "no": true, "n/a": true,
 	"na": true, "null": true, "nil": true, "unknown speaker": true, "speaker": true,
 	"unnamed": true, "unidentified": true, "various": true, "multiple": true, "crowd": true,
+	"another": true, "other": true, "the other": true, "the first": true, "the second": true,
 }
 
 var possessiveWords = map[string]bool{

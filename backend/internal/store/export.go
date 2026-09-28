@@ -14,7 +14,7 @@ import (
 // cache) and default_voice (instance-wide, not the book's) are left out.
 var ExportTables = []string{
 	"voice_presets", "characters", "character_voices",
-	"books", "chapters", "paragraphs", "paragraph_audio",
+	"books", "book_settings", "chapters", "chapter_summaries", "paragraphs", "paragraph_audio",
 	"images", "breaks", "bookmarks", "sfx", "music_regions",
 }
 
@@ -33,17 +33,19 @@ var exportRowQueries = map[string]struct {
 	where string
 	args  func(bookID, scope string) []any
 }{
-	"books":            {`id = ?`, bookArg},
-	"chapters":         {`book_id = ?`, bookArg},
-	"paragraphs":       {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
-	"paragraph_audio":  {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
-	"images":           {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
-	"breaks":           {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
-	"music_regions":    {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
-	"bookmarks":        {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
-	"sfx":              {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
-	"characters":       {`scope = ?`, scopeArg},
-	"character_voices": {`character_id IN (SELECT id FROM characters WHERE scope = ?)`, scopeArg},
+	"books":             {`id = ?`, bookArg},
+	"book_settings":     {`book_id = ?`, bookArg},
+	"chapter_summaries": {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
+	"chapters":          {`book_id = ?`, bookArg},
+	"paragraphs":        {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
+	"paragraph_audio":   {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
+	"images":            {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
+	"breaks":            {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
+	"music_regions":     {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
+	"bookmarks":         {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
+	"sfx":               {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
+	"characters":        {`scope = ?`, scopeArg},
+	"character_voices":  {`character_id IN (SELECT id FROM characters WHERE scope = ?)`, scopeArg},
 	// The book's own preset plus every preset its characters are assigned
 	// under any clone model. Built-in presets have no row (they're compiled
 	// in), so the book's own id matching nothing is normal.

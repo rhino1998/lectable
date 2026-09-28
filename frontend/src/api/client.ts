@@ -1,5 +1,6 @@
 import {
   ROUTE_RESPONSE_KINDS,
+  type BookSetting,
   type BulkAction,
   type BulkScope,
   type CreateExportRequest,
@@ -367,6 +368,13 @@ export const api = {
   // "Doctor") for one chapter - fire-and-forget, same {queued} shape as
   // tagDirections. 503 without LECTABLE_SPEAKER_LLM_MODEL_PATH - see
   // httpapi.handleResolvePronunciation.
+  // Queues a chapter's summary pass (summary, scenes, cast) - see backend
+  // httpapi.handleSummarizeChapter. Fire-and-forget like the other passes.
+  summarizeChapter: (bookId: string, chapterIdx: number) =>
+    call('POST /api/books/{id}/chapters/{idx}/summarize', {
+      path: { id: bookId, idx: chapterIdx },
+    }),
+
   resolvePronunciation: (bookId: string, chapterIdx: number) =>
     call('POST /api/books/{id}/chapters/{idx}/resolve-pronunciation', {
       path: { id: bookId, idx: chapterIdx },
@@ -559,6 +567,16 @@ export const api = {
   // distinct words it would respell. See backend handleLexiconMatches.
   lexiconMatches: (bookId: string, body: UpsertLexiconRequest) =>
     call('POST /api/books/{id}/lexicon/matches', { path: { id: bookId }, body }),
+
+  // Saves a reader's edit of the book's setting profile - see backend
+  // handleSetBookSetting. Passes that already ran keep what they wrote.
+  setBookSetting: (bookId: string, body: BookSetting) =>
+    call('PUT /api/books/{id}/setting', { path: { id: bookId }, body }),
+
+  // Re-runs the setting pass now (one LLM call), replacing even a manual
+  // edit - see backend handleDeriveBookSetting.
+  deriveBookSetting: (bookId: string) =>
+    call('POST /api/books/{id}/setting/derive', { path: { id: bookId } }),
 
   deleteLexiconEntry: (bookId: string, entryId: string) =>
     call('DELETE /api/books/{id}/lexicon/{entryId}', { path: { id: bookId, entryId } }),

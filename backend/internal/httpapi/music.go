@@ -311,6 +311,12 @@ func (s *Server) lightChapter(ctx context.Context, book *store.Book, ch *store.C
 	}
 
 	opening := speakerattr.ChapterOpening(paragraphs)
+	var setting *speakerattr.BookSetting
+	var notes *speakerattr.ChapterSummary
+	if len(regions) > 0 {
+		setting = s.bookSetting(ctx, book)
+		notes = s.chapterNotes(ch)
+	}
 	lit := 0
 	var prev *speakerattr.Lighting
 	prevMood := ""
@@ -353,6 +359,8 @@ func (s *Server) lightChapter(ctx context.Context, book *store.Book, ch *store.C
 				Prev:       prev,
 				PrevMood:   prevMood,
 				Opening:    opening,
+				Setting:    setting,
+				Scene:      notes.SceneAt(group[0].StartIdx),
 			})
 			if err != nil {
 				return lit, nil, fmt.Errorf("lighting region starting at %d: %w", group[0].StartIdx, err)
@@ -490,7 +498,7 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote}
 	}
 
-	regions, remaining, scoreErr := s.Speaker.ScoreMusic(ctx, book.Title, ch.Title, inputs, nil)
+	regions, remaining, scoreErr := s.Speaker.ScoreMusic(ctx, book.Title, ch.Title, s.bookSetting(ctx, book), s.chapterNotes(ch), inputs, nil)
 	if len(regions) > 0 {
 		if resumeFrom > 0 {
 			regions[0].Transition = "cut"

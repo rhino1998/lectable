@@ -32,6 +32,7 @@ type Store interface {
 	CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error)
 	CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error)
 	DeleteBook(id string) error
+	DeleteBookSetting(bookID string) error
 	DeleteBookAudio(bookID string) error
 	DeleteBookmark(id string) error
 	DeleteLexiconEntry(id string) (*LexiconEntry, error)
@@ -52,6 +53,8 @@ type Store interface {
 	GetDefaultVoice() (DefaultVoice, error)
 	GetImage(id string) (*Image, error)
 	GetMusicRegion(id string) (*MusicRegion, error)
+	GetBookSetting(bookID string) (*StoredBookSetting, error)
+	GetChapterNotes(chapterID string) (*ChapterNotes, error)
 	GetParagraph(id string) (*Paragraph, error)
 	GetParagraphAudioStatus(paragraphID, voiceID string) (string, error)
 	GetParagraphIDByIdx(chapterID string, idx int) (string, error)
@@ -99,12 +102,16 @@ type Store interface {
 	SetChapterScareQuoted(chapterID string) error
 	SetCharacterAliases(characterID string, aliases []string) error
 	SetCharacterInvalid(id string, invalid bool) error
+	SetCharacterRole(id string, isRole bool) error
 	SetCharacterPronouns(id, pronouns string) error
 	SetCharacterSummary(id, summary, refLine string) error
 	SetCharacterVoice(characterID, cloneModel, voicePresetID string) error
 	SetDefaultVoice(presetID, instruct, language string, seed int, cloneModel string) error
 	SetLengthEstimate(bookID string, secPerChar float64) error
 	SetMusicRegionError(id, message string) error
+	SetBookSetting(bookID string, setting BookSetting, source BookSettingSource) error
+	SetChapterNotes(chapterID string, notes ChapterNotes) error
+	ClearBookSummaries(bookID string, fromIdx int) (int, error)
 	SetMusicRegionLighting(lighting map[string]Lighting) error
 	SetMusicRegionGenerating(id string) error
 	SetMusicRegionReady(id string, durationSeconds float64) error

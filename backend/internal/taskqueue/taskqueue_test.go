@@ -1,6 +1,9 @@
 package taskqueue
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // fakeTask is a minimal, business-logic-free Task used only by this
 // package's own tests - it stands in for whatever a real caller's task
@@ -641,5 +644,33 @@ func TestLockedQueueGetFindsQueuedAndInFlight(t *testing.T) {
 	q.Snapshot()
 	if !got[0] || !got[1] || got[2] {
 		t.Fatalf("Get(queued, inflight, missing) = %v, want [true true false]", got)
+	}
+}
+
+// TestTieKeepsActivePoolEvenWhenOlderElsewhere: a tie across pools keeps
+// the active pool even when the other pool's task was queued first -
+// insertion order used to break it, ping-ponging same-tier background work
+// between pools task by task - until SetTieSwitchAfter's bound passes.
+func TestTieKeepsActivePoolEvenWhenOlderElsewhere(t *testing.T) {
+	q := NewQueue(nil)
+	now := time.Unix(0, 0)
+	q.now = func() time.Time { return now }
+	q.SetTieSwitchAfter(time.Minute)
+
+	q.Push(newTask("a1", "pool-a", 1))
+	a1 := mustPop(t, q) // pool-a active
+	q.Push(newTask("b1", "pool-b", 1))
+	q.Push(newTask("a2", "pool-a", 1))
+	q.Push(newTask("a3", "pool-a", 1))
+	q.Finish(a1.Key())
+
+	if got := mustPop(t, q); got.Key() != "a2" {
+		t.Fatalf("tie should stay in pool-a, got %q", got.Key())
+	}
+	q.Finish("a2")
+
+	now = now.Add(2 * time.Minute)
+	if got := mustPop(t, q); got.Key() != "b1" {
+		t.Fatalf("after the tie bound, the older pool-b task should take over, got %q", got.Key())
 	}
 }

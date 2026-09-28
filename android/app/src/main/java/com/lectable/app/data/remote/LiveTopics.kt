@@ -52,6 +52,20 @@ object LiveTopics {
         LiveTopic("characters", mapOf("bookId" to bookId), serializer<List<CharacterNameDto>>())
 
     /**
+     * buildChapterNotes is the chapterNotes live topic's value and GET
+     * .../notes' reply.
+     */
+    fun chapterNotes(bookId: String, chapterIdx: Int): LiveTopic<ChapterNotesResponseDto> =
+        LiveTopic("chapterNotes", mapOf("bookId" to bookId, "chapterIdx" to chapterIdx), serializer<ChapterNotesResponseDto>())
+
+    /**
+     * buildBookSetting is the bookSetting live topic's value and GET
+     * .../setting's reply.
+     */
+    fun bookSetting(bookId: String): LiveTopic<BookSettingResponseDto> =
+        LiveTopic("bookSetting", mapOf("bookId" to bookId), serializer<BookSettingResponseDto>())
+
+    /**
      * buildLexicon lists bookID's scope's pronunciation rules, each with how
      * many of this book's paragraphs it matches (so a typo'd rule that never
      * fires is visible).

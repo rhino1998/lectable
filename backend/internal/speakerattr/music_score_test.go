@@ -35,7 +35,7 @@ func TestScoreMusicSharesDescriptionAcrossSplitsAndCutsOnNewScene(t *testing.T) 
 	ps := plainParagraphs(60)
 	ps[45].Text = "Later that night, far away."
 	llm := &scriptedMusicLLM{}
-	out, remaining, err := NewClient(Config{}, llm).ScoreMusic(context.Background(), "B", "C", ps, nil)
+	out, remaining, err := NewClient(Config{}, llm).ScoreMusic(context.Background(), "B", "C", nil, nil, ps, nil)
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("ScoreMusic() err=%v remaining=%d", err, len(remaining))
 	}

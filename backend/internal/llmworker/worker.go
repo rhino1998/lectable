@@ -640,6 +640,7 @@ func (w *Worker) LLMGenerate(ctx context.Context, systemPrompt, userPrompt strin
 	if err != nil {
 		return "", fmt.Errorf("llmworker: apply chat template: %w", err)
 	}
+	fullPrompt = disableThinking(model.ChatTemplate(""), fullPrompt)
 
 	// Not closed here - llamacpp.Scheduler.Generate can return well before
 	// the Scheduler is actually done sampling from this (ctx cancelled
@@ -665,6 +666,22 @@ func (w *Worker) LLMGenerate(ctx context.Context, systemPrompt, userPrompt strin
 	w.addTotals(stats)
 	out = stripThinking(out)
 	return out, nil
+}
+
+// disableThinking turns thinking off for a hybrid-thinking model whose
+// chat template has an enable_thinking switch (Qwen3.5/3.6). llama.cpp's
+// C-API template rendering (llama_chat_apply_template) isn't Jinja, so the
+// switch can't be passed; this does what the template itself does when it
+// is false - an empty think block opening the assistant turn - so the
+// model answers directly instead of spending its token budget reasoning
+// (stripThinking would drop the trace, but not give the time back). A
+// template without the switch (Qwen3-4B-Instruct-2507, a non-thinking
+// model) is left alone.
+func disableThinking(template, prompt string) string {
+	if !strings.Contains(template, "enable_thinking") || strings.HasSuffix(strings.TrimRight(prompt, "\n"), "</think>") {
+		return prompt
+	}
+	return prompt + "<think>\n\n</think>\n\n"
 }
 
 // stripThinking removes a leading <think>...</think> (or <thinking>...

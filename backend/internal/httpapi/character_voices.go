@@ -84,7 +84,7 @@ func (s *Server) characterizeVoice(ctx context.Context, book *store.Book, char s
 		speakerDescriptions[i] = speakerattr.DescriptionContext{Text: d.Text}
 	}
 
-	instruct, refLine, err := s.Speaker.CharacterizeVoice(ctx, char.Name, char.IsRole, char.Pronouns, speakerQuotes, speakerDescriptions)
+	instruct, refLine, err := s.Speaker.CharacterizeVoice(ctx, char.Name, char.IsRole, char.Pronouns, s.bookSetting(ctx, book), speakerQuotes, speakerDescriptions)
 	if err != nil {
 		return "", fmt.Errorf("characterize: %w", err)
 	}

@@ -191,6 +191,15 @@ type Config struct {
 	// switch away from TTS work - the same thrashing risk applies here,
 	// now that llmworker's own model shares this same process/VRAM budget.
 	IdleUnloadAfter time.Duration
+
+	// BeforeLoad, if set, runs before this Worker loads any model's
+	// weights - wired by cmd/ttsworker to unload the speaker LLM when it's
+	// too big to share VRAM with an audio model (llmworker.Worker.Unload,
+	// which waits out any LLM call in flight). Called with none of this
+	// Worker's own locks held (the residency gate aside), so it may block
+	// on the LLM without a lock-order cycle against llmworker's own
+	// BeforeLoad, which unloads models here.
+	BeforeLoad func()
 }
 
 // fcfsMutex is a mutual-exclusion lock that grants access in exactly the
@@ -497,6 +506,13 @@ func (w *Worker) unloadAligner() {
 	w.alignMu.Unlock()
 }
 
+// beforeLoad runs Config.BeforeLoad, if set - see its doc comment.
+func (w *Worker) beforeLoad() {
+	if w.cfg.BeforeLoad != nil {
+		w.cfg.BeforeLoad()
+	}
+}
+
 // loadModel calls registry.LoadModel under loadMu - see that field's own
 // doc comment for why every LoadModel call in this package must go through
 // here rather than calling w.registry.LoadModel directly.
@@ -543,6 +559,7 @@ func (w *Worker) getCloneModel(cloneModel string) (lc *loadedClone, err error) {
 	// this clone model's residency gate guarantees none of those is in
 	// flight, so this genuinely frees them rather than skipping busy ones
 	// and loading on top - see residencyGate.
+	w.beforeLoad()
 	w.UnloadDesignModels()
 	w.UnloadAuxEngines()
 
@@ -685,6 +702,7 @@ func (w *Worker) getDesignModel(engine designEngine) (ld *loadedDesign, err erro
 	// step in the other direction), every aux engine, then every *other*
 	// loaded design engine, since this app only ever wants one resident at
 	// a time in practice (see loadedDesign's own doc comment).
+	w.beforeLoad()
 	w.UnloadCloneModels()
 	w.UnloadAuxEngines()
 	w.evictOtherDesignEngines(key)
@@ -862,6 +880,7 @@ func (w *Worker) getAux(eng *auxEngine) (err error) {
 	}
 	eng.mu.Unlock()
 
+	w.beforeLoad()
 	w.UnloadCloneModels()
 	w.UnloadDesignModels()
 	w.unloadOtherAux(eng)

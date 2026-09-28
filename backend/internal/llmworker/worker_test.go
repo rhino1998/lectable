@@ -20,3 +20,13 @@ func TestStripThinking(t *testing.T) {
 		}
 	}
 }
+
+func TestDisableThinking(t *testing.T) {
+	prompt := "<|im_start|>user\nhi<|im_end|>\n<|im_start|>assistant\n"
+	if got := disableThinking("{% if enable_thinking %}...", prompt); got != prompt+"<think>\n\n</think>\n\n" {
+		t.Errorf("hybrid template: got %q", got)
+	}
+	if got := disableThinking("{{ plain chatml }}", prompt); got != prompt {
+		t.Errorf("non-thinking template changed the prompt: %q", got)
+	}
+}

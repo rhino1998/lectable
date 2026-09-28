@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audioworker"
@@ -76,6 +77,25 @@ func main() {
 
 	defaultCloneModel := envOr("LECTABLE_DEFAULT_CLONE_MODEL", "audiocpp-higgs-4b")
 
+	// A speaker LLM too big to share VRAM with an audio model (Qwen3.6-
+	// 35B-A3B: 16.5GB of a 24GB card) takes turns with them instead: an
+	// audio model load unloads it first, and its own load unloads every
+	// audio model - see llmExclusive. internal/jobs' pool switching already
+	// keeps the two families' work apart; this makes the swap synchronous
+	// here, so one never loads on top of the other.
+	llmModelPath := speakerattr.ModelPathFromEnv()
+	exclusive := llmExclusive(llmModelPath)
+	var llmRef atomic.Pointer[llmworker.Worker]
+	var audioBeforeLoad func()
+	if exclusive {
+		log.Printf("ttsworker: speaker LLM %s is exclusive - it and the audio models unload each other", llmModelPath)
+		audioBeforeLoad = func() {
+			if lw := llmRef.Load(); lw != nil {
+				lw.Unload()
+			}
+		}
+	}
+
 	audioWorker, err := audioworker.New(audioworker.Config{
 		DefaultCloneModel: defaultCloneModel,
 		// Matches internal/jobs' own maxInFlight (4, poolGeneration's
@@ -84,6 +104,7 @@ func main() {
 		// just reintroduces today's queueing, only less of it.
 		ClonePoolSize:   envIntOr("LECTABLE_AUDIOCPP_CLONE_POOL_SIZE", 4),
 		IdleUnloadAfter: idleUnloadAfter,
+		BeforeLoad:      audioBeforeLoad,
 	})
 	if err != nil {
 		log.Fatalf("ttsworker: failed to start: %v", err)
@@ -95,8 +116,12 @@ func main() {
 	// cmd/server disables it when the file isn't there), so a missing
 	// model here is not a startup error the way a bad defaultCloneModel
 	// above is.
+	llmBeforeLoad := audioWorker.UnloadCloneModels
+	if exclusive {
+		llmBeforeLoad = audioWorker.UnloadAll
+	}
 	llmWorker := llmworker.New(llmworker.Config{
-		ModelPath:     speakerattr.ModelPathFromEnv(),
+		ModelPath:     llmModelPath,
 		NGPULayers:    int32(envIntOr("LECTABLE_SPEAKER_LLM_GPU_LAYERS", -1)),
 		NCtx:          uint32(envIntOr("LECTABLE_SPEAKER_LLM_CTX", speakerattr.SlotNCtx())),
 		MaxConcurrent: envIntOr("LECTABLE_SPEAKER_LLM_MAX_CONCURRENT", 2),
@@ -112,8 +137,11 @@ func main() {
 		// resident - see audioworker.Worker.UnloadCloneModels's own doc
 		// comment for why it's meant to stay one persistent instance rather
 		// than being churned by an unrelated model swap.
-		BeforeLoad: audioWorker.UnloadCloneModels,
+		// An exclusive LLM frees everything instead, aligner and Stable
+		// Audio included.
+		BeforeLoad: llmBeforeLoad,
 	})
+	llmRef.Store(llmWorker)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /generate", audioWorker.HandleGenerate)
@@ -141,4 +169,24 @@ func main() {
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// llmExclusiveAutoBytes is the model file size above which the speaker LLM
+// is exclusive by default - see llmExclusive. Qwen3-4B (2.5GB) shares VRAM
+// with the audio models fine; Qwen3.6-35B-A3B (16.5GB) can't.
+const llmExclusiveAutoBytes = 8 << 30
+
+// llmExclusive reports whether the speaker LLM at path takes turns with
+// the audio models rather than sharing VRAM with them:
+// LECTABLE_SPEAKER_LLM_EXCLUSIVE=true/false, or by default whether the
+// model file is bigger than llmExclusiveAutoBytes.
+func llmExclusive(path string) bool {
+	switch envOr("LECTABLE_SPEAKER_LLM_EXCLUSIVE", "auto") {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	fi, err := os.Stat(path)
+	return err == nil && fi.Size() > llmExclusiveAutoBytes
 }

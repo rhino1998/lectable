@@ -62,6 +62,8 @@ func withDeps(base []string, extra ...string) []string {
 //	bookmarks      {bookId}               GET /api/books/{id}/bookmarks
 //	characters     {bookId}               GET /api/books/{id}/characters
 //	lexicon        {bookId}               GET /api/books/{id}/lexicon
+//	bookSetting    {bookId}               GET /api/books/{id}/setting
+//	chapterNotes   {bookId, chapterIdx}   GET /api/books/{id}/chapters/{idx}/notes
 //	lexiconSuggestions {bookId}           GET /api/books/{id}/lexicon/suggestions
 //	bookExports    {bookId}               GET /api/books/{id}/exports
 //	jobs                                  GET /api/jobs
@@ -93,6 +95,8 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	// Match counts scan the book's paragraphs, hence the interval.
 	// Names only, for reassign pickers - cheap next to "speakers".
 	h.Register("characters", bookTopic("characters", dbDeps("characters", "books"), 0, s.buildCharacterNames))
+	h.Register("chapterNotes", chapterTopic("chapterNotes", dbDeps("chapter_summaries", "chapters"), 0, s.buildChapterNotes))
+	h.Register("bookSetting", bookTopic("bookSetting", dbDeps("book_settings"), 0, s.buildBookSetting))
 	h.Register("lexicon", bookTopic("lexicon", dbDeps("pronunciation_lexicon", "books", "paragraphs"), 2*time.Second, s.buildLexicon))
 	h.Register("lexiconSuggestions", bookTopic("lexiconSuggestions", dbDeps("pronunciation_lexicon", "characters", "books", "paragraphs"), 2*time.Second, s.buildLexiconSuggestions))
 	// Staleness is a whole-book fingerprint query, so this is rate-limited

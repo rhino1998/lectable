@@ -254,6 +254,13 @@ func (s *DuckStore) SetCharacterPronouns(id, pronouns string) error {
 	return err
 }
 
+// SetCharacterRole marks (or, with false, unmarks) id as a generic role
+// label - see store.Character.IsRole.
+func (s *DuckStore) SetCharacterRole(id string, isRole bool) error {
+	_, err := s.db.Exec(`UPDATE characters SET is_role = ? WHERE id = ?`, isRole, id)
+	return err
+}
+
 // SetCharacterInvalid marks (or, with false, unmarks) id as invalid - see
 // store.Character.Invalid. Identity/summary/voice assignments are left
 // alone either way, so unmarking restores the character exactly as it was.

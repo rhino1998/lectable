@@ -558,7 +558,14 @@ const musicDescribeMaxTokens = 1024
 // palette and a setting that hasn't changed keeps byte-identical ambience,
 // which is what lets the ambience layer be continuation-seeded across
 // regions (jobs.Manager.musicRegionSeeds).
-const musicDescribeSystemPrompt = `You are the sound designer for an audiobook. Behind the narrator's voice plays a quiet background bed made of two layers: an instrumental music underscore, and (when the scene has a clear physical setting) an ambient soundscape of that place - ocean waves, a busy tavern, city streets, rain on a roof, a forest at night. You are designing the bed for one contiguous stretch of a novel chapter, which an earlier pass has already identified as a single tone region. You will be given the full text of every paragraph within that region, in order, and possibly a description of the region that plays just before it.
+//
+// The ambience examples are deliberately era-neutral: one used to read
+// "busy medieval tavern interior, ..., crackling hearth fire, wooden room",
+// and the model copied it verbatim for bars in present-day books (Arise's
+// Greek taverna), which is where the lighting sub-pass's "modern dive bar
+// as a medieval tavern" came from. The book's setting notes
+// (BookSetting) now supply the era instead.
+const musicDescribeSystemPrompt = `You are the sound designer for an audiobook. Behind the narrator's voice plays a quiet background bed made of two layers: an instrumental music underscore, and (when the scene has a clear physical setting) an ambient soundscape of that place - ocean waves, a busy tavern, city streets, rain on a roof, a forest at night. You are designing the bed for one contiguous stretch of a novel chapter, which an earlier pass has already identified as a single tone region. You will be given the full text of every paragraph within that region, in order, possibly notes on the book's setting, and possibly a description of the region that plays just before it.
 
 SCENE - decide this first, when a previous region is given:
 - "new" when this region starts a different scene from the previous one: the story jumps forward in time or to a different place, switches to other characters, or something shocking erupts out of calm (a twist, sudden violence).
@@ -566,15 +573,17 @@ SCENE - decide this first, when a previous region is given:
 - With no previous region, or when told an earlier pass already marked a new scene, answer "new".
 
 MUSIC - an underscore that sits under spoken narration, never competing with it:
-- Match the region's emotional register, and pick a palette that fits the book's world (historical or fantasy settings suit acoustic, folk or orchestral instruments; futuristic settings suit synths and electronic textures; contemporary settings can go either way).
+- Match the region's emotional register, and pick a palette that fits the book's world - its setting notes, when given (historical or fantasy settings suit acoustic, folk or orchestral instruments; futuristic settings suit synths and electronic textures; contemporary settings can go either way).
 - Keep it sparse and steady: sustained pads, soft textures, low or mid-register instruments, gentle pulses. Avoid a prominent lead melody, bright high-pitched solo instruments, heavy drums, sudden drops or big builds - anything that would fight the voice for attention. Even tense or action scenes stay restrained: tension comes from rhythm, low drones and dissonance, not loudness.
 - Instrumental only - never vocals, choirs singing words, or lyrics.
 - For the "same" scene, keep the previous region's genre and core instruments, evolving the mood and energy rather than switching style. For a "new" scene, choose a fresh palette that fits it, rather than reusing the previous one out of habit.
 
 AMBIENCE - the continuous sound of the place where this region physically happens:
-- Describe it the way a field recording is labeled: the sound sources, how busy or sparse they are, the space and perspective (e.g. "ocean waves breaking on a rocky shore, distant gulls, steady sea wind, wide open outdoor perspective"; "busy medieval tavern interior, low indistinct crowd murmur, clinking mugs, crackling hearth fire, wooden room"; "night city street, distant traffic hum, occasional far-off car horn, light rain on pavement").
+- Describe it the way a field recording is labeled: the sound sources, how busy or sparse they are, the space and perspective (e.g. "ocean waves breaking on a rocky shore, distant gulls, steady sea wind, wide open outdoor perspective"; "crowded drinking hall, low indistinct crowd murmur, clinking glasses, wooden room"; "night city street, distant traffic hum, occasional far-off car horn, light rain on pavement").
 - Only continuous, loopable background sound - never a one-off event (no single door slam, gunshot, scream, explosion or line of speech), and never music. Crowds are fine as indistinct murmur, never as intelligible speech.
 - Use "" (empty) when there is no clear, sustained physical setting to hear: a quiet interior with nothing notable audible, a dream or abstract space, a stretch of reflection or summary, or a setting you would only be guessing at.
+- Keep the soundscape true to the book's era and technology from its setting notes: no engines, traffic or electronics in a pre-industrial world, no hearths, horses or tavern crowds in a modern city unless the text puts them there. The notes describe the world, not where this region is - the place still comes from the text.
+- Scene notes, when given, say where and when this stretch happens - prefer them to guessing, but the region's own text wins if it has clearly moved on.
 - Decide the setting from this region's own text first. If the previous region's ambience is given and this text clearly still takes place in that same place, copy that ambience string exactly, character for character. If the characters have moved somewhere else, or the text no longer fits that place, write a new one (or "") - never carry over a place the text has left.
 
 Never mention plot events, character names or story specifics in any field - describe only sound, as if briefing someone who has never read the book.
@@ -629,9 +638,13 @@ type musicDescribeContext struct {
 	transition string
 }
 
-func (c *Client) describeMusicRegion(ctx context.Context, bookTitle, chapterTitle string, regionParagraphs []ParagraphInput, mctx musicDescribeContext) (musicDescription, error) {
+func (c *Client) describeMusicRegion(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, scene *Scene, regionParagraphs []ParagraphInput, mctx musicDescribeContext) (musicDescription, error) {
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
+	if lines := setting.promptLines(); lines != "" {
+		fmt.Fprintf(&user, "\nBook setting notes (the world as a whole):\n%s\n", lines)
+	}
+	user.WriteString(scene.promptLines())
 	switch {
 	case mctx.prev == nil:
 		user.WriteString("This is the chapter's opening region - its scene is \"new\".\n")
@@ -845,10 +858,14 @@ const musicDescribeGroupRegions = 3
 // (from pass 1's own leftover batches, or from wherever pass 2 stopped,
 // whichever is later) weren't turned into a finished region - the same
 // "out reflects real, finished work" contract AttributeChapter documents
-// in full. httpapi.ambienceChapter never auto-resumes a paused run (see
+// in full. setting (nil for none) is the book's setting profile, and notes
+// (nil for none) the chapter's summary notes, whose scene covering each
+// region's start is shown to that region's pass-2 call - pass 1 judges
+// only tone, which neither bears on.
+// httpapi.ambienceChapter never auto-resumes a paused run (see
 // its own doc comment) - remaining is informational there, not something
 // this call itself needs to get perfectly minimal.
-func (c *Client) ScoreMusic(ctx context.Context, bookTitle, chapterTitle string, paragraphs []ParagraphInput, shouldPause func() bool) (out []MusicRegionResult, remaining []ParagraphInput, err error) {
+func (c *Client) ScoreMusic(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, notes *ChapterSummary, paragraphs []ParagraphInput, shouldPause func() bool) (out []MusicRegionResult, remaining []ParagraphInput, err error) {
 	if len(paragraphs) == 0 {
 		return nil, nil, nil
 	}
@@ -889,7 +906,7 @@ func (c *Client) ScoreMusic(ctx context.Context, bookTitle, chapterTitle string,
 			i += n
 			continue
 		}
-		d, derr := c.describeMusicRegion(ctx, bookTitle, chapterTitle, span, musicDescribeContext{prev: prev, transition: b.Transition})
+		d, derr := c.describeMusicRegion(ctx, bookTitle, chapterTitle, setting, notes.SceneAt(b.StartIdx), span, musicDescribeContext{prev: prev, transition: b.Transition})
 		if derr != nil {
 			return out, paragraphsFromIdx(paragraphs, b.StartIdx), fmt.Errorf("describing region starting at %d: %w", b.StartIdx, derr)
 		}

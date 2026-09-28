@@ -40,6 +40,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   scare_quote_tagging: 'Scare Quote Tagging',
   description_tagging: 'Description Tagging',
   pronunciation: 'Pronunciation',
+  chapter_summary: 'Summary',
   // The phases of a book's own "Preprocess" run (see LibraryPage's
   // own Preprocess button) - each fans out real per-chapter/per-character
   // work into the ordinary kinds above (a "pipeline_attribution" row is a
@@ -52,6 +53,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pipeline_direction: 'Preprocess: Direction Tagging',
   pipeline_ambience: 'Preprocess: Ambience',
   pipeline_pronunciation: 'Preprocess: Pronunciation',
+  pipeline_summary: 'Preprocess: Summary',
   // "Generate audio" (library page's All/Remaining, and the reader's
   // per-chapter action) - see backend jobs.Manager.EnqueueChapter/
   // EnqueueBookGenerate/EnqueueRemaining.
@@ -68,6 +70,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pipeline_bulk_scare_quote: 'Bulk: Scare Quote Tagging',
   pipeline_bulk_direction: 'Bulk: Emotion Labeling',
   pipeline_bulk_pronunciation: 'Bulk: Pronunciation',
+  pipeline_bulk_summary: 'Bulk: Summary',
   pipeline_bulk_ambience: 'Bulk: Ambience',
   pipeline_bulk_music_generation: 'Bulk: Music Generation',
   pipeline_bulk_characterization: 'Bulk: Characterization',
@@ -226,7 +229,8 @@ function cancelTitle(t: QueueTask, inFlight: boolean): string {
     t.kind === 'speech_direction' ||
     t.kind === 'scare_quote_tagging' ||
     t.kind === 'description_tagging' ||
-    t.kind === 'pronunciation'
+    t.kind === 'pronunciation' ||
+    t.kind === 'chapter_summary'
   ) {
     return "Cancel — won't take effect until its current LLM call finishes"
   }

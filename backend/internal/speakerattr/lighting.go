@@ -38,15 +38,20 @@ const lightingMaxTokens = 768
 // soundscape still won ("busy medieval tavern" kept the dive bar in
 // candlelight), so the lighting call no longer sees it at all: the place
 // comes from the text, which the review found was the reliable signal.
+// What it does see is the book's setting profile (LightingInput.Setting):
+// the era and technology decide which light sources can exist at all, and
+// say nothing about where a stretch is.
 //
 // Effects are a fixed set the clients animate (store.LightEffect); anything
 // else parses as steady, the safe default. The previous region's cue is
 // passed back in (LightingInput.Prev) so a scene that hasn't moved keeps its
 // light instead of re-rolling it every region.
-const lightingSystemPrompt = `You are the lighting designer for an immersive audiobook. The listener's room has color smart lights, and while one stretch of a novel chapter is narrated you set them so the room feels like being inside that scene. You will be given the full text of the stretch, its emotional mood, the opening lines of the chapter, and possibly the lighting (and mood) of the stretch that plays just before it.
+const lightingSystemPrompt = `You are the lighting designer for an immersive audiobook. The listener's room has color smart lights, and while one stretch of a novel chapter is narrated you set them so the room feels like being inside that scene. You will be given the full text of the stretch, its emotional mood, the opening lines of the chapter, possibly notes on the book's setting, and possibly the lighting (and mood) of the stretch that plays just before it.
 
 How to choose:
 - First the scene's physical light: time of day and weather (noon sun, golden dusk, overcast grey, moonlit night, pitch dark), and the light sources actually present (hearth fire, candles, torches, lanterns, fluorescent tubes, neon signs, screens, glowing magic, underwater gloom).
+- Only use light sources the book's era and technology allow (from its setting notes, when given): no electric light, neon or screens in a pre-industrial world; a modern interior is lit electrically unless the text names candles or a fire. The notes describe the world, not where this stretch is.
+- Scene notes, when given, say where and at what time of day the stretch happens - use them, unless the text has clearly moved on.
 - Decide where and when the scene is from the text itself - a place merely mentioned in conversation is not where the characters are. Keep the time of day the chapter's opening establishes (morning stays morning) unless the text says time has passed.
 - Then tint it gently by the mood: warmer and softer for comfort or romance, colder and dimmer for dread or grief, deeper and redder for danger or rage. The place still comes first - a tense scene by a campfire is still firelight, just lower and redder.
 - Flames - candles, oil lamps, lanterns, torches, a hearth or camp fire - are a saturated amber-orange, never pale yellow or white. Moonlight is a cool pale blue; overcast daylight a soft grey-white; electric lamps a warm amber-white. Only use orange when a flame is actually the light source - other interiors, screens, offices and streets get their own colors.
@@ -101,6 +106,12 @@ type LightingInput struct {
 	// time of day and place they establish anchor every call, since each
 	// one otherwise sees only its own region.
 	Opening string
+	// Setting is the book's setting profile, nil for none (see
+	// lightingSystemPrompt's doc comment).
+	Setting *BookSetting
+	// Scene is the chapter summary's scene covering this stretch, nil for
+	// none: its location and time of day.
+	Scene *Scene
 }
 
 // chapterOpeningChars bounds LightingInput.Opening.
@@ -165,6 +176,10 @@ func (c *Client) DescribeLighting(ctx context.Context, bookTitle, chapterTitle s
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
 	fmt.Fprintf(&user, "Mood: %s\n", orNone(in.Mood))
+	if lines := in.Setting.promptLines(); lines != "" {
+		fmt.Fprintf(&user, "\nBook setting notes (the world as a whole):\n%s", lines)
+	}
+	user.WriteString(in.Scene.promptLines())
 	if in.Opening != "" {
 		fmt.Fprintf(&user, "\nChapter opening (for the time of day and place): %s\n", in.Opening)
 	}

@@ -29,6 +29,23 @@ object AudioStatuses {
 }
 
 /**
+ * BookSettingSource says who wrote a stored BookSetting.
+ *
+ *
+ * Values: see [BookSettingSources].
+ */
+typealias BookSettingSource = String
+
+/**
+ * [BookSettingSource]'s wire values, in declaration order.
+ */
+object BookSettingSources {
+    const val AUTO: BookSettingSource = "auto"
+    const val MANUAL: BookSettingSource = "manual"
+    val VALUES: List<BookSettingSource> = listOf(AUTO, MANUAL)
+}
+
+/**
  * bulkAction is a Speakers-page whole-book action (POST
  * /api/books/{id}/bulk/{action}), in the page's display order. "generate"
  * queues the same "pipeline_generate_book" row as the library page's
@@ -48,12 +65,13 @@ object BulkActions {
     const val SCARE_QUOTE: BulkAction = "scare_quote"
     const val DIRECTION: BulkAction = "direction"
     const val PRONUNCIATION: BulkAction = "pronunciation"
+    const val SUMMARY: BulkAction = "summary"
     const val AMBIENCE: BulkAction = "ambience"
     const val MUSIC_GENERATION: BulkAction = "music_generation"
     const val GENERATE: BulkAction = "generate"
     const val CHARACTERIZATION: BulkAction = "characterization"
     const val VOICES: BulkAction = "voices"
-    val VALUES: List<BulkAction> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, AMBIENCE, MUSIC_GENERATION, GENERATE, CHARACTERIZATION, VOICES)
+    val VALUES: List<BulkAction> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, SUMMARY, AMBIENCE, MUSIC_GENERATION, GENERATE, CHARACTERIZATION, VOICES)
 }
 
 /**
@@ -191,11 +209,12 @@ object ResetPasses {
     const val SCARE_QUOTE: ResetPass = "scare_quote"
     const val DIRECTION: ResetPass = "direction"
     const val PRONUNCIATION: ResetPass = "pronunciation"
+    const val SUMMARY: ResetPass = "summary"
     const val AMBIENCE: ResetPass = "ambience"
     const val MUSIC_GENERATION: ResetPass = "music_generation"
     const val GENERATE: ResetPass = "generate"
     const val LIGHTING: ResetPass = "lighting"
-    val VALUES: List<ResetPass> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, AMBIENCE, MUSIC_GENERATION, GENERATE, LIGHTING)
+    val VALUES: List<ResetPass> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, SUMMARY, AMBIENCE, MUSIC_GENERATION, GENERATE, LIGHTING)
 }
 
 /**
@@ -437,6 +456,40 @@ data class BookManifestDto(
     val posSeconds: Double = 0.0,
 )
 
+/**
+ * bookSettingDTO is a book's setting profile (store.BookSetting) - the world
+ * its story takes place in, which the ambience, lighting and
+ * characterization prompts are shown. Field-for-field store.BookSetting, so
+ * the two convert directly. Derived once per book by one LLM call
+ * the first time a pass needs it; a reader can edit it.
+ */
+@Serializable
+data class BookSettingDto(
+    val era: String = "",
+    val technology: String = "",
+    val place: String = "",
+    /**
+     * Accent is the main characters' accent, "" when the text doesn't make
+     * it clear.
+     */
+    val accent: String = "",
+    val genre: String = "",
+)
+
+/**
+ * bookSettingResponse is GET/PUT/POST .../setting's reply. Setting is nil
+ * until the book has one.
+ */
+@Serializable
+data class BookSettingResponseDto(
+    val setting: BookSettingDto? = null,
+    /**
+     * Source is who wrote it - store.BookSettingAuto or BookSettingManual.
+     */
+    val source: BookSettingSource? = null,
+    val updatedAt: Long? = null,
+)
+
 @Serializable
 data class BookSummaryDto(
     val id: String = "",
@@ -496,6 +549,14 @@ data class CanceledCountResponseDto(
 )
 
 @Serializable
+data class CastMemberDto(
+    val name: String = "",
+    val role: Boolean = false,
+    val pronouns: String = "",
+    val refs: List<String> = emptyList(),
+)
+
+@Serializable
 data class ChapterDetailDto(
     val idx: Int = 0,
     val title: String = "",
@@ -527,6 +588,26 @@ data class ChapterMusicDto(
      */
     val lit: Boolean = false,
     val regions: List<MusicRegionDto> = emptyList(),
+)
+
+/**
+ * chapterNotesDTO is one chapter's summary-pass notes (store.ChapterNotes):
+ * what happens, its scenes, and its cast.
+ */
+@Serializable
+data class ChapterNotesDto(
+    val summary: String = "",
+    val scenes: List<SummarySceneDto> = emptyList(),
+    val cast: List<CastMemberDto> = emptyList(),
+)
+
+/**
+ * chapterNotesResponse is GET .../notes' reply and the chapterNotes live
+ * topic's value. Notes is nil until the chapter has been summarized.
+ */
+@Serializable
+data class ChapterNotesResponseDto(
+    val notes: ChapterNotesDto? = null,
 )
 
 @Serializable
@@ -1067,6 +1148,14 @@ data class MergeCharacterRequestDto(
      * character's exact name.
      */
     val targetName: String = "",
+    /**
+     * AsRole makes the target a generic role label (store.Character.
+     * IsRole, created as one or turned into one) and skips adding the
+     * merged-away name as its alias - for folding a descriptor-named
+     * "character" ("the older man") into its kind ("Man"), where the
+     * description is no name the target goes by.
+     */
+    val asRole: Boolean = false,
 )
 
 /**
@@ -1324,6 +1413,14 @@ data class PassesDto(
      * run, without re-scoring its music.
      */
     val lighting: Boolean = false,
+    /**
+     * Summary is set once the summary pass (internal/speakerattr.Client.
+     * SummarizeChapter, a jobs.KindSummary task via httpapi.
+     * summarizeChapter) has stored the chapter's ChapterNotes. Speaker
+     * attribution and the ambience pass wait on it (jobs.Manager.
+     * summaryDependency) to read its cast and scenes.
+     */
+    val summary: Boolean = false,
 )
 
 /**
@@ -1392,10 +1489,12 @@ data class QueueTaskDto(
      * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
      * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
      * | "speech_direction" | "ambience" | "scare_quote_tagging" |
-     * "description_tagging" (per-item work, see jobs.Kind) or
+     * "description_tagging" | "chapter_summary" (per-item work, see
+     * jobs.Kind) or
      * "pipeline_scare_quote" | "pipeline_attribution" |
      * "pipeline_description" | "pipeline_characterization" |
      * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
+     * | "pipeline_summary"
      * (one of a book's own preprocessing phases - see
      * jobs.EnqueuePipeline/toPipelineQueueTask; deliberately "pipeline_"-
      * prefixed so these can never collide with the per-item kind sharing a
@@ -1706,6 +1805,17 @@ data class SubscribeMessageDto(
     val id: String = "",
     val topic: String = "",
     val params: JsonElement? = null,
+)
+
+@Serializable
+data class SummarySceneDto(
+    /**
+     * StartIdx is the scene's first paragraph; it runs to the next scene's.
+     */
+    val startIdx: Int = 0,
+    val location: String = "",
+    val time: String = "",
+    val present: List<String> = emptyList(),
 )
 
 @Serializable

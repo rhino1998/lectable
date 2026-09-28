@@ -12,12 +12,18 @@ export const AUDIO_STATUSES = ['pending', 'generating', 'ready', 'error'] as con
 export type AudioStatus = (typeof AUDIO_STATUSES)[number]
 
 /**
+ * BookSettingSource says who wrote a stored BookSetting.
+ */
+export const BOOK_SETTING_SOURCES = ['auto', 'manual'] as const
+export type BookSettingSource = (typeof BOOK_SETTING_SOURCES)[number]
+
+/**
  * bulkAction is a Speakers-page whole-book action (POST
  * /api/books/{id}/bulk/{action}), in the page's display order. "generate"
  * queues the same "pipeline_generate_book" row as the library page's
  * Generate: All.
  */
-export const BULK_ACTIONS = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'ambience', 'music_generation', 'generate', 'characterization', 'voices'] as const
+export const BULK_ACTIONS = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'summary', 'ambience', 'music_generation', 'generate', 'characterization', 'voices'] as const
 export type BulkAction = (typeof BULK_ACTIONS)[number]
 
 /**
@@ -68,7 +74,7 @@ export type LightEffect = (typeof LIGHT_EFFECTS)[number]
  * (POST /api/books/{id}/reset/{pass}) - every bulkAction except the
  * character-scoped ones.
  */
-export const RESET_PASSES = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'ambience', 'music_generation', 'generate', 'lighting'] as const
+export const RESET_PASSES = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'summary', 'ambience', 'music_generation', 'generate', 'lighting'] as const
 export type ResetPass = (typeof RESET_PASSES)[number]
 
 /**
@@ -259,6 +265,38 @@ export interface BookManifest {
   posSeconds: number
 }
 
+/**
+ * bookSettingDTO is a book's setting profile (store.BookSetting) - the world
+ * its story takes place in, which the ambience, lighting and
+ * characterization prompts are shown. Field-for-field store.BookSetting, so
+ * the two convert directly. Derived once per book by one LLM call
+ * the first time a pass needs it; a reader can edit it.
+ */
+export interface BookSetting {
+  era: string
+  technology: string
+  place: string
+  /**
+   * Accent is the main characters' accent, "" when the text doesn't make
+   * it clear.
+   */
+  accent: string
+  genre: string
+}
+
+/**
+ * bookSettingResponse is GET/PUT/POST .../setting's reply. Setting is nil
+ * until the book has one.
+ */
+export interface BookSettingResponse {
+  setting?: BookSetting | null
+  /**
+   * Source is who wrote it - store.BookSettingAuto or BookSettingManual.
+   */
+  source?: BookSettingSource
+  updatedAt?: number
+}
+
 export interface BookSummary {
   id: string
   title: string
@@ -314,6 +352,13 @@ export interface CanceledCountResponse {
   canceled: number
 }
 
+export interface CastMember {
+  name: string
+  role: boolean
+  pronouns: string
+  refs: string[]
+}
+
 export interface ChapterDetail {
   idx: number
   title: string
@@ -343,6 +388,24 @@ export interface ChapterMusic {
    */
   lit: boolean
   regions: MusicRegion[]
+}
+
+/**
+ * chapterNotesDTO is one chapter's summary-pass notes (store.ChapterNotes):
+ * what happens, its scenes, and its cast.
+ */
+export interface ChapterNotes {
+  summary: string
+  scenes: SummaryScene[]
+  cast: CastMember[]
+}
+
+/**
+ * chapterNotesResponse is GET .../notes' reply and the chapterNotes live
+ * topic's value. Notes is nil until the chapter has been summarized.
+ */
+export interface ChapterNotesResponse {
+  notes?: ChapterNotes | null
 }
 
 export interface ChapterSummary {
@@ -822,6 +885,14 @@ export interface MergeCharacterRequest {
    * character's exact name.
    */
   targetName: string
+  /**
+   * AsRole makes the target a generic role label (store.Character.
+   * IsRole, created as one or turned into one) and skips adding the
+   * merged-away name as its alias - for folding a descriptor-named
+   * "character" ("the older man") into its kind ("Man"), where the
+   * description is no name the target goes by.
+   */
+  asRole?: boolean
 }
 
 /**
@@ -1076,6 +1147,14 @@ export interface Passes {
    * run, without re-scoring its music.
    */
   lighting: boolean
+  /**
+   * Summary is set once the summary pass (internal/speakerattr.Client.
+   * SummarizeChapter, a jobs.KindSummary task via httpapi.
+   * summarizeChapter) has stored the chapter's ChapterNotes. Speaker
+   * attribution and the ambience pass wait on it (jobs.Manager.
+   * summaryDependency) to read its cast and scenes.
+   */
+  summary: boolean
 }
 
 /**
@@ -1139,10 +1218,12 @@ export interface QueueTask {
    * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
    * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
    * | "speech_direction" | "ambience" | "scare_quote_tagging" |
-   * "description_tagging" (per-item work, see jobs.Kind) or
+   * "description_tagging" | "chapter_summary" (per-item work, see
+   * jobs.Kind) or
    * "pipeline_scare_quote" | "pipeline_attribution" |
    * "pipeline_description" | "pipeline_characterization" |
    * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
+   * | "pipeline_summary"
    * (one of a book's own preprocessing phases - see
    * jobs.EnqueuePipeline/toPipelineQueueTask; deliberately "pipeline_"-
    * prefixed so these can never collide with the per-item kind sharing a
@@ -1436,6 +1517,16 @@ export interface SubscribeMessage {
   params: unknown
 }
 
+export interface SummaryScene {
+  /**
+   * StartIdx is the scene's first paragraph; it runs to the next scene's.
+   */
+  startIdx: number
+  location: string
+  time: string
+  present: string[]
+}
+
 export interface TestCloneInstructRequest {
   /**
    * BaseID is an existing voice (built-in or custom) whose already-
@@ -1673,6 +1764,16 @@ export interface LiveTopics {
    */
   characters: { params: { bookId: string }; data: CharacterName[] }
   /**
+   * buildChapterNotes is the chapterNotes live topic's value and GET
+   * .../notes' reply.
+   */
+  chapterNotes: { params: { bookId: string; chapterIdx: number }; data: ChapterNotesResponse }
+  /**
+   * buildBookSetting is the bookSetting live topic's value and GET
+   * .../setting's reply.
+   */
+  bookSetting: { params: { bookId: string }; data: BookSettingResponse }
+  /**
    * buildLexicon lists bookID's scope's pronunciation rules, each with how
    * many of this book's paragraphs it matches (so a typo'd rule that never
    * fires is visible).
@@ -1903,6 +2004,16 @@ export interface Routes {
     query: Record<never, never>
     body: never
     response: ChapterMusic
+    errorCode: never
+  }
+  /**
+   * handleGetChapterNotes serves GET /api/books/{id}/chapters/{idx}/notes.
+   */
+  'GET /api/books/{id}/chapters/{idx}/notes': {
+    path: { id: string; idx: number }
+    query: Record<never, never>
+    body: never
+    response: ChapterNotesResponse
     errorCode: never
   }
   /**
@@ -2160,6 +2271,17 @@ export interface Routes {
    * ambienceChapter's own doc comment for why.
    */
   'POST /api/books/{id}/chapters/{idx}/run-ambience': {
+    path: { id: string; idx: number }
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleSummarizeChapter serves POST /api/books/{id}/chapters/{idx}/summarize:
+   * queues the chapter's summary pass, re-running it if it already has one.
+   */
+  'POST /api/books/{id}/chapters/{idx}/summarize': {
     path: { id: string; idx: number }
     query: Record<never, never>
     body: never
@@ -2748,6 +2870,41 @@ export interface Routes {
     query: { q?: string | number | boolean }
     body: never
     response: SearchResult[]
+    errorCode: never
+  }
+  /**
+   * handleGetBookSetting serves GET /api/books/{id}/setting.
+   */
+  'GET /api/books/{id}/setting': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: BookSettingResponse
+    errorCode: never
+  }
+  /**
+   * handleSetBookSetting serves PUT /api/books/{id}/setting - a reader's
+   * edit, which a later derive won't replace unless asked to. Already-run
+   * passes keep what they wrote; re-run them to apply it.
+   */
+  'PUT /api/books/{id}/setting': {
+    path: { id: string }
+    query: Record<never, never>
+    body: BookSetting
+    response: BookSettingResponse
+    errorCode: never
+  }
+  /**
+   * handleDeriveBookSetting serves POST /api/books/{id}/setting/derive:
+   * re-runs the setting pass now (one LLM call, through the Jobs page's
+   * preview slot), replacing whatever the book had - a manual edit
+   * included.
+   */
+  'POST /api/books/{id}/setting/derive': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: BookSettingResponse
     errorCode: never
   }
   /**
@@ -3347,6 +3504,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/generate': 'json',
   'POST /api/books/{id}/chapters/{idx}/generate-music': 'json',
   'GET /api/books/{id}/chapters/{idx}/music': 'json',
+  'GET /api/books/{id}/chapters/{idx}/notes': 'json',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description': 'none',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion': 'none',
   'POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/generate-sfx': 'json',
@@ -3359,6 +3517,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/retag-descriptions': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes': 'json',
   'POST /api/books/{id}/chapters/{idx}/run-ambience': 'json',
+  'POST /api/books/{id}/chapters/{idx}/summarize': 'json',
   'POST /api/books/{id}/chapters/{idx}/tag-directions': 'json',
   'GET /api/books/{id}/characters': 'json',
   'POST /api/books/{id}/characters/characterize': 'json',
@@ -3394,6 +3553,9 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/preprocess': 'json',
   'POST /api/books/{id}/reset/{pass}': 'json',
   'GET /api/books/{id}/search': 'json',
+  'GET /api/books/{id}/setting': 'json',
+  'PUT /api/books/{id}/setting': 'json',
+  'POST /api/books/{id}/setting/derive': 'json',
   'GET /api/books/{id}/speakers': 'json',
   'DELETE /api/books/{id}/speakers': 'none',
   'POST /api/books/{id}/speakers/reattribute': 'json',

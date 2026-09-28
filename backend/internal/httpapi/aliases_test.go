@@ -73,3 +73,41 @@ func TestCharacterAliasesEndpointAndMerge(t *testing.T) {
 		t.Fatalf("group speaker was registered as a character")
 	}
 }
+
+// Merging a descriptor-named "character" into its kind with asRole makes
+// the target a role (even one that already existed as a plain character)
+// and records no alias.
+func TestMergeAsRole(t *testing.T) {
+	_, s, _, ts := newTestServer(t)
+	bookID, _, err := s.CreateBook("Test Book", "A", "en", "", "", 0, []store.ChapterInput{{
+		Title:  "One",
+		Blocks: []store.BlockInput{{Kind: store.BlockText, Text: "“Hi,”", IsQuote: true}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, _ := s.GetBook(bookID)
+	scope := store.SeriesScope(book)
+	older, _, _ := s.UpsertCharacter(scope, "the older man", false)
+	man, _, _ := s.UpsertCharacter(scope, "Man", false)
+	ch, _ := s.GetChapterByIdx(bookID, 0)
+	if err := s.SetParagraphSpeakers(ch.ID, map[int]string{0: "the older man"}); err != nil {
+		t.Fatal(err)
+	}
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/"+bookID+"/characters/"+older.ID+"/merge", map[string]any{"targetName": "Man", "asRole": true}, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("merge: %d", resp.StatusCode)
+	}
+	got, _ := s.GetCharacter(man.ID)
+	if got == nil || !got.IsRole || len(got.Aliases) != 0 {
+		t.Fatalf("target = %+v, want a role with no aliases", got)
+	}
+	ps, _ := s.ListParagraphsRaw(ch.ID)
+	if ps[0].Speaker != "Man" {
+		t.Fatalf("speaker = %q, want Man", ps[0].Speaker)
+	}
+	if c, _ := s.GetCharacter(older.ID); c != nil {
+		t.Fatalf("merged-away character still exists")
+	}
+}

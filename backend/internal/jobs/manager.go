@@ -362,6 +362,7 @@ var kindPool = map[Kind]taskqueue.PoolKey{
 	KindScareQuote:              poolLLM,
 	KindDescription:             poolLLM,
 	KindPronunciation:           poolLLM,
+	KindSummary:                 poolLLM,
 }
 
 // poolFor reports which slot pool kind draws from - see kindPool.
@@ -627,6 +628,11 @@ const (
 	// a plain word substitution applies under every clone model, while
 	// direction tagging is Higgs-only.
 	KindPronunciation Kind = "pronunciation"
+	// KindSummary is a chapter's summary pass (internal/speakerattr.Client.
+	// SummarizeChapter, via httpapi.summarizeChapter) - its summary, scenes
+	// and cast. KindScareQuote's shape; attribution and the ambience pass
+	// depend on it (summaryDependency).
+	KindSummary Kind = "chapter_summary"
 )
 
 // Tier is shared across every chapter/paragraph-scoped Kind - a
@@ -987,6 +993,8 @@ func (t *task) dedupKey() string {
 		return "describe:" + t.llmKey
 	case KindPronunciation:
 		return "pronunciation:" + t.llmKey
+	case KindSummary:
+		return "summary:" + t.llmKey
 	default:
 		return t.paragraph.ID
 	}
@@ -1079,6 +1087,7 @@ var kindCompare = map[Kind]func(a, b *task) int{
 	KindScareQuote:              comparePosition,
 	KindDescription:             comparePosition,
 	KindPronunciation:           comparePosition,
+	KindSummary:                 comparePosition,
 }
 
 // Less breaks a same-pool, same-(promoted-)tier tie between t and other -
@@ -1426,6 +1435,17 @@ type ChapterScareQuoter func(ctx context.Context, book *store.Book, ch *store.Ch
 // resolved yet - ChapterDirector's exact role for
 // speechDirectionDependency. A never-configured pronouncer (nil) just
 // means generation never waits on pronunciation resolution.
+// ChapterSummarizer lazily runs one chapter's summary pass (setting
+// Passes.Summary) the moment summaryDependency finds a KindSpeakerAttribution
+// or KindAmbience task for a chapter that has none yet - ChapterScareQuoter's
+// role for scareQuoteDependency. Never configured (nil) means nothing waits
+// on summaries.
+type ChapterSummarizer func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error)
+
+// SummaryFunc performs one chapter's summary pass - the work behind a
+// KindSummary task. DirectionFunc's shape.
+type SummaryFunc func(ctx context.Context) (int, func(), error)
+
 type ChapterPronouncer func(ctx context.Context, book *store.Book, ch *store.Chapter) (resolved int, requeue func(), err error)
 
 type Manager struct {
@@ -1452,6 +1472,7 @@ type Manager struct {
 	runAmbience  AmbienceRunner
 	scareQuote   ChapterScareQuoter
 	pronounce    ChapterPronouncer
+	summarize    ChapterSummarizer
 	ctx          context.Context // set by Start; used by fire-and-forget Enqueue* resolution goroutines
 
 	// queue is this package's whole priority/dependency/pool-dispatch
@@ -1545,6 +1566,11 @@ func NewManager(s store.Store, tts *ttsworker.Manager, dataDir string) *Manager 
 	// instead of leaving it resident until ttsworker's own idle timeout
 	// (LECTABLE_MODEL_IDLE_UNLOAD_AFTER) elapses on hardware with no VRAM headroom
 	// to spare running both at once.
+	// Pools of equal priority take turns in stretches, not task by task:
+	// a switch between the TTS and LLM families unloads one and loads the
+	// other (onPoolActivate) - tens of seconds with a large LLM - so a tie
+	// keeps the active pool for up to poolTieSwitchAfter.
+	m.queue.SetTieSwitchAfter(poolTieSwitchAfter)
 	m.queue.RegisterPool(poolGeneration, taskqueue.PoolConfig{Capacity: maxInFlight, OnActivate: func() { m.onPoolActivate(poolGeneration) }})
 	m.queue.RegisterPool(poolLLM, taskqueue.PoolConfig{Capacity: maxAttributionInFlight, OnActivate: func() { m.onPoolActivate(poolLLM) }})
 	m.queue.RegisterPool(poolDesign, taskqueue.PoolConfig{Capacity: maxDesignInFlight, OnActivate: func() { m.onPoolActivate(poolDesign) }})
@@ -1644,6 +1670,12 @@ func (m *Manager) SetAmbienceRunner(fn AmbienceRunner) {
 // httpapi.NewRouter, the same place/timing as SetChapterDirector.
 func (m *Manager) SetChapterScareQuoter(fn ChapterScareQuoter) {
 	m.scareQuote = fn
+}
+
+// SetChapterSummarizer wires fn in as the lazy summarizer - see
+// ChapterSummarizer. Called once from httpapi.NewRouter.
+func (m *Manager) SetChapterSummarizer(fn ChapterSummarizer) {
+	m.summarize = fn
 }
 
 // SetChapterPronouncer wires fn in as the lazy pronunciation resolver - see
@@ -2705,6 +2737,11 @@ func (m *Manager) resolveDependencies(lq *taskqueue.LockedQueue, tk taskqueue.Ta
 			deps = append(deps, d)
 		}
 	}
+	if t.kind == KindSpeakerAttribution || t.kind == KindAmbience {
+		if d := m.summaryDependency(lq, t); d != nil {
+			deps = append(deps, d)
+		}
+	}
 	if t.kind == KindMusicLiveGeneration {
 		if d := m.liveMusicDependency(lq, t); d != nil {
 			deps = append(deps, d)
@@ -3034,6 +3071,45 @@ func (m *Manager) scareQuoteDependency(lq *taskqueue.LockedQueue, t *task) taskq
 		chapterIdx:  t.chapterIdx,
 		llmKey:      chapterID,
 		runLLM:      func(ctx context.Context) (int, func(), error) { return m.scareQuote(ctx, book, &chVal) },
+		seriesName:  book.SeriesName,
+		seriesIndex: book.SeriesIndex,
+	}
+	return m.pushDependency(lq, nt)
+}
+
+// summaryDependency makes t's own chapter's summary pass (KindSummary) a
+// dependency of a KindSpeakerAttribution/KindAmbience task -
+// scareQuoteDependency's shape: the chapter's queued or in-flight
+// KindSummary task, or a lazily created one via m.summarize the first time
+// it finds Passes.Summary unset. Attribution reads the summary's cast
+// (who's in the chapter, and what the text calls them), ambience and
+// lighting its scenes (where, and what time of day). A failed summary
+// leaves Passes.Summary unset and is recreated on the next resolution.
+func (m *Manager) summaryDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+	chapterID := t.chapterID
+	if found, ok := lq.Get("summary:" + chapterID); ok {
+		return found
+	}
+	if m.summarize == nil {
+		return nil
+	}
+	ch, err := m.memoChapterByID(lq, chapterID)
+	if err != nil || ch == nil || ch.Passes.Summary {
+		return nil
+	}
+	book, err := m.memoBook(lq, t.bookID)
+	if err != nil || book == nil {
+		return nil
+	}
+	chVal := *ch
+	nt := &task{
+		kind:        KindSummary,
+		tier:        t.tier,
+		bookID:      t.bookID,
+		chapterID:   chapterID,
+		chapterIdx:  t.chapterIdx,
+		llmKey:      chapterID,
+		runLLM:      func(ctx context.Context) (int, func(), error) { return m.summarize(ctx, book, &chVal) },
 		seriesName:  book.SeriesName,
 		seriesIndex: book.SeriesIndex,
 	}
@@ -3404,6 +3480,12 @@ func (m *Manager) Paused() bool {
 	defer m.mu.Unlock()
 	return m.paused
 }
+
+// poolTieSwitchAfter is how long a pool keeps the queue against equally
+// urgent work in another pool - see taskqueue.Queue.SetTieSwitchAfter and
+// NewManager. Long next to a model swap (a 16.5GB LLM loads in ~15s), short
+// next to a whole-book background run.
+const poolTieSwitchAfter = 5 * time.Minute
 
 // onPoolActivate is registered as every pool's own taskqueue.PoolConfig.
 // OnActivate (see NewManager) - fires synchronously, with the queue's own
@@ -3802,6 +3884,18 @@ func (m *Manager) EnqueueDescription(bookID, chapterID string, chapterIdx int, f
 // httpapi.preprocessDescriptionPhase.
 func (m *Manager) RunDescription(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, fn DescriptionFunc) (int, error) {
 	return m.runLLMTaskDirect(ctx, KindDescription, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
+}
+
+// EnqueueSummary queues fn as a KindSummary task - EnqueueScareQuote's
+// shape.
+func (m *Manager) EnqueueSummary(bookID, chapterID string, chapterIdx int, fn SummaryFunc) {
+	m.enqueueChapterLLM(KindSummary, bookID, chapterID, chapterIdx, fn)
+}
+
+// RunSummary is EnqueueSummary's blocking sibling, for the preprocess
+// phase and the bulk action.
+func (m *Manager) RunSummary(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, fn SummaryFunc) (int, error) {
+	return m.runLLMTaskDirect(ctx, KindSummary, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
 }
 
 // EnqueuePronunciation queues fn as a KindPronunciation task - same shape

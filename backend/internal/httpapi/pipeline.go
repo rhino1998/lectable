@@ -132,6 +132,7 @@ func (s *Server) handlePreprocessBook(w http.ResponseWriter, r *http.Request) {
 		jobs.PhaseDirection:        s.preprocessDirectionPhase(book, chapters),
 		jobs.PhaseAmbience:         s.preprocessAmbiencePhase(book, chapters),
 		jobs.PhasePronunciation:    s.preprocessPronunciationPhase(book, chapters),
+		jobs.PhaseSummary:          s.preprocessSummaryPhase(book, chapters),
 	}
 	if err := s.Jobs.EnqueuePipeline(book.ID, phases); err != nil {
 		writeError(w, http.StatusConflict, err.Error())
@@ -154,6 +155,20 @@ func (s *Server) preprocessScareQuotePhase(book *store.Book, chapters []store.Ch
 		func(ctx context.Context, tier int, ch *store.Chapter) error {
 			_, err := s.Jobs.RunScareQuote(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
 				return s.scareQuoteChapterForJob(ctx, book, ch)
+			})
+			return err
+		})
+}
+
+// preprocessSummaryPhase is the summary phase - attribution and the
+// ambience pass wait on it (jobs.pipelinePhaseDeps), since they read each
+// chapter's cast and scenes. Skips chapters with Passes.Summary.
+func (s *Server) preprocessSummaryPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
+	return s.chapterPhase(book, chapters, "summary",
+		func(p store.Passes) bool { return p.Summary },
+		func(ctx context.Context, tier int, ch *store.Chapter) error {
+			_, err := s.Jobs.RunSummary(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
+				return s.summarizeChapter(ctx, book, ch)
 			})
 			return err
 		})

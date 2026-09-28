@@ -232,6 +232,7 @@ func (s *DuckStore) ReplaceChapterContent(chapterID, title string, blocks []Bloc
 		{"images", `DELETE FROM images WHERE chapter_id = ?`},
 		{"breaks", `DELETE FROM breaks WHERE chapter_id = ?`},
 		{"music regions", `DELETE FROM music_regions WHERE chapter_id = ?`},
+		{"summary", `DELETE FROM chapter_summaries WHERE chapter_id = ?`},
 	} {
 		if _, err := tx.Exec(stmt.sql, chapterID); err != nil {
 			return nil, nil, fmt.Errorf("delete %s: %w", stmt.what, err)
@@ -349,11 +350,17 @@ func (s *DuckStore) DeleteBook(id string) error {
 	if _, err := tx.Exec(`DELETE FROM breaks WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, id); err != nil {
 		return fmt.Errorf("delete breaks: %w", err)
 	}
+	if _, err := tx.Exec(`DELETE FROM chapter_summaries WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, id); err != nil {
+		return fmt.Errorf("delete chapter summaries: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM chapters WHERE book_id = ?`, id); err != nil {
 		return fmt.Errorf("delete chapters: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM sync_tree_nodes WHERE book_id = ?`, id); err != nil {
 		return fmt.Errorf("delete sync tree: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM book_settings WHERE book_id = ?`, id); err != nil {
+		return fmt.Errorf("delete book setting: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM books WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete book: %w", err)

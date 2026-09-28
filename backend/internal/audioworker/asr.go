@@ -12,6 +12,7 @@ import (
 // for the same reasons (see UnloadCloneModels' doc comment): it runs once
 // per generated paragraph, as part of jobs' completeness check.
 func (w *Worker) transcriberSession() (*audiocpp.Session, error) {
+	w.beforeLoad() // before asrMu - see alignSession
 	w.asrMu.Lock()
 	defer w.asrMu.Unlock()
 

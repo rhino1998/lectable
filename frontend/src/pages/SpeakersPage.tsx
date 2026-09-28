@@ -28,6 +28,7 @@ import { SpeakerRow } from '../components/speakers/SpeakerRow'
 import { ChapterPassTable } from '../components/speakers/ChapterPassTable'
 import { SpeakerSettings } from '../components/speakers/SpeakerSettings'
 import { LexiconPanel } from '../components/speakers/LexiconPanel'
+import { SettingPanel } from '../components/speakers/SettingPanel'
 import { sortedRoster } from '../utils/speakerOrder'
 import { DEFAULT_CLONE_MODEL } from '../api/types'
 import type { BulkAction, BulkScope, Speaker } from '../api/types'
@@ -361,6 +362,8 @@ export function SpeakersPage() {
       {bulkError && <p className="error-text">{bulkError}</p>}
 
       <SpeakerSettings bookId={bookId} cloneModel={effectiveCloneModel} />
+
+      <SettingPanel bookId={bookId} />
 
       <LexiconPanel bookId={bookId} seriesName={book.seriesName} />
 

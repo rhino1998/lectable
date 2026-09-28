@@ -117,3 +117,38 @@ func TestAttributeChapterAsksOnlyDialogueInParallel(t *testing.T) {
 		}
 	}
 }
+
+// descriptorLLM answers every asked line with a description, the way a
+// small model does when narration only says "the older man said".
+type descriptorLLM struct{}
+
+func (descriptorLLM) LLMGenerate(_ context.Context, _, user string, _ float32, _ int) (string, error) {
+	var sb strings.Builder
+	for _, line := range strings.Split(user, "\n") {
+		if i := strings.Index(line, " (who?):"); i > 0 {
+			fmt.Fprintf(&sb, "%s: the older man\n", line[:i])
+		}
+	}
+	return sb.String(), nil
+}
+
+// A description the model answers with becomes a role label, even though
+// AttributeChapter has already seen it as a "name" from an earlier line.
+func TestAttributeChapterTurnsDescriptionsIntoRoles(t *testing.T) {
+	var paras []ParagraphInput
+	for i := 0; i < 90; i++ {
+		paras = append(paras, ParagraphInput{Idx: i, Text: fmt.Sprintf("“line %d”", i), IsQuote: true})
+	}
+	out, roles, _, _, err := NewClient(Config{}, descriptorLLM{}).AttributeChapter(context.Background(), "Book", "Ch", Roster{Names: []string{"Bert"}}, paras, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range paras {
+		if out[p.Idx] != "Man" {
+			t.Fatalf("paragraph %d: speaker %q, want Man", p.Idx, out[p.Idx])
+		}
+	}
+	if !roles["Man"] {
+		t.Fatalf("roles = %v, want Man", roles)
+	}
+}

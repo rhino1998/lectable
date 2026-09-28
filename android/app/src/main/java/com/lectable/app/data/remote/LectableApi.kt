@@ -207,6 +207,15 @@ interface LectableApi {
     ): ChapterMusicDto
 
     /**
+     * handleGetChapterNotes serves GET /api/books/{id}/chapters/{idx}/notes.
+     */
+    @GET("api/books/{id}/chapters/{idx}/notes")
+    suspend fun getChapterNotes(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+    ): ChapterNotesResponseDto
+
+    /**
      * handleSetParagraphDescription reassigns one paragraph's description
      * attribution from one character to another - the Speakers page's
      * per-character "descriptions" list's own counterpart to
@@ -467,6 +476,16 @@ interface LectableApi {
      */
     @POST("api/books/{id}/chapters/{idx}/run-ambience")
     suspend fun runChapterAmbience(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+    ): QueuedResponseDto
+
+    /**
+     * handleSummarizeChapter serves POST /api/books/{id}/chapters/{idx}/summarize:
+     * queues the chapter's summary pass, re-running it if it already has one.
+     */
+    @POST("api/books/{id}/chapters/{idx}/summarize")
+    suspend fun summarizeChapter(
         @Path("id") id: String,
         @Path("idx") idx: Int,
     ): QueuedResponseDto
@@ -1019,6 +1038,36 @@ interface LectableApi {
         @Path("id") id: String,
         @Query("q") q: String? = null,
     ): List<SearchResultDto>
+
+    /**
+     * handleGetBookSetting serves GET /api/books/{id}/setting.
+     */
+    @GET("api/books/{id}/setting")
+    suspend fun getBookSetting(
+        @Path("id") id: String,
+    ): BookSettingResponseDto
+
+    /**
+     * handleSetBookSetting serves PUT /api/books/{id}/setting - a reader's
+     * edit, which a later derive won't replace unless asked to. Already-run
+     * passes keep what they wrote; re-run them to apply it.
+     */
+    @PUT("api/books/{id}/setting")
+    suspend fun setBookSetting(
+        @Path("id") id: String,
+        @Body body: BookSettingDto,
+    ): BookSettingResponseDto
+
+    /**
+     * handleDeriveBookSetting serves POST /api/books/{id}/setting/derive:
+     * re-runs the setting pass now (one LLM call, through the Jobs page's
+     * preview slot), replacing whatever the book had - a manual edit
+     * included.
+     */
+    @POST("api/books/{id}/setting/derive")
+    suspend fun deriveBookSetting(
+        @Path("id") id: String,
+    ): BookSettingResponseDto
 
     /**
      * handleListSpeakers reports every speaker recognized in bookID so far -

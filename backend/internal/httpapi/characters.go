@@ -422,6 +422,12 @@ type mergeCharacterRequest struct {
 	// "Narrator" (a sentinel, not a real character row) or another
 	// character's exact name.
 	TargetName string `json:"targetName"`
+	// AsRole makes the target a generic role label (store.Character.
+	// IsRole, created as one or turned into one) and skips adding the
+	// merged-away name as its alias - for folding a descriptor-named
+	// "character" ("the older man") into its kind ("Man"), where the
+	// description is no name the target goes by.
+	AsRole bool `json:"asRole,omitempty"`
 }
 
 // handleMergeCharacter folds one character into another: every paragraph
@@ -491,17 +497,23 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 	if targetName == "Narrator" {
 		storeTargetName = ""
 	} else if targetName != "Unknown" {
-		target, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), targetName, false)
+		target, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), targetName, req.AsRole)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if req.AsRole && !target.IsRole {
+			if err := s.Store.SetCharacterRole(target.ID, true); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 		// The merged-away name (and anything it was already called) is
 		// another name for the target from now on - so attribution folds
 		// it back in, reads "Albert said" as the target, and the same
 		// split doesn't come back. Not for a junk name ("Fritz and
 		// Bert", "No one"), which was never anyone's name.
-		if clean, _ := speakerattr.SanitizeSpeaker(char.Name); clean == char.Name {
+		if clean, _ := speakerattr.SanitizeSpeaker(char.Name); clean == char.Name && !req.AsRole {
 			if err := s.Store.AddCharacterAliases(target.ID, append([]string{char.Name}, char.Aliases...)...); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return

@@ -164,9 +164,12 @@ byte-for-byte.
 - `src/pages/SpeakersPage.tsx` — the roster and its handlers; the rest is
   in `src/components/speakers/`: `SpeakerSettings` (book-wide switches),
   `ChapterPassTable` (per-chapter pass table + whole-book Rest/All/Reset
-  rows), `SpeakerRow` (+ aliases/pronouns/emotions/merge),
+  rows; its Summary column's eye icon expands a row with the chapter's
+  summary notes - `chapterNotes` live topic), `SpeakerRow` (+ aliases/pronouns/emotions/merge),
   `SpeakerEvidence` (appearance/description rows), `CharacterVoiceEditor`,
-  `PassStatus` (status cells, bulk button), `LexiconPanel` (the series
+  `PassStatus` (status cells, bulk button), `SettingPanel` (the book's
+  setting profile - `bookSetting` live topic, editable, with a re-read
+  button; see backend `httpapi/setting.go`), `LexiconPanel` (the series
   pronunciation lexicon - `lexicon` live topic; see backend
   `internal/pronounce/lexicon.go`). The Jobs page's "Narration left" line
   is `utils/narrationEta` (queued narration chars / the backend's measured

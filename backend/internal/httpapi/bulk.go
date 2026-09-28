@@ -36,6 +36,7 @@ const (
 	bulkScareQuote       bulkAction = "scare_quote"
 	bulkDirection        bulkAction = "direction"
 	bulkPronunciation    bulkAction = "pronunciation"
+	bulkSummary          bulkAction = "summary"
 	bulkAmbience         bulkAction = "ambience"
 	bulkMusicGeneration  bulkAction = "music_generation"
 	bulkGenerate         bulkAction = "generate"
@@ -54,6 +55,7 @@ const (
 	resetScareQuote      = resetPass(bulkScareQuote)
 	resetDirection       = resetPass(bulkDirection)
 	resetPronunciation   = resetPass(bulkPronunciation)
+	resetSummary         = resetPass(bulkSummary)
 	resetAmbience        = resetPass(bulkAmbience)
 	resetMusicGeneration = resetPass(bulkMusicGeneration)
 	resetGenerate        = resetPass(bulkGenerate)
@@ -120,6 +122,16 @@ var chapterBulkPasses = map[bulkAction]chapterBulkPass{
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
 			_, err := s.Jobs.RunPronunciation(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
 				return s.pronounceChapter(ctx, book, ch, nil)
+			})
+			return err
+		},
+	},
+	bulkSummary: {
+		kind: jobs.KindSummary,
+		done: func(p store.Passes) bool { return p.Summary },
+		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
+			_, err := s.Jobs.RunSummary(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
+				return s.summarizeChapter(ctx, book, ch)
 			})
 			return err
 		},
@@ -422,6 +434,9 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 		}
 	case resetLighting:
 		err = s.Store.ClearBookLighting(book.ID)
+	case resetSummary:
+		// Notes change no paragraph, so no audio goes stale.
+		_, err = s.Store.ClearBookSummaries(book.ID, fromIdx)
 	default:
 		if _, ok := store.PassResets[string(pass)]; !ok {
 			writeError(w, http.StatusNotFound, "unknown pass "+string(pass))

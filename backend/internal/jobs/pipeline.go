@@ -85,6 +85,7 @@ const (
 	pipelinePhaseScareQuote
 	pipelinePhaseDescription
 	pipelinePhasePronunciation
+	pipelinePhaseSummary
 	pipelinePhaseCount
 )
 
@@ -97,6 +98,7 @@ var pipelinePhaseNames = [pipelinePhaseCount]string{
 	pipelinePhaseScareQuote:       "scare_quote",
 	pipelinePhaseDescription:      "description",
 	pipelinePhasePronunciation:    "pronunciation",
+	pipelinePhaseSummary:          "summary",
 }
 
 // PipelinePhases is EnqueuePipeline's argument - one PipelinePhaseFunc per
@@ -115,6 +117,7 @@ const (
 	PhaseDirection        = pipelinePhaseDirection
 	PhaseAmbience         = pipelinePhaseAmbience
 	PhasePronunciation    = pipelinePhasePronunciation
+	PhaseSummary          = pipelinePhaseSummary
 )
 
 // pipelinePhaseDeps lists, per phase, the phases of the same book's run
@@ -122,7 +125,8 @@ const (
 // constants' doc comment for why each edge exists. A phase with no entry
 // dispatches immediately.
 var pipelinePhaseDeps = [pipelinePhaseCount][]int{
-	pipelinePhaseAttribution:      {pipelinePhaseScareQuote},
+	pipelinePhaseAttribution:      {pipelinePhaseScareQuote, pipelinePhaseSummary},
+	pipelinePhaseAmbience:         {pipelinePhaseSummary},
 	pipelinePhaseDescription:      {pipelinePhaseScareQuote},
 	pipelinePhaseCharacterization: {pipelinePhaseAttribution, pipelinePhaseDescription},
 	pipelinePhaseVoiceProvision:   {pipelinePhaseCharacterization},
@@ -145,6 +149,7 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 	pipelinePhaseScareQuote:       "pipeline_scare_quote",
 	pipelinePhaseDescription:      "pipeline_description",
 	pipelinePhasePronunciation:    "pipeline_pronunciation",
+	pipelinePhaseSummary:          "pipeline_summary",
 }
 
 // PipelinePhaseFunc is one phase's own real work for one book - fan out
@@ -548,6 +553,7 @@ var phaseChildKinds = map[int]Kind{
 	pipelinePhaseScareQuote:    KindScareQuote,
 	pipelinePhaseDescription:   KindDescription,
 	pipelinePhasePronunciation: KindPronunciation,
+	pipelinePhaseSummary:       KindSummary,
 }
 
 // children reports which m.queue tasks a promotion of t cascades to, or nil.

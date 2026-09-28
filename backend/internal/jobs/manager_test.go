@@ -880,6 +880,54 @@ func TestScareQuoteDependencyBlocksAttributionAndDescription(t *testing.T) {
 	}
 }
 
+// TestSummaryDependencyBlocksAttributionAndAmbience covers
+// summaryDependency: a chapter's attribution and ambience tasks both wait on
+// one lazily-created KindSummary task for that chapter, and once
+// Passes.Summary is stored both dispatch without another summary run.
+func TestSummaryDependencyBlocksAttributionAndAmbience(t *testing.T) {
+	s := openTestStore(t)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "Some narration.")
+
+	calls := 0
+	mgr := newTestManagerWithStore(s)
+	mgr.summarize = func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
+		calls++
+		return 0, nil, s.SetChapterNotes(ch.ID, store.ChapterNotes{Summary: "x"})
+	}
+	// Scare quotes already tagged, so only the summary gates attribution.
+	if err := s.SetChapterScareQuoted(chapterID); err != nil {
+		t.Fatal(err)
+	}
+
+	attrTask := &task{kind: KindSpeakerAttribution, bookID: book.ID, chapterID: chapterID, tier: TierBackground, llmKey: chapterID}
+	ambTask := &task{kind: KindAmbience, bookID: book.ID, chapterID: chapterID, tier: TierBackground, llmKey: chapterID}
+	mgr.pushTask(attrTask)
+	mgr.pushTask(ambTask)
+
+	got, ok := mgr.queue.Pop()
+	if !ok || got.(*task).kind != KindSummary {
+		t.Fatalf("expected the lazily-created summary task to dispatch first, got %v", got)
+	}
+	if _, ok := mgr.queue.Pop(); ok {
+		t.Fatalf("expected attribution/ambience to wait while the summary is in flight")
+	}
+	blocker := got.(*task)
+	_, _, _ = blocker.runLLM(t.Context())
+	mgr.queue.Finish(blocker.dedupKey())
+
+	dispatched := map[*task]bool{}
+	for range 2 {
+		got, ok := mgr.queue.Pop()
+		if !ok {
+			t.Fatalf("expected attribution and ambience to dispatch once the chapter is summarized")
+		}
+		dispatched[got.(*task)] = true
+	}
+	if !dispatched[attrTask] || !dispatched[ambTask] || calls != 1 {
+		t.Fatalf("dispatched %v after %d summary runs", dispatched, calls)
+	}
+}
+
 // TestAttributionOrderDependencyJoinsAnAlreadyQueuedTask covers the actual
 // production shape (preprocessAttributionPhase/"Attribute all" pushing
 // every not-yet-attributed chapter's own task at once, before any of them

@@ -161,8 +161,11 @@ type Client struct {
 }
 
 // DefaultModelFile is the GGUF speaker attribution loads from ~/llm-models
-// when LECTABLE_SPEAKER_LLM_MODEL_PATH isn't set - Qwen3-4B-Instruct-2507, Q4_K_M.
-const DefaultModelFile = "qwen3-4b-instruct-2507-q4_k_m.gguf"
+// when LECTABLE_SPEAKER_LLM_MODEL_PATH isn't set - Qwen3.6-35B-A3B (a 3B-active MoE), Unsloth's
+// UD-IQ4_XS: 16.5GB, so it runs exclusive of the audio models (see
+// cmd/ttsworker's llmExclusive). Qwen3-4B-Instruct-2507 (Q4_K_M) was the
+// default before 2026-09-28 and still works via the env var.
+const DefaultModelFile = "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
 
 // DefaultModelPath returns ~/llm-models/DefaultModelFile (or just
 // llm-models/DefaultModelFile, relative to the working directory, if the
@@ -508,6 +511,20 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 				continue
 			}
 			if name := canon[idx]; name != "" && name != "Narrator" && name != "Unknown" {
+				roleNames[name] = true
+			}
+		}
+		roles := maps.Clone(knownIsRole)
+		for name := range roleNames {
+			roles[name] = true
+		}
+		// The roster's own names, not known: known has every raw answer
+		// this call saw folded in, so "the older man" would count as a
+		// name and pass through.
+		canon = ResolveCastRefs(canon, roster.Cast)
+		canon = resolveIdentities(canon, NewSpeakerNameResolver(knownCharacters, roster.Aliases), roles)
+		for _, name := range canon {
+			if roles[name] {
 				roleNames[name] = true
 			}
 		}
@@ -933,6 +950,10 @@ type Roster struct {
 	Aliases      map[string][]string
 	Pronouns     map[string]string
 	Prominent    []string
+	// Cast is the chapter's cast from its summary (WithCast), nil when it
+	// has none: an answer that is one of a member's references ("the old
+	// sailor") becomes their name.
+	Cast []CastMember
 }
 
 // relevantNames picks which of roster.Names to list in a prompt for
@@ -1065,6 +1086,7 @@ func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle
 		}
 		fmt.Fprintf(&user, "Known characters: %s\n", strings.Join(entries, ", "))
 	}
+
 	user.WriteString("\nLines:\n")
 	for i, p := range lines {
 		// A blank line marks a real paragraph break - see systemPrompt.
@@ -1258,6 +1280,7 @@ Describe the voice across specific, concrete dimensions rather than one or two v
 Never describe the voice by comparing it to a real, identifiable person - a celebrity, actor, public figure, or narrator, by name (e.g. "sounds like Morgan Freeman", "a David Attenborough quality") - even if the dialogue or description evokes one. A small, locally-run voice-design model has no reliable knowledge of what any specific real person actually sounds like, so a name like that is dead weight at best and a distracting mismatch at worst; translate whatever impression that comparison is standing in for directly into the same pitch/pace/timbre/personality vocabulary above instead (e.g. a "deep, commanding, gravelly bass-baritone with unhurried gravitas" rather than "a James Earl Jones voice").
 Whenever there is any gender signal at all, state it explicitly and unambiguously as one word in that opening "Speak as a [word] ..." clause - "male"/"female", or "man"/"woman"/"boy"/"girl" if age makes that the more natural fit - before any age/accent/tone words, the same way the built-in presets read (e.g. "Speak as a calm, warm middle-aged male narrator..."). Do not rely on pronouns, a gendered name, or descriptive words like "gruff" or "delicate" to imply gender on their own - one of those explicit words must actually appear, every time there is a signal to base it on, so this is consistent from one character to the next rather than only sometimes stated outright.
 Every character gets a specific nationality- or region-based accent named explicitly somewhere in "instruct" - never the generic word "accent" alone, and never left out entirely, even for an ordinary human with nothing distinctive about them otherwise. Whenever the source material gives an accent, regional, or national signal - a stated nationality/hometown/origin, a description of how they sound ("spoke with a thick Scottish burr", "his clipped British vowels"), dialect/phonetic spelling written into their own dialogue ("y'all", "dinnae", "innit"), regional slang ("bloody", "mate", "arse" read British; "y'all", "fixin' to" read Southern American), or a name/setting that strongly suggests a place or culture of origin - name that specific accent or regional voice explicitly (e.g. "with a Scottish accent", "a Yorkshire accent", "a clipped Received Pronunciation accent", "a lilting Irish accent", "a Brooklyn accent", "a General American accent") rather than the generic word "accent" alone.
+You may also be given notes on the book's setting. When a character's own material gives no accent signal, use the setting's accent for the main characters' own people rather than a default General American one; a character the text marks as from elsewhere, or a race/species with its own convention below, still follows that instead.
 Casual or informal speech is NOT a regional signal on its own - dropped g's ("goin'"), "ain't", "gonna", contractions, slang, swearing, and a rough, folksy, or working-class manner appear in every English dialect, so never pick an accent just from those. In particular, never reach for a Southern American drawl to convey warmth, gruffness, toughness, weariness, or a rural/working-class character: cast it only when the text itself places the character in or from the American South, or writes distinctly Southern dialect ("y'all", "fixin' to", "might could") into their speech. "South"/"southern" in the text means the American South only when it says so - "the south of England" is Southern English, and a compass direction is no accent at all. This is for audiobook narration, so a reasonable, tasteful inference from a name or setting is fine when nothing more explicit is available. When the material gives no signal at all - no name, setting, or dialogue cue to infer from - still name a specific accent rather than omitting one: reach for whatever's most plausible given the story's own general setting (e.g. a General American accent for an otherwise-unmarked contemporary American setting, a standard/neutral British accent for an unmarked British one), falling back to a plain, unremarkable General American accent as the last resort default when the setting itself gives nothing to go on either.
 When a character is a named fantasy/sci-fi race or species, or a non-corporeal/non-biological entity (per the paragraph above) and the text itself gives no accent/regional signal of its own, fall back on the accent (or, for a couple of kinds, deliberate lack of one) audiobook narration conventionally gives that kind, rather than defaulting to an unaccented voice by default: dwarves - a thick Scottish accent; elves - a refined, mid-Atlantic or English RP accent; orcs and goblins - a rough, guttural, working-class or Cockney-inflected accent; giants and trolls - a broad, rustic, rural accent; halflings/hobbits - a warm West Country (English countryside) accent; dragons - a plummy, aristocratic English RP accent; vampires - a refined Eastern European (Transylvanian) or aristocratic RP accent; fairies/pixies - a light, airy Irish lilt; robots/AI/constructs - a flat, neutral, unaccented, precisely-enunciated register with no regional coloring at all, the deliberate absence of an accent being the convention itself; ghosts/spirits - a faint, old-fashioned English accent evoking a bygone era, airy and half-whispered; demons - a refined, urbane, aristocratic English RP accent for anything articulate and menacing-but-composed, or a guttural, growling, non-regional voice for anything more beastly/feral. These are the expected, standard defaults for each kind, not a hesitant last resort - apply them confidently whenever the race/species/entity itself is established and the text is silent on accent specifically, the same way a real casting director would reach for the genre-standard choice rather than leave it vague. An explicit signal actually in the text (a stated nationality, dialect spelling, or described accent) still wins when one is present; absent both that and a race/species match here, fall back to the general rule above (infer from name/setting, or default to a plain General American accent) rather than ever leaving accent out - every character, human or not, ends up with one specific accent named in "instruct".
 When the material signals a more specific non-human texture beyond the broad creature/entity categories above, layer in the matching delivery quality alongside whatever accent/pitch/size choices already apply, applying it with the same confidence as the accent defaults above: a snake-like or reptilian creature - a light sibilant hiss threaded through the delivery; an insectoid or hive-mind entity - a faint buzzing, subtly doubled-voice quality; an angelic or divine being - an airy, reverberant, breathy quality. Apply one of these whenever the material signals that specific kind (a named reptilian/snake race, a swarm/hive framing, an angel/seraph/divine messenger called out as such) - still never invent the underlying kind itself where the text is silent, the same restraint the broader creature/entity rule above already asks for, but don't hedge on the texture once that kind is established.
@@ -1313,7 +1336,7 @@ Neither field should repeat the character's name or include a heading.`
 // pronouns (see store.Character.Pronouns; "" when unknown) goes on the
 // user turn the same way - characterizeSystemPrompt treats it as the
 // authoritative gender signal.
-func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool, pronouns string, quotes []QuoteContext, descriptions []DescriptionContext) (instruct string, refLine string, err error) {
+func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool, pronouns string, setting *BookSetting, quotes []QuoteContext, descriptions []DescriptionContext) (instruct string, refLine string, err error) {
 	if len(quotes) > maxCharacterizeQuotes {
 		quotes = quotes[:maxCharacterizeQuotes]
 	}
@@ -1328,6 +1351,9 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 	}
 	if isRole {
 		fmt.Fprintf(&user, "Note: %q is a generic role/type label, not one consistent individual - the sample below may be pooled from several different unnamed people who shared it.\n", name)
+	}
+	if lines := setting.castingLines(); lines != "" {
+		fmt.Fprintf(&user, "\nBook setting notes:\n%s", lines)
 	}
 	if len(quotes) > 0 {
 		user.WriteString("\nTheir dialogue:\n")

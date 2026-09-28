@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ScareQuoteChapter is DescribeChapter's own sibling in shape: a separate,
@@ -47,58 +50,155 @@ Rules:
 - When genuinely torn, leave it out - an empty list is very often the fully correct answer, and defaulting to "real dialogue" is always the safer error.
 - Each entry's "idx" must be copied exactly from the number printed right before that line in "Lines:" - never shift it to a neighboring line.`
 
-// scareQuoteBatchParagraphs mirrors describeBatchParagraphs' own choice and
-// reasoning exactly (see its doc comment) - a scare quote is the same
-// shape of rare, binary, easy-to-streak judgment DescribeChapter's own
-// benchmarking already found needs a small batch to keep precision high.
-const scareQuoteBatchParagraphs = 5
+// scareQuoteBatchParagraphs is how many paragraphs one scare-quote call
+// judges; a batch with no candidate (scareQuoteCandidates) makes no call.
+// It was 5 on Qwen3-4B, which lapsed into tagging real dialogue in
+// anything larger. Measured on Qwen3.6 over 32 chapters (22 holding the
+// library's 30 stored scare quotes, 10 others), against Qwen3-4B at 5 one
+// call at a time (47s, 893 calls, 12 found): unfiltered, batch 20 took
+// 2m19s for 53 and batch 40 started flagging spoken dialogue ("“Why?”
+// Ingrid asked"); with the candidate filter, which rules that out, batch
+// 20 took 48s/84 calls for 58 and batch 40 49s/61 calls for 92, sampled
+// flags all genuine (terms, labels, titles, sarcasm). A bigger batch
+// finds more - the prompt's "almost always empty" framing suppresses
+// flags in a small one.
+var scareQuoteBatchParagraphs = 40
+
+// scareQuoteParallelBatches is how many batches run at once - the
+// worker's 2 LLM slots, attributeParallelBatches' sibling. Batches are
+// independent (each sees only its own lines), so order doesn't matter.
+const scareQuoteParallelBatches = 2
 
 // ScareQuoteChapter tags chapterTitle's quoted paragraphs that are actually
 // scare quotes rather than real spoken dialogue, batching in groups of
-// scareQuoteBatchParagraphs. Returns the set of paragraph Idx values
-// flagged as scare quotes - a paragraph with no entry is real dialogue
-// (the common case).
+// scareQuoteBatchParagraphs, scareQuoteParallelBatches at a time. A batch
+// with no quoted line at all makes no call. Returns the set of paragraph
+// Idx values flagged as scare quotes - a paragraph with no entry is real
+// dialogue (the common case).
 //
 // shouldPause/remaining/err follow AttributeChapter/DescribeChapter's own
-// contract exactly (see their doc comments) - nil-safe shouldPause,
-// checked between batches only, remaining holds whatever wasn't reached
-// (by a pause or a genuine failure) so the caller can persist real
-// progress and requeue just the rest.
+// contract (see their doc comments) - nil-safe shouldPause, checked
+// between batches only; remaining holds everything from the first batch
+// not completed (by a pause or a genuine failure) so the caller can
+// persist real progress and requeue just the rest.
 func (c *Client) ScareQuoteChapter(ctx context.Context, bookTitle, chapterTitle string, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int]bool, remaining []ParagraphInput, err error) {
 	out = make(map[int]bool, len(paragraphs))
-	isQuoteByIdx := make(map[int]bool, len(paragraphs))
-	for _, p := range paragraphs {
-		isQuoteByIdx[p.Idx] = p.IsQuote
-	}
+	candidate := scareQuoteCandidates(paragraphs)
 
+	var starts []int
 	for start := 0; start < len(paragraphs); start += scareQuoteBatchParagraphs {
-		if start > 0 && shouldPause != nil && shouldPause() {
-			remaining = paragraphs[start:]
+		starts = append(starts, start)
+	}
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		stopAt   = len(starts)
+		firstErr error
+	)
+	sem := make(chan struct{}, scareQuoteParallelBatches)
+	for bi, start := range starts {
+		if bi > 0 && shouldPause != nil && shouldPause() {
+			mu.Lock()
+			stopAt = min(stopAt, bi)
+			mu.Unlock()
 			break
 		}
-		end := start + scareQuoteBatchParagraphs
-		if end > len(paragraphs) {
-			end = len(paragraphs)
+		batch := paragraphs[start:min(start+scareQuoteBatchParagraphs, len(paragraphs))]
+		hasCandidate := false
+		for _, p := range batch {
+			hasCandidate = hasCandidate || candidate[p.Idx]
 		}
-		batch := paragraphs[start:end]
-
-		raw, err := c.scareQuoteBatch(ctx, bookTitle, chapterTitle, batch)
-		if err != nil {
-			return out, paragraphs[start:], fmt.Errorf("paragraphs %d-%d: %w", batch[0].Idx, batch[len(batch)-1].Idx, err)
+		if !hasCandidate {
+			continue // nothing shaped like a scare quote - no call
 		}
-		// Only an actual quoted-dialogue span can ever be a scare quote -
-		// enforced here deterministically rather than trusted to the
-		// model's own prompt adherence (systemPrompt's own rule 1), the
-		// same belt-and-suspenders shape httpapi.attributeChapter applies
-		// to AttributeChapter's own Speaker result.
-		for idx := range raw {
-			if isQuoteByIdx[idx] {
-				out[idx] = true
+		sem <- struct{}{}
+		mu.Lock()
+		failed := firstErr != nil
+		mu.Unlock()
+		if failed {
+			<-sem
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			raw, berr := c.scareQuoteBatch(ctx, bookTitle, chapterTitle, batch)
+			mu.Lock()
+			defer mu.Unlock()
+			if berr != nil {
+				if bi < stopAt {
+					stopAt = bi
+					firstErr = fmt.Errorf("paragraphs %d-%d: %w", batch[0].Idx, batch[len(batch)-1].Idx, berr)
+				}
+				return
 			}
+			// Only a candidate (see scareQuoteCandidates) can be a scare
+			// quote, whatever the model answered - a flag on an ordinary
+			// line of dialogue is exactly the error to rule out.
+			for idx := range raw {
+				if candidate[idx] {
+					out[idx] = true
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if stopAt < len(starts) {
+		remaining = paragraphs[starts[stopAt]:]
+		// A batch after the stop point may have finished first; its flags
+		// are dropped with it, so a requeue redoes them consistently.
+		for _, p := range remaining {
+			delete(out, p.Idx)
 		}
 	}
-	return out, remaining, nil
+	return out, remaining, firstErr
 }
+
+// scareQuoteCandidates is which quoted paragraphs could be scare quotes at
+// all, by their place in the text - a scare quote sits inside a narration
+// sentence, so the epub splitter always leaves it as an Inline segment of
+// a longer source paragraph:
+//   - mid-sentence: the segment before it (same source paragraph) ends on a
+//     word, not punctuation - "my “friends” were", "the “noobs,” meaning";
+//   - or a short quote (scareQuoteMaxWords) with no closing punctuation of
+//     its own, followed by more of the same sentence - "“Toy yachts” lined
+//     the harbor".
+//
+// Spoken dialogue opens its paragraph or follows a sentence end, comma or
+// colon, so it's never asked about. Measured over the library's 39,086
+// quoted spans: 1.6% are mid-sentence, and they held all 30 stored flags,
+// 41 of Qwen3.6's 42 new batch-20 flags (the other was a spoken line with
+// a nested ‘scare quote’ inside it) and none of the dialogue lines batch 40
+// wrongly flagged ("“Why?” Ingrid asked").
+func scareQuoteCandidates(paragraphs []ParagraphInput) map[int]bool {
+	out := map[int]bool{}
+	for i, p := range paragraphs {
+		if !p.IsQuote {
+			continue
+		}
+		prevMid := false
+		if p.Inline && i > 0 && paragraphs[i-1].Idx == p.Idx-1 {
+			prev := strings.TrimRight(paragraphs[i-1].Text, " \t")
+			if r, _ := utf8.DecodeLastRuneInString(prev); unicode.IsLetter(r) || unicode.IsDigit(r) || r == '’' || r == '\'' || r == '-' {
+				prevMid = true
+			}
+		}
+		shortBare := false
+		if i+1 < len(paragraphs) && paragraphs[i+1].Inline && paragraphs[i+1].Idx == p.Idx+1 {
+			inner := strings.TrimFunc(p.Text, func(r rune) bool { return unicode.IsSpace(r) || strings.ContainsRune(`"“”'‘’`, r) })
+			r, _ := utf8.DecodeLastRuneInString(inner)
+			shortBare = len(strings.Fields(inner)) <= scareQuoteMaxWords && (unicode.IsLetter(r) || unicode.IsDigit(r))
+		}
+		if prevMid || shortBare {
+			out[p.Idx] = true
+		}
+	}
+	return out
+}
+
+// scareQuoteMaxWords bounds scareQuoteCandidates' short-quote rule.
+const scareQuoteMaxWords = 6
 
 func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle string, batch []ParagraphInput) (map[int]bool, error) {
 	var user strings.Builder

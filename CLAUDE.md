@@ -117,6 +117,16 @@ Philips Hue lights themselves over the bridge's local v1 API (HTTPS)
 (`frontend/src/lighting`, android `playback/lighting`), configured
 per device. See `backend/CLAUDE.md`'s `run-ambience` entry.
 
+A per-book **setting profile** (era, technology, place, accent, genre)
+is written once per book by one LLM call over excerpts from across it, the first time a pass needs it, and shown to the ambience,
+lighting and characterization prompts so each stops guessing the world
+from its own short span. See `backend/CLAUDE.md`'s `.../setting` entry.
+
+A per-chapter **summary pass** writes each chapter's summary, scenes
+(where, when, who's there) and cast (with what the text calls them);
+attribution reads the cast and ambience/lighting the scenes. See
+`backend/CLAUDE.md`'s `.../summarize` entry.
+
 ## Running everything locally
 
 1. `backend`: from `backend/`, build both binaries once

@@ -246,6 +246,12 @@ type Passes struct {
 	// Lighting not - gets just the lighting sub-pass on its next ambience
 	// run, without re-scoring its music.
 	Lighting bool `json:"lighting"`
+	// Summary is set once the summary pass (internal/speakerattr.Client.
+	// SummarizeChapter, a jobs.KindSummary task via httpapi.
+	// summarizeChapter) has stored the chapter's ChapterNotes. Speaker
+	// attribution and the ambience pass wait on it (jobs.Manager.
+	// summaryDependency) to read its cast and scenes.
+	Summary bool `json:"summary"`
 }
 
 // AmbienceDone reports whether the whole ambience pass - music scoring and

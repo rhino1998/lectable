@@ -227,6 +227,10 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	// silently stuck half-done with nothing left in the queue to ever
 	// pick them back up).
 	attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+	// The chapter's cast from its summary, when it has one: listed in every
+	// batch with what the chapter calls them, so a batch that only says
+	// "the smith" or "he" still sees who's in the scene.
+	attrRoster = s.withChapterCast(attrRoster, ch, invalid)
 	speakers, roleNames, pronouns, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, attrRoster, inputs, nil)
 
 	paragraphByIdx := make(map[int]store.Paragraph, len(all))
@@ -438,6 +442,10 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	var attrErr error
 	if len(retry) > 0 {
 		attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+		// The chapter's cast from its summary, when it has one: listed in every
+		// batch with what the chapter calls them, so a batch that only says
+		// "the smith" or "he" still sees who's in the scene.
+		attrRoster = s.withChapterCast(attrRoster, ch, invalid)
 		widened, widenedRoles, werr := s.Speaker.AttributeWithWideningContext(ctx, book.Title, ch.Title, attrRoster, inputs, retry, rejected)
 		if werr != nil {
 			attrErr = fmt.Errorf("auto split %q: chapter %d: %w", excludeName, ch.Idx, werr)
@@ -598,7 +606,13 @@ func (s *Server) scareQuoteChapter(ctx context.Context, book *store.Book, ch *st
 	var changed []store.Paragraph
 	for _, p := range all {
 		want := scareQuotes[p.Idx]
-		if want == p.ScareQuote {
+		// Additive: a run only ever adds flags. The pass misses far more
+		// scare quotes than it invents (its precision is high - see
+		// speakerattr.scareQuoteCandidates), so a re-run not finding one
+		// again is no evidence it was wrong; clearing it would hand a real
+		// scare quote back to attribution as dialogue. A reader's manual
+		// edit or a pass Reset still clears.
+		if !want || p.ScareQuote {
 			continue
 		}
 		byIdx[p.Idx] = want

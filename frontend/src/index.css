@@ -2728,6 +2728,53 @@ label {
   height: 2.5rem;
 }
 
+/* ChapterPassTable's expanded summary-notes row (ChapterNotesView). */
+.chapter-notes {
+  padding: 0.4rem 0 0.6rem 1.5rem;
+  max-width: 60rem;
+}
+.chapter-notes p {
+  margin: 0 0 0.4rem;
+}
+.chapter-notes-scenes {
+  margin: 0 0 0.4rem;
+  padding-left: 1.2rem;
+}
+
+/* Speakers page book setting profile (SettingPanel). */
+.setting-form {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 0.35rem 0.75rem;
+  align-items: center;
+  margin: 0.6rem 0;
+  max-width: 44rem;
+}
+.setting-form label {
+  display: contents;
+}
+.setting-form label span {
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+  font-size: 0.9rem;
+}
+.setting-form input {
+  font: inherit;
+  padding: 0.3rem 0.1rem;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+}
+.setting-form input:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+.setting-form-actions {
+  grid-column: 2;
+  display: flex;
+  gap: 0.5rem;
+}
+
 /* Speakers page pronunciation lexicon (LexiconPanel). */
 .lexicon-form {
   display: flex;

@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import {
   RiDiscLine,
   RiFileHistoryLine,
   RiDoubleQuotesL,
   RiEmotionLine,
+  RiEyeLine,
+  RiFileTextLine,
   RiSpeakLine,
   RiLightbulbLine,
   RiMusic2Line,
@@ -29,6 +31,9 @@ import {
   useRunChapterAmbience,
   useAmbienceChapters,
   useTagDirections,
+  useSummarizeChapter,
+  useSummarizingChapters,
+  useChapterNotes,
 } from '../../api/queries'
 import { ApiError } from '../../api/client'
 import { useReimportChapterAction } from '../../hooks/useReimportChapterAction'
@@ -63,6 +68,11 @@ export function ChapterPassTable({
   const generateChapterMusic = useGenerateChapterMusic(bookId)
   const generateChapter = useGenerateChapter(bookId)
   const resetPass = useResetPass(bookId)
+  const summarizeChapter = useSummarizeChapter(bookId)
+  const summarizingIdxs = useSummarizingChapters(bookId)
+  const [summaryError, setSummaryError] = useState<string | null>(null)
+  // The chapter whose summary notes are shown in an expanded row, if any.
+  const [notesFor, setNotesFor] = useState<number | null>(null)
 
   // Derived from the shared backend job queue (the live jobs topic), not
   // local mutation state - attribution is fire-and-forget now (see useAttributingChapters'
@@ -106,6 +116,13 @@ export function ChapterPassTable({
     attributeSpeakers.mutate(idx, {
       onError: (err) =>
         setAttributeError(err instanceof ApiError ? err.message : 'Speaker attribution failed'),
+    })
+  }
+
+  const runSummarize = (idx: number) => {
+    setSummaryError(null)
+    summarizeChapter.mutate(idx, {
+      onError: (err) => setSummaryError(err instanceof ApiError ? err.message : 'Summary failed'),
     })
   }
 
@@ -200,6 +217,9 @@ export function ChapterPassTable({
   const runDirectionAll = () => runBulk('direction', 'all')
   const runDirectionUndirected = () => runBulk('direction', 'rest')
   const hasUndirected = book.chapters.some((c) => !c.passes.direction)
+  const runSummaryAll = () => runBulk('summary', 'all')
+  const runSummaryRest = () => runBulk('summary', 'rest')
+  const hasUnsummarized = book.chapters.some((c) => !c.passes.summary)
   const runPronunciationAll = () => runBulk('pronunciation', 'all')
   const runPronunciationUnresolved = () => runBulk('pronunciation', 'rest')
   const hasUnresolvedPronunciation = book.chapters.some((c) => !c.passes.pronunciation)
@@ -248,6 +268,7 @@ export function ChapterPassTable({
       {directionError && <p className="error-text">{directionError}</p>}
       {reimportError && <p className="error-text">{reimportError}</p>}
       {pronunciationError && <p className="error-text">{pronunciationError}</p>}
+      {summaryError && <p className="error-text">{summaryError}</p>}
       {musicScoreError && <p className="error-text">{musicScoreError}</p>}
       {musicGenerateError && <p className="error-text">{musicGenerateError}</p>}
       {generateError && <p className="error-text">{generateError}</p>}
@@ -255,6 +276,9 @@ export function ChapterPassTable({
         <thead>
           <tr>
             <th>Chapter</th>
+            <th title="Per-chapter notes - a short summary, its scenes (where and when), and its cast - that attribution, ambience and lighting read">
+              Summary
+            </th>
             <th>Attribution</th>
             <th>Description</th>
             <th>Scare quotes</th>
@@ -273,6 +297,15 @@ export function ChapterPassTable({
           <tr className="chapter-attribute-bulk-row">
             <td className="muted" title="Every chapter that isn't done yet">
               Rest
+            </td>
+            <td>
+              <BulkActionButton
+                icon={RiFileTextLine}
+                busy={bulkRunning.has('summary')}
+                disabled={!hasUnsummarized}
+                onClick={runSummaryRest}
+                title="Summarize unsummarized chapters — every chapter without a summary yet"
+              />
             </td>
             <td>
               <BulkActionButton
@@ -353,6 +386,14 @@ export function ChapterPassTable({
             </td>
             <td>
               <BulkActionButton
+                icon={RiFileTextLine}
+                busy={bulkRunning.has('summary')}
+                onClick={runSummaryAll}
+                title="Re-summarize every chapter, including ones already done"
+              />
+            </td>
+            <td>
+              <BulkActionButton
                 icon={RiUserSearchLine}
                 busy={bulkRunning.has('attribution')}
                 onClick={runAttributeAll}
@@ -415,6 +456,14 @@ export function ChapterPassTable({
           <tr className="chapter-attribute-bulk-row chapter-attribute-bulk-row-last">
             <td className="muted" title="Clear a pass for every chapter, as though it never ran">
               Reset
+            </td>
+            <td>
+              <BulkActionButton
+                icon={RiFileTextLine}
+                disabled={bulkRunning.has('summary') || resetPass.isPending}
+                onClick={() => runReset('summary', 'chapter summaries')}
+                title="Reset summaries — delete every chapter's summary notes (no audio changes)"
+              />
             </td>
             <td>
               <BulkActionButton
@@ -497,212 +546,288 @@ export function ChapterPassTable({
             const generating =
               generatingIdxs.has(c.idx) || (bulkRunning.has('generate') && !isGenerated(c))
             const generatingMusic = generatingMusicIdxs.has(c.idx)
+            const summarizing = summarizingIdxs.has(c.idx)
             return (
-              <tr key={c.idx}>
-                <td>
-                  <div className="chapter-attribute-cell">
-                    <button
-                      className="icon-action-button"
-                      disabled={reimportingIdx !== null}
-                      onClick={() => runReimport(c.idx, c.title)}
-                      title={
-                        reimportingIdx === c.idx
-                          ? 'Re-importing…'
-                          : "Re-import this chapter from the book's epub — re-parses its paragraphs and resets its passes and audio"
-                      }
-                    >
-                      <RiFileHistoryLine
-                        className={reimportingIdx === c.idx ? 'spin' : undefined}
-                      />
-                    </button>
-                    {c.title}
-                  </div>
-                </td>
-                <td>
-                  <div className="chapter-attribute-cell">
-                    <button
-                      className="icon-action-button"
-                      disabled={attributing}
-                      onClick={() => runAttribute(c.idx)}
-                      title={
-                        attributing
-                          ? 'Attributing…'
-                          : c.passes.attribution
-                            ? 'Re-attribute speakers for this chapter'
-                            : 'Attribute speakers for this chapter'
-                      }
-                    >
-                      <RiUserSearchLine className={attributing ? 'spin' : undefined} />
-                    </button>
-                    <PassStatus done={c.passes.attribution} label="Attribution" />
-                  </div>
-                </td>
-                <td>
-                  <div className="chapter-attribute-cell">
-                    <button
-                      className="icon-action-button"
-                      disabled={retagging}
-                      onClick={() => runRetagDescriptions(c.idx)}
-                      title={
-                        retagging
-                          ? 'Retagging…'
-                          : "Retag descriptions — re-run description-tagging for this chapter (which narration paragraphs describe a character's appearance or personality)"
-                      }
-                    >
-                      <RiPriceTag3Line className={retagging ? 'spin' : undefined} />
-                    </button>
-                    <PassStatus done={c.passes.description} label="Description tagging" />
-                  </div>
-                </td>
-                <td>
-                  <div className="chapter-attribute-cell">
-                    <button
-                      className="icon-action-button"
-                      disabled={retaggingScareQuotes}
-                      onClick={() => runRetagScareQuotes(c.idx)}
-                      title={
-                        retaggingScareQuotes
-                          ? 'Retagging…'
-                          : "Retag scare quotes — re-run scare-quote tagging for this chapter (quoted spans that look like dialogue but aren't actually spoken aloud)"
-                      }
-                    >
-                      <RiDoubleQuotesL className={retaggingScareQuotes ? 'spin' : undefined} />
-                    </button>
-                    <PassStatus done={c.passes.scareQuote} label="Scare-quote tagging" />
-                  </div>
-                </td>
-                <td>
-                  <div className="chapter-attribute-cell">
-                    <button
-                      className="icon-action-button"
-                      disabled={directing}
-                      onClick={() => runDirection(c.idx)}
-                      title={
-                        directing
-                          ? 'Tagging…'
-                          : c.passes.direction
-                            ? 'Re-tag speech direction for this chapter'
-                            : 'Tag speech direction for this chapter'
-                      }
-                    >
-                      <RiEmotionLine className={directing ? 'spin' : undefined} />
-                    </button>
-                    <PassStatus done={c.passes.direction} label="Emotion labeling" />
-                  </div>
-                </td>
-                <td>
-                  <div className="chapter-attribute-cell">
-                    <button
-                      className="icon-action-button"
-                      disabled={pronouncing}
-                      onClick={() => runPronunciation(c.idx)}
-                      title={
-                        pronouncing
-                          ? 'Resolving…'
-                          : c.passes.pronunciation
-                            ? 'Re-resolve pronunciation for this chapter (ambiguous abbreviations like "Dr." or "St.")'
-                            : 'Resolve pronunciation for this chapter (ambiguous abbreviations like "Dr." or "St.")'
-                      }
-                    >
-                      <RiSpeakLine className={pronouncing ? 'spin' : undefined} />
-                    </button>
-                    <PassStatus done={c.passes.pronunciation} label="Pronunciation resolution" />
-                  </div>
-                </td>
-                <td>
-                  <div className="chapter-attribute-cell">
-                    <button
-                      className="icon-action-button"
-                      disabled={scoringMusic}
-                      onClick={() => runAmbience(c.idx)}
-                      title={
-                        scoringMusic
-                          ? 'Running ambience…'
-                          : c.passes.ambience && c.passes.lighting
-                            ? 'Re-run ambience (re-score music and re-light) for this chapter'
-                            : c.passes.ambience
-                              ? 'Light this chapter (its music is already scored)'
-                              : 'Run ambience (music + lighting) for this chapter'
-                      }
-                    >
-                      <RiMusic2Line className={scoringMusic ? 'spin' : undefined} />
-                    </button>
-                    <PassStatus
-                      done={c.passes.ambience && c.passes.lighting}
-                      label={
-                        c.passes.ambience && !c.passes.lighting
-                          ? 'Ambience (music scored, not lit yet)'
-                          : 'Ambience'
-                      }
-                    />
-                  </div>
-                </td>
-                <td>
-                  <div className="chapter-attribute-cell">
-                    <button
-                      className="icon-action-button"
-                      disabled={generating}
-                      onClick={() => runGenerate(c.idx)}
-                      title={
-                        generating
-                          ? 'Generating…'
-                          : isGenerated(c)
-                            ? 'Already fully generated — click to check for background music if it was turned on since'
-                            : 'Generate audio for this chapter'
-                      }
-                    >
-                      <RiVoiceprintLine className={generating ? 'spin' : undefined} />
-                    </button>
-                    <CountStatus
-                      ready={c.readyCount}
-                      total={c.paragraphCount}
-                      label="Narration audio"
-                    />
-                  </div>
-                </td>
-                <td>
-                  <div className="chapter-attribute-cell">
-                    <button
-                      className="icon-action-button"
-                      disabled={generatingMusic || !canGenerateMusic(c)}
-                      onClick={() => runGenerateMusic(c.idx)}
-                      title={
-                        generatingMusic
-                          ? 'Generating music…'
-                          : musicCounts(c).total === 0
-                            ? 'Generate background music — score this chapter first'
-                            : !isGenerated(c)
-                              ? "Generate background music — this chapter's narration needs to be fully generated first"
-                              : isMusicGenerated(c)
-                                ? 'Background music is fully generated for this chapter'
-                                : 'Generate background music for this chapter (retries failed regions)'
-                      }
-                    >
-                      <RiDiscLine className={generatingMusic ? 'spin' : undefined} />
-                    </button>
-                    {musicCounts(c).total === 0 ? (
-                      <span
-                        className="chapter-attribute-status"
-                        title="Music audio: not scored yet"
+              <Fragment key={c.idx}>
+                <tr>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={reimportingIdx !== null}
+                        onClick={() => runReimport(c.idx, c.title)}
+                        title={
+                          reimportingIdx === c.idx
+                            ? 'Re-importing…'
+                            : "Re-import this chapter from the book's epub — re-parses its paragraphs and resets its passes and audio"
+                        }
                       >
-                        —
-                      </span>
-                    ) : (
-                      <CountStatus
-                        ready={musicCounts(c).ready}
-                        total={musicCounts(c).total}
-                        errors={musicCounts(c).errors}
-                        label="Music audio"
-                        unit="regions"
+                        <RiFileHistoryLine
+                          className={reimportingIdx === c.idx ? 'spin' : undefined}
+                        />
+                      </button>
+                      {c.title}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={summarizing}
+                        onClick={() => runSummarize(c.idx)}
+                        title={
+                          summarizing
+                            ? 'Summarizing…'
+                            : c.passes.summary
+                              ? 'Re-summarize this chapter'
+                              : 'Summarize this chapter — its summary, scenes and cast'
+                        }
+                      >
+                        <RiFileTextLine className={summarizing ? 'spin' : undefined} />
+                      </button>
+                      <PassStatus done={c.passes.summary} label="Summary" />
+                      {c.passes.summary && (
+                        <button
+                          className="icon-action-button"
+                          onClick={() => setNotesFor((cur) => (cur === c.idx ? null : c.idx))}
+                          title={
+                            notesFor === c.idx ? 'Hide summary' : 'Show summary, scenes and cast'
+                          }
+                        >
+                          <RiEyeLine />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={attributing}
+                        onClick={() => runAttribute(c.idx)}
+                        title={
+                          attributing
+                            ? 'Attributing…'
+                            : c.passes.attribution
+                              ? 'Re-attribute speakers for this chapter'
+                              : 'Attribute speakers for this chapter'
+                        }
+                      >
+                        <RiUserSearchLine className={attributing ? 'spin' : undefined} />
+                      </button>
+                      <PassStatus done={c.passes.attribution} label="Attribution" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={retagging}
+                        onClick={() => runRetagDescriptions(c.idx)}
+                        title={
+                          retagging
+                            ? 'Retagging…'
+                            : "Retag descriptions — re-run description-tagging for this chapter (which narration paragraphs describe a character's appearance or personality)"
+                        }
+                      >
+                        <RiPriceTag3Line className={retagging ? 'spin' : undefined} />
+                      </button>
+                      <PassStatus done={c.passes.description} label="Description tagging" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={retaggingScareQuotes}
+                        onClick={() => runRetagScareQuotes(c.idx)}
+                        title={
+                          retaggingScareQuotes
+                            ? 'Retagging…'
+                            : "Retag scare quotes — re-run scare-quote tagging for this chapter (quoted spans that look like dialogue but aren't actually spoken aloud)"
+                        }
+                      >
+                        <RiDoubleQuotesL className={retaggingScareQuotes ? 'spin' : undefined} />
+                      </button>
+                      <PassStatus done={c.passes.scareQuote} label="Scare-quote tagging" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={directing}
+                        onClick={() => runDirection(c.idx)}
+                        title={
+                          directing
+                            ? 'Tagging…'
+                            : c.passes.direction
+                              ? 'Re-tag speech direction for this chapter'
+                              : 'Tag speech direction for this chapter'
+                        }
+                      >
+                        <RiEmotionLine className={directing ? 'spin' : undefined} />
+                      </button>
+                      <PassStatus done={c.passes.direction} label="Emotion labeling" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={pronouncing}
+                        onClick={() => runPronunciation(c.idx)}
+                        title={
+                          pronouncing
+                            ? 'Resolving…'
+                            : c.passes.pronunciation
+                              ? 'Re-resolve pronunciation for this chapter (ambiguous abbreviations like "Dr." or "St.")'
+                              : 'Resolve pronunciation for this chapter (ambiguous abbreviations like "Dr." or "St.")'
+                        }
+                      >
+                        <RiSpeakLine className={pronouncing ? 'spin' : undefined} />
+                      </button>
+                      <PassStatus done={c.passes.pronunciation} label="Pronunciation resolution" />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={scoringMusic}
+                        onClick={() => runAmbience(c.idx)}
+                        title={
+                          scoringMusic
+                            ? 'Running ambience…'
+                            : c.passes.ambience && c.passes.lighting
+                              ? 'Re-run ambience (re-score music and re-light) for this chapter'
+                              : c.passes.ambience
+                                ? 'Light this chapter (its music is already scored)'
+                                : 'Run ambience (music + lighting) for this chapter'
+                        }
+                      >
+                        <RiMusic2Line className={scoringMusic ? 'spin' : undefined} />
+                      </button>
+                      <PassStatus
+                        done={c.passes.ambience && c.passes.lighting}
+                        label={
+                          c.passes.ambience && !c.passes.lighting
+                            ? 'Ambience (music scored, not lit yet)'
+                            : 'Ambience'
+                        }
                       />
-                    )}
-                  </div>
-                </td>
-              </tr>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={generating}
+                        onClick={() => runGenerate(c.idx)}
+                        title={
+                          generating
+                            ? 'Generating…'
+                            : isGenerated(c)
+                              ? 'Already fully generated — click to check for background music if it was turned on since'
+                              : 'Generate audio for this chapter'
+                        }
+                      >
+                        <RiVoiceprintLine className={generating ? 'spin' : undefined} />
+                      </button>
+                      <CountStatus
+                        ready={c.readyCount}
+                        total={c.paragraphCount}
+                        label="Narration audio"
+                      />
+                    </div>
+                  </td>
+                  <td>
+                    <div className="chapter-attribute-cell">
+                      <button
+                        className="icon-action-button"
+                        disabled={generatingMusic || !canGenerateMusic(c)}
+                        onClick={() => runGenerateMusic(c.idx)}
+                        title={
+                          generatingMusic
+                            ? 'Generating music…'
+                            : musicCounts(c).total === 0
+                              ? 'Generate background music — score this chapter first'
+                              : !isGenerated(c)
+                                ? "Generate background music — this chapter's narration needs to be fully generated first"
+                                : isMusicGenerated(c)
+                                  ? 'Background music is fully generated for this chapter'
+                                  : 'Generate background music for this chapter (retries failed regions)'
+                        }
+                      >
+                        <RiDiscLine className={generatingMusic ? 'spin' : undefined} />
+                      </button>
+                      {musicCounts(c).total === 0 ? (
+                        <span
+                          className="chapter-attribute-status"
+                          title="Music audio: not scored yet"
+                        >
+                          —
+                        </span>
+                      ) : (
+                        <CountStatus
+                          ready={musicCounts(c).ready}
+                          total={musicCounts(c).total}
+                          errors={musicCounts(c).errors}
+                          label="Music audio"
+                          unit="regions"
+                        />
+                      )}
+                    </div>
+                  </td>
+                </tr>
+                {notesFor === c.idx && (
+                  <tr className="chapter-notes-row">
+                    <td colSpan={10}>
+                      <ChapterNotesView bookId={bookId} chapterIdx={c.idx} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             )
           })}
         </tbody>
       </table>
     </section>
+  )
+}
+
+// ChapterNotesView shows one chapter's summary-pass notes: the summary, each
+// scene (from its paragraph, where, when, who's there), and the cast with
+// what the chapter calls them.
+function ChapterNotesView({ bookId, chapterIdx }: { bookId: string; chapterIdx: number }) {
+  const notes = useChapterNotes(bookId, chapterIdx).data?.notes
+  if (!notes) return <p className="muted">No summary yet.</p>
+  return (
+    <div className="chapter-notes">
+      <p>{notes.summary}</p>
+      {notes.scenes.length > 0 && (
+        <ol className="chapter-notes-scenes">
+          {notes.scenes.map((sc) => (
+            <li key={sc.startIdx}>
+              <span className="muted">¶{sc.startIdx}</span> {sc.location || 'Unknown place'}
+              {sc.time && <span className="muted"> · {sc.time}</span>}
+              {sc.present.length > 0 && <span className="muted"> — {sc.present.join(', ')}</span>}
+            </li>
+          ))}
+        </ol>
+      )}
+      {notes.cast.length > 0 && (
+        <p className="chapter-notes-cast">
+          {notes.cast.map((m, i) => (
+            <span key={m.name}>
+              {i > 0 && ', '}
+              {m.name}
+              {m.role && <span className="muted"> (role)</span>}
+              {m.refs.length > 0 && <span className="muted"> ({m.refs.join('; ')})</span>}
+            </span>
+          ))}
+        </p>
+      )}
+    </div>
   )
 }

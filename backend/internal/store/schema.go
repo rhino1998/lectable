@@ -67,6 +67,25 @@ CREATE TABLE IF NOT EXISTS books (
 	estimate_sec_per_char DOUBLE NOT NULL DEFAULT 0
 );
 
+-- One chapter's summary-pass notes (store.ChapterNotes, JSON) - see
+-- speakerattr.Client.SummarizeChapter. No PRIMARY KEY (SetChapterNotes
+-- deletes then inserts), like book_settings.
+CREATE TABLE IF NOT EXISTS chapter_summaries (
+	chapter_id TEXT NOT NULL,
+	summary JSON NOT NULL,
+	updated_at BIGINT NOT NULL
+);
+
+-- One book's setting profile (store.BookSetting, JSON) - see
+-- speakerattr.Client.DescribeSetting. No PRIMARY KEY (SetBookSetting
+-- deletes then inserts), like sync_tree_nodes.
+CREATE TABLE IF NOT EXISTS book_settings (
+	book_id TEXT NOT NULL,
+	setting JSON NOT NULL,
+	source TEXT NOT NULL,
+	updated_at BIGINT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chapters (
 	id TEXT PRIMARY KEY,
 	book_id TEXT NOT NULL,

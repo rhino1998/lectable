@@ -30,6 +30,9 @@ import type {
   VoicePresets,
   VoiceSettings,
   VoiceSettingsUpdate,
+  BookSetting,
+  BookSettingResponse,
+  ChapterNotesResponse,
 } from './types'
 
 // Server state lives in live topics (see ./live.ts and backend
@@ -450,6 +453,28 @@ export function useDirectingChapters(bookId: string): Set<number> {
   return useChapterIdxSet(bookId, 'speech_direction')
 }
 
+// useAttributingChapters' own counterpart for the summary pass.
+export function useSummarizingChapters(bookId: string): Set<number> {
+  return useChapterIdxSet(bookId, 'chapter_summary')
+}
+
+// Queues one chapter's summary pass - fire-and-forget like
+// useResolvePronunciation; see useSummarizingChapters for tracking the run.
+export function useSummarizeChapter(bookId: string) {
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.summarizeChapter(bookId, chapterIdx),
+  })
+}
+
+// One chapter's summary-pass notes (live topic), or nothing while
+// chapterIdx is null.
+export function useChapterNotes(
+  bookId: string,
+  chapterIdx: number | null,
+): LiveResult<ChapterNotesResponse> {
+  return useLive('chapterNotes', chapterIdx === null ? null : { bookId, chapterIdx })
+}
+
 // useAttributingChapters' own counterpart for pronunciation resolution.
 export function usePronouncingChapters(bookId: string): Set<number> {
   return useChapterIdxSet(bookId, 'pronunciation')
@@ -673,6 +698,22 @@ export function useUpdateBookmarkNote(_bookId: string) {
 
 export function useDeleteBookmark(_bookId: string) {
   return useMutation({ mutationFn: (id: string) => api.deleteBookmark(id) })
+}
+
+// The book's setting profile (live topic) and its edits - see backend
+// httpapi/setting.go.
+export function useBookSetting(bookId: string): LiveResult<BookSettingResponse> {
+  return useLive('bookSetting', { bookId })
+}
+
+export function useSetBookSetting(bookId: string) {
+  return useMutation({
+    mutationFn: (body: BookSetting) => api.setBookSetting(bookId, body),
+  })
+}
+
+export function useDeriveBookSetting(bookId: string) {
+  return useMutation({ mutationFn: () => api.deriveBookSetting(bookId) })
 }
 
 // The book's series pronunciation lexicon (live topic) and its edits.

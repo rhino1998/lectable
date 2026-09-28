@@ -3,6 +3,7 @@ package speakerattr
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 )
 
@@ -107,7 +108,11 @@ func (c *Client) AttributeWithWideningContext(ctx context.Context, bookTitle, ch
 				speaker, _ := sanitizeSpeaker(a.Speaker, a.Role)
 				raw[idx] = disallowNarratorForDialogue(all[pos].IsQuote, resolver.Canonical(speaker))
 			}
-			canon := canonicalizeSpeakerNames(knownCharacters, raw)
+			roles := maps.Clone(roster.Roles)
+			if roles == nil {
+				roles = map[string]bool{}
+			}
+			canon := resolveIdentities(canonicalizeSpeakerNames(knownCharacters, raw), resolver, roles)
 			for _, pos := range covered {
 				idx := all[pos].Idx
 				name, ok := canon[idx]
@@ -117,7 +122,7 @@ func (c *Client) AttributeWithWideningContext(ctx context.Context, bookTitle, ch
 					continue
 				}
 				out[idx] = name
-				if attributions[idx].Role && name != "Narrator" && name != "Unknown" {
+				if (attributions[idx].Role || roles[name]) && name != "Narrator" && name != "Unknown" {
 					roleNames[name] = true
 				}
 			}

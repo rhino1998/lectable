@@ -68,6 +68,14 @@ type Server struct {
 	// literal (see cmd/server/main.go) rather than through a constructor.
 	provisionLocks sync.Map
 
+	// identityIndexes caches each book's speakerattr.IdentityIndex (bookID
+	// -> cachedIdentityIndex) - see Server.identityIndex.
+	identityIndexes sync.Map
+
+	// settingLocks is a keyed mutex (bookID -> *sync.Mutex) serializing
+	// deriveBookSetting per book.
+	settingLocks sync.Map
+
 	// syncTreePrune drops stored offline-sync tree nodes left by other
 	// builds, once per process, on the first manifest request - see
 	// syncTreeVersion.
@@ -119,6 +127,7 @@ func NewRouter(s *Server) http.Handler {
 			s.Jobs.SetChapterAttributor(s.attributeChapterForJob)
 			s.Jobs.SetChapterScareQuoter(s.scareQuoteChapterForJob)
 			s.Jobs.SetChapterPronouncer(s.pronounceChapterForJob)
+			s.Jobs.SetChapterSummarizer(s.summarizeChapter)
 			// ambienceChapter itself calls s.Speaker.ScoreMusic - same
 			// s.Speaker-configured gate as the three above, and the same
 			// reason jobs.Manager.maybeRunChapterAmbience's own nil-scorer
@@ -160,6 +169,9 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)
 
 	mux.HandleFunc("GET /api/books/{id}/characters", s.handleListCharacterNames)
+	mux.HandleFunc("GET /api/books/{id}/setting", s.handleGetBookSetting)
+	mux.HandleFunc("PUT /api/books/{id}/setting", s.handleSetBookSetting)
+	mux.HandleFunc("POST /api/books/{id}/setting/derive", s.handleDeriveBookSetting)
 	mux.HandleFunc("GET /api/books/{id}/lexicon", s.handleListLexicon)
 	mux.HandleFunc("PUT /api/books/{id}/lexicon", s.handleUpsertLexicon)
 	mux.HandleFunc("DELETE /api/books/{id}/lexicon/{entryId}", s.handleDeleteLexicon)
@@ -185,6 +197,8 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/attribute-speakers", s.handleAttributeSpeakers)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-descriptions", s.handleRetagDescriptions)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-scare-quotes", s.handleRetagScareQuotes)
+	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/summarize", s.handleSummarizeChapter)
+	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/notes", s.handleGetChapterNotes)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/tag-directions", s.handleTagDirections)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/resolve-pronunciation", s.handleResolvePronunciation)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/music", s.handleGetChapterMusic)

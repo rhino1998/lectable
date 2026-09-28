@@ -22,6 +22,10 @@ const alignerSampleRate = 16000
 // it for the worker's whole lifetime - mirrors alignment.py's module-level
 // _session singleton.
 func (w *Worker) alignSession() (*audiocpp.Session, error) {
+	// Before alignMu, not inside it: see Config.BeforeLoad. Cheap when the
+	// LLM isn't resident, and it never is mid-generation when it's big
+	// enough for BeforeLoad to be set.
+	w.beforeLoad()
 	w.alignMu.Lock()
 	defer w.alignMu.Unlock()
 

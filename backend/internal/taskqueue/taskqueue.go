@@ -41,6 +41,7 @@ package taskqueue
 import (
 	"sort"
 	"sync"
+	"time"
 )
 
 // PoolKey identifies which worker pool a Task dispatches through - just a
@@ -314,8 +315,48 @@ type Queue struct {
 
 	hasActive  bool
 	activePool PoolKey
+	// activeSince is when activePool became active - see
+	// SetTieSwitchAfter.
+	activeSince time.Time
+	// tieSwitchAfter bounds how long a same-tier tie keeps the active
+	// pool - see SetTieSwitchAfter. 0 means forever.
+	tieSwitchAfter time.Duration
+	now            func() time.Time
 
 	seq int64
+}
+
+// SetTieSwitchAfter bounds "minimize transitions" (see Queue): a pool
+// whose best candidate only ties the active pool's (same effective tier,
+// same has-dependents) takes over once the active pool has been active
+// for at least d, instead of waiting for it to run dry - so a steady
+// same-tier stream in one pool can't starve another indefinitely. 0 (the
+// default) keeps the active pool on every tie. A strictly more urgent
+// candidate elsewhere always switches right away regardless.
+func (q *Queue) SetTieSwitchAfter(d time.Duration) {
+	q.mu.Lock()
+	q.tieSwitchAfter = d
+	q.mu.Unlock()
+}
+
+// outranksActive reports whether cand, from a pool other than the active
+// one, should take over from activeBest (nil when the active pool has
+// nothing eligible). Only tier and has-dependents count across pools -
+// insertion order would otherwise break every tie in favor of whichever
+// pool queued first, ping-ponging same-tier background work between pools
+// task by task, each switch paying a model unload/load - except once the
+// active pool has held a tie for tieSwitchAfter.
+func (q *Queue) outranksActive(cand, activeBest *candidate) bool {
+	if activeBest == nil {
+		return true
+	}
+	if cand.effTier != activeBest.effTier {
+		return cand.effTier < activeBest.effTier
+	}
+	if cand.hasQueuedDependents != activeBest.hasQueuedDependents {
+		return cand.hasQueuedDependents
+	}
+	return q.tieSwitchAfter > 0 && q.now().Sub(q.activeSince) >= q.tieSwitchAfter && cand.seq < activeBest.seq
 }
 
 // NewQueue returns an empty Queue. resolver may be nil (equivalent to a
@@ -331,6 +372,7 @@ func NewQueue(resolver Resolver) *Queue {
 		queued:        make(map[string]*entry),
 		inFlight:      make(map[string]Task),
 		inFlightCount: make(map[PoolKey]int),
+		now:           time.Now,
 	}
 }
 
@@ -815,7 +857,7 @@ func (q *Queue) Pop() (Task, bool) {
 			if pool == q.activePool {
 				continue
 			}
-			if activeBest != nil && !better(cand, activeBest) {
+			if !q.outranksActive(cand, activeBest) {
 				continue // doesn't outrank staying in the active pool
 			}
 			if elsewhereBest == nil || better(cand, elsewhereBest) {
@@ -948,4 +990,5 @@ func (q *Queue) transition(to PoolKey) {
 	}
 	q.activePool = to
 	q.hasActive = true
+	q.activeSince = q.now()
 }
