@@ -15,11 +15,11 @@ LLAMACPP_DIR="${LLAMACPP_DIR:-$HOME/llama-cpp-py-sync/vendor/llama.cpp/build/bin
 export CGO_LDFLAGS="-L${AUDIOCPP_DIR} -L${LLAMACPP_DIR}"
 export LD_LIBRARY_PATH="${LLAMACPP_DIR}:${AUDIOCPP_DIR}:${LD_LIBRARY_PATH:-}"
 
-export DATA_DIR="${DATA_DIR:-$(pwd)/data}"
-export SPEAKER_LLM_GPU_LAYERS="${SPEAKER_LLM_GPU_LAYERS:--1}"
+export LECTABLE_DATA_DIR="${LECTABLE_DATA_DIR:-$(pwd)/data}"
+export LECTABLE_SPEAKER_LLM_GPU_LAYERS="${LECTABLE_SPEAKER_LLM_GPU_LAYERS:--1}"
 # Primed system prompts as restored KV snapshots (~28% faster LLM passes,
 # +1.4GB ttsworker RSS) - see llmworker.Config.PrimeAsState.
-export SPEAKER_LLM_PRIME_STATE="${SPEAKER_LLM_PRIME_STATE:-true}"
+export LECTABLE_SPEAKER_LLM_PRIME_STATE="${LECTABLE_SPEAKER_LLM_PRIME_STATE:-true}"
 
 GO_TOOLCHAIN_DIR="${GO_TOOLCHAIN_DIR:-$HOME/go-toolchains/go1.27.1/bin}"
 if [ -d "$GO_TOOLCHAIN_DIR" ]; then
@@ -50,7 +50,12 @@ if [ "$FOREGROUND" = "1" ]; then
   exec ./server
 fi
 
-LOG_FILE="${LOG_FILE:-/tmp/lectable-server.log}"
-nohup ./server >>"$LOG_FILE" 2>&1 &
+LECTABLE_LOG_FILE="${LECTABLE_LOG_FILE:-/tmp/lectable-server.log}"
+# One log per run, keeping the previous run's as $LECTABLE_LOG_FILE.1 - appending
+# forever grew it past a gigabyte.
+if [ -f "$LECTABLE_LOG_FILE" ]; then
+  mv -f "$LECTABLE_LOG_FILE" "$LECTABLE_LOG_FILE.1"
+fi
+nohup ./server >"$LECTABLE_LOG_FILE" 2>&1 &
 disown
-echo "server started (PID $!), spawns ./ttsworker itself, logging to $LOG_FILE"
+echo "server started (PID $!), spawns ./ttsworker itself, logging to $LECTABLE_LOG_FILE"

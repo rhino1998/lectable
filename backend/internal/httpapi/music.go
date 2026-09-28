@@ -145,7 +145,7 @@ func (s *Server) buildChapterMusic(bookID string, chapterIdx int) (chapterMusicD
 // ambienceChapter's own doc comment for why.
 func (s *Server) handleRunChapterAmbience(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "the ambience pass is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "the ambience pass is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
 	bookID := r.PathValue("id")

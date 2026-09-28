@@ -56,7 +56,7 @@ type Server struct {
 	// are only unique within one backend's own database) or keying on the backend's URL
 	// (which breaks on every DHCP lease change for a LAN-hosted backend).
 	InstanceID string
-	// LibraryName is an optional human-readable label (LIBRARY_NAME env var, see cmd/server) for
+	// LibraryName is an optional human-readable label (LECTABLE_LIBRARY_NAME env var, see cmd/server) for
 	// telling backends apart in a client's UI - purely cosmetic, never used for the cache-scoping
 	// InstanceID is for. "" (the default) means the deployer never set one.
 	LibraryName string
@@ -164,6 +164,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("PUT /api/books/{id}/lexicon", s.handleUpsertLexicon)
 	mux.HandleFunc("DELETE /api/books/{id}/lexicon/{entryId}", s.handleDeleteLexicon)
 	mux.HandleFunc("POST /api/books/{id}/lexicon/preview", s.handlePreviewLexicon)
+	mux.HandleFunc("POST /api/books/{id}/lexicon/matches", s.handleLexiconMatches)
 	mux.HandleFunc("GET /api/books/{id}/lexicon/suggestions", s.handleLexiconSuggestions)
 	mux.HandleFunc("GET /api/books/{id}/bookmarks", s.handleListBookmarks)
 	mux.HandleFunc("POST /api/books/{id}/bookmarks", s.handleCreateBookmark)

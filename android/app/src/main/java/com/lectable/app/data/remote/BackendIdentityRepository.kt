@@ -41,7 +41,7 @@ class BackendIdentityRepository @Inject constructor(
     private val _libraryId = MutableStateFlow<String?>(null)
     val libraryId: StateFlow<String?> = _libraryId
 
-    // "" if the current backend never set LIBRARY_NAME (or hasn't resolved yet) - purely
+    // "" if the current backend never set LECTABLE_LIBRARY_NAME (or hasn't resolved yet) - purely
     // cosmetic (see InstanceDto), for a Settings-screen-style "which backend is this" label.
     private val _libraryName = MutableStateFlow("")
     val libraryName: StateFlow<String> = _libraryName

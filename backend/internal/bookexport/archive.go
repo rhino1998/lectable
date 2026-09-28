@@ -18,7 +18,7 @@ import (
 //
 // Narration clips, images and the cover are EPUB resources and stay where
 // the package document puts them (OEBPS/...); Manifest.Files maps every
-// file in the archive, wherever it is, back to its place under DATA_DIR,
+// file in the archive, wherever it is, back to its place under LECTABLE_DATA_DIR,
 // so Import never needs to know the EPUB layout.
 const (
 	lectableDir      = "META-INF/lectable/"
@@ -72,7 +72,7 @@ type Manifest struct {
 	Voices    []VoiceInfo `json:"voices,omitempty"`
 	// Tables lists the db/*.jsonl files present.
 	Tables []string `json:"tables,omitempty"`
-	// Files maps archive entries to DATA_DIR (full exports only).
+	// Files maps archive entries to LECTABLE_DATA_DIR (full exports only).
 	Files []ManifestFile `json:"files,omitempty"`
 }
 

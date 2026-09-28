@@ -965,6 +965,29 @@ data class LexiconEntryDto(
      * Matches is how many paragraphs in this book the rule applies to.
      */
     val matches: Int = 0,
+    /**
+     * MatchedWords is the distinct words it respells in this book, as
+     * written (whole words for a Prefix rule) - see lexiconMatches.
+     */
+    val matchedWords: List<String> = emptyList(),
+)
+
+/**
+ * lexiconMatchesDTO is what a rule matches in one book - the lexicon
+ * editor's "what will this respell?" check, before or after saving.
+ */
+@Serializable
+data class LexiconMatchesDto(
+    val paragraphs: Int = 0,
+    /**
+     * Words is the distinct matched words (case-insensitively), at most
+     * maxLexiconMatchedWords, most frequent first.
+     */
+    val words: List<String> = emptyList(),
+    /**
+     * MoreWords counts distinct words past Words' cap.
+     */
+    val moreWords: Int? = null,
 )
 
 /**

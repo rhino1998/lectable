@@ -57,17 +57,17 @@ func (s *DuckStore) OnChange(fn ChangeFunc) {
 }
 
 // slowCallThreshold is the duration at or above which a DB call is logged
-// (DB_SLOW_LOG_MS, default 100ms; 0 logs every call, negative disables).
+// (LECTABLE_DB_SLOW_LOG_MS, default 100ms; 0 logs every call, negative disables).
 // With the store's single connection (SetMaxOpenConns(1)) a call's time
 // includes waiting for that connection, so a slow line usually means
 // "queued behind other DB work" rather than "this query is slow" - the
 // transaction lines (time a Begin held the connection) show who held it.
 var slowCallThreshold = func() time.Duration {
-	if v := os.Getenv("DB_SLOW_LOG_MS"); v != "" {
+	if v := os.Getenv("LECTABLE_DB_SLOW_LOG_MS"); v != "" {
 		if ms, err := strconv.Atoi(v); err == nil {
 			return time.Duration(ms) * time.Millisecond
 		}
-		log.Printf("store: DB_SLOW_LOG_MS=%q is not a valid int, using 100", v)
+		log.Printf("store: LECTABLE_DB_SLOW_LOG_MS=%q is not a valid int, using 100", v)
 	}
 	return 100 * time.Millisecond
 }()

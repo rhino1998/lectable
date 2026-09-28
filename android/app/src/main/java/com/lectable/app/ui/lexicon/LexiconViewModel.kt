@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.dto.LexiconEntryDto
+import com.lectable.app.data.remote.dto.LexiconMatchesDto
 import com.lectable.app.data.remote.dto.LexiconSuggestionDto
 import com.lectable.app.data.remote.dto.UpsertLexiconRequestDto
 import com.lectable.app.data.repository.LexiconRepository
@@ -17,7 +18,11 @@ import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -34,12 +39,16 @@ data class LexiconUiState(
     // "form" for the unsaved rule being edited, or a saved entry's id - whichever preview is
     // rendering right now.
     val previewingKey: String? = null,
+    // What the rule being typed matches in this book (null while the form is empty) - see
+    // checkMatches.
+    val formMatches: LexiconMatchesDto? = null,
 )
 
 /** The Android analogue of frontend's components/speakers/LexiconPanel.tsx: the book's
  *  series-wide pronunciation lexicon ("say Nyx as Nicks"), with listen-before-save previews in
  *  the narrator's voice and roster-name suggestions. Saving/removing a rule regenerates every
  *  line it matches, server-side (backend httpapi/lexicon.go). */
+@OptIn(FlowPreview::class)
 @HiltViewModel
 class LexiconViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -55,7 +64,19 @@ class LexiconViewModel @Inject constructor(
 
     private var player: MediaPlayer? = null
 
+    // The form's current rule, debounced into [LexiconUiState.formMatches].
+    private val formRule = MutableStateFlow(UpsertLexiconRequestDto())
+
     init {
+        viewModelScope.launch {
+            formRule
+                .debounce(300)
+                .distinctUntilChanged { a, b -> a.term.trim() == b.term.trim() && a.prefix == b.prefix && a.caseSensitive == b.caseSensitive }
+                .collectLatest { rule ->
+                    val matches = if (rule.term.isBlank()) null else runCatching { repository.matches(bookId, rule.trimmed()) }.getOrNull()
+                    _uiState.update { it.copy(formMatches = matches) }
+                }
+        }
         viewModelScope.launch {
             combine(
                 liveStore.book(bookId),
@@ -117,6 +138,11 @@ class LexiconViewModel @Inject constructor(
             }.onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Could not preview this rule") } }
             _uiState.update { it.copy(previewingKey = null) }
         }
+    }
+
+    /** Called with the form's rule as it changes - its matches arrive in formMatches. */
+    fun checkMatches(rule: UpsertLexiconRequestDto) {
+        formRule.value = rule
     }
 
     fun dismissError() {

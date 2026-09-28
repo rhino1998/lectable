@@ -9,15 +9,15 @@
 #   ./deploy.sh            # build + restart
 #   ./deploy.sh --rollback # restart on the *.prev binaries instead
 #
-# Env: PORT (8080), LOG_FILE (/tmp/lectable-server.log), plus everything
-# run.sh reads (AUDIOCPP_DIR, LLAMACPP_DIR, DATA_DIR, ...).
+# Env: LECTABLE_PORT (8080), LECTABLE_LOG_FILE (/tmp/lectable-server.log), plus everything
+# run.sh reads (AUDIOCPP_DIR, LLAMACPP_DIR, LECTABLE_DATA_DIR, ...).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 HERE="$(pwd)"
-PORT="${PORT:-8080}"
-BASE="http://localhost:${PORT}"
-LOG_FILE="${LOG_FILE:-/tmp/lectable-server.log}"
-export LOG_FILE
+LECTABLE_PORT="${LECTABLE_PORT:-8080}"
+BASE="http://localhost:${LECTABLE_PORT}"
+LECTABLE_LOG_FILE="${LECTABLE_LOG_FILE:-/tmp/lectable-server.log}"
+export LECTABLE_LOG_FILE
 
 ROLLBACK=0
 case "${1:-}" in
@@ -100,6 +100,6 @@ for _ in $(seq 1 90); do
   sleep 1
 done
 echo "backend didn't come up in 90s - last log lines:" >&2
-tail -20 "$LOG_FILE" >&2
+tail -20 "$LECTABLE_LOG_FILE" >&2
 echo "roll back with: $0 --rollback" >&2
 exit 1

@@ -54,7 +54,7 @@ func readManifest(zr *zip.Reader) (*Manifest, error) {
 // Import restores the whole-book export in r into the library under its
 // original id - ids are random, so they only collide with the same book.
 // The rows go in first, in one transaction; then every file, each back at
-// its place under DATA_DIR with its original mtime (audio URLs and
+// its place under LECTABLE_DATA_DIR with its original mtime (audio URLs and
 // Android's offline sync version clips by it). If a file fails the book
 // is deleted again. Library-wide files - voice reference clips and their
 // emotion variants - are only added, never overwritten: a preset this
@@ -156,7 +156,7 @@ func (src Source) remapCharacters(rows map[string][]json.RawMessage) error {
 }
 
 // allowedDataPath limits what an export can write to its own book's
-// files and to voice refs - never elsewhere under DATA_DIR, or outside it.
+// files and to voice refs - never elsewhere under LECTABLE_DATA_DIR, or outside it.
 func allowedDataPath(bookID, p string) bool {
 	if p == "" || path.IsAbs(p) || path.Clean(p) != p || strings.HasPrefix(p, "../") || strings.Contains(p, "\\") {
 		return false

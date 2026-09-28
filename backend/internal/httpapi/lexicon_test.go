@@ -225,3 +225,11 @@ func TestGlobalPrefixLexiconRule(t *testing.T) {
 		t.Fatalf("generation text = %q", got)
 	}
 }
+
+func TestLexiconMatchesReportsDistinctWords(t *testing.T) {
+	ps := []store.Paragraph{{Text: "The gaoler and the gaolers."}, {Text: "Gaoler again."}, {Text: "Nothing."}}
+	m := lexiconMatches(ps, pronounce.LexiconEntry{Term: "gaol", Prefix: true})
+	if m.Paragraphs != 2 || !reflect.DeepEqual(m.Words, []string{"gaoler", "gaolers"}) || m.MoreWords != 0 {
+		t.Fatalf("= %+v", m)
+	}
+}

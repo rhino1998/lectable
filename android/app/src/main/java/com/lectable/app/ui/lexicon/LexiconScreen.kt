@@ -68,6 +68,7 @@ fun LexiconScreen(
     var prefix by rememberSaveable { mutableStateOf(false) }
     var global by rememberSaveable { mutableStateOf(false) }
     fun formRule() = UpsertLexiconRequestDto(term = term, replacement = replacement, caseSensitive = caseSensitive, prefix = prefix, global = global)
+    LaunchedEffect(term, prefix, caseSensitive) { viewModel.checkMatches(formRule()) }
     fun loadForm(rule: UpsertLexiconRequestDto) {
         term = rule.term
         replacement = rule.replacement
@@ -151,6 +152,26 @@ fun LexiconScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Checkbox(checked = global, onCheckedChange = { global = it })
                         Text("All books", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    uiState.formMatches?.takeIf { term.isNotBlank() }?.let { m ->
+                        val distinct = m.words.size + (m.moreWords ?: 0)
+                        val tooBroad = prefix && distinct > 5
+                        Text(
+                            buildString {
+                                if (m.paragraphs == 0) {
+                                    append("No matches in this book.")
+                                } else {
+                                    append("Matches ${m.paragraphs} paragraph${if (m.paragraphs == 1) "" else "s"} here: ")
+                                    append(m.words.joinToString(", "))
+                                    m.moreWords?.takeIf { it > 0 }?.let { append(" and $it more") }
+                                    append(".")
+                                }
+                                if (tooBroad) append(" That's $distinct different words - check \"Derived words\" isn't too broad.")
+                                if (global) append(" (Counted in this book only.)")
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (tooBroad) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     val formReady = term.isNotBlank() && replacement.isNotBlank()
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -250,7 +271,8 @@ private fun LexiconRow(
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text(
-                "${entry.matches} matching paragraph${if (entry.matches == 1) "" else "s"} in this book",
+                "${entry.matches} matching paragraph${if (entry.matches == 1) "" else "s"} in this book" +
+                    if (entry.matchedWords.isNotEmpty()) ": ${entry.matchedWords.joinToString(", ")}" else "",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

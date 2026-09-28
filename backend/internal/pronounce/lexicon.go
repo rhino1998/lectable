@@ -139,3 +139,22 @@ func MergeLexicon(lexicon, pron []Substitution) []Substitution {
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Offset < out[j].Offset })
 	return out
 }
+
+// LexiconMatchedWords is every word in text that rule matches, as written -
+// for a Prefix rule the whole word ("gaolers", not just "gaol"), so a
+// listener can see exactly what a derived-word rule will respell.
+func LexiconMatchedWords(text string, rule LexiconEntry) []string {
+	var out []string
+	for _, sub := range LexiconSubstitutions(text, []LexiconEntry{rule}) {
+		end := sub.Offset + sub.Length
+		for end < len(text) {
+			r, size := utf8.DecodeRuneInString(text[end:])
+			if !isWordRune(r) {
+				break
+			}
+			end += size
+		}
+		out = append(out, text[sub.Offset:end])
+	}
+	return out
+}

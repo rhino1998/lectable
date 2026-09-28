@@ -321,7 +321,7 @@ type Clip struct {
 type File struct {
 	// Path is where it is on disk.
 	Path string
-	// DataPath is Path relative to the library's DATA_DIR, slash-separated
+	// DataPath is Path relative to the library's LECTABLE_DATA_DIR, slash-separated
 	// - where Import puts it back.
 	DataPath string
 	ModTime  time.Time

@@ -726,6 +726,28 @@ export interface LexiconEntry {
    * Matches is how many paragraphs in this book the rule applies to.
    */
   matches: number
+  /**
+   * MatchedWords is the distinct words it respells in this book, as
+   * written (whole words for a Prefix rule) - see lexiconMatches.
+   */
+  matchedWords: string[]
+}
+
+/**
+ * lexiconMatchesDTO is what a rule matches in one book - the lexicon
+ * editor's "what will this respell?" check, before or after saving.
+ */
+export interface LexiconMatches {
+  paragraphs: number
+  /**
+   * Words is the distinct matched words (case-insensitively), at most
+   * maxLexiconMatchedWords, most frequent first.
+   */
+  words: string[]
+  /**
+   * MoreWords counts distinct words past Words' cap.
+   */
+  moreWords?: number
 }
 
 /**
@@ -2566,6 +2588,17 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleLexiconMatches reports what a rule - saved or not - matches in this
+   * book, so the editor can show it before saving.
+   */
+  'POST /api/books/{id}/lexicon/matches': {
+    path: { id: string }
+    query: Record<never, never>
+    body: UpsertLexiconRequest
+    response: LexiconMatches
+    errorCode: never
+  }
+  /**
    * handlePreviewLexicon renders a rule - saved or not yet saved - in the
    * book's own narrator voice and clone model, so a listener can hear a
    * respelling before committing to it (and regenerating every line it
@@ -2838,7 +2871,7 @@ export interface Routes {
    * internal/instanceid) - a client caching data locally (the Android app's
    * offline downloads - see android/CLAUDE.md) uses this to scope that cache
    * per-backend, since book IDs alone are only unique within one backend.
-   * Name is the optional LIBRARY_NAME operators can set purely so a client
+   * Name is the optional LECTABLE_LIBRARY_NAME operators can set purely so a client
    * juggling multiple backends has something human-readable to show, distinct
    * from id (never meant to be read by a person).
    */
@@ -3350,6 +3383,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/generate-remaining': 'json',
   'GET /api/books/{id}/lexicon': 'json',
   'PUT /api/books/{id}/lexicon': 'json',
+  'POST /api/books/{id}/lexicon/matches': 'json',
   'POST /api/books/{id}/lexicon/preview': 'binary',
   'GET /api/books/{id}/lexicon/suggestions': 'json',
   'DELETE /api/books/{id}/lexicon/{entryId}': 'none',

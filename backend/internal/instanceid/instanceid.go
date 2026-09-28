@@ -1,5 +1,5 @@
 // Package instanceid gives each backend a stable identity that survives
-// restarts and network-address changes, as long as its DATA_DIR persists -
+// restarts and network-address changes, as long as its LECTABLE_DATA_DIR persists -
 // so a client (the Android app in particular, which can be pointed at
 // different backends over its lifetime - see android/CLAUDE.md's "Server
 // address") can tell whether it's still talking to the same backend it
@@ -19,7 +19,7 @@ import (
 
 // LoadOrCreate reads dataDir's persisted instance id, or generates and
 // persists a fresh one (via store.NewID, the same random-hex scheme every
-// other ID in this app uses) if this is the first time this DATA_DIR has
+// other ID in this app uses) if this is the first time this LECTABLE_DATA_DIR has
 // been started.
 func LoadOrCreate(dataDir string) (string, error) {
 	path := filepath.Join(dataDir, "instance_id")

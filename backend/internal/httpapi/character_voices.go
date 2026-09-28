@@ -517,7 +517,7 @@ func (s *Server) handleGenerateCharacterVoice(w http.ResponseWriter, r *http.Req
 // handleCharacterizeSpeakers.
 func (s *Server) handleGenerateCharacterVoices(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
 	bookID := r.PathValue("id")
@@ -580,7 +580,7 @@ func (s *Server) handleGenerateCharacterVoices(w http.ResponseWriter, r *http.Re
 // task internally, for a character with no voice yet at all).
 func (s *Server) handleRegenerateCharacterVoices(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
 	bookID := r.PathValue("id")
@@ -663,7 +663,7 @@ func (s *Server) handleRegenerateCharacterVoices(w http.ResponseWriter, r *http.
 // character gets invalidated, not just rebuilt eagerly).
 func (s *Server) handleCharacterizeSpeaker(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
 	bookID := r.PathValue("id")
@@ -853,7 +853,7 @@ func (s *Server) recharacterizeAndInvalidate(ctx context.Context, book *store.Bo
 // table once each one's task clears.
 func (s *Server) handleCharacterizeSpeakers(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
 	bookID := r.PathValue("id")

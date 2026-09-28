@@ -77,7 +77,7 @@ type Config struct {
 const minSlotNCtx = 12288
 
 // SlotNCtx is cmd/ttsworker's default for llmworker.Config.NCtx
-// (SPEAKER_LLM_CTX): the per-generation-slot share of the shared KV pool.
+// (LECTABLE_SPEAKER_LLM_CTX): the per-generation-slot share of the shared KV pool.
 // The largest reply any pass asks for (MaxOutputTokens), but never below
 // minSlotNCtx. This used to be MaxOutputTokens alone at 24576 (attribution's
 // old JSON-for-every-line budget), reserving ~2x the KV cache - several GB
@@ -116,15 +116,15 @@ func MaxOutputTokens() int {
 	return max
 }
 
-// ConfigFromEnv reads SPEAKER_LLM_NO_THINK - see NewClientFromEnv. The
-// model-loading env vars (SPEAKER_LLM_MODEL_PATH/GPU_LAYERS/CTX/
+// ConfigFromEnv reads LECTABLE_SPEAKER_LLM_NO_THINK - see NewClientFromEnv. The
+// model-loading env vars (LECTABLE_SPEAKER_LLM_MODEL_PATH/GPU_LAYERS/CTX/
 // MAX_CONCURRENT) are read by cmd/ttsworker/main.go instead now (see this
 // package's own doc comment) - NewClientFromEnv still resolves the model
 // path itself (ModelPathFromEnv), but only to decide whether the feature is
 // available at all.
 func ConfigFromEnv() Config {
 	cfg := Config{}
-	if v := strings.TrimSpace(os.Getenv("SPEAKER_LLM_NO_THINK")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LECTABLE_SPEAKER_LLM_NO_THINK")); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.NoThink = b
 		}
@@ -161,7 +161,7 @@ type Client struct {
 }
 
 // DefaultModelFile is the GGUF speaker attribution loads from ~/llm-models
-// when SPEAKER_LLM_MODEL_PATH isn't set - Qwen3-4B-Instruct-2507, Q4_K_M.
+// when LECTABLE_SPEAKER_LLM_MODEL_PATH isn't set - Qwen3-4B-Instruct-2507, Q4_K_M.
 const DefaultModelFile = "qwen3-4b-instruct-2507-q4_k_m.gguf"
 
 // DefaultModelPath returns ~/llm-models/DefaultModelFile (or just
@@ -175,11 +175,11 @@ func DefaultModelPath() string {
 	return filepath.Join(home, "llm-models", DefaultModelFile)
 }
 
-// ModelPathFromEnv returns SPEAKER_LLM_MODEL_PATH, or DefaultModelPath() if
+// ModelPathFromEnv returns LECTABLE_SPEAKER_LLM_MODEL_PATH, or DefaultModelPath() if
 // it's unset. Shared by cmd/server (NewClientFromEnv's enablement gate) and
 // cmd/ttsworker (what llmworker actually loads) so the two can't disagree.
 func ModelPathFromEnv() string {
-	if v := strings.TrimSpace(os.Getenv("SPEAKER_LLM_MODEL_PATH")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("LECTABLE_SPEAKER_LLM_MODEL_PATH")); v != "" {
 		return v
 	}
 	return DefaultModelPath()

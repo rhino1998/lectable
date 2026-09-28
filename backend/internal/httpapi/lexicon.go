@@ -30,6 +30,83 @@ type lexiconEntryDTO struct {
 	Global bool `json:"global"`
 	// Matches is how many paragraphs in this book the rule applies to.
 	Matches int `json:"matches"`
+	// MatchedWords is the distinct words it respells in this book, as
+	// written (whole words for a Prefix rule) - see lexiconMatches.
+	MatchedWords []string `json:"matchedWords"`
+}
+
+// lexiconMatchesDTO is what a rule matches in one book - the lexicon
+// editor's "what will this respell?" check, before or after saving.
+type lexiconMatchesDTO struct {
+	Paragraphs int `json:"paragraphs"`
+	// Words is the distinct matched words (case-insensitively), at most
+	// maxLexiconMatchedWords, most frequent first.
+	Words []string `json:"words"`
+	// MoreWords counts distinct words past Words' cap.
+	MoreWords int `json:"moreWords,omitempty"`
+}
+
+// maxLexiconMatchedWords caps lexiconMatchesDTO.Words.
+const maxLexiconMatchedWords = 12
+
+// lexiconMatches is what rule matches across paragraphs.
+func lexiconMatches(paragraphs []store.Paragraph, rule pronounce.LexiconEntry) lexiconMatchesDTO {
+	counts := map[string]int{}
+	spelling := map[string]string{}
+	var order []string
+	out := lexiconMatchesDTO{}
+	for _, p := range paragraphs {
+		words := pronounce.LexiconMatchedWords(p.Text, rule)
+		if len(words) == 0 {
+			continue
+		}
+		out.Paragraphs++
+		for _, w := range words {
+			key := strings.ToLower(w)
+			if _, ok := counts[key]; !ok {
+				spelling[key] = w
+				order = append(order, key)
+			}
+			counts[key]++
+		}
+	}
+	sort.SliceStable(order, func(i, j int) bool { return counts[order[i]] > counts[order[j]] })
+	for i, key := range order {
+		if i == maxLexiconMatchedWords {
+			out.MoreWords = len(order) - i
+			break
+		}
+		out.Words = append(out.Words, spelling[key])
+	}
+	if out.Words == nil {
+		out.Words = []string{}
+	}
+	return out
+}
+
+// handleLexiconMatches reports what a rule - saved or not - matches in this
+// book, so the editor can show it before saving.
+func (s *Server) handleLexiconMatches(w http.ResponseWriter, r *http.Request) {
+	book, ok := s.lexiconBook(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	var req upsertLexiconRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	rule := req.rule()
+	if rule.Term == "" {
+		writeJSON(w, http.StatusOK, lexiconMatchesDTO{Words: []string{}})
+		return
+	}
+	paragraphs, err := s.Store.ListParagraphsRawForBook(book.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, lexiconMatches(paragraphs, rule))
 }
 
 func (s *Server) handleListLexicon(w http.ResponseWriter, r *http.Request) {
@@ -64,8 +141,9 @@ func (s *Server) buildLexicon(bookID string) ([]lexiconEntryDTO, error) {
 		out[i] = lexiconEntryDTO{
 			ID: e.ID, Term: e.Term, Replacement: e.Replacement, CaseSensitive: e.CaseSensitive,
 			Prefix: e.Prefix, Global: e.Scope == store.GlobalLexiconScope,
-			Matches: len(matchingParagraphs(paragraphs, e.LexiconEntry)),
 		}
+		m := lexiconMatches(paragraphs, e.LexiconEntry)
+		out[i].Matches, out[i].MatchedWords = m.Paragraphs, m.Words
 	}
 	return out, nil
 }

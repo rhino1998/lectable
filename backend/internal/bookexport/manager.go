@@ -24,8 +24,8 @@ import (
 // Exports are kept on disk so downloading one again is just serving a
 // file:
 //
-//	DATA_DIR/exports/<book id>/<artifact id><ext>    the export
-//	DATA_DIR/exports/<book id>/<artifact id>.json    its Artifact
+//	LECTABLE_DATA_DIR/exports/<book id>/<artifact id><ext>    the export
+//	LECTABLE_DATA_DIR/exports/<book id>/<artifact id>.json    its Artifact
 //
 // An artifact is identified by its Options (Options.ID), so building the
 // same selection again replaces it in place. Whether it's still current

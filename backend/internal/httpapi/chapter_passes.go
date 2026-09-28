@@ -994,7 +994,7 @@ func (s *Server) describeChapterForJob(ctx context.Context, book *store.Book, ch
 // speaker table once a chapter's task clears.
 func (s *Server) handleAttributeSpeakers(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
 	bookID := r.PathValue("id")
@@ -1040,7 +1040,7 @@ func (s *Server) handleAttributeSpeakers(w http.ResponseWriter, r *http.Request)
 // via GET /api/jobs.
 func (s *Server) handleTagDirections(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "speech direction tagging is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "speech direction tagging is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
 	bookID := r.PathValue("id")
@@ -1126,7 +1126,7 @@ func (s *Server) handleResolvePronunciation(w http.ResponseWriter, r *http.Reque
 // reporting ok=false when the caller should just return.
 func (s *Server) chapterLLMTarget(w http.ResponseWriter, r *http.Request) (*store.Book, *store.Chapter, bool) {
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return nil, nil, false
 	}
 	bookID := r.PathValue("id")

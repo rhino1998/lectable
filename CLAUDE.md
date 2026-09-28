@@ -144,7 +144,7 @@ Android app on the connected device (`android/install.sh`; `make
 deploy-backend`/`install-android` run either half).
 
 Default ports: backend `8080`, ttsworker `8091` (loopback only, not meant
-to be reached directly), frontend `5173`. The backend's `ALLOW_ORIGIN` env
+to be reached directly), frontend `5173`. The backend's `LECTABLE_ALLOW_ORIGIN` env
 var (default `http://localhost:5173`) must match wherever the frontend dev
 server actually runs. (`android` doesn't go through CORS - it's a native
 client, not a browser.)
@@ -173,10 +173,10 @@ client, not a browser.)
 
 - Live-topic builds share the store's single DuckDB connection with
   everything else, so a slow one stalls the whole app; `internal/live` logs
-  any build over `LIVE_SLOW_BUILD_MS` (default 500) as `live: slow build`.
+  any build over `LECTABLE_LIVE_SLOW_BUILD_MS` (default 500) as `live: slow build`.
 
 - No auth, no multi-user support — this is a single-user local app.
-- All persistent state lives under the backend's `DATA_DIR` (default
+- All persistent state lives under the backend's `LECTABLE_DATA_DIR` (default
   `./data`): `library.duckdb`,
   `audio/<bookID>/<chapterID>/<voiceID>/<idx>.opus` (served clips - narration,
   plus `sfx/` and `music/` beside the voice dirs - are Ogg Opus; model inputs

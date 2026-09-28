@@ -328,7 +328,7 @@ export const api = {
     call('DELETE /api/books/{id}/speakers', { path: { id: bookId } }),
 
   // Enqueues LLM speaker attribution for one chapter (503 if the backend
-  // has no SPEAKER_LLM_MODEL_PATH configured) - registers any
+  // has no LECTABLE_SPEAKER_LLM_MODEL_PATH configured) - registers any
   // newly-discovered character; their voice is provisioned lazily later,
   // the first time it's actually needed for generation. Fire-and-forget,
   // same {queued} shape as generateChapter/enqueueParagraphRegenerate:
@@ -343,7 +343,7 @@ export const api = {
     }),
 
   // Enqueues a description-tagging job for one chapter (503 if the backend
-  // has no SPEAKER_LLM_MODEL_PATH configured) - fire-and-forget like
+  // has no LECTABLE_SPEAKER_LLM_MODEL_PATH configured) - fire-and-forget like
   // attributeSpeakers; the job waits on the chapter's scare-quote tagging
   // first. See httpapi.handleRetagDescriptions.
   retagDescriptions: (bookId: string, chapterIdx: number) =>
@@ -355,7 +355,7 @@ export const api = {
   // utils/emotions.ts, or stays neutral) for one chapter - fire-and-forget,
   // same {queued} shape as attributeSpeakers, for the same reason: it runs
   // the LLM over a whole chapter in batches and can take a while. Any
-  // clone model. 503 if the backend has no SPEAKER_LLM_MODEL_PATH
+  // clone model. 503 if the backend has no LECTABLE_SPEAKER_LLM_MODEL_PATH
   // configured - see httpapi.handleTagDirections. Progress/completion is observed the same
   // way attribution's is (GET /api/jobs), not this call's own response.
   tagDirections: (bookId: string, chapterIdx: number) =>
@@ -365,7 +365,7 @@ export const api = {
 
   // Enqueues pronunciation resolution (ambiguous abbreviations like "Dr." ->
   // "Doctor") for one chapter - fire-and-forget, same {queued} shape as
-  // tagDirections. 503 without SPEAKER_LLM_MODEL_PATH - see
+  // tagDirections. 503 without LECTABLE_SPEAKER_LLM_MODEL_PATH - see
   // httpapi.handleResolvePronunciation.
   resolvePronunciation: (bookId: string, chapterIdx: number) =>
     call('POST /api/books/{id}/chapters/{idx}/resolve-pronunciation', {
@@ -377,7 +377,7 @@ export const api = {
   // character in the book, in the backend, without needing the Speakers
   // page's four individual "all" buttons clicked in order. Fire-and-forget,
   // same {queued} shape as attributeSpeakers/tagDirections - a whole book
-  // can take a long time. 503 if SPEAKER_LLM_MODEL_PATH is unconfigured,
+  // can take a long time. 503 if LECTABLE_SPEAKER_LLM_MODEL_PATH is unconfigured,
   // 409 if a run is already in progress for this book - see
   // httpapi.handlePreprocessBook. Progress is observable via
   // BookSummary.preprocessing (the books topic) and the jobs topic, same
@@ -480,7 +480,7 @@ export const api = {
   // whichever real character/Narrator/Unknown actually speaks it - see
   // httpapi.handleReattributeSpeaker. Fire-and-forget, same {queued}
   // shape as attributeSpeakers/tagDirections (queued here counts chapters
-  // dispatched, not paragraphs) - 503 if SPEAKER_LLM_MODEL_PATH is
+  // dispatched, not paragraphs) - 503 if LECTABLE_SPEAKER_LLM_MODEL_PATH is
   // unconfigured, 404 if name isn't "Unknown" and isn't a real character
   // either. Progress is observable via the jobs topic
   // (kind: 'speaker-reattribute'), and the speakers topic reflects each
@@ -513,7 +513,7 @@ export const api = {
     }),
 
   // Force re-runs characterization for one character (503 if the backend
-  // has no SPEAKER_LLM_MODEL_PATH configured), even if it's already been
+  // has no LECTABLE_SPEAKER_LLM_MODEL_PATH configured), even if it's already been
   // characterized - unlike attributeSpeakers' own auto-discovery, which
   // only ever characterizes once. Invalidates (not re-renders) this
   // book's own resolved clone model's assigned voice preset for the
@@ -554,6 +554,11 @@ export const api = {
   // the first sentence it matches - see backend handlePreviewLexicon.
   previewLexiconEntry: (bookId: string, body: UpsertLexiconRequest) =>
     call('POST /api/books/{id}/lexicon/preview', { path: { id: bookId }, body }),
+
+  // What a rule (saved or not) matches in this book - paragraphs and the
+  // distinct words it would respell. See backend handleLexiconMatches.
+  lexiconMatches: (bookId: string, body: UpsertLexiconRequest) =>
+    call('POST /api/books/{id}/lexicon/matches', { path: { id: bookId }, body }),
 
   deleteLexiconEntry: (bookId: string, entryId: string) =>
     call('DELETE /api/books/{id}/lexicon/{entryId}', { path: { id: bookId, entryId } }),

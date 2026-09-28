@@ -64,7 +64,7 @@ func envIntOr(key string, def int) int {
 }
 
 func main() {
-	port := flag.String("port", envOr("TTS_WORKER_PORT", "8091"), "port to listen on (loopback only)")
+	port := flag.String("port", envOr("LECTABLE_TTS_WORKER_PORT", "8091"), "port to listen on (loopback only)")
 	flag.Parse()
 
 	// idleUnloadAfter is shared between the two model families (TTS clone
@@ -72,9 +72,9 @@ func main() {
 	// exist for the same reason (free this process's shared VRAM budget for
 	// whichever family isn't actively in use) and there's no case observed
 	// so far for wanting different thresholds on either side.
-	idleUnloadAfter := envDurationOr("MODEL_IDLE_UNLOAD_AFTER", 2*time.Minute)
+	idleUnloadAfter := envDurationOr("LECTABLE_MODEL_IDLE_UNLOAD_AFTER", 2*time.Minute)
 
-	defaultCloneModel := envOr("QWEN_TTS_DEFAULT_CLONE_MODEL", "audiocpp-higgs-4b")
+	defaultCloneModel := envOr("LECTABLE_DEFAULT_CLONE_MODEL", "audiocpp-higgs-4b")
 
 	audioWorker, err := audioworker.New(audioworker.Config{
 		DefaultCloneModel: defaultCloneModel,
@@ -82,7 +82,7 @@ func main() {
 		// concurrent-Generate-call cap) by default - see audioworker.
 		// Config.ClonePoolSize's own doc comment for why a smaller pool
 		// just reintroduces today's queueing, only less of it.
-		ClonePoolSize:   envIntOr("QWEN_TTS_AUDIOCPP_CLONE_POOL_SIZE", 4),
+		ClonePoolSize:   envIntOr("LECTABLE_AUDIOCPP_CLONE_POOL_SIZE", 4),
 		IdleUnloadAfter: idleUnloadAfter,
 	})
 	if err != nil {
@@ -97,12 +97,12 @@ func main() {
 	// above is.
 	llmWorker := llmworker.New(llmworker.Config{
 		ModelPath:     speakerattr.ModelPathFromEnv(),
-		NGPULayers:    int32(envIntOr("SPEAKER_LLM_GPU_LAYERS", -1)),
-		NCtx:          uint32(envIntOr("SPEAKER_LLM_CTX", speakerattr.SlotNCtx())),
-		MaxConcurrent: envIntOr("SPEAKER_LLM_MAX_CONCURRENT", 2),
+		NGPULayers:    int32(envIntOr("LECTABLE_SPEAKER_LLM_GPU_LAYERS", -1)),
+		NCtx:          uint32(envIntOr("LECTABLE_SPEAKER_LLM_CTX", speakerattr.SlotNCtx())),
+		MaxConcurrent: envIntOr("LECTABLE_SPEAKER_LLM_MAX_CONCURRENT", 2),
 		// Opt-in: see llmworker.Config.PrimeAsState/NUBatch.
-		PrimeAsState:    envOr("SPEAKER_LLM_PRIME_STATE", "") == "true",
-		NUBatch:         uint32(envIntOr("SPEAKER_LLM_UBATCH", 0)),
+		PrimeAsState:    envOr("LECTABLE_SPEAKER_LLM_PRIME_STATE", "") == "true",
+		NUBatch:         uint32(envIntOr("LECTABLE_SPEAKER_LLM_UBATCH", 0)),
 		SystemPrompts:   speakerattr.SystemPrompts(),
 		IdleUnloadAfter: idleUnloadAfter,
 		// Free every resident clone model before the LLM's own (lazy,

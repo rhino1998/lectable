@@ -96,7 +96,7 @@ const maxInFlight = 8
 // worker (see Kind's own doc comment history).
 //
 // Matches llmworker.Config's own default MaxConcurrent (2, see
-// cmd/ttsworker/main.go's SPEAKER_LLM_MAX_CONCURRENT) rather than staying
+// cmd/ttsworker/main.go's LECTABLE_SPEAKER_LLM_MAX_CONCURRENT) rather than staying
 // at 1 the way it used to: that old value assumed speakerattr.Client fully
 // serialized every call behind its own mutex regardless of how many tasks
 // were "in flight" here, so a second poolLLM slot could only ever sit
@@ -182,7 +182,7 @@ func envIntOr(key string, def int) int {
 // raising this only lets an already-resident design engine's own pooled
 // sessions actually run concurrently, the same throughput case
 // higgsClonePoolSize's own doc comment makes for Generate.
-var maxDesignInFlight = envIntOr("QWEN_TTS_MAX_DESIGN_IN_FLIGHT", 2)
+var maxDesignInFlight = envIntOr("LECTABLE_MAX_DESIGN_IN_FLIGHT", 2)
 
 // maxSFXInFlight bounds poolSFX - shared by every generation-only "gen
 // task" engine's own standalone preview render (ACE-Step, Stable Audio -
@@ -198,7 +198,7 @@ var maxDesignInFlight = envIntOr("QWEN_TTS_MAX_DESIGN_IN_FLIGHT", 2)
 // stableAudioMediumPoolSize) - each is a multi-step diffusion/generation
 // call, not a single autoregressive decode, on hardware with no spare
 // VRAM headroom to begin with (see backend/CLAUDE.md).
-var maxSFXInFlight = envIntOr("QWEN_TTS_MAX_SFX_IN_FLIGHT", 4)
+var maxSFXInFlight = envIntOr("LECTABLE_MAX_SFX_IN_FLIGHT", 4)
 
 // maxTaskAttempts bounds how many total dispatches (the first try plus
 // retries) a task gets after genuine failures before handleResult gives up
@@ -1543,7 +1543,7 @@ func NewManager(s store.Store, tts *ttsworker.Manager, dataDir string) *Manager 
 	// same-family poolGeneration<->poolDesign switch - see familyOf/
 	// onPoolActivate) frees the family being left behind right away,
 	// instead of leaving it resident until ttsworker's own idle timeout
-	// (MODEL_IDLE_UNLOAD_AFTER) elapses on hardware with no VRAM headroom
+	// (LECTABLE_MODEL_IDLE_UNLOAD_AFTER) elapses on hardware with no VRAM headroom
 	// to spare running both at once.
 	m.queue.RegisterPool(poolGeneration, taskqueue.PoolConfig{Capacity: maxInFlight, OnActivate: func() { m.onPoolActivate(poolGeneration) }})
 	m.queue.RegisterPool(poolLLM, taskqueue.PoolConfig{Capacity: maxAttributionInFlight, OnActivate: func() { m.onPoolActivate(poolLLM) }})

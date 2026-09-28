@@ -70,3 +70,32 @@ func TestLexiconPrefixRules(t *testing.T) {
 		}
 	}
 }
+
+func TestLexiconMatchedWords(t *testing.T) {
+	rule := LexiconEntry{Term: "gaol", Replacement: "jail", Prefix: true}
+	got := LexiconMatchedWords("The gaoler left the Gaol; gaols everywhere, rogaol not.", rule)
+	if !reflect.DeepEqual(got, []string{"gaoler", "Gaol", "gaols"}) {
+		t.Errorf("prefix = %q", got)
+	}
+	whole := LexiconEntry{Term: "Nyx", Replacement: "Nicks"}
+	if got := LexiconMatchedWords("Nyx and Nyxie", whole); !reflect.DeepEqual(got, []string{"Nyx"}) {
+		t.Errorf("whole word = %q", got)
+	}
+}
+
+// TestDemesneRule pins the All-books rule that replaced speakerattr's old
+// hard-coded demesne respelling, with the same results.
+func TestDemesneRule(t *testing.T) {
+	lex := []LexiconEntry{{Term: "demesne", Replacement: "domain", Prefix: true}}
+	for in, want := range map[string]string{
+		"He walked the bounds of his demesne.": "He walked the bounds of his domain.",
+		"The lords' demesnes stretched east.":  "The lords' domains stretched east.",
+		"Demesne law applied there.":           "Domain law applied there.",
+		"THE DEMESNES OF THE KING":             "THE DOMAINS OF THE KING",
+		"The demesne's borders held.":          "The domain's borders held.",
+	} {
+		if got := Apply(in, nil, LexiconSubstitutions(in, lex)); got != want {
+			t.Errorf("%q -> %q, want %q", in, got, want)
+		}
+	}
+}

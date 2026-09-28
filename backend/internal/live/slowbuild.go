@@ -9,16 +9,16 @@ import (
 )
 
 // slowBuildThreshold is how long a topic build can take before it's logged
-// (LIVE_SLOW_BUILD_MS, default 500; 0 or negative disables). Builds share
+// (LECTABLE_LIVE_SLOW_BUILD_MS, default 500; 0 or negative disables). Builds share
 // the store's single DuckDB connection with everything else, so one slow
 // topic - rebuilt on every relevant write - quietly stalls generation,
 // position saves and every other page; this makes that visible.
 var slowBuildThreshold = func() time.Duration {
-	if v := os.Getenv("LIVE_SLOW_BUILD_MS"); v != "" {
+	if v := os.Getenv("LECTABLE_LIVE_SLOW_BUILD_MS"); v != "" {
 		if ms, err := strconv.Atoi(v); err == nil {
 			return time.Duration(ms) * time.Millisecond
 		}
-		log.Printf("live: LIVE_SLOW_BUILD_MS=%q is not a valid int, using 500", v)
+		log.Printf("live: LECTABLE_LIVE_SLOW_BUILD_MS=%q is not a valid int, using 500", v)
 	}
 	return 500 * time.Millisecond
 }()

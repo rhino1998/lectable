@@ -1,4 +1,4 @@
-// Package audiomaint keeps DATA_DIR/audio tidy in the background: it
+// Package audiomaint keeps LECTABLE_DATA_DIR/audio tidy in the background: it
 // converts served clips written before the switch to Ogg Opus
 // (MigrateLegacyWAV), and deletes files the database no longer refers to
 // (SweepOrphans). Run does both from cmd/server.
@@ -298,7 +298,7 @@ type SweepStats struct {
 	BytesRemoved int64
 }
 
-// SweepOrphans deletes whatever under DATA_DIR/audio refs no longer
+// SweepOrphans deletes whatever under LECTABLE_DATA_DIR/audio refs no longer
 // accounts for, touching only entries last modified before cutoff: whole
 // books and chapters that are gone, voice directories no paragraph_audio
 // row names, music files of deleted regions, ambience loops no region

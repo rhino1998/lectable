@@ -81,7 +81,7 @@ type seen struct {
 }
 
 func main() {
-	addr := flag.String("addr", "ws://127.0.0.1:8080/api/events", "live events websocket URL (see backend's PORT env var if not the default 8080)")
+	addr := flag.String("addr", "ws://127.0.0.1:8080/api/events", "live events websocket URL (see backend's LECTABLE_PORT env var if not the default 8080)")
 	bookFilter := flag.String("book", "", "only show tasks whose bookId has this prefix")
 	kindFilter := flag.String("kind", "", "only show tasks whose kind is in this comma-separated list (e.g. speech_direction,speaker_characterization)")
 	grepFilter := flag.String("grep", "", "only show tasks whose printed line contains this substring (case-insensitive)")

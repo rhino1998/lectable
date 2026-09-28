@@ -691,6 +691,19 @@ export function useLexiconSuggestions(bookId: string): LiveResult<LexiconSuggest
   return useLive('lexiconSuggestions', { bookId })
 }
 
+// Live "what would this rule respell?" check for the lexicon form - a plain
+// query (not a topic: it's about an unsaved rule), refetched as the rule
+// changes; the previous answer stays up while the next one loads.
+export function useLexiconMatches(bookId: string, rule: UpsertLexiconRequest) {
+  const term = rule.term.trim()
+  return useQuery({
+    queryKey: ['lexiconMatches', bookId, term, rule.prefix, rule.caseSensitive],
+    queryFn: () => api.lexiconMatches(bookId, rule),
+    enabled: term.length > 0,
+    placeholderData: (prev) => prev,
+  })
+}
+
 export function usePreviewLexiconEntry(bookId: string) {
   return useMutation({
     mutationFn: (body: UpsertLexiconRequest) => api.previewLexiconEntry(bookId, body),

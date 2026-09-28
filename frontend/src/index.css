@@ -2777,3 +2777,15 @@ label {
 .lexicon-suggestion-unusual {
   border-color: var(--accent);
 }
+
+.warning-text {
+  color: var(--warning, #b45309);
+}
+
+.lexicon-match-summary {
+  margin: 0 0 0.6rem;
+  font-size: 0.85rem;
+}
+.lexicon-matched-words {
+  font-size: 0.8rem;
+}

@@ -187,7 +187,7 @@ func (s *Server) handleBulkAction(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if s.Speaker == nil {
-		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set SPEAKER_LLM_MODEL_PATH)")
+		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
 	group := jobs.BulkGroup{

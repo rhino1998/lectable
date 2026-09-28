@@ -212,7 +212,7 @@ func (m *Manager) spawnAndWaitLocked(ctx context.Context) error {
 	cmd := exec.Command(m.cfg.BinPath, "-port", strconv.Itoa(m.cfg.Port))
 	cmd.Env = append(os.Environ(), "LD_LIBRARY_PATH="+m.cfg.LibDir+":"+os.Getenv("LD_LIBRARY_PATH"))
 	if m.cfg.DefaultCloneModel != "" {
-		cmd.Env = append(cmd.Env, "QWEN_TTS_DEFAULT_CLONE_MODEL="+m.cfg.DefaultCloneModel)
+		cmd.Env = append(cmd.Env, "LECTABLE_DEFAULT_CLONE_MODEL="+m.cfg.DefaultCloneModel)
 	}
 	if _, set := os.LookupEnv("OMP_NUM_THREADS"); !set {
 		cmd.Env = append(cmd.Env, "OMP_NUM_THREADS="+strconv.Itoa(workerOMPThreads))
@@ -779,7 +779,7 @@ func (m *Manager) LLMGenerate(ctx context.Context, systemPrompt, userPrompt stri
 
 // UnloadTTS asks the worker to free every currently-loaded TTS clone
 // model right now (audioworker.Worker.UnloadAll, via POST /unload) rather
-// than waiting for its own idle timer (MODEL_IDLE_UNLOAD_AFTER) - called
+// than waiting for its own idle timer (LECTABLE_MODEL_IDLE_UNLOAD_AFTER) - called
 // by internal/jobs on a genuine pool-family switch away from TTS work
 // (toward the LLM) and when the whole queue is paused, so a model that
 // won't be touched again for a while actually frees its VRAM promptly.

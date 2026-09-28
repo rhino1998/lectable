@@ -870,6 +870,16 @@ interface LectableApi {
     ): IdResponseDto
 
     /**
+     * handleLexiconMatches reports what a rule - saved or not - matches in this
+     * book, so the editor can show it before saving.
+     */
+    @POST("api/books/{id}/lexicon/matches")
+    suspend fun lexiconMatches(
+        @Path("id") id: String,
+        @Body body: UpsertLexiconRequestDto,
+    ): LexiconMatchesDto
+
+    /**
      * handlePreviewLexicon renders a rule - saved or not yet saved - in the
      * book's own narrator voice and clone model, so a listener can hear a
      * respelling before committing to it (and regenerating every line it
@@ -1121,7 +1131,7 @@ interface LectableApi {
      * internal/instanceid) - a client caching data locally (the Android app's
      * offline downloads - see android/CLAUDE.md) uses this to scope that cache
      * per-backend, since book IDs alone are only unique within one backend.
-     * Name is the optional LIBRARY_NAME operators can set purely so a client
+     * Name is the optional LECTABLE_LIBRARY_NAME operators can set purely so a client
      * juggling multiple backends has something human-readable to show, distinct
      * from id (never meant to be read by a person).
      */

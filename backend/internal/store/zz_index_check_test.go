@@ -11,9 +11,9 @@ import (
 // For every single-column secondary index, compares per-value row counts
 // from a full scan against an indexed equality lookup.
 func TestCheckLiveCopyIndexes(t *testing.T) {
-	path := os.Getenv("LIVE_DB_COPY")
+	path := os.Getenv("LECTABLE_LIVE_DB_COPY")
 	if path == "" {
-		t.Skip("LIVE_DB_COPY unset")
+		t.Skip("LECTABLE_LIVE_DB_COPY unset")
 	}
 	db, err := sql.Open("duckdb", path)
 	if err != nil {
@@ -76,9 +76,9 @@ func TestCheckLiveCopyIndexes(t *testing.T) {
 
 // Drops and recreates every secondary index from its own stored SQL.
 func TestRepairLiveIndexes(t *testing.T) {
-	path := os.Getenv("REPAIR_DB")
+	path := os.Getenv("LECTABLE_REPAIR_DB")
 	if path == "" {
-		t.Skip("REPAIR_DB unset")
+		t.Skip("LECTABLE_REPAIR_DB unset")
 	}
 	db, err := sql.Open("duckdb", path)
 	if err != nil {

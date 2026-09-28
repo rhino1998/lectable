@@ -24,7 +24,7 @@ import (
 // temp data directory, and a real jobs.Manager pointed at a fake ttsworker
 // (see ttsworkertest) instead of a real one - no GPU, no audio.cpp, no
 // network beyond loopback. Speaker is deliberately left nil, matching a
-// deployment with SPEAKER_LLM_MODEL_PATH unset (see Server.Speaker's own
+// deployment with LECTABLE_SPEAKER_LLM_MODEL_PATH unset (see Server.Speaker's own
 // doc comment) - LLM-backed endpoints are expected to report 503 in this
 // configuration, exercised explicitly below rather than left untested.
 func newTestServer(t *testing.T) (*Server, *store.DuckStore, *ttsworkertest.Server, *httptest.Server) {

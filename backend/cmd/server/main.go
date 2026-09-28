@@ -47,29 +47,29 @@ func homePath(elem ...string) string {
 }
 
 func main() {
-	portStr := getenv("PORT", "8080")
+	portStr := getenv("LECTABLE_PORT", "8080")
 	addr := ":" + portStr
-	dataDir := getenv("DATA_DIR", "./data")
-	allowOrigin := getenv("ALLOW_ORIGIN", "http://localhost:5173")
+	dataDir := getenv("LECTABLE_DATA_DIR", "./data")
+	allowOrigin := getenv("LECTABLE_ALLOW_ORIGIN", "http://localhost:5173")
 	// Purely a human-readable label (e.g. "Home", "Office") for a client juggling more than one
 	// backend to tell them apart by - see internal/instanceid's InstanceID for the actual stable
 	// identity clients scope cached data by; this is never used for that. Empty by default since
 	// most setups only ever talk to one backend and don't need to name it.
-	libraryName := getenv("LIBRARY_NAME", "")
+	libraryName := getenv("LECTABLE_LIBRARY_NAME", "")
 
 	// ttsworker.Manager spawns and watchdog-restarts a separate ttsworker
 	// process (the only thing in this app that links against
 	// libaudiocpp.so - see backend/CLAUDE.md) rather than talking to a
-	// separate Python service; TTS_WORKER_BIN/AUDIOCPP_LIB_DIR replace the
+	// separate Python service; LECTABLE_TTS_WORKER_BIN/LECTABLE_AUDIOCPP_LIB_DIR replace the
 	// old TTS_SERVICE_URL.
-	ttsWorkerBin := getenv("TTS_WORKER_BIN", "./ttsworker")
-	audiocppLibDir := getenv("AUDIOCPP_LIB_DIR", homePath("audio.cpp", "build", "bin"))
+	ttsWorkerBin := getenv("LECTABLE_TTS_WORKER_BIN", "./ttsworker")
+	audiocppLibDir := getenv("LECTABLE_AUDIOCPP_LIB_DIR", homePath("audio.cpp", "build", "bin"))
 	ttsWorkerPort := 0
-	if v := os.Getenv("TTS_WORKER_PORT"); v != "" {
+	if v := os.Getenv("LECTABLE_TTS_WORKER_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {
 			ttsWorkerPort = p
 		} else {
-			log.Printf("TTS_WORKER_PORT %q is not numeric, using default", v)
+			log.Printf("LECTABLE_TTS_WORKER_PORT %q is not numeric, using default", v)
 		}
 	}
 
@@ -149,7 +149,7 @@ func main() {
 	go liveHub.Run(ctx)
 
 	// speakerClient is nil (and speaker attribution's endpoint reports 503)
-	// unless the model file (SPEAKER_LLM_MODEL_PATH, or
+	// unless the model file (LECTABLE_SPEAKER_LLM_MODEL_PATH, or
 	// speakerattr.DefaultModelPath) exists - see internal/speakerattr. The
 	// GGUF model itself is loaded and run inside the ttsworker process (see
 	// internal/llmworker and backend/CLAUDE.md's "ttsworker / audioworker"
@@ -157,14 +157,14 @@ func main() {
 	// connection ttsMgr already maintains for TTS calls.
 	speakerClient := speakerattr.NewClientFromEnv(ttsMgr)
 	if speakerClient == nil {
-		log.Printf("speaker attribution: model %s not found (set SPEAKER_LLM_MODEL_PATH), disabled", speakerattr.ModelPathFromEnv())
+		log.Printf("speaker attribution: model %s not found (set LECTABLE_SPEAKER_LLM_MODEL_PATH), disabled", speakerattr.ModelPathFromEnv())
 	} else {
 		defer speakerClient.Close()
 	}
 
 	narrationResolver := narration.NewResolver(st)
 	// Book exports build in the background and are kept under
-	// DATA_DIR/exports; build state changes reach clients via the
+	// LECTABLE_DATA_DIR/exports; build state changes reach clients via the
 	// bookExports live topic.
 	exports := bookexport.NewManager(bookexport.Source{Store: st, Voices: narrationResolver, DataDir: dataDir},
 		func() { liveHub.Invalidate(httpapi.DepExports) })
@@ -188,7 +188,7 @@ func main() {
 
 	var mdnsServer *mdnsadvert.Server
 	if port, err := strconv.Atoi(portStr); err != nil {
-		log.Printf("mdns: PORT %q is not numeric, skipping LAN advertisement: %v", portStr, err)
+		log.Printf("mdns: LECTABLE_PORT %q is not numeric, skipping LAN advertisement: %v", portStr, err)
 	} else if mdnsServer, err = mdnsadvert.Start(port); err != nil {
 		log.Printf("mdns: failed to advertise on LAN, falling back to manual discovery: %v", err)
 	} else {

@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -255,6 +256,11 @@ type Worker struct {
 	idleStop chan struct{}
 	idleDone chan struct{}
 }
+
+// logPrompts (LECTABLE_LLM_LOG_PROMPTS=1) logs every call's full prompt and output
+// text - see LLMGenerate. Read by ttsworker, which inherits the server's
+// environment.
+var logPrompts = os.Getenv("LECTABLE_LLM_LOG_PROMPTS") == "1"
 
 var backendInitOnce sync.Once
 
@@ -581,22 +587,33 @@ func (w *Worker) LLMGenerate(ctx context.Context, systemPrompt, userPrompt strin
 	// pipeline take minutes despite an isolated reproduction of the exact
 	// same prompt finishing in seconds) - reqID correlates this call's own
 	// start/end log lines with each other and with whatever's happening
-	// concurrently in the rest of the log. Logs the full prompt text,
-	// deliberately untruncated, since a truncated prompt is exactly what's
-	// useless when the goal is reproducing a specific slow/stuck call
-	// outside the live pipeline.
+	// concurrently in the rest of the log. With LECTABLE_LLM_LOG_PROMPTS=1 it also
+	// logs the full prompt and output text, deliberately untruncated, since
+	// a truncated prompt is exactly what's useless when the goal is
+	// reproducing a specific slow/stuck call outside the live pipeline -
+	// off by default, since every attribution/pronunciation/ambience batch
+	// logging its whole prompt grew the server log past a gigabyte.
 	reqID := w.reqCounter.Add(1)
 	start := time.Now()
 	var stats llamacpp.GenStats
-	log.Printf("llmworker: [req %d] starting generate (temp=%.2f maxTokens=%d)\n--- system prompt ---\n%s\n--- user prompt ---\n%s\n--- end prompt ---", reqID, temp, maxTokens, systemPrompt, userPrompt)
+	if logPrompts {
+		log.Printf("llmworker: [req %d] starting generate (temp=%.2f maxTokens=%d)\n--- system prompt ---\n%s\n--- user prompt ---\n%s\n--- end prompt ---", reqID, temp, maxTokens, systemPrompt, userPrompt)
+	} else {
+		log.Printf("llmworker: [req %d] starting generate (temp=%.2f maxTokens=%d, system %d bytes, user %d bytes)", reqID, temp, maxTokens, len(systemPrompt), len(userPrompt))
+	}
 	defer func() {
 		if err != nil {
 			log.Printf("llmworker: [req %d] failed after %s: %v", reqID, time.Since(start).Round(time.Millisecond), err)
 		} else {
-			log.Printf("llmworker: [req %d] finished after %s (%d bytes out; prompt %d tok + %d reused, prefill %s; gen %d tok, decode %s; queued %s)\n--- output ---\n%s\n--- end output ---",
+			summary := fmt.Sprintf("llmworker: [req %d] finished after %s (%d bytes out; prompt %d tok + %d reused, prefill %s; gen %d tok, decode %s; queued %s)",
 				reqID, time.Since(start).Round(time.Millisecond), len(out),
 				stats.PromptTokens, stats.ReusedTokens, stats.Prefill.Round(time.Millisecond),
-				stats.GenTokens, stats.Decode.Round(time.Millisecond), stats.Queued.Round(time.Millisecond), out)
+				stats.GenTokens, stats.Decode.Round(time.Millisecond), stats.Queued.Round(time.Millisecond))
+			if logPrompts {
+				log.Printf("%s\n--- output ---\n%s\n--- end output ---", summary, out)
+			} else {
+				log.Print(summary)
+			}
 		}
 	}()
 

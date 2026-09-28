@@ -345,7 +345,7 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
   reference audio bytes on every call; audio.cpp's own session-level cache
   (`cloneFamily.sessionOptions`, 8 slots) transparently dedupes repeated
   (reference audio, reference text) pairs. `Config.IdleUnloadAfter`
-  (wired from `MODEL_IDLE_UNLOAD_AFTER`, shared with `internal/llmworker`)
+  (wired from `LECTABLE_MODEL_IDLE_UNLOAD_AFTER`, shared with `internal/llmworker`)
   frees *every* loaded clone model, including the otherwise-never-evicted
   default one, once none of `Generate`/`Design`/`Align` has been called
   for that long - timeout-based deliberately, not triggered eagerly on
@@ -368,7 +368,7 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
 - **`internal/llmworker`** is the *only* package importing `llamacpp-go`.
   It loads the speaker-attribution GGUF model lazily (on first
   `LLMGenerate` call, or the first call after an idle unload) and serves
-  up to `Config.MaxConcurrent` (default 2, `SPEAKER_LLM_MAX_CONCURRENT` -
+  up to `Config.MaxConcurrent` (default 2, `LECTABLE_SPEAKER_LLM_MAX_CONCURRENT` -
   lowered from an original 4 after a real, observed "failed to allocate
   buffer for kv cache" VRAM exhaustion: the shared KV pool has to reserve
   room for every one of `MaxConcurrent` slots to independently reach
@@ -383,7 +383,7 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
   permanently-resident sequence at load time, so later calls sharing one
   of those exact strings skip redecoding it - `llamacpp.Context.CopySeq`
   copies that shared prefix into whichever generation slot picks up the
-  call. With `SPEAKER_LLM_PRIME_STATE=true` they're snapshots
+  call. With `LECTABLE_SPEAKER_LLM_PRIME_STATE=true` they're snapshots
   restored into (and then kept in) a slot's own KV stream instead. Each
   finished call logs its prompt/reused/generated tokens and prefill/decode
   time.
@@ -510,7 +510,7 @@ building/running `ttsworker` does, since both now link into that binary.
   to preserve, so schema changes just edit the `CREATE TABLE IF NOT
   EXISTS` statements in `Open` directly (this DuckDB version also rejects
   `ALTER TABLE ... ADD COLUMN` with a constraint outright, `IF NOT EXISTS`
-  or not) — wipe the local `DATA_DIR` (`library.duckdb`) and start fresh
+  or not) — wipe the local `LECTABLE_DATA_DIR` (`library.duckdb`) and start fresh
   whenever the schema changes.
 - `internal/narration/` — resolves a paragraph's *effective* narration
   voice: `Resolver.BookVoice` (a book's own single voice) as the fallback,
@@ -532,16 +532,16 @@ building/running `ttsworker` does, since both now link into that binary.
   `internal/llmworker`, which actually runs the model) and directly by
   `*internal/llmworker.Worker` in `cmd/benchattr` (a standalone
   benchmarking tool with no ttsworker process of its own). Env vars
-  `SPEAKER_LLM_MODEL_PATH`/`SPEAKER_LLM_GPU_LAYERS`/`SPEAKER_LLM_CTX`/
-  `SPEAKER_LLM_MAX_CONCURRENT` are read by `cmd/ttsworker/main.go` (wired
+  `LECTABLE_SPEAKER_LLM_MODEL_PATH`/`LECTABLE_SPEAKER_LLM_GPU_LAYERS`/`LECTABLE_SPEAKER_LLM_CTX`/
+  `LECTABLE_SPEAKER_LLM_MAX_CONCURRENT` are read by `cmd/ttsworker/main.go` (wired
   into `llmworker.Config`, since that's the process that loads the model)
   - `cmd/server` still resolves the model path too
   (`speakerattr.ModelPathFromEnv`), but only to decide whether the feature
   is enabled at all (`NewClientFromEnv`: disabled if the file doesn't exist).
-  `SPEAKER_LLM_MODEL_PATH` (a `.gguf` file, default
+  `LECTABLE_SPEAKER_LLM_MODEL_PATH` (a `.gguf` file, default
   `~/llm-models/qwen3-4b-instruct-2507-q4_k_m.gguf`, see
-  `speakerattr.DefaultModelPath`), `SPEAKER_LLM_GPU_LAYERS` (default `-1`: offload everything a GPU
-  backend can take), `SPEAKER_LLM_CTX` (each generation slot's share of
+  `speakerattr.DefaultModelPath`), `LECTABLE_SPEAKER_LLM_GPU_LAYERS` (default `-1`: offload everything a GPU
+  backend can take), `LECTABLE_SPEAKER_LLM_CTX` (each generation slot's share of
   the shared KV pool; default `speakerattr.SlotNCtx()` - the largest reply
   any pass asks for (8192, the emotion pass), never below 12288 so the
   prompt fits too. It was 24576 while attribution replied with a JSON
@@ -550,28 +550,32 @@ building/running `ttsworker` does, since both now link into that binary.
   trained context size", deliberately: modern GGUF models increasingly
   train at a very large native context (Qwen3 trains at 262144), and a KV
   cache sized for that can fail to allocate alongside another
-  already-VRAM-resident model; set `SPEAKER_LLM_CTX=0` explicitly if a
-  given model genuinely needs more), `SPEAKER_LLM_MAX_CONCURRENT` (default `2`, see
+  already-VRAM-resident model; set `LECTABLE_SPEAKER_LLM_CTX=0` explicitly if a
+  given model genuinely needs more), `LECTABLE_SPEAKER_LLM_MAX_CONCURRENT` (default `2`, see
   `llmworker.Config.MaxConcurrent`'s own doc comment for why),
-  `SPEAKER_LLM_PRIME_STATE` (bool, default `false`, but `run.sh` - so
+  `LECTABLE_SPEAKER_LLM_PRIME_STATE` (bool, default `false`, but `run.sh` - so
   `make deploy`/`make run` - sets `true`; keeps primed system
   prompts as restored KV snapshots in a non-unified cache instead of
   resident sequences; ~28% faster attribution, +1.4GB worker RSS, see
   `llmworker.Config.PrimeAsState` and `../llamacpp-go/CLAUDE.md`),
-  `SPEAKER_LLM_UBATCH` (physical batch size, default llama.cpp's 512), `SPEAKER_LLM_NO_THINK` (bool, default
+  `LECTABLE_LLM_LOG_PROMPTS` (`1` logs every LLM call's full prompt and output
+  text; off by default, when each call logs a one-line summary - the
+  full dumps grew the server log past a gigabyte; `run.sh` also starts a
+  fresh `LECTABLE_LOG_FILE` per run, keeping the previous one as `LECTABLE_LOG_FILE.1`),
+  `LECTABLE_SPEAKER_LLM_UBATCH` (physical batch size, default llama.cpp's 512), `LECTABLE_SPEAKER_LLM_NO_THINK` (bool, default
   `false`) - appends Qwen3's `/no_think` marker to every attribution
   batch's user turn.
   **Recommended model: `Qwen3-4B-Instruct-2507`** (a genuinely
   non-thinking-only checkpoint, not a hybrid-thinking model with
   `/no_think` bolted on) - benchmarked on real book content against
   hybrid-thinking Qwen3-1.7B/0.6B (with and without
-  `SPEAKER_LLM_NO_THINK`): a hybrid-thinking model's own `<think>...</think>`
+  `LECTABLE_SPEAKER_LLM_NO_THINK`): a hybrid-thinking model's own `<think>...</think>`
   trace routinely burns through `attributeMaxTokens` before ever producing
   the JSON answer, outright losing entire batches on real chapter-length
   content (1.7B-thinking lost most of two of three test chapters,
   0.6B-thinking lost two of three entirely), and even completed batches
   drastically under-attribute real dialogue (defaulting almost everything
-  to `"Narrator"`/`"Unknown"`). `SPEAKER_LLM_NO_THINK=true` on the same
+  to `"Narrator"`/`"Unknown"`). `LECTABLE_SPEAKER_LLM_NO_THINK=true` on the same
   hybrid models fixes both (0 batch failures, far higher recall) but is
   still a workaround - Qwen3-4B-Instruct-2507 had zero batch failures, the
   best recall of everything tested, and correctly resolved a real
@@ -757,7 +761,7 @@ building/running `ttsworker` does, since both now link into that binary.
   `handleSetCharacterVoice` resolves the same book's clone model
   server-side. `httpapi.Server.Speaker` is `nil` (attribution endpoint
   reports 503, lazy characterization stays a no-op) if
-  `SPEAKER_LLM_MODEL_PATH` is unconfigured - everything else works
+  `LECTABLE_SPEAKER_LLM_MODEL_PATH` is unconfigured - everything else works
   regardless. Attribution is explicitly triggered per chapter (`POST
   .../attribute-speakers`); characterization/voice-provisioning happens
   the first time it's needed, or explicitly via the Speakers page's
@@ -1312,7 +1316,7 @@ building/running `ttsworker` does, since both now link into that binary.
   The timeline is meant to feed an Opus .m4b writer too - `manager.go`'s
   `write` is the one place a format plugs in. A **full-book** export also
   carries lectable's own data under `META-INF/lectable/` (readers ignore
-  it): `manifest.json` (maps every archive entry to its DATA_DIR path + mtime),
+  it): `manifest.json` (maps every archive entry to its LECTABLE_DATA_DIR path + mtime),
   `db/<table>.jsonl` (`store.ExportBookRows` - DuckDB `to_json` of each row,
   paragraph_audio trimmed to the exported clips), and `data/...` (source
   epub, voice refs + emotion variants for every preset in play, SFX, music
@@ -1324,7 +1328,7 @@ building/running `ttsworker` does, since both now link into that binary.
   or `voice-refs/`, which is never overwritten); `409 book_exists` if the
   book is already there. Uploading a full export through `POST /api/books`
   imports it; a chapter-subset export is imported as a plain new book.
-  `Manager` keeps built exports at `DATA_DIR/exports/<book>/<id>.epub` +
+  `Manager` keeps built exports at `LECTABLE_DATA_DIR/exports/<book>/<id>.epub` +
   `<id>.json` (id = `Options.ID()`, so rebuilding the same selection
   replaces it) and tracks requested ones; staleness is computed on read
   from `store.ExportFingerprints` (SyncFingerprints widened to SFX, music
@@ -1532,25 +1536,25 @@ go run ./cmd/server                     # needs neither - see the hard invariant
 
 `run.sh` (this directory) wraps the above plus every env var below with
 the same defaults `Makefile` uses (override any of them by exporting
-first, e.g. `AUDIOCPP_DIR`/`LLAMACPP_DIR`/`DATA_DIR`/
-`SPEAKER_LLM_MODEL_PATH`): `./run.sh --build` builds both binaries then
+first, e.g. `AUDIOCPP_DIR`/`LLAMACPP_DIR`/`LECTABLE_DATA_DIR`/
+`LECTABLE_SPEAKER_LLM_MODEL_PATH`): `./run.sh --build` builds both binaries then
 launches `server` backgrounded (logging to `/tmp/lectable-server.log` by
-default, `$LOG_FILE` to override) - `server` spawns `ttsworker` itself, as
+default, `$LECTABLE_LOG_FILE` to override) - `server` spawns `ttsworker` itself, as
 always. Drop `--build` to relaunch without rebuilding, or add `--fg`/
 `--foreground` to run in the foreground instead of backgrounding it. This
 is the easiest way to get both binaries' env vars right at once - prefer
 it (or `make run`, identical) over reconstructing `CGO_LDFLAGS`/
 `LD_LIBRARY_PATH` by hand.
 
-Env vars (all optional): `PORT` (8080), `DATA_DIR` (`./data`),
-`ALLOW_ORIGIN` (`http://localhost:5173`), `TTS_WORKER_BIN` (`./ttsworker`),
-`TTS_WORKER_PORT` (8091), `AUDIOCPP_LIB_DIR`
+Env vars (all optional): `LECTABLE_PORT` (8080), `LECTABLE_DATA_DIR` (`./data`),
+`LECTABLE_ALLOW_ORIGIN` (`http://localhost:5173`), `LECTABLE_TTS_WORKER_BIN` (`./ttsworker`),
+`LECTABLE_TTS_WORKER_PORT` (8091), `LECTABLE_AUDIOCPP_LIB_DIR`
 (`~/audio.cpp/build/bin`), `LECTABLE_AUDIOCPP_MODELS_DIR`
-(`~/audio.cpp/models` - where every default audio.cpp GGUF path resolves), `SPEAKER_LLM_MODEL_PATH`/
-`SPEAKER_LLM_GPU_LAYERS`/`SPEAKER_LLM_CTX`/`SPEAKER_LLM_MAX_CONCURRENT`/
-`SPEAKER_LLM_NO_THINK`/`MODEL_IDLE_UNLOAD_AFTER` (speaker attribution - see
+(`~/audio.cpp/models` - where every default audio.cpp GGUF path resolves), `LECTABLE_SPEAKER_LLM_MODEL_PATH`/
+`LECTABLE_SPEAKER_LLM_GPU_LAYERS`/`LECTABLE_SPEAKER_LLM_CTX`/`LECTABLE_SPEAKER_LLM_MAX_CONCURRENT`/
+`LECTABLE_SPEAKER_LLM_NO_THINK`/`LECTABLE_MODEL_IDLE_UNLOAD_AFTER` (speaker attribution - see
 "ttsworker / audioworker / llmworker" and `internal/speakerattr` above;
-attribution is disabled, not fatal, if the model file doesn't exist). `DB_SLOW_LOG_MS` (100) logs every DB call at or above that
+attribution is disabled, not fatal, if the model file doesn't exist). `LECTABLE_DB_SLOW_LOG_MS` (100) logs every DB call at or above that
 many ms (`store: timing <method> <op> took ...`; `0` logs all, negative
 disables) - with the single connection, that time includes waiting for
 it, and `transaction held` lines show who held it. Every finished job
@@ -1562,7 +1566,7 @@ server`), not `./ttsworker` directly - `cmd/server`'s own `ttsworker.
 Manager` spawns the worker with `os.Environ()` (its own environment) as
 the child process's base, so any of these already set for `cmd/server`
 flow through to `ttsworker` automatically; only `LD_LIBRARY_PATH` (and
-`QWEN_TTS_DEFAULT_CLONE_MODEL`) get explicitly overridden on top of that.
+`LECTABLE_DEFAULT_CLONE_MODEL`) get explicitly overridden on top of that.
 Building `cmd/server` itself needs neither native library's shared
 libraries on `CGO_LDFLAGS`/`LD_LIBRARY_PATH` any more - only `ttsworker`'s
 build does, since both now link into that one binary.

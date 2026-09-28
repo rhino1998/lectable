@@ -4,6 +4,7 @@ import { ApiError } from '../../api/client'
 import {
   useDeleteLexiconEntry,
   useLexicon,
+  useLexiconMatches,
   useLexiconSuggestions,
   usePreviewLexiconEntry,
   useUpsertLexiconEntry,
@@ -38,6 +39,11 @@ export function LexiconPanel({ bookId, seriesName }: { bookId: string; seriesNam
   // Save for every book rather than this series.
   const [global, setGlobal] = useState(false)
   const formRule = { term, replacement, caseSensitive, prefix, global }
+  const matches = useLexiconMatches(bookId, formRule).data
+  // A derived-word rule reaching many different words is usually too broad
+  // ("Al" would also respell Alfred and Alice).
+  const distinctMatched = matches ? matches.words.length + (matches.moreWords ?? 0) : 0
+  const tooBroad = prefix && distinctMatched > 5
   const resetForm = (t = '') => {
     setTerm(t)
     setReplacement('')
@@ -158,6 +164,16 @@ export function LexiconPanel({ bookId, seriesName }: { bookId: string; seriesNam
           <RiAddLine className={upsert.isPending ? 'spin' : undefined} />
         </button>
       </form>
+      {term.trim() !== '' && matches && (
+        <p className={'lexicon-match-summary' + (tooBroad ? ' warning-text' : ' muted')}>
+          {matches.paragraphs === 0
+            ? 'No matches in this book.'
+            : `Matches ${matches.paragraphs} paragraph${matches.paragraphs === 1 ? '' : 's'} here: ${matches.words.join(', ')}${matches.moreWords ? ` and ${matches.moreWords} more` : ''}.`}
+          {tooBroad &&
+            ` That's ${distinctMatched} different words - check "Derived words" isn't too broad${global ? ' for every book' : ''}.`}
+          {global && ' (Counted in this book only.)'}
+        </p>
+      )}
       {suggestions.length > 0 && (
         <div className="lexicon-suggestions">
           <span className="muted">Names without a rule:</span>
@@ -201,7 +217,12 @@ export function LexiconPanel({ bookId, seriesName }: { bookId: string; seriesNam
                   {e.caseSensitive && <span className="muted"> (case)</span>}
                   {e.global && <span className="muted"> (all books)</span>}
                 </td>
-                <td>{e.replacement}</td>
+                <td>
+                  {e.replacement}
+                  {e.matchedWords.length > 0 && (
+                    <div className="muted lexicon-matched-words">{e.matchedWords.join(', ')}</div>
+                  )}
+                </td>
                 <td className={e.matches === 0 ? 'muted' : undefined}>{e.matches}</td>
                 <td>
                   <button

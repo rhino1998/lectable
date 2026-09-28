@@ -353,7 +353,7 @@ func (s *DuckStore) DeleteChapterAudio(chapterID string) error {
 	return err
 }
 
-// AudioRefs is everything under DATA_DIR/audio the database still
+// AudioRefs is everything under LECTABLE_DATA_DIR/audio the database still
 // refers to - what audiomaint.SweepOrphans keeps.
 type AudioRefs struct {
 	// ChapterBooks maps every chapter id to its book id; every book id
