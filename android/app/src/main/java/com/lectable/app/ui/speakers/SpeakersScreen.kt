@@ -1,5 +1,9 @@
 package com.lectable.app.ui.speakers
 
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -88,6 +92,12 @@ fun SpeakersScreen(
     // "Someone other than this character" - Narrator plus every other real character's name,
     // shared by the merge sheet and each appearance row's own reassign menu, mirroring
     // frontend's own otherTargets/reassignTargets (the same set for both purposes).
+    var rosterFilter by rememberSaveable { mutableStateOf("") }
+    val filteredSpeakers = remember(uiState.speakers, rosterFilter) {
+        val q = rosterFilter.trim()
+        if (q.isEmpty()) uiState.speakers else uiState.speakers.filter { it.name.contains(q, ignoreCase = true) }
+    }
+
     fun otherTargets(characterId: String) =
         listOf("Narrator") + uiState.speakers.filter { it.id.isNotEmpty() && it.id != characterId }.map { it.name }
 
@@ -148,10 +158,35 @@ fun SpeakersScreen(
             }
             item {
                 Text(
-                    "Roster",
+                    if (rosterFilter.isBlank() || uiState.speakers.isEmpty()) {
+                        "Roster"
+                    } else {
+                        "Roster (${filteredSpeakers.size} of ${uiState.speakers.size})"
+                    },
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
+            }
+            // Roster search - name only, like the web page's; filters just what's shown, while
+            // merge/reassign targets still come from the full roster.
+            if (uiState.speakers.isNotEmpty()) {
+                item {
+                    OutlinedTextField(
+                        value = rosterFilter,
+                        onValueChange = { rosterFilter = it },
+                        placeholder = { Text("Search speakers…") },
+                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                        trailingIcon = {
+                            if (rosterFilter.isNotEmpty()) {
+                                IconButton(onClick = { rosterFilter = "" }) {
+                                    Icon(Icons.Filled.Close, contentDescription = "Clear search")
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                    )
+                }
             }
             if (uiState.loading) {
                 item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
@@ -164,8 +199,17 @@ fun SpeakersScreen(
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     )
                 }
+            } else if (filteredSpeakers.isEmpty()) {
+                item {
+                    Text(
+                        "No matches",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    )
+                }
             } else {
-                items(uiState.speakers, key = { it.id.ifEmpty { "narrator" } }) { speaker ->
+                items(filteredSpeakers, key = { it.id.ifEmpty { "narrator" } }) { speaker ->
                     SpeakerRow(
                         speaker = speaker,
                         bookVoiceName = uiState.bookVoiceName,
