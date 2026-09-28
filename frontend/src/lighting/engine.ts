@@ -22,24 +22,25 @@ import type { HueBridge, HueLight, HueState } from './hue'
 const TICK_MS = 125
 const GROUP_MIN_INTERVAL_MS = 1000
 // Transition into a new cue, in deciseconds.
-const CUT_TRANSITION_DS = 8
-const CONTINUATION_TRANSITION_DS = 40
+const CUT_TRANSITION_DS = 25
+const CONTINUATION_TRANSITION_DS = 100
 const PULSE_PERIOD_MS = 4500
 const SHIMMER_PERIOD_MS = 11000
 const LIGHTNING_MIN_GAP_MS = 7000
 const LIGHTNING_MAX_GAP_MS = 22000
-// Flicker is a very subtle candle-like wander, not a strobe: each light's
-// level random-walks within the top FLICKER_DEPTH of the cue's brightness
-// (it was 45% with 100-300ms jumps - far too intense on real bulbs), easing
-// half way toward a fresh random target per update and fading over the
-// whole time until its next one. Color barely moves: at most
-// FLICKER_COLOR_SHIFT toward a slightly deeper tint of the base itself
-// (flickerTint), never toward the cue's accent, which can be a wildly
+// Flicker is a gentle candle-like wander, not a strobe: each light's level
+// random-walks within the top FLICKER_DEPTH of the cue's brightness, easing
+// FLICKER_EASE of the way toward a fresh random target per update and fading
+// over the whole time until its next one. (It was 45% with 100-300ms jumps -
+// far too intense on real bulbs - then 20% with a 0.5 ease, which kept most
+// lights within ~85-95% and was invisible; this lands roughly 65-95%.)
+// Color moves only a little: at most FLICKER_COLOR_SHIFT toward a slightly
+// deeper tint of the base itself (flickerTint), never toward the cue's accent, which can be a wildly
 // different color. Hue keeps brightness (bri) separate from color (xy), so
 // that drift doesn't change how bright the room is.
-const FLICKER_DEPTH = 0.2
-const FLICKER_COLOR_SHIFT = 0.25
-const FLICKER_EASE = 0.5
+const FLICKER_DEPTH = 0.4
+const FLICKER_COLOR_SHIFT = 0.4
+const FLICKER_EASE = 0.8
 const FLICKER_MIN_DS = 3
 const MAX_IN_FLIGHT = 2
 

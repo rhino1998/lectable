@@ -48,7 +48,7 @@ describe('LightingEngine', () => {
     await vi.advanceTimersByTimeAsync(125)
     expect(calls).toHaveLength(1)
     expect(calls[0]).toMatchObject({ kind: 'group', id: 'g' })
-    expect(calls[0].state).toMatchObject({ on: true, bri: 254, transitiontime: 8 })
+    expect(calls[0].state).toMatchObject({ on: true, bri: 254, transitiontime: 25 })
 
     // The same cue again is a no-op; a new one waits out the group budget.
     engine.setCue(cue(), 'cut')
@@ -57,7 +57,7 @@ describe('LightingEngine', () => {
     expect(calls).toHaveLength(1)
     await vi.advanceTimersByTimeAsync(600)
     expect(calls).toHaveLength(2)
-    expect(calls[1].state.transitiontime).toBe(40)
+    expect(calls[1].state.transitiontime).toBe(100)
     expect(calls[1].at - calls[0].at).toBeGreaterThanOrEqual(1000)
     await engine.stop(false)
   })

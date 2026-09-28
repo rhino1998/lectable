@@ -17,17 +17,17 @@ import kotlinx.coroutines.withContext
 
 private const val TICK_MS = 125L
 private const val GROUP_MIN_INTERVAL_MS = 1000L
-private const val CUT_TRANSITION_DS = 8
-private const val CONTINUATION_TRANSITION_DS = 40
+private const val CUT_TRANSITION_DS = 25
+private const val CONTINUATION_TRANSITION_DS = 100
 private const val PULSE_PERIOD_MS = 4500.0
 private const val SHIMMER_PERIOD_MS = 11000.0
 private const val LIGHTNING_MIN_GAP_MS = 7000L
 private const val LIGHTNING_MAX_GAP_MS = 22000L
 private const val MAX_IN_FLIGHT = 2
-// A very subtle candle-like wander, not a strobe - see frontend engine.ts's FLICKER_DEPTH.
-private const val FLICKER_DEPTH = 0.2
-private const val FLICKER_COLOR_SHIFT = 0.25
-private const val FLICKER_EASE = 0.5
+// A gentle candle-like wander, not a strobe - see frontend engine.ts's FLICKER_DEPTH.
+private const val FLICKER_DEPTH = 0.4
+private const val FLICKER_COLOR_SHIFT = 0.4
+private const val FLICKER_EASE = 0.8
 private const val FLICKER_MIN_DS = 3
 private val DEFAULT_BASE = Rgb(1.0, 0.85, 0.7)
 private val DEFAULT_FLASH = Rgb(0.86, 0.9, 1.0)
