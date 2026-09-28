@@ -23,6 +23,11 @@ type lexiconEntryDTO struct {
 	Term          string `json:"term"`
 	Replacement   string `json:"replacement"`
 	CaseSensitive bool   `json:"caseSensitive"`
+	// Prefix: the rule also covers words starting with Term (see
+	// pronounce.LexiconEntry.Prefix).
+	Prefix bool `json:"prefix"`
+	// Global: the rule applies to every book, not just this series.
+	Global bool `json:"global"`
 	// Matches is how many paragraphs in this book the rule applies to.
 	Matches int `json:"matches"`
 }
@@ -43,7 +48,7 @@ func (s *Server) buildLexicon(bookID string) ([]lexiconEntryDTO, error) {
 	if book == nil {
 		return nil, httpError(http.StatusNotFound, "book not found")
 	}
-	entries, err := s.Store.ListLexicon(store.SeriesScope(book))
+	entries, err := store.BookLexicon(s.Store, book)
 	if err != nil {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
@@ -58,6 +63,7 @@ func (s *Server) buildLexicon(bookID string) ([]lexiconEntryDTO, error) {
 	for i, e := range entries {
 		out[i] = lexiconEntryDTO{
 			ID: e.ID, Term: e.Term, Replacement: e.Replacement, CaseSensitive: e.CaseSensitive,
+			Prefix: e.Prefix, Global: e.Scope == store.GlobalLexiconScope,
 			Matches: len(matchingParagraphs(paragraphs, e.LexiconEntry)),
 		}
 	}
@@ -68,6 +74,17 @@ type upsertLexiconRequest struct {
 	Term          string `json:"term"`
 	Replacement   string `json:"replacement"`
 	CaseSensitive bool   `json:"caseSensitive"`
+	// Prefix also matches words starting with Term ("gaol" -> "gaoler").
+	Prefix bool `json:"prefix"`
+	// Global saves the rule for every book instead of this book's series.
+	Global bool `json:"global"`
+}
+
+func (r upsertLexiconRequest) rule() pronounce.LexiconEntry {
+	return pronounce.LexiconEntry{
+		Term: strings.TrimSpace(r.Term), Replacement: strings.TrimSpace(r.Replacement),
+		CaseSensitive: r.CaseSensitive, Prefix: r.Prefix,
+	}
 }
 
 // handleUpsertLexicon adds a pronunciation rule to the book's series, or
@@ -84,15 +101,16 @@ func (s *Server) handleUpsertLexicon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	req.Term = strings.TrimSpace(req.Term)
-	req.Replacement = strings.TrimSpace(req.Replacement)
-	if req.Term == "" || req.Replacement == "" {
+	rule := req.rule()
+	if rule.Term == "" || rule.Replacement == "" {
 		writeError(w, http.StatusBadRequest, "term and replacement are required")
 		return
 	}
-	entry, previous, err := s.Store.UpsertLexiconEntry(store.SeriesScope(book), pronounce.LexiconEntry{
-		Term: req.Term, Replacement: req.Replacement, CaseSensitive: req.CaseSensitive,
-	})
+	scope := store.SeriesScope(book)
+	if req.Global {
+		scope = store.GlobalLexiconScope
+	}
+	entry, previous, err := s.Store.UpsertLexiconEntry(scope, rule)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -101,7 +119,7 @@ func (s *Server) handleUpsertLexicon(w http.ResponseWriter, r *http.Request) {
 	if previous != nil {
 		rules = append(rules, previous.LexiconEntry)
 	}
-	s.invalidateLexiconMatches(book, rules)
+	s.invalidateLexiconMatches(book, scope, rules)
 	writeJSON(w, http.StatusOK, idResponse{ID: entry.ID})
 }
 
@@ -117,8 +135,8 @@ func (s *Server) handleDeleteLexicon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if entry != nil && entry.Scope == store.SeriesScope(book) {
-		s.invalidateLexiconMatches(book, []pronounce.LexiconEntry{entry.LexiconEntry})
+	if entry != nil && (entry.Scope == store.SeriesScope(book) || entry.Scope == store.GlobalLexiconScope) {
+		s.invalidateLexiconMatches(book, entry.Scope, []pronounce.LexiconEntry{entry.LexiconEntry})
 	}
 	writeNoContent(w)
 }
@@ -136,12 +154,19 @@ func (s *Server) lexiconBook(w http.ResponseWriter, bookID string) (*store.Book,
 	return book, true
 }
 
-// invalidateLexiconMatches resets generated audio for every paragraph, in
-// every book sharing book's lexicon scope, that any of rules matches.
-// Best-effort like invalidateParagraphAudio: the rule itself is already
-// saved, so a failure here is logged, not returned.
-func (s *Server) invalidateLexiconMatches(book *store.Book, rules []pronounce.LexiconEntry) {
-	books, err := s.booksInScope(book)
+// invalidateLexiconMatches resets generated audio for every paragraph that
+// any of rules matches, in every book scope covers - book's series, or the
+// whole library for a global rule. Best-effort like
+// invalidateParagraphAudio: the rule itself is already saved, so a failure
+// here is logged, not returned.
+func (s *Server) invalidateLexiconMatches(book *store.Book, scope string, rules []pronounce.LexiconEntry) {
+	var books []store.Book
+	var err error
+	if scope == store.GlobalLexiconScope {
+		books, err = s.Store.ListBooks()
+	} else {
+		books, err = s.booksInScope(book)
+	}
 	if err != nil {
 		log.Printf("lexicon: list books in scope of %s: %v", book.ID, err)
 		return
@@ -202,9 +227,7 @@ func (s *Server) handlePreviewLexicon(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	rule := pronounce.LexiconEntry{
-		Term: strings.TrimSpace(req.Term), Replacement: strings.TrimSpace(req.Replacement), CaseSensitive: req.CaseSensitive,
-	}
+	rule := req.rule()
 	if rule.Term == "" || rule.Replacement == "" {
 		writeError(w, http.StatusBadRequest, "term and replacement are required")
 		return
@@ -314,7 +337,7 @@ func (s *Server) buildLexiconSuggestions(bookID string) ([]lexiconSuggestionDTO,
 	if err != nil {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
-	entries, err := s.Store.ListLexicon(scope)
+	entries, err := store.BookLexicon(s.Store, book)
 	if err != nil {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}

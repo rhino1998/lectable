@@ -80,6 +80,7 @@ type Store interface {
 	PruneSyncTree(version string) error
 	PutSyncTreeNodes(bookID, version string, nodes []SyncTreeNode) error
 	QuotesForBooks(bookIDs []string, characterName string, limit int) ([]QuoteContext, error)
+	ReadyAudioCountsBySpeaker(bookID string) (map[string]map[string]int, error)
 	ReassignCharacterSpeaker(bookID, fromName, toName string) error
 	RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]string, error)
 	ReplaceChapterContent(chapterID, title string, blocks []BlockInput) (oldImages, newImages []CreatedImage, err error)

@@ -232,6 +232,15 @@ export const ParagraphContextMenu = forwardRef<
           >
             Narrator
           </button>
+          {/* Attribution's own "can't tell who says this" value - not a
+              roster character, so a fixed entry like Narrator. */}
+          <button
+            className="speaker-context-menu-item"
+            disabled={contextMenu.currentSpeaker === 'Unknown'}
+            onClick={() => reassignSpeaker('Unknown')}
+          >
+            Unknown
+          </button>
           <div className="speaker-context-menu-section">Scare quote</div>
           <button className="speaker-context-menu-item" onClick={toggleScareQuote}>
             {contextMenu.scareQuote ? 'Unmark as scare quote' : 'Mark as scare quote'}

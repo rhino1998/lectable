@@ -137,26 +137,44 @@ func (s *DuckStore) ParagraphAudioStatuses(paragraphIDs []string, voiceID string
 // returns - for a speaker with many thousands of paragraphs (the
 // Narrator, on a long book).
 func (s *DuckStore) CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int, error) {
-	query := `
-		SELECT COUNT(*)
+	counts, err := s.ReadyAudioCountsBySpeaker(bookID)
+	if err != nil {
+		return 0, err
+	}
+	return counts[speaker][voiceID], nil
+}
+
+// ReadyAudioCountsBySpeaker is CountReadyAudioForSpeaker for every speaker
+// at once: speaker ("" folded into "Narrator") -> voice_id -> how many of
+// that speaker's paragraphs have ready audio in that voice. One grouped
+// query - the Speakers table used to issue one count per speaker, which on
+// a book with hundreds of characters held the single DuckDB connection for
+// seconds per build.
+func (s *DuckStore) ReadyAudioCountsBySpeaker(bookID string) (map[string]map[string]int, error) {
+	rows, err := s.db.Query(`
+		SELECT CASE WHEN p.speaker = '' THEN 'Narrator' ELSE p.speaker END AS speaker, pa.voice_id, COUNT(*)
 		FROM paragraph_audio pa
 		JOIN paragraphs p ON p.id = pa.paragraph_id
 		JOIN chapters c ON c.id = p.chapter_id
-		WHERE c.book_id = ? AND pa.voice_id = ? AND pa.status = ? AND p.speaker = ?`
-	args := []any{bookID, voiceID, AudioReady, speaker}
-	if speaker == "Narrator" {
-		query = `
-			SELECT COUNT(*)
-			FROM paragraph_audio pa
-			JOIN paragraphs p ON p.id = pa.paragraph_id
-			JOIN chapters c ON c.id = p.chapter_id
-			WHERE c.book_id = ? AND pa.voice_id = ? AND pa.status = ? AND (p.speaker = 'Narrator' OR p.speaker = '')`
-		args = []any{bookID, voiceID, AudioReady}
+		WHERE c.book_id = ? AND pa.status = ?
+		GROUP BY 1, 2`, bookID, AudioReady)
+	if err != nil {
+		return nil, err
 	}
-
-	var count int
-	err := s.db.QueryRow(query, args...).Scan(&count)
-	return count, err
+	defer rows.Close()
+	out := map[string]map[string]int{}
+	for rows.Next() {
+		var speaker, voiceID string
+		var n int
+		if err := rows.Scan(&speaker, &voiceID, &n); err != nil {
+			return nil, err
+		}
+		if out[speaker] == nil {
+			out[speaker] = map[string]int{}
+		}
+		out[speaker][voiceID] = n
+	}
+	return out, rows.Err()
 }
 
 // GetParagraphAudioStatus reports one paragraph's audio status for one

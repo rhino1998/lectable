@@ -37,6 +37,10 @@ func Open(path string) (*DuckStore, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := migrateLexiconPrefix(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := migrateMusicRegionsLighting(db); err != nil {
 		db.Close()
 		return nil, err

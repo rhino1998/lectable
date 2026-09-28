@@ -238,7 +238,7 @@ type subRef struct {
 func (t *topic) rebuild() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	v, err := t.def.Build()
+	v, err := timedBuild(t.def.Key, t.def.Build)
 	if err != nil {
 		status, msg := errorStatus(err)
 		if t.built && !t.ok && t.errStatus == status && t.errMsg == msg {

@@ -17,7 +17,7 @@ func TestLexiconSubstitutions(t *testing.T) {
 		want string
 	}{
 		{"Nyx smiled.", "Nicks smiled."},
-		{"NYX and nyx.", "Nicks and Nicks."},
+		{"NYX and nyx.", "NICKS and Nicks."},                   // all-caps original -> all-caps
 		{"Nyxie stayed, Onyx too.", "Nyxie stayed, Onyx too."}, // whole words only
 		{"Nyx's blade", "Nicks's blade"},                       // possessive keeps its suffix
 		{"Mary Anne met Mary.", "Marianne met MAH-ree."},       // longest term first
@@ -53,5 +53,20 @@ func TestMergeLexiconOverridesOverlappingLLMFixes(t *testing.T) {
 	}
 	if got := MergeLexicon(nil, pron); !reflect.DeepEqual(got, pron) {
 		t.Fatal("no lexicon should return pron unchanged")
+	}
+}
+
+func TestLexiconPrefixRules(t *testing.T) {
+	lex := []LexiconEntry{{Term: "gaol", Replacement: "jail", Prefix: true}}
+	cases := map[string]string{
+		"The gaol was cold.":           "The jail was cold.",
+		"Gaolers and GAOLS alike.":     "Jailers and JAILS alike.",
+		"A gaolbird, gaoled at last.":  "A jailbird, jailed at last.",
+		"Nothing about a rogaol here.": "Nothing about a rogaol here.", // still a word start
+	}
+	for in, want := range cases {
+		if got := Apply(in, nil, LexiconSubstitutions(in, lex)); got != want {
+			t.Errorf("%q -> %q, want %q", in, got, want)
+		}
 	}
 }

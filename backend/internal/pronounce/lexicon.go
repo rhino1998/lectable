@@ -3,6 +3,7 @@ package pronounce
 import (
 	"regexp"
 	"sort"
+	"strings"
 	"unicode"
 	"unicode/utf8"
 )
@@ -17,11 +18,15 @@ type LexiconEntry struct {
 	Term          string `json:"term"`
 	Replacement   string `json:"replacement"`
 	CaseSensitive bool   `json:"caseSensitive"`
+	// Prefix also matches words that merely *start* with Term, respelling
+	// just that part and keeping the rest ("gaol" -> "jail" also turns
+	// "gaoler" into "jailer", "gaols" into "jails").
+	Prefix bool `json:"prefix"`
 }
 
 // LexiconSubstitutions finds every whole-word match of lex's terms in text
 // (a term's first/last character must not continue into a neighboring
-// letter or digit), as Substitutions in text's byte coordinates, sorted by
+// letter or digit - only its first, for a Prefix entry), as Substitutions in text's byte coordinates, sorted by
 // offset and never overlapping: longer terms claim their spans first, so
 // "Mary Anne" wins over "Mary" wherever both would match.
 func LexiconSubstitutions(text string, lex []LexiconEntry) []Substitution {
@@ -47,7 +52,7 @@ func LexiconSubstitutions(text string, lex []LexiconEntry) []Substitution {
 	matches:
 		for _, m := range re.FindAllStringIndex(text, -1) {
 			start, end := m[0], m[1]
-			if !wordEdge(text, start, end) {
+			if !wordEdge(text, start, end, e.Prefix) {
 				continue
 			}
 			for i := start; i < end; i++ {
@@ -58,7 +63,11 @@ func LexiconSubstitutions(text string, lex []LexiconEntry) []Substitution {
 			for i := start; i < end; i++ {
 				claimed[i] = true
 			}
-			out = append(out, Substitution{Offset: start, Length: end - start, Replacement: e.Replacement})
+			replacement := e.Replacement
+			if !e.CaseSensitive {
+				replacement = matchCase(text[start:end], replacement)
+			}
+			out = append(out, Substitution{Offset: start, Length: end - start, Replacement: replacement})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Offset < out[j].Offset })
@@ -66,8 +75,8 @@ func LexiconSubstitutions(text string, lex []LexiconEntry) []Substitution {
 }
 
 // wordEdge reports whether text[start:end] isn't glued to a neighboring
-// word character on either side.
-func wordEdge(text string, start, end int) bool {
+// word character on either side (only the leading side when prefix).
+func wordEdge(text string, start, end int, prefix bool) bool {
 	if start > 0 {
 		r, _ := utf8.DecodeLastRuneInString(text[:start])
 		first, _ := utf8.DecodeRuneInString(text[start:end])
@@ -75,7 +84,7 @@ func wordEdge(text string, start, end int) bool {
 			return false
 		}
 	}
-	if end < len(text) {
+	if end < len(text) && !prefix {
 		r, _ := utf8.DecodeRuneInString(text[end:])
 		last, _ := utf8.DecodeLastRuneInString(text[start:end])
 		if isWordRune(r) && isWordRune(last) {
@@ -83,6 +92,22 @@ func wordEdge(text string, start, end int) bool {
 		}
 	}
 	return true
+}
+
+// matchCase carries a case-insensitive match's capitalization onto its
+// replacement: an all-caps original ("GAOL") gets an all-caps replacement,
+// a capitalized one ("Gaol") a capitalized replacement; anything else
+// keeps the replacement exactly as the rule spells it.
+func matchCase(original, replacement string) string {
+	if strings.ToUpper(original) == original && strings.ToLower(original) != original && utf8.RuneCountInString(original) > 1 {
+		return strings.ToUpper(replacement)
+	}
+	first, _ := utf8.DecodeRuneInString(original)
+	rFirst, size := utf8.DecodeRuneInString(replacement)
+	if unicode.IsUpper(first) && unicode.IsLower(rFirst) {
+		return string(unicode.ToUpper(rFirst)) + replacement[size:]
+	}
+	return replacement
 }
 
 func isWordRune(r rune) bool {

@@ -196,6 +196,11 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		}
 	}
 
+	readyCounts, err := s.Store.ReadyAudioCountsBySpeaker(bookID)
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+
 	resolvedVoiceCache := map[string]narration.ResolvedVoice{}
 	resolveFor := func(name string) narration.ResolvedVoice {
 		if !book.MultiVoice() || name == "Narrator" {
@@ -255,13 +260,7 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		// RefAudioURL (this speaker's *own* voice preview) is deliberately
 		// NOT set from this resolution; see below.
 		resolved := resolveFor(name)
-		if len(ids) > 0 {
-			count, err := s.Store.CountReadyAudioForSpeaker(bookID, name, resolved.VoiceID())
-			if err != nil {
-				return nil, httpError(http.StatusInternalServerError, err.Error())
-			}
-			row.ReadyCount = count
-		}
+		row.ReadyCount = readyCounts[name][resolved.VoiceID()]
 		// RefAudioURL previews this speaker's *own* voice specifically -
 		// the Narrator row's own voice genuinely is the book's (that's
 		// what Narrator means), but a character with no voice assigned

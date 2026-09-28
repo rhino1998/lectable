@@ -953,6 +953,15 @@ data class LexiconEntryDto(
     val replacement: String = "",
     val caseSensitive: Boolean = false,
     /**
+     * Prefix: the rule also covers words starting with Term (see
+     * pronounce.LexiconEntry.Prefix).
+     */
+    val prefix: Boolean = false,
+    /**
+     * Global: the rule applies to every book, not just this series.
+     */
+    val global: Boolean = false,
+    /**
      * Matches is how many paragraphs in this book the rule applies to.
      */
     val matches: Int = 0,
@@ -1797,6 +1806,14 @@ data class UpsertLexiconRequestDto(
     val term: String = "",
     val replacement: String = "",
     val caseSensitive: Boolean = false,
+    /**
+     * Prefix also matches words starting with Term ("gaol" -> "gaoler").
+     */
+    val prefix: Boolean = false,
+    /**
+     * Global saves the rule for every book instead of this book's series.
+     */
+    val global: Boolean = false,
 )
 
 @Serializable

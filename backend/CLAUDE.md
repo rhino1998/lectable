@@ -1236,12 +1236,16 @@ building/running `ttsworker` does, since both now link into that binary.
   `lexicon.go` is the listener-authored half: `LexiconEntry` ("say Nyx as
   Nicks", optional case match) becomes whole-word `Substitution`s
   (`LexiconSubstitutions`, longest term first) that override any
-  overlapping LLM fix (`MergeLexicon`). Rules live in the store's
-  `pronunciation_lexicon` table, scoped per series like characters
-  (`store.SeriesScope`); `ResolveGenerationText(cloneModel, lexicon)` and
+  overlapping LLM fix (`MergeLexicon`); a `Prefix` rule also covers words
+  starting with the term ("gaol" -> "gaoler"), and case-insensitive rules
+  carry the original's capitalization onto the replacement. Rules live in
+  the store's `pronunciation_lexicon` table, scoped per series like
+  characters (`store.SeriesScope`) or to every book (`GlobalLexiconScope`;
+  `store.BookLexicon` = series rules, then global); `ResolveGenerationText(cloneModel, lexicon)` and
   the chapter DTO's `pronunciationMarks` both go through
   `Paragraph.EffectivePronunciation`, and `jobs.Manager.lexiconFor`
-  supplies the rules at generation time. Editing a rule
+  supplies the rules at generation time (and records them on the task, so a
+  rule edited mid-render discards that clip). Editing a rule
   (`PUT/DELETE /api/books/{id}/lexicon`, `httpapi/lexicon.go`) resets audio
   for every paragraph in the series the old or new rule matches; the
   `lexicon` live topic lists rules with per-book match counts.

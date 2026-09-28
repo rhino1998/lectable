@@ -7,8 +7,8 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
 
-// lexiconFor is bookID's scope's pronunciation rules (store.ListLexicon,
-// cached), for ResolveGenerationText. Best-effort: a lookup failure is
+// lexiconFor is every pronunciation rule for bookID - its series' and the
+// global ones (store.BookLexicon, cached reads), for ResolveGenerationText. Best-effort: a lookup failure is
 // logged and generation goes ahead without the rules, the same way a
 // paragraph renders without its LLM pronunciation fixes before that pass
 // has run.
@@ -20,7 +20,7 @@ func (m *Manager) lexiconFor(bookID string) []pronounce.LexiconEntry {
 		}
 		return nil
 	}
-	entries, err := m.store.ListLexicon(store.SeriesScope(book))
+	entries, err := store.BookLexicon(m.store, book)
 	if err != nil {
 		log.Printf("jobs: lexicon for book %s: %v", bookID, err)
 		return nil

@@ -248,6 +248,7 @@ CREATE TABLE IF NOT EXISTS pronunciation_lexicon (
 	term TEXT NOT NULL,
 	replacement TEXT NOT NULL,
 	case_sensitive BOOLEAN NOT NULL DEFAULT false,
+	prefix BOOLEAN NOT NULL DEFAULT false,
 	created_at BIGINT NOT NULL,
 	UNIQUE (scope, term_key)
 );
@@ -425,6 +426,13 @@ CREATE INDEX IF NOT EXISTS idx_paragraphs_speaker ON paragraphs(speaker);
 // before it existed. DuckDB's ADD COLUMN rejects NOT NULL, so the column
 // is nullable there - but the DEFAULT fills every existing row, and every
 // insert after goes through the default too, so it's never actually NULL.
+func migrateLexiconPrefix(db *sql.DB) error {
+	if _, err := db.Exec(`ALTER TABLE pronunciation_lexicon ADD COLUMN IF NOT EXISTS prefix BOOLEAN DEFAULT false`); err != nil {
+		return fmt.Errorf("migrate pronunciation_lexicon.prefix: %w", err)
+	}
+	return nil
+}
+
 func migrateCharactersPronouns(db *sql.DB) error {
 	if _, err := db.Exec(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS pronouns TEXT DEFAULT ''`); err != nil {
 		return fmt.Errorf("migrate characters.pronouns: %w", err)

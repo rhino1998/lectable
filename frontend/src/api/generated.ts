@@ -714,6 +714,15 @@ export interface LexiconEntry {
   replacement: string
   caseSensitive: boolean
   /**
+   * Prefix: the rule also covers words starting with Term (see
+   * pronounce.LexiconEntry.Prefix).
+   */
+  prefix: boolean
+  /**
+   * Global: the rule applies to every book, not just this series.
+   */
+  global: boolean
+  /**
    * Matches is how many paragraphs in this book the rule applies to.
    */
   matches: number
@@ -1518,6 +1527,14 @@ export interface UpsertLexiconRequest {
   term: string
   replacement: string
   caseSensitive: boolean
+  /**
+   * Prefix also matches words starting with Term ("gaol" -> "gaoler").
+   */
+  prefix: boolean
+  /**
+   * Global saves the rule for every book instead of this book's series.
+   */
+  global: boolean
 }
 
 export interface VoicePreset {

@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.lectable.app.data.remote.dto.LexiconEntryDto
+import com.lectable.app.data.remote.dto.UpsertLexiconRequestDto
 import com.lectable.app.ui.components.ConfirmDialog
 
 /** The book's series-wide pronunciation lexicon - see [LexiconViewModel]. Reached from the
@@ -64,6 +65,16 @@ fun LexiconScreen(
     var term by rememberSaveable { mutableStateOf("") }
     var replacement by rememberSaveable { mutableStateOf("") }
     var caseSensitive by rememberSaveable { mutableStateOf(false) }
+    var prefix by rememberSaveable { mutableStateOf(false) }
+    var global by rememberSaveable { mutableStateOf(false) }
+    fun formRule() = UpsertLexiconRequestDto(term = term, replacement = replacement, caseSensitive = caseSensitive, prefix = prefix, global = global)
+    fun loadForm(rule: UpsertLexiconRequestDto) {
+        term = rule.term
+        replacement = rule.replacement
+        caseSensitive = rule.caseSensitive
+        prefix = rule.prefix
+        global = rule.global
+    }
     var pendingDelete by remember { mutableStateOf<LexiconEntryDto?>(null) }
     val replacementFocus = remember { FocusRequester() }
 
@@ -105,10 +116,10 @@ fun LexiconScreen(
             item {
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "Say a word the way you spell it here - whole words only, overriding the automatic " +
-                            "pronunciation pass. Shared by every book in " +
+                        "Say a word the way you spell it here - whole words, or with \"Derived words\" any word " +
+                            "starting with it - overriding the automatic pronunciation pass. Rules are shared by every book in " +
                             (if (uiState.seriesName.isNotEmpty()) "the \"${uiState.seriesName}\" series" else "this book") +
-                            "; saving a rule regenerates the audio of every line it matches.",
+                            ", or the whole library with \"All books\"; saving one regenerates the audio of every line it matches.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -132,10 +143,19 @@ fun LexiconScreen(
                         Checkbox(checked = caseSensitive, onCheckedChange = { caseSensitive = it })
                         Text("Match case", style = MaterialTheme.typography.bodyMedium)
                     }
+                    // "gaol" also covers gaoler, gaols, gaolbird.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = prefix, onCheckedChange = { prefix = it })
+                        Text("Derived words (anything starting with it)", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = global, onCheckedChange = { global = it })
+                        Text("All books", style = MaterialTheme.typography.bodyMedium)
+                    }
                     val formReady = term.isNotBlank() && replacement.isNotBlank()
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
-                            onClick = { viewModel.preview("form", term, replacement, caseSensitive) },
+                            onClick = { viewModel.preview("form", formRule()) },
                             enabled = formReady && uiState.previewingKey == null,
                         ) {
                             if (uiState.previewingKey == "form") {
@@ -147,11 +167,7 @@ fun LexiconScreen(
                         }
                         Button(
                             onClick = {
-                                viewModel.save(term, replacement, caseSensitive) {
-                                    term = ""
-                                    replacement = ""
-                                    caseSensitive = false
-                                }
+                                viewModel.save(formRule()) { loadForm(UpsertLexiconRequestDto()) }
                             },
                             enabled = formReady && !uiState.saving,
                         ) { Text("Save") }
@@ -172,9 +188,7 @@ fun LexiconScreen(
                         items(uiState.suggestions, key = { it.term }) { sug ->
                             AssistChip(
                                 onClick = {
-                                    term = sug.term
-                                    replacement = ""
-                                    caseSensitive = false
+                                    loadForm(UpsertLexiconRequestDto(term = sug.term))
                                     replacementFocus.requestFocus()
                                 },
                                 label = { Text(if (sug.unusual) "${sug.term} •" else sug.term) },
@@ -201,12 +215,8 @@ fun LexiconScreen(
                         entry = entry,
                         previewing = uiState.previewingKey == entry.id,
                         previewEnabled = uiState.previewingKey == null,
-                        onPreview = { viewModel.preview(entry.id, entry.term, entry.replacement, entry.caseSensitive) },
-                        onEdit = {
-                            term = entry.term
-                            replacement = entry.replacement
-                            caseSensitive = entry.caseSensitive
-                        },
+                        onPreview = { viewModel.preview(entry.id, entry.toRequest()) },
+                        onEdit = { loadForm(entry.toRequest()) },
                         onDelete = { pendingDelete = entry },
                     )
                 }
@@ -230,7 +240,13 @@ private fun LexiconRow(
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                "${entry.term} → ${entry.replacement}" + if (entry.caseSensitive) " (match case)" else "",
+                buildString {
+                    append(entry.term)
+                    if (entry.prefix) append("…")
+                    append(" → ${entry.replacement}")
+                    if (entry.caseSensitive) append(" (match case)")
+                    if (entry.global) append(" (all books)")
+                },
                 style = MaterialTheme.typography.bodyLarge,
             )
             Text(

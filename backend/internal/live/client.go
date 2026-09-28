@@ -154,7 +154,7 @@ func (c *Client) subscribe(id, kind string, params json.RawMessage) {
 		// First subscriber: build inline rather than waiting on the refresh
 		// loop, so the snapshot arrives immediately. rebuild would deadlock
 		// on t.mu, so this is its no-subscribers-yet special case.
-		v, err := def.Build()
+		v, err := timedBuild(def.Key, def.Build)
 		if err != nil {
 			t.built, t.ok = true, false
 			t.errStatus, t.errMsg = errorStatus(err)

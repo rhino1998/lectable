@@ -26,15 +26,16 @@ export function chapterCharacterNames(chapter: ChapterDetail | undefined): Set<s
 }
 
 // A reassign picker's two sections: the roster names in chapterNames
-// (local), then the whole roster (all) - both alphabetical, Narrator/blank
-// and exclude left out. Mirrors android's pickerSections.
+// (local), then the whole roster (all) - both alphabetical, with
+// Narrator/Unknown/blank (fixed menu entries) and exclude left out. Mirrors
+// android's pickerSections.
 export function pickerSections(
   roster: string[],
   chapterNames: Set<string>,
   exclude?: string,
 ): { local: string[]; all: string[] } {
   const all = [...new Set(roster)]
-    .filter((n) => n !== '' && n !== 'Narrator' && n !== exclude)
+    .filter((n) => n !== '' && n !== 'Narrator' && n !== 'Unknown' && n !== exclude)
     .sort(byName)
   return { local: all.filter((n) => chapterNames.has(n)), all }
 }

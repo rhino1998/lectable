@@ -183,3 +183,45 @@ func TestCharacterNamesAlphabetical(t *testing.T) {
 		t.Fatalf("names = %q", names)
 	}
 }
+
+// TestGlobalPrefixLexiconRule checks a global rule with Prefix set: it
+// applies to every book, covers derived words, invalidates their audio in
+// each book, and lists as global.
+func TestGlobalPrefixLexiconRule(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	bookA := createTestBook(t, s, "Series A", 1, "The gaoler slept.", "Nothing here.")
+	bookB := createTestBook(t, s, "", 0, "Back to gaol.")
+	body, _ := json.Marshal(upsertLexiconRequest{Term: "gaol", Replacement: "jail", Prefix: true, Global: true})
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/books/"+bookA+"/lexicon", bytes.NewReader(body))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT status %d", resp.StatusCode)
+	}
+	for _, c := range []struct{ book, want string }{{bookA, "jailer"}, {bookB, "jail"}} {
+		detail, err := srv.buildChapter(c.book, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		marks := detail.Paragraphs[0].PronunciationMarks
+		if len(marks) != 1 || marks[0].Replacement != "jail" {
+			t.Fatalf("book %s marks = %+v", c.book, marks)
+		}
+		lex, err := srv.buildLexicon(c.book)
+		if err != nil || len(lex) != 1 || !lex[0].Global || !lex[0].Prefix || lex[0].Matches != 1 {
+			t.Fatalf("book %s lexicon = %+v, %v", c.book, lex, err)
+		}
+	}
+	book, _ := s.GetBook(bookA)
+	lexicon, err := store.BookLexicon(s, book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := store.Paragraph{Text: "The gaoler slept."}
+	if got := p.ResolveGenerationText("", store.PronounceLexicon(lexicon)); got != "The jailer slept." {
+		t.Fatalf("generation text = %q", got)
+	}
+}

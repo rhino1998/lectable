@@ -329,7 +329,7 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 	if err != nil {
 		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
-	lexiconEntries, err := s.Store.ListLexicon(store.SeriesScope(book))
+	lexiconEntries, err := store.BookLexicon(s.Store, book)
 	if err != nil {
 		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}

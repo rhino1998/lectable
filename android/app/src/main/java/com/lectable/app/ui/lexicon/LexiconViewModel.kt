@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.dto.LexiconEntryDto
 import com.lectable.app.data.remote.dto.LexiconSuggestionDto
+import com.lectable.app.data.remote.dto.UpsertLexiconRequestDto
 import com.lectable.app.data.repository.LexiconRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -77,11 +78,11 @@ class LexiconViewModel @Inject constructor(
     }
 
     /** Adds the rule, or replaces the one for the same word; [onSaved] clears the form. */
-    fun save(term: String, replacement: String, caseSensitive: Boolean, onSaved: () -> Unit) {
-        if (term.isBlank() || replacement.isBlank()) return
+    fun save(rule: UpsertLexiconRequestDto, onSaved: () -> Unit) {
+        if (rule.term.isBlank() || rule.replacement.isBlank()) return
         _uiState.update { it.copy(saving = true) }
         viewModelScope.launch {
-            runCatching { repository.upsert(bookId, term.trim(), replacement.trim(), caseSensitive) }
+            runCatching { repository.upsert(bookId, rule.trimmed()) }
                 .onSuccess { onSaved() }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Could not save this rule") } }
             _uiState.update { it.copy(saving = false) }
@@ -95,13 +96,13 @@ class LexiconViewModel @Inject constructor(
         }
     }
 
-    /** Plays the narrator reading the first line [term] appears in, with the rule applied. */
-    fun preview(key: String, term: String, replacement: String, caseSensitive: Boolean) {
-        if (term.isBlank() || replacement.isBlank() || _uiState.value.previewingKey != null) return
+    /** Plays the narrator reading the first line the rule matches, with it applied. */
+    fun preview(key: String, rule: UpsertLexiconRequestDto) {
+        if (rule.term.isBlank() || rule.replacement.isBlank() || _uiState.value.previewingKey != null) return
         _uiState.update { it.copy(previewingKey = key) }
         viewModelScope.launch {
             runCatching {
-                val body = repository.preview(bookId, term.trim(), replacement.trim(), caseSensitive)
+                val body = repository.preview(bookId, rule.trimmed())
                 withContext(Dispatchers.IO) {
                     File(context.cacheDir, "lexicon-preview.wav").apply { writeBytes(body.bytes()) }
                 }
@@ -128,3 +129,14 @@ class LexiconViewModel @Inject constructor(
         player = null
     }
 }
+
+private fun UpsertLexiconRequestDto.trimmed() = copy(term = term.trim(), replacement = replacement.trim())
+
+/** A saved rule as the request that would recreate it - for previewing and editing. */
+fun LexiconEntryDto.toRequest() = UpsertLexiconRequestDto(
+    term = term,
+    replacement = replacement,
+    caseSensitive = caseSensitive,
+    prefix = prefix,
+    global = global,
+)

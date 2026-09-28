@@ -17,7 +17,7 @@ class SpeakerOrderTest {
 
     @Test
     fun pickerSectionsAreAlphabeticalLocalThenAll() {
-        val roster = listOf("Zed", "Narrator", "amy", "Bob", "Cal", "Gone")
+        val roster = listOf("Zed", "Narrator", "Unknown", "amy", "Bob", "Cal", "Gone")
             .map { CharacterNameDto(id = it.lowercase(), name = it, invalid = it == "Gone") }
         val (local, all) = pickerSections(roster, chapterNames = setOf("Zed", "Bob", "Ghost"), exclude = null)
         assertEquals(listOf("Bob", "Zed"), local)

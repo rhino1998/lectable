@@ -13,7 +13,7 @@ describe('sortedRoster', () => {
 
 describe('pickerSections', () => {
   it('lists chapter names first, then the whole roster, alphabetically', () => {
-    const roster = ['Zed', 'Narrator', 'amy', 'Bob', 'Cal', 'Bob']
+    const roster = ['Zed', 'Narrator', 'Unknown', 'amy', 'Bob', 'Cal', 'Bob']
     expect(pickerSections(roster, new Set(['Zed', 'Bob', 'Ghost']))).toEqual({
       local: ['Bob', 'Zed'],
       all: ['amy', 'Bob', 'Cal', 'Zed'],

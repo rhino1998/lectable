@@ -171,6 +171,10 @@ client, not a browser.)
   `LectableApi.kt`, and `LiveTopics.kt` (see `backend/CLAUDE.md`'s
   `internal/httpapi` entry for what it reads and the response conventions).
 
+- Live-topic builds share the store's single DuckDB connection with
+  everything else, so a slow one stalls the whole app; `internal/live` logs
+  any build over `LIVE_SLOW_BUILD_MS` (default 500) as `live: slow build`.
+
 - No auth, no multi-user support — this is a single-user local app.
 - All persistent state lives under the backend's `DATA_DIR` (default
   `./data`): `library.duckdb`,

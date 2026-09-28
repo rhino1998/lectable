@@ -772,12 +772,13 @@ private fun chapterCharacterNames(chapter: ChapterDetailDto?): Set<String> {
 }
 
 /** A reassign picker's two sections: the roster's names in [chapterNames] (local), then the whole
- *  roster (all) - both alphabetical, Narrator/blank, invalid characters and [exclude] left out. */
+ *  roster (all) - both alphabetical, Narrator/Unknown/blank (fixed picker entries), invalid
+ *  characters and [exclude] left out. */
 internal fun pickerSections(roster: List<CharacterNameDto>, chapterNames: Set<String>, exclude: String?): Pair<List<String>, List<String>> {
     val all = roster.asSequence()
         .filterNot { it.invalid }
         .map { it.name }
-        .filter { it.isNotEmpty() && it != "Narrator" && it != exclude }
+        .filter { it.isNotEmpty() && it != "Narrator" && it != "Unknown" && it != exclude }
         .distinct()
         .sortedWith(String.CASE_INSENSITIVE_ORDER)
         .toList()
@@ -2508,6 +2509,9 @@ private fun SpeakerPickerSheet(
                 item { CircularProgressIndicator(modifier = Modifier.padding(24.dp)) }
             } else {
                 item { SpeakerRow("Narrator", currentSpeaker, onSelect) }
+                // Attribution's own "can't tell who says this" value - not a roster character,
+                // so it's a fixed entry like Narrator.
+                item { SpeakerRow("Unknown", currentSpeaker, onSelect) }
                 if (local.isNotEmpty()) {
                     item { VoiceSectionHeader("This chapter") }
                     items(local, key = { "local-$it" }) { name -> SpeakerRow(name, currentSpeaker, onSelect) }
