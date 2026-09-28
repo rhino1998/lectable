@@ -45,6 +45,13 @@ object LiveTopics {
         LiveTopic("bookmarks", mapOf("bookId" to bookId), serializer<List<BookmarkDto>>())
 
     /**
+     * buildCharacterNames lists bookID's series roster (store.ListCharacters -
+     * cached), alphabetically (case-insensitive).
+     */
+    fun characters(bookId: String): LiveTopic<List<CharacterNameDto>> =
+        LiveTopic("characters", mapOf("bookId" to bookId), serializer<List<CharacterNameDto>>())
+
+    /**
      * buildLexicon lists bookID's scope's pronunciation rules, each with how
      * many of this book's paragraphs it matches (so a typo'd rule that never
      * fires is visible).

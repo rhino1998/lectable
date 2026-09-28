@@ -561,6 +561,18 @@ data class CharacterIDsRequestDto(
     val characterIds: List<String> = emptyList(),
 )
 
+/**
+ * characterNameDTO is one entry of a book's series roster, names only - what
+ * a reassign picker needs, without buildSpeakers' per-speaker voice and audio
+ * resolution (seconds on a big book).
+ */
+@Serializable
+data class CharacterNameDto(
+    val id: String = "",
+    val name: String = "",
+    val invalid: Boolean = false,
+)
+
 @Serializable
 data class CharacterizeResponseDto(
     val summary: String = "",

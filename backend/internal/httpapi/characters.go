@@ -1053,3 +1053,39 @@ func (s *Server) buildCharacterDescriptions(bookID, characterID string) ([]speak
 	}
 	return out, nil
 }
+
+// characterNameDTO is one entry of a book's series roster, names only - what
+// a reassign picker needs, without buildSpeakers' per-speaker voice and audio
+// resolution (seconds on a big book).
+type characterNameDTO struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Invalid bool   `json:"invalid"`
+}
+
+func (s *Server) handleListCharacterNames(w http.ResponseWriter, r *http.Request) {
+	v, err := s.buildCharacterNames(r.PathValue("id"))
+	writeBuilt(w, v, err)
+}
+
+// buildCharacterNames lists bookID's series roster (store.ListCharacters -
+// cached), alphabetically (case-insensitive).
+func (s *Server) buildCharacterNames(bookID string) ([]characterNameDTO, error) {
+	book, err := s.Store.GetBook(bookID)
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	if book == nil {
+		return nil, httpError(http.StatusNotFound, "book not found")
+	}
+	characters, err := s.Store.ListCharacters(store.SeriesScope(book))
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	out := make([]characterNameDTO, len(characters))
+	for i, c := range characters {
+		out[i] = characterNameDTO{ID: c.ID, Name: c.Name, Invalid: c.Invalid}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
+	return out, nil
+}

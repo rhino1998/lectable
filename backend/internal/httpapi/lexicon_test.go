@@ -161,3 +161,25 @@ func TestLexiconSuggestionsSkipCoveredAndCommonWords(t *testing.T) {
 		t.Errorf("suggestions = %q, want unusual Aeris first, no Lady (title) or Nyx (has a rule)", terms)
 	}
 }
+
+func TestCharacterNamesAlphabetical(t *testing.T) {
+	srv, s, _, _ := newTestServer(t)
+	bookID := createTestBook(t, s, "", 0, "Hello.")
+	book, _ := s.GetBook(bookID)
+	for _, name := range []string{"zed", "Amy", "bob"} {
+		if _, _, err := s.UpsertCharacter(store.SeriesScope(book), name, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := srv.buildCharacterNames(bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, c := range got {
+		names = append(names, c.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"Amy", "bob", "zed"}) {
+		t.Fatalf("names = %q", names)
+	}
+}

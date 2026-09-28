@@ -12,6 +12,7 @@ import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.BookDetailDto
+import com.lectable.app.data.remote.dto.CharacterNameDto
 import com.lectable.app.data.remote.dto.BookmarkDto
 import com.lectable.app.data.remote.dto.CharacterVoiceModes
 import com.lectable.app.data.remote.dto.ChapterDetailDto
@@ -19,7 +20,6 @@ import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.SearchResultDto
-import com.lectable.app.data.remote.dto.SpeakerDto
 import com.lectable.app.data.remote.dto.VoicePresetDto
 import com.lectable.app.data.remote.dto.VoiceSettingsDto
 import com.lectable.app.data.download.DownloadStatus
@@ -128,6 +128,9 @@ data class ReaderUiState(
     val lightingEnabled: Boolean = false,
     val lightingConfigured: Boolean = false,
     val lightingStatus: LightingStatus = LightingStatus.OFF,
+    // The series roster (names only, live) for the set-speaker/description pickers - kept
+    // subscribed so a picker opens instantly; null until the first value arrives.
+    val characters: List<CharacterNameDto>? = null,
 )
 
 @HiltViewModel
@@ -251,6 +254,11 @@ class ReaderViewModel @Inject constructor(
         }
         viewModelScope.launch {
             readingSettingsRepository.fontFamily.collect { family -> _uiState.update { it.copy(fontFamily = family) } }
+        }
+        viewModelScope.launch {
+            liveStore.characters(bookId).collect { result ->
+                result.data?.let { roster -> _uiState.update { it.copy(characters = roster) } }
+            }
         }
         viewModelScope.launch {
             readingSettingsRepository.annotationsMode.collect { on -> _uiState.update { it.copy(annotationsMode = on) } }
@@ -661,14 +669,6 @@ class ReaderViewModel @Inject constructor(
     fun availablePresets(onResult: (List<VoicePresetDto>) -> Unit) {
         viewModelScope.launch {
             runCatching { voiceRepository.presets().presets }.onSuccess(onResult)
-        }
-    }
-
-    /** Populates the long-press "Set speaker" picker (SpeakerPickerSheet) - Narrator plus every
-     *  attributed character, mirroring the web Speakers page's own reassignTargets. */
-    fun availableSpeakers(onResult: (List<SpeakerDto>) -> Unit) {
-        viewModelScope.launch {
-            runCatching { libraryRepository.listSpeakers(bookId) }.onSuccess(onResult)
         }
     }
 

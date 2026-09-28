@@ -375,6 +375,17 @@ export interface CharacterIDsRequest {
   characterIds: string[]
 }
 
+/**
+ * characterNameDTO is one entry of a book's series roster, names only - what
+ * a reassign picker needs, without buildSpeakers' per-speaker voice and audio
+ * resolution (seconds on a big book).
+ */
+export interface CharacterName {
+  id: string
+  name: string
+  invalid: boolean
+}
+
 export interface CharacterizeResponse {
   summary: string
   /**
@@ -1618,6 +1629,11 @@ export interface LiveTopics {
   characterDescriptions: { params: { bookId: string; characterId: string }; data: SpeakerAppearance[] }
   bookmarks: { params: { bookId: string }; data: Bookmark[] }
   /**
+   * buildCharacterNames lists bookID's series roster (store.ListCharacters -
+   * cached), alphabetically (case-insensitive).
+   */
+  characters: { params: { bookId: string }; data: CharacterName[] }
+  /**
    * buildLexicon lists bookID's scope's pronunciation rules, each with how
    * many of this book's paragraphs it matches (so a typo'd rule that never
    * fires is visible).
@@ -2127,6 +2143,13 @@ export interface Routes {
     query: Record<never, never>
     body: never
     response: QueuedResponse
+    errorCode: never
+  }
+  'GET /api/books/{id}/characters': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: CharacterName[]
     errorCode: never
   }
   /**
@@ -3287,6 +3310,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes': 'json',
   'POST /api/books/{id}/chapters/{idx}/run-ambience': 'json',
   'POST /api/books/{id}/chapters/{idx}/tag-directions': 'json',
+  'GET /api/books/{id}/characters': 'json',
   'POST /api/books/{id}/characters/characterize': 'json',
   'POST /api/books/{id}/characters/generate-voice': 'json',
   'POST /api/books/{id}/characters/regenerate-voice': 'json',

@@ -154,6 +154,7 @@ import coil.compose.AsyncImage
 import com.lectable.app.data.download.DownloadStatus
 import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.BookmarkDto
+import com.lectable.app.data.remote.dto.CharacterNameDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterSummaryDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
@@ -162,7 +163,6 @@ import com.lectable.app.data.remote.dto.ParagraphDto
 import com.lectable.app.data.remote.dto.PronunciationMarkDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.playback.lighting.LightingStatus
-import com.lectable.app.data.remote.dto.SpeakerDto
 import com.lectable.app.data.remote.dto.VoicePresetDto
 import com.lectable.app.data.remote.dto.WordTimingDto
 import com.lectable.app.data.repository.ChapterDownloadState
@@ -594,7 +594,7 @@ fun ReaderScreen(
     speakerPickerTarget?.let { target ->
         SpeakerPickerSheet(
             onDismiss = { speakerPickerTarget = null },
-            fetchSpeakers = viewModel::availableSpeakers,
+            characters = uiState.characters,
             currentSpeaker = target.currentSpeaker,
             chapterNames = chapterCharacterNames(uiState.loadedChapters[target.chapterIdx]),
             onSelect = { name ->
@@ -607,7 +607,7 @@ fun ReaderScreen(
     descriptionPickerTarget?.let { target ->
         DescriptionPickerSheet(
             onDismiss = { descriptionPickerTarget = null },
-            fetchSpeakers = viewModel::availableSpeakers,
+            characters = uiState.characters,
             fromName = target.fromName,
             chapterNames = chapterCharacterNames(uiState.loadedChapters[target.chapterIdx]),
             onSelect = { name ->
@@ -773,8 +773,8 @@ private fun chapterCharacterNames(chapter: ChapterDetailDto?): Set<String> {
 
 /** A reassign picker's two sections: the roster's names in [chapterNames] (local), then the whole
  *  roster (all) - both alphabetical, Narrator/blank, invalid characters and [exclude] left out. */
-internal fun pickerSections(speakers: List<SpeakerDto>, chapterNames: Set<String>, exclude: String?): Pair<List<String>, List<String>> {
-    val all = speakers.asSequence()
+internal fun pickerSections(roster: List<CharacterNameDto>, chapterNames: Set<String>, exclude: String?): Pair<List<String>, List<String>> {
+    val all = roster.asSequence()
         .filterNot { it.invalid }
         .map { it.name }
         .filter { it.isNotEmpty() && it != "Narrator" && it != exclude }
@@ -2484,18 +2484,16 @@ private fun VoiceRow(name: String, subtitle: String, onClick: () -> Unit) {
 @Composable
 private fun SpeakerPickerSheet(
     onDismiss: () -> Unit,
-    fetchSpeakers: ((List<SpeakerDto>) -> Unit) -> Unit,
+    // The live series roster (ReaderUiState.characters) - null until it has arrived.
+    characters: List<CharacterNameDto>?,
     currentSpeaker: String,
     // Everyone who speaks or is described in this segment's own chapter - see
     // chapterCharacterNames. Listed first, under "This chapter", ahead of the whole roster.
     chapterNames: Set<String>,
     onSelect: (name: String) -> Unit,
 ) {
-    var speakers by remember { mutableStateOf<List<SpeakerDto>>(emptyList()) }
-    var loaded by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { fetchSpeakers { speakers = it; loaded = true } }
-
-    val (local, all) = remember(speakers, chapterNames) { pickerSections(speakers, chapterNames, exclude = null) }
+    val loaded = characters != null
+    val (local, all) = remember(characters, chapterNames) { pickerSections(characters.orEmpty(), chapterNames, exclude = null) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(modifier = Modifier.padding(bottom = 24.dp)) {
@@ -2549,17 +2547,15 @@ private fun SpeakerRow(name: String, currentSpeaker: String, onSelect: (String) 
 @Composable
 private fun DescriptionPickerSheet(
     onDismiss: () -> Unit,
-    fetchSpeakers: ((List<SpeakerDto>) -> Unit) -> Unit,
+    // See SpeakerPickerSheet's own characters.
+    characters: List<CharacterNameDto>?,
     fromName: String,
     // See SpeakerPickerSheet's own chapterNames.
     chapterNames: Set<String>,
     onSelect: (targetName: String) -> Unit,
 ) {
-    var speakers by remember { mutableStateOf<List<SpeakerDto>>(emptyList()) }
-    var loaded by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { fetchSpeakers { speakers = it; loaded = true } }
-
-    val (local, all) = remember(speakers, chapterNames, fromName) { pickerSections(speakers, chapterNames, exclude = fromName) }
+    val loaded = characters != null
+    val (local, all) = remember(characters, chapterNames, fromName) { pickerSections(characters.orEmpty(), chapterNames, exclude = fromName) }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
         LazyColumn(modifier = Modifier.padding(bottom = 24.dp)) {

@@ -488,6 +488,11 @@ interface LectableApi {
         @Path("idx") idx: Int,
     ): QueuedResponseDto
 
+    @GET("api/books/{id}/characters")
+    suspend fun listCharacterNames(
+        @Path("id") id: String,
+    ): List<CharacterNameDto>
+
     /**
      * handleCharacterizeSpeakers batch-enqueues re-characterization for a list
      * of characters in one request - SpeakersPage's "Recharacterize all",
