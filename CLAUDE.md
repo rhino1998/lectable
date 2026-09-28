@@ -157,6 +157,13 @@ client, not a browser.)
   `frontend`, AGP's built-in lint for `android`. All three should stay at
   zero errors.
 
+- `make check` from the repo root runs every linter and test suite (`make
+  test` for just the tests, or `test-go` / `test-frontend` /
+  `test-android`): `go test ./...` in every Go module (the root Makefile
+  points `CGO_LDFLAGS`/`LD_LIBRARY_PATH` at the local audio.cpp/llama.cpp
+  builds, like `backend/Makefile`), Vitest for `frontend`, and
+  `testDebugUnitTest` for `android`. Run it before committing.
+
 - The API clients are generated, not hand-mirrored: `backend/internal/httpapi`
   is the source of truth for wire types, enums, the model catalog, live
   topics, and the route table, and `make -C backend generate` rewrites

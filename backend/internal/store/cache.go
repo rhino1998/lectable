@@ -239,6 +239,14 @@ var (
 	defaultVoiceTables   = []string{"default_voice"}
 )
 
+// ListLexicon is read once per generation task (jobs.Manager.lexiconFor),
+// far more often than a listener edits the lexicon.
+func (c *Cached) ListLexicon(scope string) ([]LexiconEntry, error) {
+	return cachedRead(c, cacheKey("ListLexicon", scope), []string{"pronunciation_lexicon"}, slices.Clone[[]LexiconEntry], func() ([]LexiconEntry, error) {
+		return c.Store.ListLexicon(scope)
+	})
+}
+
 func (c *Cached) GetBook(id string) (*Book, error) {
 	return cachedRead(c, cacheKey("GetBook", id), booksTables, clonePtr[Book], func() (*Book, error) {
 		return c.Store.GetBook(id)

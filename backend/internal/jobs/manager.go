@@ -26,6 +26,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/latents"
 	"github.com/rhino1998/lectable/backend/internal/musicgen"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
@@ -1419,6 +1420,9 @@ type ChapterScareQuoter func(ctx context.Context, book *store.Book, ch *store.Ch
 type ChapterPronouncer func(ctx context.Context, book *store.Book, ch *store.Chapter) (resolved int, requeue func(), err error)
 
 type Manager struct {
+	// throughput measures recent narration speed - see Throughput.
+	throughput narrationThroughput
+
 	// musicGenerating is the set of music region ids currently being
 	// generated (claimMusicRegion/releaseMusicRegion) - kept in memory
 	// only, never persisted as a status: nothing can still be generating
@@ -5110,6 +5114,10 @@ type QueueTask struct {
 	// from ("" for neutral, or anything that isn't a single emotional line
 	// - see taskEmotion), so the dashboard can show "Fritz (Sad)".
 	Emotion string
+	// Chars is how much paragraph text a narration task renders (see
+	// taskChars) - 0 for every other kind. With Manager.Throughput, what
+	// the Jobs views estimate time left from.
+	Chars int
 }
 
 // taskEmotion is the emotion t's line generates in, for display: the
@@ -5140,7 +5148,7 @@ func toQueueTask(t *task, tier int) QueueTask {
 		ID: t.dedupKey(), Kind: t.kind, Label: t.label, BookID: t.bookID, ChapterID: t.chapterID,
 		ChapterIdx: t.chapterIdx, ParagraphIdx: paragraphIdx, Tier: tier,
 		PresetID: t.presetID, Instruct: t.instruct, Attempt: t.attempt,
-		Emotion: taskEmotion(t),
+		Emotion: taskEmotion(t), Chars: taskChars(t),
 	}
 }
 
@@ -5625,10 +5633,10 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 // whitespace was already trimmed off each segment at import time) - fine
 // here, since the goal is one naturally-flowing sentence for the TTS
 // engine to render, not recovering the original markup.
-func mergedGenerationText(members []store.Paragraph, cloneModel string) string {
+func mergedGenerationText(members []store.Paragraph, cloneModel string, lexicon []pronounce.LexiconEntry) string {
 	texts := make([]string, len(members))
 	for i, p := range members {
-		texts[i] = p.ResolveGenerationText(cloneModel)
+		texts[i] = p.ResolveGenerationText(cloneModel, lexicon)
 	}
 	return strings.Join(texts, " ")
 }
@@ -5645,7 +5653,7 @@ func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []tts
 		}
 		text := t.paragraph.Text
 		if len(t.mergeParagraphs) > 1 {
-			text = mergedGenerationText(t.mergeParagraphs, "")
+			text = mergedGenerationText(t.mergeParagraphs, "", m.lexiconFor(t.bookID))
 		}
 		audio, err := m.tts.Design(ctx, text, t.instruct, t.language, t.designModel, seed)
 		return ttsworker.Audio{WAV: audio}, nil, err
@@ -5686,10 +5694,10 @@ func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []tts
 	// align itself (alignParagraph/handleMergedResult), so the check's own
 	// word timings are reused rather than aligning twice. A length
 	// estimate's throwaway sample is never saved, so it skips the check.
-	text := t.paragraph.ResolveGenerationText(cloneModel)
+	text := t.paragraph.ResolveGenerationText(cloneModel, m.lexiconFor(t.bookID))
 	alignText := t.paragraph.Text
 	if len(t.mergeParagraphs) > 1 {
-		text = mergedGenerationText(t.mergeParagraphs, cloneModel)
+		text = mergedGenerationText(t.mergeParagraphs, cloneModel, m.lexiconFor(t.bookID))
 		alignText = text
 	}
 	if t.kind == KindLengthEstimate {
@@ -5732,6 +5740,9 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 	// is meant to complete.
 	m.finishTask(t)
 	logTaskTiming(t, result.err)
+	if result.err == nil {
+		m.throughput.record(time.Now(), taskChars(t))
+	}
 	m.maybeRecoverWorker(result.err)
 	if t.kind == KindLengthEstimate {
 		// Best-effort, throwaway: no waiters, no paragraph, nothing to
@@ -5962,12 +5973,13 @@ func (m *Manager) refreshStaleGeneration(t *task) (fresh *task, stale bool) {
 	if cloneModel == "" {
 		cloneModel = voices.DefaultCloneModel
 	}
+	lexicon := m.lexiconFor(t.bookID)
 	current := func(p store.Paragraph) store.Paragraph {
 		cur, err := m.store.GetParagraph(p.ID)
 		if err != nil || cur == nil {
 			return p
 		}
-		if cur.ResolveGenerationText(cloneModel) != p.ResolveGenerationText(cloneModel) {
+		if cur.ResolveGenerationText(cloneModel, lexicon) != p.ResolveGenerationText(cloneModel, lexicon) {
 			stale = true
 		}
 		return *cur
@@ -6104,9 +6116,10 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, mergedLatents 
 	if cloneModel == "" {
 		cloneModel = voices.DefaultCloneModel
 	}
+	lexicon := m.lexiconFor(t.bookID)
 	texts := make([]string, len(t.mergeParagraphs))
 	for i, p := range t.mergeParagraphs {
-		texts[i] = p.ResolveGenerationText(cloneModel)
+		texts[i] = p.ResolveGenerationText(cloneModel, lexicon)
 	}
 	mergedText := strings.Join(texts, " ")
 
@@ -6260,8 +6273,9 @@ func (m *Manager) generateIndependently(t *task) {
 		}
 		return
 	}
+	lexicon := m.lexiconFor(t.bookID)
 	for _, p := range t.mergeParagraphs {
-		text := p.ResolveGenerationText(cloneModel)
+		text := p.ResolveGenerationText(cloneModel, lexicon)
 		audio, words, err := m.generateCloneChecked(m.ctx, cloneModel, refAudio, t.refText, t.language, text, t.cloneInstruct, p.Text)
 		if err != nil {
 			m.failParagraph(t, p, err)

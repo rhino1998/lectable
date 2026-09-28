@@ -146,6 +146,27 @@ byte-for-byte.
   per loaded chapter (not just "the current one") whenever it has pending
   paragraphs and isn't already generating (`backend`'s `EnqueueChapter` is
   idempotent per chapter, so this is safe to call opportunistically).
+  Its self-contained pieces live beside it: `hooks/useChapterActions`
+  (per-chapter pass buttons + the shared action error),
+  `useChapterWindowing` (most-visible chapter + measured heights for
+  windowing), `useAutoFollow` (scroll-follow of the playing paragraph),
+  `useSFXOverlay`, `useReaderShortcuts`, `useStableCallback`,
+  `useRemotePosition` (the "continued on another device" notice: the
+  book's saved position moved by someone else while this reader sat
+  paused - own saves are remembered so their echoes don't trigger it;
+  mirrored in android's `ui/reader/RemotePosition.kt`), and
+  `components/ParagraphContextMenu` (the annotations-view right-click menu,
+  opened imperatively like `AnnotationTooltip`).
+- `src/pages/SpeakersPage.tsx` — the roster and its handlers; the rest is
+  in `src/components/speakers/`: `SpeakerSettings` (book-wide switches),
+  `ChapterPassTable` (per-chapter pass table + whole-book Rest/All/Reset
+  rows), `SpeakerRow` (+ aliases/pronouns/emotions/merge),
+  `SpeakerEvidence` (appearance/description rows), `CharacterVoiceEditor`,
+  `PassStatus` (status cells, bulk button), `LexiconPanel` (the series
+  pronunciation lexicon - `lexicon` live topic; see backend
+  `internal/pronounce/lexicon.go`). The Jobs page's "Narration left" line
+  is `utils/narrationEta` (queued narration chars / the backend's measured
+  `narrationCharsPerSecond`; android `ui/jobs/NarrationEta.kt`).
 
 ## Dev server
 
@@ -160,7 +181,10 @@ proxy target here rather than hardcoding a backend origin in `client.ts`.
 
 ## Verifying changes
 
-There's no component test setup. `npx tsc -b` for type errors, `npm run
-build` for a production build sanity check, and — since this is a UI —
+`npm test` runs Vitest over `src/**/*.test.ts` - pure modules only
+(`lighting/` color math and `LightingEngine` against a fake bridge with
+fake timers, `utils/`); there's no component/DOM test setup. `npx tsc -b`
+for type errors, `npm run build` for a production build sanity check, and
+— since this is a UI —
 actually load it in a browser and click through upload → pick a chapter →
 play, rather than trusting the build alone.

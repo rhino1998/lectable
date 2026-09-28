@@ -665,10 +665,34 @@ export interface JobsSnapshot {
    * handleResumeJobs, the Jobs dashboard's own pause/resume button.
    */
   paused: boolean
+  /**
+   * NarrationCharsPerSecond is jobs.Manager.Throughput: how fast
+   * narration has been rendering lately, in characters of paragraph text
+   * per second across every generation slot together, rounded to 0.1.
+   * Omitted (0) until there's a recent continuous run to measure - no
+   * estimate is better than a wild one.
+   */
+  narrationCharsPerSecond?: number
 }
 
 export interface LanguagesResponse {
   languages: string[]
+}
+
+/**
+ * lexiconEntryDTO is one pronunciation rule (store.LexiconEntry) - shared
+ * by every book in the book's series (store.SeriesScope), like the
+ * character roster.
+ */
+export interface LexiconEntry {
+  id: string
+  term: string
+  replacement: string
+  caseSensitive: boolean
+  /**
+   * Matches is how many paragraphs in this book the rule applies to.
+   */
+  matches: number
 }
 
 /**
@@ -1102,6 +1126,14 @@ export interface QueueTask {
    * clone task's line generates in, "" for neutral.
    */
   emotion?: string
+  /**
+   * Chars is jobs.QueueTask.Chars verbatim - how much paragraph text a
+   * narration task ("voice_clone"/"voice_design") renders, omitted for
+   * every other kind. Summed over a book's narration tasks and divided by
+   * jobsSnapshotDTO.NarrationCharsPerSecond, it's the Jobs views' "time
+   * left" estimate.
+   */
+  chars?: number
 }
 
 /**
@@ -1440,6 +1472,12 @@ export interface UpdateBookmarkRequest {
   note: string
 }
 
+export interface UpsertLexiconRequest {
+  term: string
+  replacement: string
+  caseSensitive: boolean
+}
+
 export interface VoicePreset {
   id: string
   name: string
@@ -1548,6 +1586,12 @@ export interface LiveTopics {
   characterAppearances: { params: { bookId: string; characterId: string }; data: SpeakerAppearance[] }
   characterDescriptions: { params: { bookId: string; characterId: string }; data: SpeakerAppearance[] }
   bookmarks: { params: { bookId: string }; data: Bookmark[] }
+  /**
+   * buildLexicon lists bookID's scope's pronunciation rules, each with how
+   * many of this book's paragraphs it matches (so a typo'd rule that never
+   * fires is visible).
+   */
+  lexicon: { params: { bookId: string }; data: LexiconEntry[] }
   bookExports: { params: { bookId: string }; data: BookExport[] }
   jobs: { params: Record<never, never>; data: JobsSnapshot }
   voicePresets: { params: Record<never, never>; data: VoicePresets }
@@ -2423,6 +2467,37 @@ export interface Routes {
     response: QueuedResponse
     errorCode: never
   }
+  'GET /api/books/{id}/lexicon': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: LexiconEntry[]
+    errorCode: never
+  }
+  /**
+   * handleUpsertLexicon adds a pronunciation rule to the book's series, or
+   * replaces the one for the same term (case-insensitively), then clears
+   * generated audio for every paragraph in the series that the old or new
+   * rule matches, so it's re-rendered with the new pronunciation.
+   */
+  'PUT /api/books/{id}/lexicon': {
+    path: { id: string }
+    query: Record<never, never>
+    body: UpsertLexiconRequest
+    response: IdResponse
+    errorCode: never
+  }
+  /**
+   * handleDeleteLexicon removes a pronunciation rule and clears generated
+   * audio for every paragraph in its series that the rule matched.
+   */
+  'DELETE /api/books/{id}/lexicon/{entryId}': {
+    path: { id: string; entryId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
   /**
    * handleLookahead keeps some runway of generated audio ahead of wherever
    * the reader currently is, spanning into later chapters as needed rather
@@ -3173,6 +3248,9 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/exports/{exportId}/file': 'binary',
   'POST /api/books/{id}/generate': 'json',
   'POST /api/books/{id}/generate-remaining': 'json',
+  'GET /api/books/{id}/lexicon': 'json',
+  'PUT /api/books/{id}/lexicon': 'json',
+  'DELETE /api/books/{id}/lexicon/{entryId}': 'none',
   'POST /api/books/{id}/lookahead': 'json',
   'GET /api/books/{id}/manifest': 'json',
   'GET /api/books/{id}/position': 'json',

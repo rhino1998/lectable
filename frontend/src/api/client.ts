@@ -4,6 +4,7 @@ import {
   type BulkScope,
   type CreateExportRequest,
   type CustomVoicePresetInput,
+  type UpsertLexiconRequest,
   type ErrorCode,
   type GenerateSFXRequest,
   type JobTier,
@@ -542,6 +543,15 @@ export const api = {
     call('PUT /api/bookmarks/{id}', { path: { id }, body: { note } }),
 
   deleteBookmark: (id: string) => call('DELETE /api/bookmarks/{id}', { path: { id } }),
+
+  // Adds a pronunciation rule to the book's series lexicon, or replaces the
+  // one for the same term - see backend handleUpsertLexicon (which also
+  // clears audio for every paragraph the old/new rule matches).
+  upsertLexiconEntry: (bookId: string, body: UpsertLexiconRequest) =>
+    call('PUT /api/books/{id}/lexicon', { path: { id: bookId }, body }),
+
+  deleteLexiconEntry: (bookId: string, entryId: string) =>
+    call('DELETE /api/books/{id}/lexicon/{entryId}', { path: { id: bookId, entryId } }),
 
   // Cancels one job-queue task by id (QueueTask.id) - see
   // httpapi.handleCancelJob. encodeURIComponent since an LLM-kind task's id

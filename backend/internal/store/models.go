@@ -606,16 +606,26 @@ func (p Paragraph) EffectiveEmotion() string {
 // common case of nothing to apply. Pauses are computed here rather than
 // stored: they're a pure function of the text, so there's nothing to
 // persist or invalidate. Never used for forced alignment/word timing,
-// which always uses p.Text untouched.
-func (p Paragraph) ResolveGenerationText(cloneModel string) string {
+// which always uses p.Text untouched. lexicon is the book's scope's
+// listener-authored rules (ListLexicon), applied as EffectivePronunciation
+// describes.
+func (p Paragraph) ResolveGenerationText(cloneModel string, lexicon []pronounce.LexiconEntry) string {
 	var insertions []deliverytags.Insertion
 	if cloneModel == voices.HiggsCloneModel {
 		insertions = deliverytags.PauseInsertions(p.Text)
 	}
-	if len(insertions) == 0 && len(p.Pronunciation) == 0 && len(p.Emphasis) == 0 {
+	pron := p.EffectivePronunciation(lexicon)
+	if len(insertions) == 0 && len(pron) == 0 && len(p.Emphasis) == 0 {
 		return p.Text
 	}
-	return pronounce.Apply(p.Text, insertions, pronounce.Compose(p.Text, p.Pronunciation, p.Emphasis))
+	return pronounce.Apply(p.Text, insertions, pronounce.Compose(p.Text, pron, p.Emphasis))
+}
+
+// EffectivePronunciation is p.Pronunciation (the LLM pass's picks) merged
+// with every whole-word match of lexicon's rules in p.Text - the rules win
+// wherever the two overlap (pronounce.MergeLexicon).
+func (p Paragraph) EffectivePronunciation(lexicon []pronounce.LexiconEntry) []pronounce.Substitution {
+	return pronounce.MergeLexicon(pronounce.LexiconSubstitutions(p.Text, lexicon), p.Pronunciation)
 }
 
 // Character is a speaking character, discovered by speaker attribution

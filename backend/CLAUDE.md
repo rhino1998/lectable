@@ -1017,7 +1017,11 @@ building/running `ttsworker` does, since both now link into that binary.
   `Kind` (`KindVoiceClone`, `KindVoiceDesign`, `KindSpeakerAttribution`,
   `KindSpeakerCharacterization`, `KindSpeechDirection`, `KindPronunciation`,
   among others) rather than
-  one mechanism per feature. Every kind sorts through the same
+  one mechanism per feature. (`throughput.go`: successful narration
+  completions feed a characters-per-second rate over the latest continuous
+  run, `Manager.Throughput`, which the jobs snapshot exposes as
+  `narrationCharsPerSecond` beside each narration task's `chars`, for the
+  Jobs views' time-left estimate.) Every kind sorts through the same
   tier-ordered heap (`TierUrgent`/`TierLookahead`/`TierNormal`/`TierBackground` - `TierNormal` is never a default, only reached by manually promoting a task from the Jobs page), but
   dispatches into one of *two separate* worker slot pools by resource, not
   one shared pool: `poolGeneration` (`maxInFlight` slots, GPU-bound TTS
@@ -1226,6 +1230,18 @@ building/running `ttsworker` does, since both now link into that binary.
   text, composing zero-width tag insertions and span-replacing
   substitutions together in one offset-ordered pass so a substitution's
   length change never throws off another edit's offset.
+  `lexicon.go` is the listener-authored half: `LexiconEntry` ("say Nyx as
+  Nicks", optional case match) becomes whole-word `Substitution`s
+  (`LexiconSubstitutions`, longest term first) that override any
+  overlapping LLM fix (`MergeLexicon`). Rules live in the store's
+  `pronunciation_lexicon` table, scoped per series like characters
+  (`store.SeriesScope`); `ResolveGenerationText(cloneModel, lexicon)` and
+  the chapter DTO's `pronunciationMarks` both go through
+  `Paragraph.EffectivePronunciation`, and `jobs.Manager.lexiconFor`
+  supplies the rules at generation time. Editing a rule
+  (`PUT/DELETE /api/books/{id}/lexicon`, `httpapi/lexicon.go`) resets audio
+  for every paragraph in the series the old or new rule matches; the
+  `lexicon` live topic lists rules with per-book match counts.
 - `internal/audiopath/` — computes where generated audio lives from IDs
   alone (`data/audio/<bookID>/<chapterID>/<voiceID>/<idx>.opus`, plus
   `sfx/`/`music/` beside the voice dirs and a per-book `ambience/`); never

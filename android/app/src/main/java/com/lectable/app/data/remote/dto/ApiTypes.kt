@@ -895,11 +895,36 @@ data class JobsSnapshotDto(
      * handleResumeJobs, the Jobs dashboard's own pause/resume button.
      */
     val paused: Boolean = false,
+    /**
+     * NarrationCharsPerSecond is jobs.Manager.Throughput: how fast
+     * narration has been rendering lately, in characters of paragraph text
+     * per second across every generation slot together, rounded to 0.1.
+     * Omitted (0) until there's a recent continuous run to measure - no
+     * estimate is better than a wild one.
+     */
+    val narrationCharsPerSecond: Double? = null,
 )
 
 @Serializable
 data class LanguagesResponseDto(
     val languages: List<String> = emptyList(),
+)
+
+/**
+ * lexiconEntryDTO is one pronunciation rule (store.LexiconEntry) - shared
+ * by every book in the book's series (store.SeriesScope), like the
+ * character roster.
+ */
+@Serializable
+data class LexiconEntryDto(
+    val id: String = "",
+    val term: String = "",
+    val replacement: String = "",
+    val caseSensitive: Boolean = false,
+    /**
+     * Matches is how many paragraphs in this book the rule applies to.
+     */
+    val matches: Int = 0,
 )
 
 /**
@@ -1345,6 +1370,14 @@ data class QueueTaskDto(
      * clone task's line generates in, "" for neutral.
      */
     val emotion: String? = null,
+    /**
+     * Chars is jobs.QueueTask.Chars verbatim - how much paragraph text a
+     * narration task ("voice_clone"/"voice_design") renders, omitted for
+     * every other kind. Summed over a book's narration tasks and divided by
+     * jobsSnapshotDTO.NarrationCharsPerSecond, it's the Jobs views' "time
+     * left" estimate.
+     */
+    val chars: Int? = null,
 )
 
 /**
@@ -1707,6 +1740,13 @@ data class UnsubscribeMessageDto(
 @Serializable
 data class UpdateBookmarkRequestDto(
     val note: String = "",
+)
+
+@Serializable
+data class UpsertLexiconRequestDto(
+    val term: String = "",
+    val replacement: String = "",
+    val caseSensitive: Boolean = false,
 )
 
 @Serializable

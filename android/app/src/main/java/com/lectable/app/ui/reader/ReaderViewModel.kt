@@ -117,6 +117,9 @@ data class ReaderUiState(
     val voiceKey: String? = null,
     val downloadStates: Map<Int, ChapterDownloadState> = emptyMap(),
     val bookDownloadProgress: Pair<Int, Int>? = null,
+    // The book's saved position when another device moved it while this reader sat paused -
+    // see remotePosition. Null otherwise.
+    val remotePosition: ParagraphPos? = null,
 )
 
 @HiltViewModel
@@ -161,6 +164,11 @@ class ReaderViewModel @Inject constructor(
     // starting chapter/position - later book-topic updates only refresh uiState.book.
     private var bookInitialized = false
 
+    // This reader's own recent position saves (plus where it resumed from), and a dismissed
+    // remote position - see remotePosition/withRemotePosition.
+    private val ownPositionSaves = ArrayDeque<ParagraphPos>()
+    private var dismissedRemotePosition: ParagraphPos? = null
+
     // The book's last-known-good voice settings as fetched/saved, kept around (rather than
     // re-derived from uiState's display-only voicePresetName/voiceKey - voiceKey is an opaque
     // hash string, not reversible) so setMultiVoice can PUT a full voiceSettingsDTO without
@@ -196,7 +204,7 @@ class ReaderViewModel @Inject constructor(
         player.onPositionUpdate = { chapterIdx, paragraphIdx, seconds -> maybeSavePosition(chapterIdx, paragraphIdx, seconds) }
 
         viewModelScope.launch {
-            player.state.collect { playback -> _uiState.update { it.copy(playback = playback) } }
+            player.state.collect { playback -> _uiState.update { withRemotePosition(it.copy(playback = playback)) } }
         }
 
         // Keeps some runway of generated audio ahead of wherever playback currently is
@@ -342,7 +350,8 @@ class ReaderViewModel @Inject constructor(
                 val error = result.error
                 when {
                     book != null -> {
-                        _uiState.update { it.copy(loading = false, book = book) }
+                        if (!bookInitialized) noteOwnPositionSave(book.posChapterIdx to book.posParagraphIdx)
+                        _uiState.update { withRemotePosition(it.copy(loading = false, book = book)) }
                         if (!bookInitialized) {
                             bookInitialized = true
                             startFromLiveBook(book)
@@ -595,6 +604,7 @@ class ReaderViewModel @Inject constructor(
         val now = SystemClock.elapsedRealtime()
         if (now - lastPositionSaveAtMs < POSITION_SAVE_MIN_INTERVAL_MS) return
         lastPositionSaveAtMs = now
+        noteOwnPositionSave(chapterIdx to paragraphIdx)
         viewModelScope.launch {
             runCatching { libraryRepository.updatePosition(bookId, PositionDto(chapterIdx, paragraphIdx, seconds)) }
                 .onSuccess {
@@ -1004,6 +1014,44 @@ class ReaderViewModel @Inject constructor(
             awaitChapter(chapterIdx)
             player.playFrom(chapterIdx, paragraphIdx)
         }
+    }
+
+    private fun noteOwnPositionSave(pos: ParagraphPos) {
+        if (pos in ownPositionSaves) return
+        ownPositionSaves.addLast(pos)
+        while (ownPositionSaves.size > OWN_POSITION_SAVES_KEPT) ownPositionSaves.removeFirst()
+    }
+
+    /** Recomputes [ReaderUiState.remotePosition] - only while paused: whoever is actively
+     *  listening here owns the position. */
+    private fun withRemotePosition(state: ReaderUiState): ReaderUiState {
+        val book = state.book
+        val playback = state.playback
+        val remote = if (book == null || playback.isPlaying || playback.chapterIdx < 0) {
+            null
+        } else {
+            remotePosition(
+                book.posChapterIdx to book.posParagraphIdx,
+                playback.chapterIdx to playback.paragraphIdx,
+                ownPositionSaves,
+                dismissedRemotePosition,
+            )
+        }
+        return if (remote == state.remotePosition) state else state.copy(remotePosition = remote)
+    }
+
+    /** "Jump there" on the moved-elsewhere notice. */
+    fun jumpToRemotePosition() {
+        val (chapterIdx, paragraphIdx) = _uiState.value.remotePosition ?: return
+        noteOwnPositionSave(chapterIdx to paragraphIdx)
+        _uiState.update { withRemotePosition(it) }
+        jumpToParagraph(chapterIdx, paragraphIdx)
+    }
+
+    /** "Stay here" - keeps this reader's position until the other device moves again. */
+    fun dismissRemotePosition() {
+        dismissedRemotePosition = _uiState.value.remotePosition ?: return
+        _uiState.update { withRemotePosition(it) }
     }
 
     fun dismissError() {

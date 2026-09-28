@@ -68,6 +68,7 @@ fun JobsScreen(
     val snapshot = uiState.snapshot
     val totalCount = (snapshot?.inFlight?.size ?: 0) + (snapshot?.queued?.size ?: 0)
     val paused = snapshot?.paused ?: false
+    val eta = remember(snapshot) { narrationEta(snapshot) }
 
     Scaffold(
         topBar = {
@@ -120,6 +121,24 @@ fun JobsScreen(
                                 "Paused — no new jobs will be dispatched. Anything already in flight is still running.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                    if (eta != null) {
+                        item {
+                            val perBook = if (eta.books.size > 1) {
+                                eta.books.joinToString(prefix = " (", postfix = ")") {
+                                    "${it.bookTitle} ~${formatEta(it.seconds)}"
+                                }
+                            } else {
+                                ""
+                            }
+                            Text(
+                                "Narration left: ~${formatEta(eta.totalSeconds)} at " +
+                                    "${"%.1f".format(eta.charsPerSecond)} chars/s$perBook",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                             )
                         }

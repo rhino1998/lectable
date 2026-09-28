@@ -16,6 +16,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/deliverytags"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
@@ -89,12 +90,17 @@ type pronunciationMarkDTO struct {
 // pre-resolved (never freely-generated text - see internal/pronounce's
 // own doc comment), so there's no diff-and-validate step needed here the
 // way directionMarksFor needs deliverytags.ExtractInsertions.
-func pronunciationMarksFor(p store.Paragraph) []pronunciationMarkDTO {
-	if len(p.Pronunciation) == 0 {
+//
+// lexicon is the book's scope's listener-authored rules: their matches are
+// marked too, exactly as generation applies them (store.Paragraph.
+// EffectivePronunciation).
+func pronunciationMarksFor(p store.Paragraph, lexicon []pronounce.LexiconEntry) []pronunciationMarkDTO {
+	pron := p.EffectivePronunciation(lexicon)
+	if len(pron) == 0 {
 		return nil
 	}
-	out := make([]pronunciationMarkDTO, len(p.Pronunciation))
-	for i, sub := range p.Pronunciation {
+	out := make([]pronunciationMarkDTO, len(pron))
+	for i, sub := range pron {
 		out[i] = pronunciationMarkDTO{
 			Offset:      utf8.RuneCountInString(p.Text[:sub.Offset]),
 			Length:      utf8.RuneCountInString(p.Text[sub.Offset : sub.Offset+sub.Length]),
@@ -323,6 +329,11 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 	if err != nil {
 		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
+	lexiconEntries, err := s.Store.ListLexicon(store.SeriesScope(book))
+	if err != nil {
+		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
+	}
+	lexicon := store.PronounceLexicon(lexiconEntries)
 	images, err := s.Store.ListImages(ch.ID)
 	if err != nil {
 		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
@@ -398,7 +409,7 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 			DescribesCharacters: p.DescribesCharacters,
 			Emotion:             p.EffectiveEmotion(),
 			DirectionMarks:      directionMarksFor(p, cloneModelByParagraph[p.ID]),
-			PronunciationMarks:  pronunciationMarksFor(p),
+			PronunciationMarks:  pronunciationMarksFor(p, lexicon),
 			AudioStatus:         audioStatus(state.Status),
 			AudioError:          state.Error,
 			DurationSeconds:     state.DurationSeconds,

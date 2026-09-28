@@ -17,6 +17,8 @@ import type {
   CustomVoicePreset,
   CustomVoicePresetInput,
   JobsSnapshot,
+  LexiconEntry,
+  UpsertLexiconRequest,
   TestLLMRequest,
   Position,
   QueueTask,
@@ -670,6 +672,21 @@ export function useUpdateBookmarkNote(_bookId: string) {
 
 export function useDeleteBookmark(_bookId: string) {
   return useMutation({ mutationFn: (id: string) => api.deleteBookmark(id) })
+}
+
+// The book's series pronunciation lexicon (live topic) and its edits.
+export function useLexicon(bookId: string): LiveResult<LexiconEntry[]> {
+  return useLive('lexicon', { bookId })
+}
+
+export function useUpsertLexiconEntry(bookId: string) {
+  return useMutation({
+    mutationFn: (body: UpsertLexiconRequest) => api.upsertLexiconEntry(bookId, body),
+  })
+}
+
+export function useDeleteLexiconEntry(bookId: string) {
+  return useMutation({ mutationFn: (entryId: string) => api.deleteLexiconEntry(bookId, entryId) })
 }
 
 export function useVoicePresets(): LiveResult<VoicePresets> {

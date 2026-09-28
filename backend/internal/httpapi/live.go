@@ -60,6 +60,7 @@ func withDeps(base []string, extra ...string) []string {
 //	characterAppearances  {bookId, characterId}
 //	characterDescriptions {bookId, characterId}
 //	bookmarks      {bookId}               GET /api/books/{id}/bookmarks
+//	lexicon        {bookId}               GET /api/books/{id}/lexicon
 //	bookExports    {bookId}               GET /api/books/{id}/exports
 //	jobs                                  GET /api/jobs
 //	voicePresets                          GET /api/voices/presets
@@ -76,7 +77,8 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	// store.PositionTable).
 	h.Register("books", noParams("books", withDeps(narrationDeps, DBDep(store.PositionTable), DepJobs), time.Second, s.buildBooks))
 	h.Register("book", bookTopic("book", withDeps(narrationDeps, DBDep(store.PositionTable), DBDep("music_regions"), DepJobs), 500*time.Millisecond, s.buildBook))
-	h.Register("chapter", chapterTopic("chapter", withDeps(narrationDeps, DBDep("images"), DBDep("breaks"), DBDep("sfx"), DepJobs), 0, s.buildChapter))
+	// pronunciation_lexicon: a rule's matches show as pronunciation marks.
+	h.Register("chapter", chapterTopic("chapter", withDeps(narrationDeps, DBDep("images"), DBDep("breaks"), DBDep("sfx"), DBDep("pronunciation_lexicon"), DepJobs), 0, s.buildChapter))
 	h.Register("chapterMusic", chapterTopic("chapterMusic", withDeps(dbDeps("books", "chapters", "music_regions"), DepJobs), 0, s.buildChapterMusic))
 	h.Register("voice", bookTopic("voice", dbDeps("books"), 0, s.buildVoice))
 	// DepJobs too: an emotion variant finishing rendering (a
@@ -86,6 +88,8 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("characterAppearances", characterTopic("characterAppearances", narrationDeps, 2*time.Second, s.buildCharacterAppearances))
 	h.Register("characterDescriptions", characterTopic("characterDescriptions", narrationDeps, 2*time.Second, s.buildCharacterDescriptions))
 	h.Register("bookmarks", bookTopic("bookmarks", dbDeps("bookmarks", "books", "chapters", "paragraphs"), 0, s.buildBookmarks))
+	// Match counts scan the book's paragraphs, hence the interval.
+	h.Register("lexicon", bookTopic("lexicon", dbDeps("pronunciation_lexicon", "books", "paragraphs"), 2*time.Second, s.buildLexicon))
 	// Staleness is a whole-book fingerprint query, so this is rate-limited
 	// like the other whole-book topics; a build's progress still lands
 	// every couple of seconds.

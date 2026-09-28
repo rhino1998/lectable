@@ -1076,7 +1076,7 @@ func TestParagraphEmphasisRoundTripsAndAppliesAtGenerationTime(t *testing.T) {
 	// one clobbering the other.
 	p.Pronunciation = []pronounce.Substitution{{Offset: 23, Length: 3, Replacement: "Doctor"}}
 
-	got := p.ResolveGenerationText("audiocpp-higgs-4b")
+	got := p.ResolveGenerationText("audiocpp-higgs-4b", nil)
 	want := `I NEVER said "please" to Doctor anyone.`
 	if got != want {
 		t.Fatalf("ResolveGenerationText = %q, want %q", got, want)
@@ -1088,10 +1088,10 @@ func TestParagraphEmphasisRoundTripsAndAppliesAtGenerationTime(t *testing.T) {
 // any other clone model's tokenizer would read the tag as literal text.
 func TestResolveGenerationTextPausesHiggsOnly(t *testing.T) {
 	p := Paragraph{Text: "Well... I suppose so."}
-	if got, want := p.ResolveGenerationText("audiocpp-higgs-4b"), "Well<|prosody:pause|>... I suppose so."; got != want {
+	if got, want := p.ResolveGenerationText("audiocpp-higgs-4b", nil), "Well<|prosody:pause|>... I suppose so."; got != want {
 		t.Fatalf("Higgs: ResolveGenerationText = %q, want %q", got, want)
 	}
-	if got := p.ResolveGenerationText("audiocpp-pocket-100m"); got != p.Text {
+	if got := p.ResolveGenerationText("audiocpp-pocket-100m", nil); got != p.Text {
 		t.Fatalf("Pocket: ResolveGenerationText = %q, want the text unchanged", got)
 	}
 }

@@ -93,6 +93,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
@@ -224,7 +225,7 @@ fun ReaderScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val listState = rememberLazyListState()
 
-    // Mirrors frontend's autoFollow (ReaderPage.tsx): keeps the currently-playing
+    // Mirrors frontend's autoFollow (hooks/useAutoFollow.ts): keeps the currently-playing
     // paragraph in view as playback advances, but suspends the moment the user drags
     // the list themselves, so it doesn't fight someone scrolling ahead/back to read.
     // Detected via the list's own drag interaction (not the ambient scroll offset),
@@ -255,6 +256,20 @@ fun ReaderScreen(
             playbackSeconds = viewModel.player.positionMs() / 1000.0
             delay(80)
         }
+    }
+
+    // Moved on another device while this reader sat paused - see ReaderViewModel.remotePosition.
+    // Restarting (the position cleared by playing, or moved again) dismisses the old snackbar.
+    LaunchedEffect(uiState.remotePosition) {
+        val (chapterIdx, paragraphIdx) = uiState.remotePosition ?: return@LaunchedEffect
+        val title = uiState.book?.chapters?.getOrNull(chapterIdx)?.title ?: "Chapter ${chapterIdx + 1}"
+        val result = snackbarHostState.showSnackbar(
+            "Continued on another device: $title, paragraph ${paragraphIdx + 1}",
+            actionLabel = "Jump there",
+            withDismissAction = true,
+            duration = SnackbarDuration.Indefinite,
+        )
+        if (result == SnackbarResult.ActionPerformed) viewModel.jumpToRemotePosition() else viewModel.dismissRemotePosition()
     }
 
     LaunchedEffect(uiState.error) {
@@ -887,7 +902,7 @@ private fun InfiniteChapterContent(
 
     // Keeps the currently-playing paragraph centered as playback advances - see
     // LazyListState.centerItem. Suspends itself the moment the reader scrolls by their own
-    // input (autoFollow, tracked by the caller), same as ReaderPage.tsx.
+    // input (autoFollow, tracked by the caller), same as the web reader's useAutoFollow.
     LaunchedEffect(playback.chapterIdx, playback.paragraphIdx, autoFollow, entries) {
         if (!autoFollow) return@LaunchedEffect
         val itemIndex = entries.indexOfFirst {

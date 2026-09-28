@@ -34,6 +34,7 @@ type Store interface {
 	DeleteBook(id string) error
 	DeleteBookAudio(bookID string) error
 	DeleteBookmark(id string) error
+	DeleteLexiconEntry(id string) (*LexiconEntry, error)
 	DeleteChapterAudio(chapterID string) error
 	DeleteCharacter(id string) error
 	DeleteParagraphAudioByVoiceID(bookID, voiceID string) ([]SpeakerAudioRef, error)
@@ -58,6 +59,7 @@ type Store interface {
 	GetVoicePreset(id string) (*VoicePreset, error)
 	ImportBookRows(rows map[string][]json.RawMessage) error
 	ListBookmarks(bookID string) ([]Bookmark, error)
+	ListLexicon(scope string) ([]LexiconEntry, error)
 	ListBooks() ([]Book, error)
 	ListBreaks(chapterID string) ([]Break, error)
 	ListChapterSummaries(bookID, voiceID string, overrides []SpeakerVoice) ([]ChapterSummary, error)
@@ -131,6 +133,7 @@ type Store interface {
 	UpdateVoicePreset(id, name, instruct, refText string, seed int, speedMultiplier float64, designModel string) error
 	UpdateVoicePresetSeed(id string, seed int) error
 	UpsertBookmark(paragraphID, note string) (string, error)
+	UpsertLexiconEntry(scope string, e pronounce.LexiconEntry) (entry LexiconEntry, previous *LexiconEntry, err error)
 	UpsertCharacter(scope, name string, isRole bool) (character Character, created bool, err error)
 	VoicePresetGroups() (map[string]string, error)
 	VoicePresetIDsForCharacter(characterID string) ([]string, error)

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 
 	"github.com/rhino1998/lectable/backend/internal/jobs"
@@ -63,6 +64,12 @@ type queueTaskDTO struct {
 	// Emotion is jobs.QueueTask.Emotion verbatim - the emotion variant a
 	// clone task's line generates in, "" for neutral.
 	Emotion string `json:"emotion,omitempty"`
+	// Chars is jobs.QueueTask.Chars verbatim - how much paragraph text a
+	// narration task ("voice_clone"/"voice_design") renders, omitted for
+	// every other kind. Summed over a book's narration tasks and divided by
+	// jobsSnapshotDTO.NarrationCharsPerSecond, it's the Jobs views' "time
+	// left" estimate.
+	Chars int `json:"chars,omitempty"`
 }
 
 type jobsSnapshotDTO struct {
@@ -71,6 +78,12 @@ type jobsSnapshotDTO struct {
 	// Paused mirrors jobs.Manager.Paused() - see handlePauseJobs/
 	// handleResumeJobs, the Jobs dashboard's own pause/resume button.
 	Paused bool `json:"paused"`
+	// NarrationCharsPerSecond is jobs.Manager.Throughput: how fast
+	// narration has been rendering lately, in characters of paragraph text
+	// per second across every generation slot together, rounded to 0.1.
+	// Omitted (0) until there's a recent continuous run to measure - no
+	// estimate is better than a wild one.
+	NarrationCharsPerSecond float64 `json:"narrationCharsPerSecond,omitempty"`
 }
 
 // buildJobsSnapshot reports the job queue's live state - what's dispatched
@@ -134,10 +147,14 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 			Instruct:     t.Instruct,
 			Attempt:      t.Attempt,
 			Emotion:      t.Emotion,
+			Chars:        t.Chars,
 		}
 	}
 
 	out := jobsSnapshotDTO{InFlight: []queueTaskDTO{}, Queued: []queueTaskDTO{}, Paused: s.Jobs.Paused()}
+	if rate, ok := s.Jobs.Throughput(); ok {
+		out.NarrationCharsPerSecond = math.Round(rate*10) / 10
+	}
 	for _, t := range inFlight {
 		out.InFlight = append(out.InFlight, toDTO(t))
 	}

@@ -44,6 +44,14 @@ object LiveTopics {
     fun bookmarks(bookId: String): LiveTopic<List<BookmarkDto>> =
         LiveTopic("bookmarks", mapOf("bookId" to bookId), serializer<List<BookmarkDto>>())
 
+    /**
+     * buildLexicon lists bookID's scope's pronunciation rules, each with how
+     * many of this book's paragraphs it matches (so a typo'd rule that never
+     * fires is visible).
+     */
+    fun lexicon(bookId: String): LiveTopic<List<LexiconEntryDto>> =
+        LiveTopic("lexicon", mapOf("bookId" to bookId), serializer<List<LexiconEntryDto>>())
+
     fun bookExports(bookId: String): LiveTopic<List<BookExportDto>> =
         LiveTopic("bookExports", mapOf("bookId" to bookId), serializer<List<BookExportDto>>())
 

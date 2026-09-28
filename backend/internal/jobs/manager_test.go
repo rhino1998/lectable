@@ -1463,7 +1463,7 @@ func TestHandleResultDiscardsStaleGenerationText(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected the stale paragraph to be requeued, got %d queued tasks", len(got))
 	}
-	if text := got[0].paragraph.ResolveGenerationText(""); text != "Free domains." {
+	if text := got[0].paragraph.ResolveGenerationText("", nil); text != "Free domains." {
 		t.Errorf("requeued generation text = %q, want %q", text, "Free domains.")
 	}
 	if got[0].attempt != 0 {

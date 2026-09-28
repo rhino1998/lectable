@@ -847,6 +847,33 @@ interface LectableApi {
         @Path("id") id: String,
     ): QueuedResponseDto
 
+    @GET("api/books/{id}/lexicon")
+    suspend fun listLexicon(
+        @Path("id") id: String,
+    ): List<LexiconEntryDto>
+
+    /**
+     * handleUpsertLexicon adds a pronunciation rule to the book's series, or
+     * replaces the one for the same term (case-insensitively), then clears
+     * generated audio for every paragraph in the series that the old or new
+     * rule matches, so it's re-rendered with the new pronunciation.
+     */
+    @PUT("api/books/{id}/lexicon")
+    suspend fun upsertLexicon(
+        @Path("id") id: String,
+        @Body body: UpsertLexiconRequestDto,
+    ): IdResponseDto
+
+    /**
+     * handleDeleteLexicon removes a pronunciation rule and clears generated
+     * audio for every paragraph in its series that the rule matched.
+     */
+    @DELETE("api/books/{id}/lexicon/{entryId}")
+    suspend fun deleteLexicon(
+        @Path("id") id: String,
+        @Path("entryId") entryId: String,
+    ): Unit
+
     /**
      * handleLookahead keeps some runway of generated audio ahead of wherever
      * the reader currently is, spanning into later chapters as needed rather

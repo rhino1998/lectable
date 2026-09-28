@@ -1,93 +1,50 @@
-import {
-  startTransition,
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from '@tanstack/react-router'
 import {
-  useAttributeSpeakers,
-  useAttributingChapters,
   useBook,
   useBookmarks,
   useChapterMusicRange,
   useChapterRange,
   useCreateBookmark,
   useDeleteBookmark,
-  useDeleteChapterAudio,
-  useDirectingChapters,
-  usePronouncingChapters,
-  useResolvePronunciation,
-  useDescribingChapters,
-  useGenerateChapter,
   useGenerateParagraphSFX,
-  useGeneratingChapters,
   useLookahead,
   useRegenerateParagraph,
-  useRegenerateMusicRegion,
-  useRetagDescriptions,
-  useRetagScareQuotes,
-  useScareQuotingChapters,
-  useRunChapterAmbience,
-  useAmbienceChapters,
-  useSetParagraphDescription,
-  useSetParagraphEmotion,
-  useSetParagraphScareQuote,
   useSetParagraphSFXPrompt,
-  useSetParagraphSpeaker,
   useSpeakers,
-  useTagDirections,
   useUpdatePosition,
 } from '../api/queries'
-import { ApiError } from '../api/client'
 import { usePlayback } from '../hooks/usePlayback'
 import { useBackgroundMusic } from '../hooks/useBackgroundMusic'
 import { useLighting } from '../hooks/useLighting'
 import { useLightingState } from '../lighting/controller'
 import { useInView } from '../hooks/useInView'
-import { useClickOutside } from '../hooks/useClickOutside'
 import { useMediaSession } from '../hooks/useMediaSession'
-import { useReimportChapterAction } from '../hooks/useReimportChapterAction'
 import { READER_FONT_FAMILIES, useReaderTypography } from '../hooks/useReaderTypography'
+import { useStableCallback } from '../hooks/useStableCallback'
+import { useChapterActions } from '../hooks/useChapterActions'
+import { useChapterWindowing } from '../hooks/useChapterWindowing'
+import { useAutoFollow } from '../hooks/useAutoFollow'
+import { useSFXOverlay } from '../hooks/useSFXOverlay'
+import { remotePosition, useRemotePosition } from '../hooks/useRemotePosition'
+import { useReaderShortcuts } from '../hooks/useReaderShortcuts'
+import { ParagraphContextMenu } from '../components/ParagraphContextMenu'
+import type { ParagraphContextMenuHandle } from '../components/ParagraphContextMenu'
 import { PlayerBar } from '../components/PlayerBar'
 import { ChapterSection } from '../components/ChapterSection'
 import { AnnotationTooltip } from '../components/AnnotationTooltip'
 import type { AnnotationTooltipHandle } from '../components/AnnotationTooltip'
 import type { ChapterDetail, MusicRegion, Paragraph } from '../api/types'
-import { RiEmotionNormalLine } from 'react-icons/ri'
-import { EMOTIONS } from '../utils/emotions'
 import { matchesSelectedSpeaker } from '../utils/annotations'
 
-// Wraps `fn` in a stable function identity (never changes across renders)
-// that always calls whatever the latest `fn` actually is - the same
-// "latest ref" pattern usePlayback's own stateRef uses, applied here so
-// callbacks handed down to memoized children (ChapterSection/
-// ParagraphGroup) don't force them to re-render just because the
-// underlying handler closed over some value that changed (e.g. a mutation
-// object TanStack Query re-creates each render).
-function useStableCallback<A extends unknown[], R>(fn: (...args: A) => R): (...args: A) => R {
-  const fnRef = useRef(fn)
-  fnRef.current = fn
-  return useCallback((...args: A) => fnRef.current(...args), [])
-}
-
 // How many loaded chapters on each side of whichever one is actually on
-// screen stay fully mounted - see the chapterHeights/registerHeight
-// windowing below. Generous enough that ordinary scrolling (including a
+// screen stay fully mounted - see useChapterWindowing's chapterHeights
+// (per-chapter measured heights). Generous enough that ordinary scrolling (including a
 // fast flick) never visibly pops a chapter from placeholder to full
 // content mid-view; chapters already fetched and rendered once, so
 // expanding a placeholder back to full content is a synchronous re-render,
 // not a network wait.
 const RENDER_WINDOW_RADIUS = 2
-
-// How many viewport-heights away the active paragraph can be before
-// following it jumps there instantly instead of smooth-scrolling - see
-// scrollToActiveParagraph.
-const FAR_SCROLL_VIEWPORTS = 3
 
 // A stable empty-array reference for a chapter with no music regions (or
 // while annotations view is off, so none were fetched at all) - handing
@@ -145,36 +102,31 @@ export function ReaderPage() {
       await generateSFX.mutateAsync({ chapterIdx, paragraphIdx, prompt })
     },
   )
-  // lastSFXKeyRef backs the sound-effect overlay-playback effect below -
-  // declared here (before playback/chapters exist yet) since hooks must
-  // run unconditionally in the same order every render; the effect itself
-  // is defined further down, once both are in scope.
-  const lastSFXKeyRef = useRef<string | null>(null)
 
-  // Chapter-header actions: clear a chapter's own generated audio (a
-  // scalpel next to VoicePanel's whole-book "Delete generated audio"), and
-  // run/re-run speaker attribution for just that chapter without going to
-  // the Speakers page - see SpeakersPage's own "Attribute speakers" button
-  // for the fuller roster-management version of the same call.
-  const deleteChapterAudio = useDeleteChapterAudio(bookId)
-  const attributeSpeakers = useAttributeSpeakers(bookId)
-  const attributingIdxs = useAttributingChapters(bookId)
-  const retagDescriptions = useRetagDescriptions(bookId)
-  const retagScareQuotes = useRetagScareQuotes(bookId)
-  const tagDirections = useTagDirections(bookId)
-  const directingIdxs = useDirectingChapters(bookId)
-  const resolvePronunciation = useResolvePronunciation(bookId)
-  const pronouncingIdxs = usePronouncingChapters(bookId)
-  const runChapterAmbience = useRunChapterAmbience(bookId)
-  const ambienceIdxs = useAmbienceChapters(bookId)
-  const generateChapter = useGenerateChapter(bookId)
-  const generatingIdxs = useGeneratingChapters(bookId)
-  const regenerateMusicRegion = useRegenerateMusicRegion(bookId)
-  const [chapterActionError, setChapterActionError] = useState<string | null>(null)
-  // Description/scare-quote tagging are queued jobs, derived from the live
-  // job-queue topic like attributingIdxs/directingIdxs above.
-  const describingIdxs = useDescribingChapters(bookId)
-  const scareQuotingIdxs = useScareQuotingChapters(bookId)
+  const {
+    error: chapterActionError,
+    setError: setChapterActionError,
+    attributingIdxs,
+    describingIdxs,
+    scareQuotingIdxs,
+    directingIdxs,
+    pronouncingIdxs,
+    ambienceIdxs,
+    generatingIdxs,
+    reimportingIdx,
+    clearingIdx,
+    runChapterAmbience,
+    runClearChapterAudio,
+    runReimportChapter,
+    runAttributeChapter,
+    runRetagDescriptionsChapter,
+    runRetagScareQuotesChapter,
+    runTagDirectionsChapter,
+    runResolvePronunciationChapter,
+    runAmbienceChapter,
+    runGenerateChapter,
+    runRegenerateMusic,
+  } = useChapterActions(bookId)
 
   // Colors narrator/speaker/description segments in the paragraph list
   // instead of leaving that distinction to the speaker-hint badge alone
@@ -191,301 +143,19 @@ export function ReaderPage() {
   const [selectedSpeaker, setSelectedSpeaker] = useState<string | null>(null)
 
   // Right-click "reassign speaker"/"reassign description" menu (annotations
-  // view only) - see openSpeakerMenu/reassignSpeaker/reassignDescription
-  // below and their render near the end of this component. speakersQuery
-  // backs the menu's own "reassign to…" list - a live topic, so a name just
-  // typed in via UpsertCharacter (a brand-new speaker) shows up here next
-  // time the menu opens without a separate fetch.
+  // view only) - see ParagraphContextMenu. speakersQuery also backs
+  // PlayerBar's speaker list.
   const speakersQuery = useSpeakers(bookId)
-  const setParagraphSpeaker = useSetParagraphSpeaker(bookId)
-  const setParagraphDescription = useSetParagraphDescription(bookId)
-  const setParagraphScareQuote = useSetParagraphScareQuote(bookId)
-  const setParagraphEmotion = useSetParagraphEmotion(bookId)
-  const [contextMenu, setContextMenu] = useState<{
-    chapterIdx: number
-    paragraphIdx: number
-    isQuote: boolean
-    currentSpeaker: string
-    describesCharacters: string[]
-    scareQuote: boolean
-    emotion: string
-    x: number
-    y: number
-  } | null>(null)
-  const contextMenuRef = useRef<HTMLDivElement>(null)
-  useClickOutside([contextMenuRef], () => setContextMenu(null), contextMenu !== null)
+  const contextMenuRef = useRef<ParagraphContextMenuHandle>(null)
 
   const openSpeakerMenu = useCallback(
     (e: React.MouseEvent, chapterIdx: number, p: Paragraph) => {
       if (!annotationsView) return
       e.preventDefault()
       e.stopPropagation()
-      setContextMenu({
-        chapterIdx,
-        paragraphIdx: p.idx,
-        isQuote: !!p.isQuote,
-        currentSpeaker: p.speaker ?? '',
-        describesCharacters: p.describesCharacters ?? [],
-        scareQuote: !!p.scareQuote,
-        emotion: p.emotion ?? '',
-        x: e.clientX,
-        y: e.clientY,
-      })
+      contextMenuRef.current?.open(chapterIdx, p, e.clientX, e.clientY)
     },
     [annotationsView],
-  )
-
-  // Corrects the menu's raw click-point position (contextMenu.x/y) to keep
-  // it fully on screen - clamped against both the viewport edges and
-  // .player-bar's own top edge, since the raw position alone can otherwise
-  // render the menu (or its lower rows) behind the fixed bottom bar or off
-  // the right/bottom of the window when the paragraph clicked sits near
-  // either. Runs via useLayoutEffect (not useEffect) so the corrected
-  // position is committed before the browser ever paints the menu at its
-  // raw, unclamped spot - no visible jump. null until measured, so the
-  // menu's own style falls back to the raw click point for that first,
-  // pre-measurement render.
-  const [menuPos, setMenuPos] = useState<{ left: number; top: number } | null>(null)
-  useLayoutEffect(() => {
-    if (!contextMenu) {
-      setMenuPos(null)
-      return
-    }
-    const el = contextMenuRef.current
-    if (!el) return
-    const margin = 8
-    const rect = el.getBoundingClientRect()
-    const playerBar = document.querySelector('.player-bar')
-    const bottomBoundary = playerBar ? playerBar.getBoundingClientRect().top : window.innerHeight
-    const left = Math.min(contextMenu.x, window.innerWidth - rect.width - margin)
-    const top = Math.min(contextMenu.y, bottomBoundary - rect.height - margin)
-    setMenuPos({ left: Math.max(margin, left), top: Math.max(margin, top) })
-  }, [contextMenu])
-
-  const reassignTargets = useMemo(
-    () => [
-      ...new Set(
-        (speakersQuery.data ?? [])
-          .filter((s) => !s.invalid)
-          .map((s) => s.name)
-          .filter((n) => n !== '' && n !== 'Narrator'),
-      ),
-    ],
-    [speakersQuery.data],
-  )
-
-  const reassignSpeaker = useCallback(
-    (speaker: string) => {
-      if (!contextMenu) return
-      setChapterActionError(null)
-      setParagraphSpeaker.mutate(
-        { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, speaker },
-        {
-          onError: (err) =>
-            setChapterActionError(
-              err instanceof ApiError ? err.message : 'Could not reassign this paragraph',
-            ),
-        },
-      )
-      setContextMenu(null)
-    },
-    [contextMenu, setParagraphSpeaker],
-  )
-
-  // reassignSpeaker's own counterpart for a *description* paragraph - moves
-  // it off `from`'s own describes-list and onto `to`'s instead ("" clears
-  // it, describing no one), leaving any other character this same
-  // paragraph also describes untouched (a description paragraph can name
-  // more than one - see the menu's own per-name rows below).
-  const reassignDescription = useCallback(
-    (from: string, to: string) => {
-      if (!contextMenu) return
-      setChapterActionError(null)
-      setParagraphDescription.mutate(
-        { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, from, to },
-        {
-          onError: (err) =>
-            setChapterActionError(
-              err instanceof ApiError ? err.message : 'Could not reassign this description',
-            ),
-        },
-      )
-      setContextMenu(null)
-    },
-    [contextMenu, setParagraphDescription],
-  )
-
-  // Live "mark/unmark as scare quote" toggle - see
-  // handleSetParagraphScareQuote's own doc comment for why this (unlike
-  // reassignSpeaker/reassignDescription above) immediately invalidates the
-  // paragraph's own audio server-side rather than requiring a separate
-  // explicit regenerate.
-  const toggleScareQuote = useCallback(() => {
-    if (!contextMenu) return
-    setChapterActionError(null)
-    setParagraphScareQuote.mutate(
-      {
-        chapterIdx: contextMenu.chapterIdx,
-        paragraphIdx: contextMenu.paragraphIdx,
-        scareQuote: !contextMenu.scareQuote,
-      },
-      {
-        onError: (err) =>
-          setChapterActionError(
-            err instanceof ApiError ? err.message : 'Could not update scare-quote status',
-          ),
-      },
-    )
-    setContextMenu(null)
-  }, [contextMenu, setParagraphScareQuote])
-
-  // Manual emotion override for a dialogue line ('' = neutral) - like
-  // toggleScareQuote, the backend invalidates and regenerates the line's
-  // audio itself when its effective emotion changes.
-  const setEmotion = useCallback(
-    (emotion: string) => {
-      if (!contextMenu) return
-      setChapterActionError(null)
-      setParagraphEmotion.mutate(
-        { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, emotion },
-        {
-          onError: (err) =>
-            setChapterActionError(
-              err instanceof ApiError ? err.message : "Could not set this line's emotion",
-            ),
-        },
-      )
-      setContextMenu(null)
-    },
-    [contextMenu, setParagraphEmotion],
-  )
-
-  const runClearChapterAudio = useCallback(
-    (idx: number, title: string) => {
-      if (
-        !confirm(
-          `Clear all generated audio for "${title}"? Every paragraph in this chapter will need to be regenerated.`,
-        )
-      ) {
-        return
-      }
-      setChapterActionError(null)
-      deleteChapterAudio.mutate(idx, {
-        onError: (err) =>
-          setChapterActionError(
-            err instanceof ApiError ? err.message : "Could not clear this chapter's audio",
-          ),
-      })
-    },
-    [deleteChapterAudio],
-  )
-
-  const { run: runReimportChapter, reimportingIdx } = useReimportChapterAction(
-    bookId,
-    setChapterActionError,
-  )
-
-  const runAttributeChapter = useCallback(
-    (idx: number) => {
-      setChapterActionError(null)
-      attributeSpeakers.mutate(idx, {
-        onError: (err) =>
-          setChapterActionError(
-            err instanceof ApiError ? err.message : 'Speaker attribution failed',
-          ),
-      })
-    },
-    [attributeSpeakers],
-  )
-
-  const runRetagDescriptionsChapter = useCallback(
-    (idx: number) => {
-      setChapterActionError(null)
-      retagDescriptions.mutate(idx, {
-        onError: (err) =>
-          setChapterActionError(
-            err instanceof ApiError ? err.message : 'Description tagging failed',
-          ),
-      })
-    },
-    [retagDescriptions],
-  )
-
-  const runRetagScareQuotesChapter = useCallback(
-    (idx: number) => {
-      setChapterActionError(null)
-      retagScareQuotes.mutate(idx, {
-        onError: (err) =>
-          setChapterActionError(
-            err instanceof ApiError ? err.message : 'Scare-quote tagging failed',
-          ),
-      })
-    },
-    [retagScareQuotes],
-  )
-
-  const runTagDirectionsChapter = useCallback(
-    (idx: number) => {
-      setChapterActionError(null)
-      tagDirections.mutate(idx, {
-        onError: (err) =>
-          setChapterActionError(
-            err instanceof ApiError ? err.message : 'Speech-direction tagging failed',
-          ),
-      })
-    },
-    [tagDirections],
-  )
-
-  const runResolvePronunciationChapter = useCallback(
-    (idx: number) => {
-      setChapterActionError(null)
-      resolvePronunciation.mutate(idx, {
-        onError: (err) =>
-          setChapterActionError(
-            err instanceof ApiError ? err.message : 'Pronunciation resolution failed',
-          ),
-      })
-    },
-    [resolvePronunciation],
-  )
-
-  const runAmbienceChapter = useCallback(
-    (idx: number) => {
-      setChapterActionError(null)
-      runChapterAmbience.mutate(idx, {
-        onError: (err) =>
-          setChapterActionError(err instanceof ApiError ? err.message : 'Ambience pass failed'),
-      })
-    },
-    [runChapterAmbience],
-  )
-
-  const runGenerateChapter = useCallback(
-    (idx: number) => {
-      setChapterActionError(null)
-      generateChapter.mutate(idx, {
-        onError: (err) =>
-          setChapterActionError(err instanceof ApiError ? err.message : 'Audio generation failed'),
-      })
-    },
-    [generateChapter],
-  )
-
-  const runRegenerateMusic = useCallback(
-    (chapterIdx: number, regionId: string) => {
-      setChapterActionError(null)
-      regenerateMusicRegion.mutate(
-        { regionId, chapterIdx },
-        {
-          onError: (err) =>
-            setChapterActionError(
-              err instanceof ApiError ? err.message : 'Could not generate background music',
-            ),
-        },
-      )
-    },
-    [regenerateMusicRegion],
   )
 
   // The window of chapters currently mounted in the scroll list. Grows
@@ -493,11 +163,19 @@ export function ReaderPage() {
   // requiring a chapter to be explicitly selected.
   const [range, setRange] = useState<{ start: number; end: number } | null>(null)
 
+  const remotePositionState = useRemotePosition()
+  const { noteOwnSave } = remotePositionState
+
   useEffect(() => {
     if (bookQuery.data && range === null) {
       setRange({ start: bookQuery.data.posChapterIdx, end: bookQuery.data.posChapterIdx })
+      // Where this reader resumed from is its own, not another device's.
+      noteOwnSave({
+        chapterIdx: bookQuery.data.posChapterIdx,
+        paragraphIdx: bookQuery.data.posParagraphIdx,
+      })
     }
-  }, [bookQuery.data, range])
+  }, [bookQuery.data, range, noteOwnSave])
 
   const totalChapters = bookQuery.data?.chapters.length ?? 0
   const chapterResults = useChapterRange(bookId, range?.start ?? 0, range?.end ?? -1)
@@ -540,46 +218,6 @@ export function ReaderPage() {
     return map
   }, [musicResults, range])
 
-  // Speakers already narrating paragraphs near contextMenu's own paragraph,
-  // within the same chapter (the same scene/conversation), closest
-  // occurrence first - mirrors android's nearbySpeakersFor/
-  // SpeakerPickerSheet exactly, including the "Narrator/blank excluded,
-  // dialogue paragraphs only" filter (a misattributed line is usually
-  // meant for whoever else is already talking around it, not some
-  // character from a completely different part of the book). Distance is
-  // measured in paragraph index, either direction. Only ever backs the
-  // "Reassign speaker" branch below - android doesn't do this for
-  // description reassignment either (DescriptionPickerSheet stays a flat
-  // roster list), so neither does this.
-  const nearbySpeakers = useMemo(() => {
-    if (!contextMenu || !contextMenu.isQuote) return []
-    const chapter = chapters.get(contextMenu.chapterIdx)
-    if (!chapter) return []
-    const targetIdx = contextMenu.paragraphIdx
-    return [
-      ...new Set(
-        chapter.paragraphs
-          .filter((p) => p.idx !== targetIdx && p.speaker && p.speaker !== 'Narrator')
-          .sort((a, b) => Math.abs(a.idx - targetIdx) - Math.abs(b.idx - targetIdx))
-          .map((p) => p.speaker as string),
-      ),
-    ]
-  }, [contextMenu, chapters])
-
-  // Hoists nearbySpeakers ahead of the rest of the book's full roster in
-  // the "Reassign speaker" menu, under its own section header - same
-  // "restrict to the known roster, then split into nearby/rest" shape
-  // android's own SpeakerPickerSheet uses. With nothing nearby, this just
-  // falls back to reassignTargets as a flat list, same as it always was.
-  const nearbyReassignTargets = useMemo(
-    () => nearbySpeakers.filter((name) => reassignTargets.includes(name)),
-    [nearbySpeakers, reassignTargets],
-  )
-  const restReassignTargets = useMemo(
-    () => reassignTargets.filter((name) => !nearbyReassignTargets.includes(name)),
-    [reassignTargets, nearbyReassignTargets],
-  )
-
   const expandDown = useCallback(() => {
     setRange((r) => (r ? { ...r, end: Math.min(r.end + 1, totalChapters - 1) } : r))
   }, [totalChapters])
@@ -589,9 +227,10 @@ export function ReaderPage() {
 
   const handlePosition = useCallback(
     (chIdx: number, paraIdx: number, seconds: number) => {
+      noteOwnSave({ chapterIdx: chIdx, paragraphIdx: paraIdx })
       updatePosition.mutate({ chapterIdx: chIdx, paragraphIdx: paraIdx, seconds })
     },
-    [updatePosition],
+    [updatePosition, noteOwnSave],
   )
 
   const playback = usePlayback({
@@ -678,46 +317,13 @@ export function ReaderPage() {
   )
   const seek = useStableCallback((seconds: number) => playback.seek(seconds))
 
-  // Sound-effect overlay playback: a brand-new, independent <audio> (via
-  // the Audio() constructor, not playback's own audioElement) fired once
-  // playback actually reaches this paragraph's own chosen trigger word
-  // (sfxTriggerWord, a 0-based index into words - see ChapterSection's own
-  // word-picker), not merely once the paragraph starts - deliberately
-  // never stopped/tracked past that point, so a clip longer than the rest
-  // of its own paragraph keeps playing to completion even once playback
-  // has moved on to a later one (see backend/CLAUDE.md's "SFX sound
-  // effects" section: overlap with later paragraphs is fine, an explicit
-  // stop on advance is not). Re-checked on every playback.currentTime
-  // update (usePlayback's own 'timeupdate'-driven state, a few times a
-  // second - plenty of precision for triggering a sound cue, unlike
-  // per-frame word highlighting) rather than only on paragraph change, so
-  // landing mid-paragraph past the trigger word (a seek, or a paragraph
-  // entered already past it) still fires immediately instead of never.
-  // Keyed off (chapterIdx, paragraphIdx) so this fires at most once per
-  // paragraph visit even though the effect re-runs many times while
-  // playing it, and gated on isPlaying so a paragraph merely landed on
-  // while paused never triggers one - matching how narration itself only
-  // plays on Play.
-  useEffect(() => {
-    if (!playback.isPlaying) return
-    const key = `${playback.chapterIdx}:${playback.paragraphIdx}`
-    if (lastSFXKeyRef.current === key) return
-    const p = chapters.get(playback.chapterIdx)?.paragraphs[playback.paragraphIdx]
-    if (p?.sfxStatus !== 'ready' || !p.sfxAudioUrl) return
-    const triggerTime = p.words[p.sfxTriggerWord ?? 0]?.start ?? 0
-    if (playback.currentTime < triggerTime) return
-    lastSFXKeyRef.current = key
-    new Audio(p.sfxAudioUrl).play().catch(() => {
-      // Autoplay blocked (no user gesture on this tab yet) - nothing to
-      // recover from; a later paragraph's own overlay isn't affected.
-    })
-  }, [
-    playback.isPlaying,
-    playback.chapterIdx,
-    playback.paragraphIdx,
-    playback.currentTime,
+  useSFXOverlay({
     chapters,
-  ])
+    chapterIdx: playback.chapterIdx,
+    paragraphIdx: playback.paragraphIdx,
+    currentTime: playback.currentTime,
+    isPlaying: playback.isPlaying,
+  })
 
   // ParagraphText only ever reads the audioElement prop while its own
   // `active` is true (see that component), so a non-active chapter's
@@ -794,207 +400,18 @@ export function ReaderPage() {
   useInView(topSentinelRef, expandUp, '800px', [range?.start, startSettled])
   useInView(bottomSentinelRef, expandDown, '800px', [range?.end, endSettled])
 
-  const paragraphRefs = useRef(new Map<string, HTMLElement>())
-  const registerParagraphRef = useCallback((key: string, el: HTMLElement | null) => {
-    if (el) paragraphRefs.current.set(key, el)
-    else paragraphRefs.current.delete(key)
-  }, [])
-
-  // Which loaded chapter is actually scrolled into view - distinct from
-  // playback.chapterIdx (which chapter is currently *playing*, possibly
-  // off-screen if the reader scrolled ahead/back manually - see
-  // autoFollow). Backs PlayerBar's "this chapter only" speaker-list scope
-  // (scopeChapter below), which should reflect what's on screen, not
-  // what's playing. Tracks intersection ratios across every mounted
-  // chapter-block (chapterSectionRefs) and keeps whichever one is
-  // currently most visible - entries only report elements whose
-  // intersection *changed* on a given callback, so ratios are accumulated
-  // in a ref across calls rather than recomputed from just that batch.
-  const chapterSectionRefs = useRef(new Map<number, HTMLElement>())
-  const registerChapterSectionRef = useCallback((idx: number, el: HTMLElement | null) => {
-    if (el) chapterSectionRefs.current.set(idx, el)
-    else chapterSectionRefs.current.delete(idx)
-  }, [])
-  const chapterVisibilityRef = useRef(new Map<number, number>())
-  const [visibleChapterIdx, setVisibleChapterIdx] = useState<number | null>(null)
-  useEffect(() => {
-    // A fresh observer reports every observed section on its first
-    // callback, so drop ratios left over from the previous range - after
-    // a jump resets the range, a chapter no longer mounted would otherwise
-    // keep its last ratio forever and could win "most visible".
-    chapterVisibilityRef.current.clear()
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const idx = Number((entry.target as HTMLElement).dataset.chapterIdx)
-          chapterVisibilityRef.current.set(idx, entry.isIntersecting ? entry.intersectionRatio : 0)
-        }
-        let best: number | null = null
-        let bestRatio = 0
-        for (const [idx, ratio] of chapterVisibilityRef.current) {
-          if (ratio > bestRatio) {
-            bestRatio = ratio
-            best = idx
-          }
-        }
-        // A transition: this recenters the render window (focusChapterIdx
-        // below), which mounts whole chapters - a couple hundred
-        // paragraphs each - as they come into range. Rendered urgently
-        // that blocked the main thread for hundreds of ms mid-scroll (and
-        // right after every far jump); as a transition React time-slices
-        // it between frames instead.
-        if (best !== null) {
-          const next = best
-          startTransition(() => setVisibleChapterIdx(next))
-        }
-      },
-      { threshold: [0, 0.1, 0.25, 0.5, 0.75, 1] },
-    )
-    for (const el of chapterSectionRefs.current.values()) observer.observe(el)
-    return () => observer.disconnect()
-  }, [range?.start, range?.end])
-
-  // Windowing: which loaded chapters actually get their full DOM mounted
-  // (heading + entire paragraph list) versus collapsed to a single sized
-  // spacer - see ChapterSection's renderFull/placeholderHeight and the
-  // render loop below. `range` only ever grows (a chapter, once loaded,
-  // stays in the map for the rest of the session - see expandUp/
-  // expandDown), so without this a long reading session accumulates every
-  // chapter scrolled through, all still fully mounted, and every one of
-  // them pays layout/paint cost on every render regardless of whether
-  // ChapterSection's own memoization skips reconciling its React tree.
-  // Caches each chapter's own last-measured height (via the ResizeObserver
-  // below) so collapsing it to a placeholder doesn't change the scroll
-  // list's total height - the reader's scroll position stays put even
-  // though most of what they've already read is no longer real DOM.
-  const [chapterHeights, setChapterHeights] = useState<Map<number, number>>(() => new Map())
-  const registerHeight = useCallback((idx: number, height: number) => {
-    setChapterHeights((prev) => {
-      const existing = prev.get(idx)
-      if (existing !== undefined && Math.abs(existing - height) < 1) return prev
-      const next = new Map(prev)
-      next.set(idx, height)
-      return next
-    })
-  }, [])
-  useEffect(() => {
-    const observer = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const el = entry.target as HTMLElement
-        // Skip a chapter that hasn't loaded its real data yet (still
-        // showing "Loading chapter…") - see ChapterSection's data-loaded -
-        // caching that skeleton's own tiny height would wrongly become
-        // this chapter's placeholder size forever if it falls out of the
-        // render window before its real content ever gets a chance to
-        // mount and be measured.
-        if (el.dataset.loaded !== '1') continue
-        const idx = Number(el.dataset.chapterIdx)
-        const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height
-        if (Number.isFinite(idx) && height > 0) registerHeight(idx, height)
-      }
-    })
-    for (const el of chapterSectionRefs.current.values()) observer.observe(el)
-    return () => observer.disconnect()
-  }, [range?.start, range?.end, registerHeight])
-
-  // Keeps the currently-playing paragraph centered as playback advances
-  // (and does the initial resume-position scroll the same way, since that's
-  // just "the active paragraph" at mount). Suspends itself the moment the
-  // reader scrolls *by their own input*, so following doesn't fight someone
-  // reading ahead or back; the "Jump to current" button in the player bar
-  // both recenters immediately and turns following back on.
-  //
-  // Detecting "explicit" scrolling means listening for the input gestures
-  // that cause it (wheel, touch drag, scroll-relevant keys) rather than the
-  // ambient 'scroll' event - the page's height keeps changing as chapters
-  // and images load in, and those layout shifts alone can move the
-  // scroll position (and fire 'scroll') with no user input at all.
-  const [autoFollow, setAutoFollow] = useState(true)
-  const hasScrolledOnceRef = useRef(false)
-  // Read through a ref so scrollToActiveParagraph's identity doesn't churn
-  // every time the observer above reports a new most-visible chapter.
-  const visibleChapterIdxRef = useRef(visibleChapterIdx)
-  visibleChapterIdxRef.current = visibleChapterIdx
-  // Which paragraph ("chapterIdx:paragraphIdx") following last actually
-  // scrolled to - lets the follow effect below retry only while the
-  // target hasn't rendered yet, instead of re-scrolling on every
-  // `chapters` change (a live chapter update lands each time a paragraph's
-  // audio finishes generating, and each chapter the sentinels load in is
-  // another). Re-issuing scrollIntoView on those restarted any smooth
-  // scroll still in flight, which read as stutter.
-  const followedKeyRef = useRef<string | null>(null)
-
-  // A requested smooth scroll turns into an instant jump when the target
-  // is far from what's on screen - more than one chapter away from the
-  // most-visible chapter, or more than FAR_SCROLL_VIEWPORTS screens away
-  // within one long chapter. Smooth-scrolling across that much of a long
-  // book takes seconds, and passes over chapters that are still sized
-  // placeholders (see the windowing above) mounting their full DOM
-  // mid-animation, so the scroll stutters and can land off-target as
-  // their real heights settle. The target itself is always mounted (the
-  // playing chapter never collapses to a placeholder); its neighbors fill
-  // in afterwards as a transition (see the IntersectionObserver above).
-  // Returns whether the target paragraph was mounted at all (false =
-  // retry once it renders).
-  const scrollToActiveParagraph = useCallback(
-    (behavior: ScrollBehavior) => {
-      const key = `${playback.chapterIdx}:${playback.paragraphIdx}`
-      const el = paragraphRefs.current.get(key)
-      if (!el) return false
-      followedKeyRef.current = key
-      if (behavior === 'smooth') {
-        const visibleIdx = visibleChapterIdxRef.current
-        const chapterDistance = visibleIdx === null ? 0 : Math.abs(playback.chapterIdx - visibleIdx)
-        const rect = el.getBoundingClientRect()
-        const viewportDistance =
-          Math.abs(rect.top + rect.height / 2 - window.innerHeight / 2) / window.innerHeight
-        if (chapterDistance > 1 || viewportDistance > FAR_SCROLL_VIEWPORTS) behavior = 'instant'
-      }
-      el.scrollIntoView({ block: 'center', behavior })
-      hasScrolledOnceRef.current = true
-      return true
-    },
-    [playback.chapterIdx, playback.paragraphIdx],
+  const { registerChapterSectionRef, visibleChapterIdx, chapterHeights } = useChapterWindowing(
+    range?.start,
+    range?.end,
   )
-
-  useEffect(() => {
-    if (!autoFollow) {
-      followedKeyRef.current = null
-      return
-    }
-    if (followedKeyRef.current === `${playback.chapterIdx}:${playback.paragraphIdx}`) return
-    scrollToActiveParagraph(hasScrolledOnceRef.current ? 'smooth' : 'auto')
-    // Re-runs when renderedChapters changes too (the deferred copy the
-    // paragraphs are actually rendered from), so it retries once the resumed
-    // chapter's paragraphs actually render (first tick after load, the ref
-    // won't exist yet) - but only until that first successful scroll.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playback.chapterIdx, playback.paragraphIdx, renderedChapters, autoFollow])
-
-  useEffect(() => {
-    const SCROLL_KEYS = new Set([
-      'ArrowUp',
-      'ArrowDown',
-      'PageUp',
-      'PageDown',
-      'Home',
-      'End',
-      ' ',
-      'Spacebar',
-    ])
-    const breakFollow = () => setAutoFollow(false)
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (SCROLL_KEYS.has(e.key)) breakFollow()
-    }
-    window.addEventListener('wheel', breakFollow, { passive: true })
-    window.addEventListener('touchmove', breakFollow, { passive: true })
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      window.removeEventListener('wheel', breakFollow)
-      window.removeEventListener('touchmove', breakFollow)
-      window.removeEventListener('keydown', onKeyDown)
-    }
-  }, [])
+  const { autoFollow, setAutoFollow, registerParagraphRef, jumpToCurrentParagraph } = useAutoFollow(
+    {
+      chapterIdx: playback.chapterIdx,
+      paragraphIdx: playback.paragraphIdx,
+      renderedChapters,
+      visibleChapterIdx,
+    },
+  )
 
   // Moves playback to the adjacent paragraph, crossing into the
   // next/previous chapter when the current one is exhausted - but only if
@@ -1098,7 +515,7 @@ export function ReaderPage() {
         }
       }
     },
-    [range, chapters, playback],
+    [range, chapters, playback, setAutoFollow],
   )
 
   // Custom hover tooltip for annotation segments, replacing the native
@@ -1128,49 +545,17 @@ export function ReaderPage() {
   }, [])
   const hideAnnotationTooltip = useCallback(() => tooltipRef.current?.hide(), [])
 
-  // Play/pause/skip/bookmark keyboard shortcuts - ignored while a form
-  // field has focus (typing " "/arrow keys/"b" in the search box, a
-  // voice-editor textarea, etc. must behave normally, not hijack playback)
-  // or while a modifier is held (so e.g. Cmd+ArrowLeft browser-back still
-  // works).
-  useEffect(() => {
-    const isTypingTarget = (el: EventTarget | null) => {
-      if (!(el instanceof HTMLElement)) return false
-      return (
-        el.tagName === 'INPUT' ||
-        el.tagName === 'TEXTAREA' ||
-        el.tagName === 'SELECT' ||
-        el.isContentEditable
-      )
-    }
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target)) return
-      if (e.key === ' ' || e.key === 'Spacebar') {
-        e.preventDefault()
-        if (playback.isPlaying) playback.pause()
-        else playback.play()
-      } else if (e.key === 'ArrowRight') {
-        e.preventDefault()
-        skipParagraph(1)
-      } else if (e.key === 'ArrowLeft') {
-        e.preventDefault()
-        skipParagraph(-1)
-      } else if (e.key === 'b' || e.key === 'B') {
-        e.preventDefault()
-        toggleBookmark(playback.chapterIdx, playback.paragraphIdx)
-      } else if ((e.key === 'n' || e.key === 'N') && selectedSpeaker) {
-        e.preventDefault()
-        jumpToNextAppearance(selectedSpeaker)
-      }
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [playback, skipParagraph, toggleBookmark, selectedSpeaker, jumpToNextAppearance])
-
-  const jumpToCurrentParagraph = useCallback(() => {
-    setAutoFollow(true)
-    scrollToActiveParagraph('smooth')
-  }, [scrollToActiveParagraph])
+  useReaderShortcuts({
+    isPlaying: playback.isPlaying,
+    play: playback.play,
+    pause: playback.pause,
+    chapterIdx: playback.chapterIdx,
+    paragraphIdx: playback.paragraphIdx,
+    skipParagraph,
+    toggleBookmark,
+    selectedSpeaker,
+    jumpToNextAppearance,
+  })
 
   const jumpToChapter = (idx: number) => {
     setRange({ start: idx, end: idx })
@@ -1189,6 +574,16 @@ export function ReaderPage() {
 
   const book = bookQuery.data
   const currentChapter = chapters.get(playback.chapterIdx)
+  // Moved on another device while this reader sat paused - see
+  // useRemotePosition.
+  const remote = playback.isPlaying
+    ? null
+    : remotePosition(
+        { chapterIdx: book.posChapterIdx, paragraphIdx: book.posParagraphIdx },
+        { chapterIdx: playback.chapterIdx, paragraphIdx: playback.paragraphIdx },
+        remotePositionState.ownSaves,
+        remotePositionState.dismissed,
+      )
   // Whichever chapter is actually scrolled into view (visibleChapterIdx),
   // falling back to the playing chapter before the observer's first
   // measurement lands - both what "this chapter only" scopes to in
@@ -1213,6 +608,26 @@ export function ReaderPage() {
           </div>
         </div>
         {chapterActionError && <p className="error-text">{chapterActionError}</p>}
+        {remote && (
+          <p className="remote-position-banner">
+            Continued on another device:{' '}
+            {book.chapters[remote.chapterIdx]?.title ?? `Chapter ${remote.chapterIdx + 1}`},
+            paragraph {remote.paragraphIdx + 1}.{' '}
+            <button
+              className="text-button"
+              onClick={() => {
+                setRange({ start: remote.chapterIdx, end: remote.chapterIdx })
+                playback.playAt(remote.chapterIdx, remote.paragraphIdx, { autoplay: false })
+                setAutoFollow(true)
+              }}
+            >
+              Jump there
+            </button>{' '}
+            <button className="text-button" onClick={() => remotePositionState.dismiss(remote)}>
+              Stay here
+            </button>
+          </p>
+        )}
       </div>
 
       <div
@@ -1255,9 +670,7 @@ export function ReaderPage() {
                 renderFull={renderFull}
                 placeholderHeight={measuredHeight}
                 chapterAttributing={attributingIdxs.has(idx)}
-                chapterClearing={
-                  deleteChapterAudio.isPending && deleteChapterAudio.variables === idx
-                }
+                chapterClearing={clearingIdx === idx}
                 chapterReimporting={reimportingIdx === idx}
                 hasAttribution={!!chapterSummary?.passes.attribution}
                 chapterRetaggingDescriptions={describingIdxs.has(idx)}
@@ -1340,125 +753,13 @@ export function ReaderPage() {
         onReaderFontFamilyChange={typography.setFontFamily}
       />
 
-      {contextMenu && (
-        <div
-          ref={contextMenuRef}
-          className="speaker-context-menu"
-          style={
-            menuPos
-              ? { top: menuPos.top, left: menuPos.left }
-              : { top: contextMenu.y, left: contextMenu.x }
-          }
-        >
-          {contextMenu.isQuote ? (
-            <>
-              <div className="speaker-context-menu-title">Reassign speaker</div>
-              <div className="speaker-context-menu-current">
-                Currently: <strong>{contextMenu.currentSpeaker || 'Narrator'}</strong>
-              </div>
-              <button
-                className="speaker-context-menu-item"
-                disabled={contextMenu.currentSpeaker === ''}
-                onClick={() => reassignSpeaker('')}
-              >
-                Narrator
-              </button>
-              <div className="speaker-context-menu-section">Scare quote</div>
-              <button className="speaker-context-menu-item" onClick={toggleScareQuote}>
-                {contextMenu.scareQuote ? 'Unmark as scare quote' : 'Mark as scare quote'}
-              </button>
-              {!contextMenu.scareQuote && (
-                <>
-                  <div className="speaker-context-menu-section">Emotion</div>
-                  <div className="speaker-context-menu-chips">
-                    {[{ id: '', label: 'Neutral', icon: RiEmotionNormalLine }, ...EMOTIONS].map(
-                      (e) => (
-                        <button
-                          key={e.id}
-                          className={
-                            'speaker-context-menu-chip' +
-                            (e.id === contextMenu.emotion
-                              ? ' speaker-context-menu-chip-active'
-                              : '')
-                          }
-                          disabled={e.id === contextMenu.emotion}
-                          onClick={() => setEmotion(e.id)}
-                        >
-                          <e.icon /> {e.label}
-                        </button>
-                      ),
-                    )}
-                  </div>
-                </>
-              )}
-              {nearbyReassignTargets.length > 0 && (
-                <div className="speaker-context-menu-section">Nearby</div>
-              )}
-              {nearbyReassignTargets.map((name) => (
-                <button
-                  key={name}
-                  className="speaker-context-menu-item"
-                  disabled={name === contextMenu.currentSpeaker}
-                  onClick={() => reassignSpeaker(name)}
-                >
-                  {name}
-                </button>
-              ))}
-              {nearbyReassignTargets.length > 0 && (
-                <div className="speaker-context-menu-section">All characters</div>
-              )}
-              {restReassignTargets.map((name) => (
-                <button
-                  key={name}
-                  className="speaker-context-menu-item"
-                  disabled={name === contextMenu.currentSpeaker}
-                  onClick={() => reassignSpeaker(name)}
-                >
-                  {name}
-                </button>
-              ))}
-            </>
-          ) : contextMenu.describesCharacters.length > 0 ? (
-            <>
-              <div className="speaker-context-menu-title">Reassign description</div>
-              {contextMenu.describesCharacters.map((from) => (
-                <div key={from} className="speaker-context-menu-group">
-                  <div className="speaker-context-menu-current">
-                    Describes: <strong>{from}</strong>
-                  </div>
-                  <button
-                    className="speaker-context-menu-item"
-                    onClick={() => reassignDescription(from, '')}
-                  >
-                    Remove
-                  </button>
-                  {reassignTargets
-                    .filter((name) => name !== from)
-                    .map((name) => (
-                      <button
-                        key={name}
-                        className="speaker-context-menu-item"
-                        onClick={() => reassignDescription(from, name)}
-                      >
-                        {name}
-                      </button>
-                    ))}
-                </div>
-              ))}
-            </>
-          ) : (
-            <>
-              <div className="speaker-context-menu-title">Reassign speaker</div>
-              <div className="speaker-context-menu-current">
-                Currently: <strong>Narrator</strong>
-              </div>
-              <div className="speaker-context-menu-empty">
-                Only dialogue can be reassigned to a character
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      <ParagraphContextMenu
+        ref={contextMenuRef}
+        bookId={bookId}
+        chapters={chapters}
+        speakers={speakersQuery.data ?? []}
+        onError={setChapterActionError}
+      />
 
       <AnnotationTooltip ref={tooltipRef} />
     </div>

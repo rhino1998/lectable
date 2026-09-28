@@ -2727,3 +2727,42 @@ label {
   width: 2.5rem;
   height: 2.5rem;
 }
+
+/* Speakers page pronunciation lexicon (LexiconPanel). */
+.lexicon-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.6rem 0;
+}
+.lexicon-form input:not([type='checkbox']) {
+  font: inherit;
+  min-width: 10rem;
+  padding: 0.3rem 0.1rem;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+}
+.lexicon-form input:not([type='checkbox']):focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+.lexicon-table {
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+.lexicon-table th,
+.lexicon-table td {
+  text-align: left;
+  padding: 0.25rem 1rem 0.25rem 0;
+}
+
+/* ReaderPage's "continued on another device" notice (useRemotePosition). */
+.remote-position-banner {
+  margin: 0.4rem 0 0;
+  padding: 0.4rem 0.6rem;
+  border-left: 3px solid var(--accent);
+  background: var(--accent-bg, transparent);
+}

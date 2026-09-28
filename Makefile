@@ -1,5 +1,6 @@
-# Repo-wide lint entry points. `make lint` runs every component's linter;
-# each lint-* target also works on its own.
+# Repo-wide lint/test entry points. `make check` runs every component's
+# linter and tests (`make lint` / `make test` for just one half); each
+# lint-*/test-* target also works on its own.
 #
 # golangci-lint (v2) is expected on PATH or in $(go env GOPATH)/bin:
 #   go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
@@ -9,8 +10,17 @@
 GO_MODULES := backend audiocpp-go llamacpp-go lac
 GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || echo $(shell go env GOPATH)/bin/golangci-lint)
 ANDROID_SDK_ROOT ?= /home/rhino/android-sdk-toolchains
+# Local audio.cpp/llama.cpp builds for the cgo modules' tests - same defaults
+# as backend/Makefile; override on the command line.
+AUDIOCPP_DIR ?= $(HOME)/audio.cpp/build/bin
+LLAMACPP_DIR ?= $(HOME)/llama-cpp-py-sync/vendor/llama.cpp/build/bin
+export CGO_LDFLAGS := -L$(AUDIOCPP_DIR) -L$(LLAMACPP_DIR)
+export LD_LIBRARY_PATH := $(LLAMACPP_DIR):$(AUDIOCPP_DIR):$(LD_LIBRARY_PATH)
 
-.PHONY: lint lint-go lint-frontend lint-android deploy deploy-backend install-android
+.PHONY: check lint lint-go lint-frontend lint-android test test-go test-frontend test-android \
+	deploy deploy-backend install-android
+
+check: lint test
 
 lint: lint-go lint-frontend lint-android
 
@@ -22,6 +32,17 @@ lint-frontend:
 
 lint-android:
 	cd android && ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ./gradlew -q lintDebug
+
+test: test-go test-frontend test-android
+
+test-go:
+	@for m in $(GO_MODULES); do echo "== go test $$m"; (cd $$m && go test ./...) || exit 1; done
+
+test-frontend:
+	cd frontend && npm test
+
+test-android:
+	cd android && ANDROID_SDK_ROOT=$(ANDROID_SDK_ROOT) ./gradlew -q testDebugUnitTest
 
 # Rebuild + restart the backend (backend/deploy.sh), then build + install the
 # Android app on the connected device (android/install.sh). The web frontend

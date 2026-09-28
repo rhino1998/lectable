@@ -18,7 +18,7 @@ object DownloadStatus {
  * one backend's own database. [voiceKey] mirrors the backend's own voice-invalidation rule (see
  * root CLAUDE.md: changing a book's voice resets its cached audio) - it's the same (presetId,
  * instruct, language) tuple the backend hashes into its `voiceId` (see
- * backend/internal/store/store.go's VoiceID), just compared as a raw string here rather than
+ * backend/internal/store/voicepresets.go's VoiceID), just compared as a raw string here rather than
  * reproducing the SHA256 client-side, since all we need is staleness detection, not
  * byte-identical keys. [pinned] is vestigial: it distinguished manual downloads from the
  * since-removed automatic next-chapter prefetch (which evicted unpinned rows once playback moved

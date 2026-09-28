@@ -46,7 +46,7 @@ import kotlinx.serialization.json.Json
 
 
 /**
- * presetId+instruct+language, exactly what backend/internal/store/store.go's VoiceID hashes
+ * presetId+instruct+language, exactly what backend/internal/store/voicepresets.go's VoiceID hashes
  * (minus seed, minus the hash itself - see that function) - used here purely for local
  * staleness comparison against a downloaded chapter's voice, not required to match the server's
  * own hash byte for byte.

@@ -21,6 +21,7 @@ import { ApiError } from '../api/client'
 import { useClickOutside } from '../hooks/useClickOutside'
 import type { QueueTask } from '../api/types'
 import { emotionLabel } from '../utils/emotions'
+import { formatEta, narrationEta } from '../utils/narrationEta'
 
 const QUEUED_DISPLAY_LIMIT = 200
 // A raw instruct string can be a full sentence or two - too long for a
@@ -329,6 +330,7 @@ export function JobsPage() {
   const queued = snapshot?.queued ?? []
   const totalCount = (snapshot?.inFlight.length ?? 0) + queued.length
   const paused = snapshot?.paused ?? false
+  const eta = useMemo(() => narrationEta(snapshot), [snapshot])
 
   // Tracked locally (not derived from the mutation's own isPending, which
   // only ever reflects the single most recent call) so two different rows'
@@ -499,6 +501,17 @@ export function JobsPage() {
 
       {jobsQuery.isLoading && <p>Loading…</p>}
       {jobsQuery.isError && <p className="error-text">Could not load the job queue.</p>}
+
+      {eta && (
+        <p
+          className="muted jobs-eta"
+          title="Queued and in-flight narration only, at the recently measured rate across every generation slot - reading ahead or a bulk Generate adds more as it goes"
+        >
+          Narration left: ~{formatEta(eta.totalSeconds)} at {eta.charsPerSecond.toFixed(1)} chars/s
+          {eta.books.length > 1 &&
+            ` (${eta.books.map((b) => `${b.bookTitle} ~${formatEta(b.seconds)}`).join(', ')})`}
+        </p>
+      )}
 
       {snapshot && (
         <>
