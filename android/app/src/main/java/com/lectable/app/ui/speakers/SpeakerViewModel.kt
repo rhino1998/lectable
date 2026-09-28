@@ -40,6 +40,7 @@ data class SpeakerUiState(
     val characterizingIds: Set<String> = emptySet(),
     val generatingVoiceIds: Set<String> = emptySet(),
     val deletingIds: Set<String> = emptySet(),
+    val togglingInvalidIds: Set<String> = emptySet(),
     // Which character's "View appearances" is currently expanded - null when none is.
     val appearancesFor: String? = null,
     val appearances: List<SpeakerAppearanceDto> = emptyList(),
@@ -215,6 +216,17 @@ class SpeakerViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { speakerRepository.setCharacterVoice(bookId, characterId, voicePresetId) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    /** Non-destructive, one tap to undo - no confirmation, same as the web page. The row's
+     *  badge updates via the live speakers topic. */
+    fun setInvalid(characterId: String, invalid: Boolean) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(togglingInvalidIds = it.togglingInvalidIds + characterId) }
+            runCatching { speakerRepository.setCharacterInvalid(bookId, characterId, invalid) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+            _uiState.update { it.copy(togglingInvalidIds = it.togglingInvalidIds - characterId) }
         }
     }
 

@@ -1,5 +1,9 @@
 package com.lectable.app.ui.speakers
 
+import androidx.compose.ui.graphics.Color
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material.icons.filled.Close
@@ -99,7 +103,7 @@ fun SpeakersScreen(
     }
 
     fun otherTargets(characterId: String) =
-        listOf("Narrator") + uiState.speakers.filter { it.id.isNotEmpty() && it.id != characterId }.map { it.name }
+        listOf("Narrator") + uiState.speakers.filter { it.id.isNotEmpty() && it.id != characterId && !it.invalid }.map { it.name }
 
     Scaffold(
         topBar = {
@@ -219,6 +223,8 @@ fun SpeakersScreen(
                         characterizing = speaker.id in uiState.characterizingIds,
                         generatingVoice = speaker.id in uiState.generatingVoiceIds,
                         deleting = speaker.id in uiState.deletingIds,
+                        togglingInvalid = speaker.id in uiState.togglingInvalidIds,
+                        onToggleInvalid = { viewModel.setInvalid(speaker.id, !speaker.invalid) },
                         reassignTargets = { otherTargets(speaker.id) },
                         playingUrl = uiState.playingUrl,
                         onPlay = { speaker.refAudioUrl?.let(viewModel::playUrl) },
@@ -312,6 +318,8 @@ private fun SpeakerRow(
     characterizing: Boolean,
     generatingVoice: Boolean,
     deleting: Boolean,
+    togglingInvalid: Boolean,
+    onToggleInvalid: () -> Unit,
     reassignTargets: () -> List<String>,
     // The relative URL currently playing via SpeakerViewModel.playUrl, or null - compared
     // against this row's/each nested row's own audioUrl to decide Play vs. Stop (see
@@ -355,7 +363,26 @@ private fun SpeakerRow(
                 }
             }
             Column(modifier = Modifier.weight(1f)) {
-                Text(speaker.name, style = MaterialTheme.typography.bodyLarge)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        speaker.name,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (speaker.invalid) MaterialTheme.colorScheme.onSurfaceVariant else Color.Unspecified,
+                    )
+                    // Not a real speaker (marked invalid): attribution won't assign this name
+                    // again - mirrors the web roster's "invalid" badge.
+                    if (speaker.invalid) {
+                        Text(
+                            "invalid",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier
+                                .padding(start = 6.dp)
+                                .border(1.dp, MaterialTheme.colorScheme.error, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp),
+                        )
+                    }
+                }
                 Text(
                     "${speaker.readyCount}/${speaker.paragraphCount} generated",
                     style = MaterialTheme.typography.labelSmall,
@@ -397,6 +424,20 @@ private fun SpeakerRow(
                             text = { Text(if (descriptionsExpanded) "Hide descriptions" else "View descriptions") },
                             leadingIcon = { Icon(Icons.Filled.Description, contentDescription = null) },
                             onClick = { onToggleDescriptions(); showMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    when {
+                                        togglingInvalid -> "Updating…"
+                                        speaker.invalid -> "Allow again (unmark invalid)"
+                                        else -> "Mark invalid (not a real speaker)"
+                                    },
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
+                            enabled = !togglingInvalid,
+                            onClick = { onToggleInvalid(); showMenu = false },
                         )
                         DropdownMenuItem(
                             text = { Text("Merge into…") },

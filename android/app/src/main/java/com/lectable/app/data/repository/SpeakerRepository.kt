@@ -4,6 +4,7 @@ import com.lectable.app.data.remote.LectableApi
 import com.lectable.app.data.remote.dto.CharacterizeResponseDto
 import com.lectable.app.data.remote.dto.GenerateVoiceResponseDto
 import com.lectable.app.data.remote.dto.MergeCharacterRequestDto
+import com.lectable.app.data.remote.dto.SetCharacterInvalidRequestDto
 import com.lectable.app.data.remote.dto.SetCharacterVoiceRequestDto
 import com.lectable.app.data.remote.dto.SpeakerAppearanceDto
 import javax.inject.Inject
@@ -20,6 +21,12 @@ class SpeakerRepository @Inject constructor(
 ) {
     suspend fun setCharacterVoice(bookId: String, characterId: String, voicePresetId: String) {
         api.setCharacterVoice(bookId, characterId, SetCharacterVoiceRequestDto(voicePresetId))
+    }
+
+    /** Marks (or unmarks) a character as not a real speaker - attribution won't create or
+     *  assign that name again; existing lines stay until reassigned. */
+    suspend fun setCharacterInvalid(bookId: String, characterId: String, invalid: Boolean) {
+        api.setCharacterInvalid(bookId, characterId, SetCharacterInvalidRequestDto(invalid = invalid))
     }
 
     suspend fun deleteCharacter(bookId: String, characterId: String) {
