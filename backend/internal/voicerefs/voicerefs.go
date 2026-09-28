@@ -276,7 +276,7 @@ func NormalizeVolume(dataDir, presetID, referencePresetID string) error {
 	if err := os.WriteFile(path, out, 0o644); err != nil {
 		return err
 	}
-	// Variants were loudness-matched to the old level.
+	// Variants were loudness-bounded against the old level.
 	return DeleteVariants(dataDir, presetID)
 }
 

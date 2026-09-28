@@ -66,9 +66,12 @@ func MarkVariantFailed(dataDir, presetID, emotion string) error {
 // it first if it doesn't exist yet: BreezeTTS instructed cloning
 // (voices.InstructedCloneModel) of base's own reference clip, speaking
 // the emotion's RefLine under its Instruction, then capped at
-// maxRefClipSeconds and loudness-matched to the base clip so an emotional
-// line doesn't land louder or quieter than the rest of that voice's lines
-// (shout/whisper still differ in delivery, just not in overall level).
+// maxRefClipSeconds and loudness-bounded against the base clip: a variant
+// keeps its own level (a shout can land louder, a whisper quieter) as long
+// as it sounds at most 50% quieter or louder than the base's
+// ([minVariantLU, maxVariantLU] away from it), and
+// is pulled back to the nearest bound otherwise. Only base clips are fully
+// normalized (NormalizeVolume).
 // Renders base itself first if needed (EnsureFile).
 func EnsureVariantFile(ctx context.Context, tts *ttsworker.Manager, dataDir string, base BaseClip, emotion string) (string, error) {
 	e, ok := emotions.Get(emotion)
@@ -101,7 +104,7 @@ func EnsureVariantFile(ctx context.Context, tts *ttsworker.Manager, dataDir stri
 	if err != nil {
 		return "", err
 	}
-	data, err = matchLoudness(data, baseAudio)
+	data, err = boundLoudness(data, baseAudio)
 	if err != nil {
 		return "", err
 	}
@@ -114,10 +117,20 @@ func EnsureVariantFile(ctx context.Context, tts *ttsworker.Manager, dataDir stri
 	return path, nil
 }
 
-// matchLoudness rescales data's overall loudness to reference's - the
-// in-memory counterpart of NormalizeVolume. Returns data unchanged if
-// either clip has nothing that survives loudness gating.
-func matchLoudness(data, reference []byte) ([]byte, error) {
+// minVariantLU/maxVariantLU bound an emotion variant's integrated
+// loudness relative to its base clip's, in LU: up to half or 1.5x as loud
+// *perceptually*, using the usual rule that +10 LU sounds twice as loud
+// (so 10*log2(ratio): -10 LU to about +5.85 LU).
+var (
+	minVariantLU = 10 * math.Log2(0.5)
+	maxVariantLU = 10 * math.Log2(1.5)
+)
+
+// boundLoudness rescales data so its integrated loudness lands within
+// [minVariantLU, maxVariantLU] of reference's, leaving it untouched if
+// it's already inside that band. Returns data unchanged if either clip has
+// nothing that survives loudness gating.
+func boundLoudness(data, reference []byte) ([]byte, error) {
 	refClip, err := wav.Decode(reference)
 	if err != nil {
 		return nil, fmt.Errorf("decode base clip: %w", err)
@@ -131,7 +144,12 @@ func matchLoudness(data, reference []byte) ([]byte, error) {
 	if math.IsInf(target, -1) || math.IsInf(current, -1) {
 		return data, nil
 	}
-	applyGain(clip.Samples, clampGain(loudness.GainFor(current, target)))
+	diff := current - target // variant's loudness relative to the base, in LU
+	bounded := min(max(diff, minVariantLU), maxVariantLU)
+	if bounded == diff {
+		return data, nil
+	}
+	applyGain(clip.Samples, clampGain(loudness.GainFor(current, target+bounded)))
 	return wav.Encode(clip.Samples, clip.SampleRate, clip.Channels)
 }
 

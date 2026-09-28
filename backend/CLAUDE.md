@@ -825,7 +825,10 @@ building/running `ttsworker` does, since both now link into that binary.
   `voice-refs/variants/<presetID>/<emotion>.wav`): BreezeTTS instructed
   cloning (`voices.InstructedCloneModel`) of the preset's own base clip,
   speaking that emotion's `RefLine` under its `Instruction`, capped at
-  `maxRefClipSeconds` and loudness-matched to the base clip. An emotional
+  `maxRefClipSeconds` and loudness-bounded to sound at most half or
+  1.5x as loud as the base clip (-10..+5.85 LU, taking +10 LU as twice
+  as loud; only base clips are fully normalized, so a shout or whisper
+  keeps some of its own loudness). An emotional
   line then clones from the variant (with its `RefLine` as the reference
   transcript) instead of the base clip - `jobs.Manager.generate`, via
   `emotionVariant`, which re-reads the paragraph's emotion from the store

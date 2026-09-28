@@ -464,3 +464,41 @@ func TestDesignFailurePropagates(t *testing.T) {
 		t.Fatalf("expected no reference clip to have been written after a failed render")
 	}
 }
+
+func TestBoundLoudness(t *testing.T) {
+	base := constantAmplitudeClip(t, 0.2, 1000, 16000)
+	peak := func(data []byte) float64 {
+		t.Helper()
+		clip, err := wav.Decode(data)
+		if err != nil {
+			t.Fatalf("wav.Decode: %v", err)
+		}
+		var p float64
+		for _, s := range clip.Samples {
+			p = max(p, math.Abs(float64(s)))
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		name      string
+		amplitude float32
+		want      float64
+	}{
+		// Band is -10 LU..+5.85 LU around 0.2: amplitudes ~0.0632..~0.3927.
+		{"within band louder", 0.35, 0.35},
+		{"within band quieter", 0.08, 0.08},
+		{"too loud", 0.8, 0.2 * math.Pow(10, maxVariantLU/20)},
+		{"too quiet", 0.03, 0.2 * math.Pow(10, minVariantLU/20)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			variant := constantAmplitudeClip(t, tc.amplitude, 1000, 16000)
+			out, err := boundLoudness(variant, base)
+			if err != nil {
+				t.Fatalf("boundLoudness: %v", err)
+			}
+			if got := peak(out); math.Abs(got-tc.want) > 0.005 {
+				t.Fatalf("peak = %.4f, want %.4f", got, tc.want)
+			}
+		})
+	}
+}
