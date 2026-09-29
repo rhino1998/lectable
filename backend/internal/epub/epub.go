@@ -325,17 +325,34 @@ func startsWithTitle(blocks []Block, title string) bool {
 	return false
 }
 
+// maxEntrySize caps how much of one archive entry readZipFile will
+// decompress - far above any real chapter, image or package document, but
+// low enough that a malformed epub or zip bomb fails instead of exhausting
+// memory. The header's declared size isn't trusted: the read itself is
+// limited.
+const maxEntrySize = 64 << 20
+
 func readZipFile(files map[string]*zip.File, name string) ([]byte, error) {
 	f, ok := files[name]
 	if !ok {
 		return nil, fmt.Errorf("not found in archive: %s", name)
+	}
+	if f.UncompressedSize64 > maxEntrySize {
+		return nil, fmt.Errorf("%s: %d bytes uncompressed, over the %d-byte limit", name, f.UncompressedSize64, maxEntrySize)
 	}
 	rc, err := f.Open()
 	if err != nil {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(rc)
+	data, err := io.ReadAll(io.LimitReader(rc, maxEntrySize+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxEntrySize {
+		return nil, fmt.Errorf("%s: over the %d-byte uncompressed limit", name, maxEntrySize)
+	}
+	return data, nil
 }
 
 // resolveHref joins an OPF-relative or spine-relative href (a URI, possibly

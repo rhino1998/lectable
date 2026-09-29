@@ -476,7 +476,7 @@ building/running `ttsworker` does, since both now link into that binary.
   between) split the block into separate paragraphs (`paragraphBreak`):
   some epubs put a whole scene in one `<p>` with `<br/><br/>` between its
   real paragraphs, which merged every turn of dialogue into one paragraph
-  and threw off speaker attribution.
+  and threw off speaker attribution. `readZipFile` caps each entry at 64 MiB decompressed (`maxEntrySize`), so a malformed epub or zip bomb fails the upload instead of exhausting memory.
 - `internal/store/` — DuckDB persistence (`books` → `chapters` →
   `paragraphs`, plus `characters`/`character_voices`, book-scoped). One
   `*sql.DB` connection (`SetMaxOpenConns(1)`) since DuckDB is single-writer
