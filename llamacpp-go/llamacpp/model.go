@@ -41,6 +41,10 @@ type ModelParams struct {
 	// enough to tokenize/detokenize or apply a chat template without
 	// paying for a full model load.
 	VocabOnly bool
+
+	// LoadMTP also loads the model's MTP (multi-token prediction) layers,
+	// if its GGUF has them - needed for Context.EnableMTP.
+	LoadMTP bool
 }
 
 func (p ModelParams) cParams() C.struct_llama_model_params {
@@ -48,6 +52,7 @@ func (p ModelParams) cParams() C.struct_llama_model_params {
 	c.n_gpu_layers = C.int32_t(p.NGPULayers)
 	c.load_mode = C.enum_llama_load_mode(p.LoadMode)
 	c.vocab_only = C.bool(p.VocabOnly)
+	c.load_mtp = C.bool(p.LoadMTP)
 	return c
 }
 

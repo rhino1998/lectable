@@ -153,6 +153,14 @@ type Config struct {
 	// prefix (~10K tokens for speakerattr's prompts) - which measured as ~2x
 	// slower prompt processing on real attribution batches.
 	PrimeAsState bool
+
+	// MTPDraft, when > 0, turns on MTP speculative decoding (llamacpp.
+	// Context.EnableMTP) drafting up to this many tokens per step - for a
+	// GGUF that carries MTP layers (e.g. Unsloth's Qwen3.6-35B-A3B-MTP).
+	// Output is still the target model's own sampling; drafts only skip
+	// decode rounds when they match. A model without an MTP head just runs
+	// without it (logged).
+	MTPDraft int
 }
 
 func (c Config) withDefaults() Config {
@@ -386,7 +394,7 @@ func (w *Worker) load() error {
 	}
 
 	backendInitOnce.Do(llamacpp.BackendInit)
-	model, err := llamacpp.LoadModel(w.cfg.ModelPath, llamacpp.ModelParams{NGPULayers: w.cfg.NGPULayers})
+	model, err := llamacpp.LoadModel(w.cfg.ModelPath, llamacpp.ModelParams{NGPULayers: w.cfg.NGPULayers, LoadMTP: w.cfg.MTPDraft > 0})
 	if err != nil {
 		return fmt.Errorf("llmworker: load model %s: %w", w.cfg.ModelPath, err)
 	}
@@ -405,7 +413,7 @@ func (w *Worker) load() error {
 	}
 	log.Printf("llmworker: sizing KV cache to %d tokens (perSlot=%d x MaxConcurrent=%d + resident primed prefixes, nSeqMax=%d, primeAsState=%v)", ctxNCtx, w.cfg.NCtx, w.cfg.MaxConcurrent, nSeqMax, w.cfg.PrimeAsState)
 
-	lctx, err := model.NewContext(llamacpp.ContextParams{
+	cparams := llamacpp.ContextParams{
 		NCtx:    ctxNCtx,
 		NSeqMax: nSeqMax,
 		// Unified is required for CopySeq's cheap partial-prefix path - see
@@ -416,10 +424,26 @@ func (w *Worker) load() error {
 		FlashAttn: w.cfg.FlashAttn,
 		TypeK:     w.cfg.KVType,
 		TypeV:     w.cfg.KVType,
-	})
+		// A hybrid model's recurrent state must roll back rejected drafts.
+		NRsSeq: uint32(max(w.cfg.MTPDraft, 0)),
+		// Logit rows per round: each slot's next token plus its draft, or a
+		// prompt's last token - not the whole ubatch, which would reserve
+		// ~2 GiB of logits at ubatch 2048.
+		NOutputsMax: uint32(w.cfg.MaxConcurrent * (1 + max(w.cfg.MTPDraft, 0))),
+	}
+	lctx, err := model.NewContext(cparams)
 	if err != nil {
 		model.Close()
 		return fmt.Errorf("llmworker: create context: %w", err)
+	}
+	if w.cfg.MTPDraft > 0 {
+		// Before priming, so primed prefixes and snapshots carry the draft
+		// context's side too.
+		if err := lctx.EnableMTP(cparams, w.cfg.MTPDraft); err != nil {
+			log.Printf("llmworker: MTP unavailable for %s, generating without it: %v", w.cfg.ModelPath, err)
+		} else {
+			log.Printf("llmworker: MTP speculative decoding on, drafting up to %d tokens", w.cfg.MTPDraft)
+		}
 	}
 
 	primedMap := make(map[string]*primed, len(w.cfg.SystemPrompts))

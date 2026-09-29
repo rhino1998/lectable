@@ -154,6 +154,12 @@ type RoundStats struct {
 	// still in the slot; PrefixRestored those that restored the snapshot.
 	PrefixReused, PrefixRestored int
 	RestoreTime                  time.Duration
+
+	// With MTP (Context.EnableMTP): DraftTokens were drafted and verified,
+	// DraftAccepted of them matched what the target sampled, and DraftTime
+	// is the time spent drafting.
+	DraftTokens, DraftAccepted int
+	DraftTime                  time.Duration
 }
 
 // RoundStats returns the running totals since the Scheduler started.
@@ -269,6 +275,11 @@ type slot struct {
 	nextTok   Token   // sampled token waiting to be decoded next round
 	haveNext  bool    // whether nextTok is actually set yet (false on a slot's very first round)
 	left      int     // generation tokens still allowed before MaxTokens is hit
+
+	// MTP only: draft is this round's drafted continuation of nextTok,
+	// decoded right after it; posBase is nextTok's own position.
+	draft   []Token
+	posBase int32
 
 	stats       GenStats
 	admitted    time.Time
@@ -411,6 +422,13 @@ func (s *Scheduler) run() {
 		budget := nBatch
 		prefillN := 0 // prompt tokens in this round, for recordRound
 
+		// verifying marks decode-phase slots whose tokens this round are
+		// nextTok plus its MTP draft, checked against the target below.
+		verifying := make([]bool, len(slots))
+		if s.ctx.mtp != nil {
+			s.draftSlots(slots)
+		}
+
 		// Continuing (decode-phase) slots first -- one token each, cheap,
 		// and keeping them fed is what keeps their own latency low instead
 		// of being starved behind a newly-admitted slot's large prefill.
@@ -422,14 +440,30 @@ func (s *Scheduler) run() {
 			if !sl.haveNext || budget <= 0 {
 				continue
 			}
-			if err := batch.Add(sl.nextTok, sl.pos, int32(i), true); err != nil {
-				continue // batch genuinely full; picked up again next round
+			// nextTok, then any MTP draft after it, every one wanting
+			// logits: row j is what the target samples after token j.
+			added := 0
+			for j := 0; j <= len(sl.draft) && budget > 0; j++ {
+				tok := sl.nextTok
+				if j > 0 {
+					tok = sl.draft[j-1]
+				}
+				if err := batch.Add(tok, sl.pos, int32(i), true); err != nil {
+					break // batch genuinely full; picked up again next round
+				}
+				batchPos++
+				sl.pos++
+				budget--
+				added++
 			}
-			outputIdx[i] = batchPos
+			if added == 0 {
+				continue
+			}
+			sl.draft = sl.draft[:added-1]
+			sl.posBase = sl.pos - int32(added)
+			outputIdx[i] = batchPos - int32(added)
 			hasOutput[i] = true
-			batchPos++
-			sl.pos++
-			budget--
+			verifying[i] = s.ctx.mtp != nil
 		}
 
 		// Prefilling slots next, each contributing as much of its own
@@ -544,28 +578,58 @@ func (s *Scheduler) run() {
 				sl.finish(schedResult{text: string(sl.generated)})
 				continue
 			}
-			next := sl.req.req.Sampler.Sample(s.ctx, outputIdx[i])
-			sl.stats.GenTokens++
-			if vocab.IsEOG(next) {
+			// Sample row j; while it matches draft token j, that token is
+			// already decoded after it, so keep going. The first mismatch
+			// (or the row after the whole draft) is the new nextTok.
+			var next Token
+			accepted := 0
+			done := false
+			for j := 0; ; j++ {
+				next = sl.req.req.Sampler.Sample(s.ctx, outputIdx[i]+int32(j))
+				sl.stats.GenTokens++
+				if vocab.IsEOG(next) {
+					done = true
+					break
+				}
+				piece := vocab.TokenToPiece(next, false)
+				sl.generated = append(sl.generated, piece...)
+				if onPiece := sl.req.req.OnPiece; onPiece != nil && !onPiece(piece) {
+					done = true
+					break
+				}
+				sl.left--
+				if sl.left <= 0 {
+					done = true
+					break
+				}
+				if j < len(sl.draft) && next == sl.draft[j] {
+					accepted++
+					continue
+				}
+				break
+			}
+			if verifying[i] && len(sl.draft) > 0 {
+				s.recordDraft(len(sl.draft), accepted)
+			}
+			if done {
 				s.release(int32(i), sl)
 				sl.finish(schedResult{text: string(sl.generated)})
 				continue
 			}
-
-			piece := vocab.TokenToPiece(next, false)
-			sl.generated = append(sl.generated, piece...)
-			if onPiece := sl.req.req.OnPiece; onPiece != nil && !onPiece(piece) {
-				s.release(int32(i), sl)
-				sl.finish(schedResult{text: string(sl.generated)})
-				continue
+			if verifying[i] {
+				// Drop the rejected draft tokens' KV (target and draft
+				// contexts), then point the driver at the last kept row.
+				keep := sl.posBase + 1 + int32(accepted)
+				if accepted < len(sl.draft) && !s.ctx.TrimSequence(int32(i), keep) {
+					s.ctx.TrimSequence(int32(i), 0)
+					s.kept[i] = keptPrefix{}
+					sl.finish(schedResult{err: errors.New("llamacpp: MTP: could not roll back rejected draft tokens")})
+					continue
+				}
+				s.ctx.mtp.accept(int32(i), accepted)
+				sl.pos = keep
 			}
-
-			sl.left--
-			if sl.left <= 0 {
-				s.release(int32(i), sl)
-				sl.finish(schedResult{text: string(sl.generated)})
-				continue
-			}
+			sl.draft = nil
 			sl.nextTok = next
 			sl.haveNext = true
 		}
@@ -587,6 +651,40 @@ func (s *Scheduler) release(slotID int32, sl *slot) {
 	}
 	s.ctx.TrimSequence(slotID, 0)
 	s.kept[slotID] = keptPrefix{}
+}
+
+// draftSlots sets each generating slot's MTP draft for this round - all
+// drafted together - leaving room under MaxTokens for every drafted token
+// plus the one sampled after them.
+func (s *Scheduler) draftSlots(slots []slot) {
+	var reqs []mtpDraftReq
+	var idx []int
+	for i := range slots {
+		sl := &slots[i]
+		sl.draft = nil
+		if !sl.active || sl.remaining != nil || !sl.haveNext || sl.left <= 1 {
+			continue
+		}
+		reqs = append(reqs, mtpDraftReq{seq: int32(i), idLast: sl.nextTok, pos0: sl.pos, nMax: min(s.ctx.mtp.nMax, sl.left-1)})
+		idx = append(idx, i)
+	}
+	if len(reqs) == 0 {
+		return
+	}
+	t := time.Now()
+	for k, d := range s.ctx.mtp.draft(reqs) {
+		slots[idx[k]].draft = d
+	}
+	s.roundsMu.Lock()
+	s.rounds.DraftTime += time.Since(t)
+	s.roundsMu.Unlock()
+}
+
+func (s *Scheduler) recordDraft(drafted, accepted int) {
+	s.roundsMu.Lock()
+	defer s.roundsMu.Unlock()
+	s.rounds.DraftTokens += drafted
+	s.rounds.DraftAccepted += accepted
 }
 
 // recordRound adds one Decode call to s.rounds - a prefill round if it

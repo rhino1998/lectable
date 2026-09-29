@@ -162,10 +162,12 @@ type Client struct {
 
 // DefaultModelFile is the GGUF speaker attribution loads from ~/llm-models
 // when LECTABLE_SPEAKER_LLM_MODEL_PATH isn't set - Qwen3.6-35B-A3B (a 3B-active MoE), Unsloth's
-// UD-IQ4_XS: 16.5GB, so it runs exclusive of the audio models (see
+// UD-IQ4_XS with its MTP head (18.2GB; the same weights as the plain
+// 16.5GB file, plus the layers MTP speculative decoding drafts with - see
+// llmworker.Config.MTPDraft), so it runs exclusive of the audio models (see
 // cmd/ttsworker's llmExclusive). Qwen3-4B-Instruct-2507 (Q4_K_M) was the
 // default before 2026-09-28 and still works via the env var.
-const DefaultModelFile = "Qwen3.6-35B-A3B-UD-IQ4_XS.gguf"
+const DefaultModelFile = "Qwen3.6-35B-A3B-MTP-UD-IQ4_XS.gguf"
 
 // DefaultModelPath returns ~/llm-models/DefaultModelFile (or just
 // llm-models/DefaultModelFile, relative to the working directory, if the

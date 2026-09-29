@@ -562,12 +562,18 @@ building/running `ttsworker` does, since both now link into that binary.
   text; off by default, when each call logs a one-line summary - the
   full dumps grew the server log past a gigabyte; `run.sh` also starts a
   fresh `LECTABLE_LOG_FILE` per run, keeping the previous one as `LECTABLE_LOG_FILE.1`),
-  `LECTABLE_SPEAKER_LLM_UBATCH` (physical batch size, default llama.cpp's 512), `LECTABLE_SPEAKER_LLM_NO_THINK` (bool, default
+  `LECTABLE_SPEAKER_LLM_UBATCH` (physical batch size, default 2048 - ~35%
+  faster prompt reading than llama.cpp's 512; 4096 adds ~1%),
+  `LECTABLE_SPEAKER_LLM_MTP` (MTP draft length, default 3, `0` off - see
+  `llmworker.Config.MTPDraft` and `../llamacpp-go/CLAUDE.md`'s "MTP
+  speculative decoding"), `LECTABLE_SPEAKER_LLM_NO_THINK` (bool, default
   `false`) - appends Qwen3's `/no_think` marker to every attribution
   batch's user turn.
   **Default model since 2026-09-28: `Qwen3.6-35B-A3B`** (Unsloth
   `UD-IQ4_XS`, 16.5GB; a mixture-of-experts with ~3B active parameters,
-  `speakerattr.DefaultModelFile`). Benchmarked against Qwen3-4B and Gemma 4
+  `speakerattr.DefaultModelFile` - now the `-MTP-` file, 18.2GB, the same
+  weights plus the MTP head that drafts for speculative decoding: ~190 vs
+  ~105 tok/s generation on a live summary pass). Benchmarked against Qwen3-4B and Gemma 4
   26B-A4B through `llama-server` on the same pipeline code (harness kept
   out of the repo): attribution on the hand-corrected Spire's Spite ch.
   40-58 was 95.4% vs Qwen3-4B's 96.5% (the prompt and speech-tag rules
@@ -1564,12 +1570,30 @@ go build ./...
 
 `Makefile` (this directory) wraps all of the above - the toolchain
 `PATH`/`GOTOOLCHAIN` override *and* both native libraries'
-`CGO_LDFLAGS`/`LD_LIBRARY_PATH` (defaulting to the same
-`/home/rhino/audio.cpp/build/bin`/
-`/home/rhino/llama-cpp-py-sync/vendor/llama.cpp/build/bin` paths used
-elsewhere in this doc, overridable per-invocation, e.g. `make build
-AUDIOCPP_DIR=/some/other/path`) - so day-to-day commands don't need any of
-these exported by hand:
+`CGO_LDFLAGS`/`LD_LIBRARY_PATH` (defaulting to
+`/home/rhino/audio.cpp/build-rocm7/bin` and
+`/home/rhino/llama.cpp-latest/build-live/bin`, overridable per-invocation,
+e.g. `make build AUDIOCPP_DIR=/some/other/path`) - so day-to-day commands
+don't need any of these exported by hand.
+
+**GPU toolchain (since 2026-09-28): ROCm 7.2.4**, unpacked user-space in
+`~/rocm7-user/root/opt/rocm-7.2.4` (`ROCM_DIR`; no system install - `/opt/rocm`
+is still 6.4.4 and on `ld.so.conf`, and both share sonames like
+`libhsa-runtime64.so.1`, so `ROCM_DIR/lib` must come first on
+`LD_LIBRARY_PATH`). Under WSL it reaches the GPU through `librocdxg`, which
+needs `HSA_ENABLE_DXG_DETECTION=1`; the Makefiles, `run.sh`, `deploy.sh` and
+`../.env` all set both. llama.cpp is `~/llama.cpp-latest` (a worktree of
+`llama-cpp-py-sync/vendor/llama.cpp`, no local patches) built in
+`build-live` with `LLAMA_BUILD_COMMON=ON`; audio.cpp is the usual checkout,
+local patches included, built in `build-rocm7`. The old ROCm 6.4.4 builds
+(`~/audio.cpp/build`, `~/llama-cpp-py-sync/vendor/llama.cpp/build`) are
+untouched, for rollback. Both libraries must use the same ROCm - they
+share the ttsworker process, and two HIP runtimes in one process crashed it
+("ROCm error"); `run.sh` exports `LECTABLE_AUDIOCPP_LIB_DIR` (which
+`cmd/server` puts first on the worker's library path) from `AUDIOCPP_DIR`
+for that reason. Measured with llama-bench on Qwen3.6-35B-A3B: ROCm 7 plus
+the newer llama.cpp is ~5% faster reading prompts and ~15% faster
+generating than 6.4.4. Day-to-day commands don't need any of this exported by hand:
 
 ```
 make build   # go build -o ttsworker ./cmd/ttsworker && go build -o server ./cmd/server
@@ -1613,7 +1637,7 @@ it (or `make run`, identical) over reconstructing `CGO_LDFLAGS`/
 Env vars (all optional): `LECTABLE_PORT` (8080), `LECTABLE_DATA_DIR` (`./data`),
 `LECTABLE_ALLOW_ORIGIN` (`http://localhost:5173`), `LECTABLE_TTS_WORKER_BIN` (`./ttsworker`),
 `LECTABLE_TTS_WORKER_PORT` (8091), `LECTABLE_AUDIOCPP_LIB_DIR`
-(`~/audio.cpp/build/bin`), `LECTABLE_AUDIOCPP_MODELS_DIR`
+(`~/audio.cpp/build-rocm7/bin`; `run.sh` sets it from `AUDIOCPP_DIR`), `LECTABLE_AUDIOCPP_MODELS_DIR`
 (`~/audio.cpp/models` - where every default audio.cpp GGUF path resolves), `LECTABLE_SPEAKER_LLM_MODEL_PATH`/
 `LECTABLE_SPEAKER_LLM_GPU_LAYERS`/`LECTABLE_SPEAKER_LLM_CTX`/`LECTABLE_SPEAKER_LLM_MAX_CONCURRENT`/
 `LECTABLE_SPEAKER_LLM_NO_THINK`/`LECTABLE_MODEL_IDLE_UNLOAD_AFTER` (speaker attribution - see

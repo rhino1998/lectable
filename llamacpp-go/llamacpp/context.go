@@ -76,6 +76,20 @@ type ContextParams struct {
 	// CopySeq a cheap same-stream metadata update instead (cells.seq_add in
 	// llama.cpp's own implementation), with no full-buffer restriction.
 	KVUnified bool
+
+	// NRsSeq is how many recurrent-state snapshots each sequence keeps, so
+	// a hybrid (recurrent) model can roll a sequence back by up to that
+	// many tokens (TrimSequence). 0 leaves libllama's default (no partial
+	// rollback). MTP drafting needs it at least as large as its draft
+	// length - see Context.EnableMTP.
+	NRsSeq uint32
+
+	// NOutputsMax caps how many tokens per ubatch can request logits. 0
+	// leaves libllama's default (the whole batch), which sizes the compute
+	// buffer for n_ubatch rows of vocab-wide logits - ~2 GiB at ubatch 2048
+	// for a 248K vocab. A Scheduler needs at most nSlots x (1 + MTP draft)
+	// per round; a prompt decode needs one.
+	NOutputsMax uint32
 }
 
 // FlashAttnMode is ContextParams.FlashAttn.
@@ -141,6 +155,12 @@ func (p ContextParams) cParams() C.struct_llama_context_params {
 		c.n_seq_max = C.uint32_t(p.NSeqMax)
 	}
 	c.kv_unified = C.bool(p.KVUnified)
+	if p.NRsSeq != 0 {
+		c.n_rs_seq = C.uint32_t(p.NRsSeq)
+	}
+	if p.NOutputsMax != 0 {
+		c.n_outputs_max = C.uint32_t(p.NOutputsMax)
+	}
 	return c
 }
 
@@ -149,6 +169,7 @@ func (p ContextParams) cParams() C.struct_llama_context_params {
 type Context struct {
 	handle *C.struct_llama_context
 	model  *Model // keeps the model referenced (and alive) for as long as the Context is
+	mtp    *mtpDrafter
 }
 
 // NewContext creates a Context for this model. The returned *Context must
@@ -180,6 +201,10 @@ func (m *Model) NewContext(params ContextParams) (*Context, error) {
 func (c *Context) Close() {
 	if c == nil || c.handle == nil {
 		return
+	}
+	if c.mtp != nil {
+		c.mtp.close() // the draft context points back at this one
+		c.mtp = nil
 	}
 	C.llama_free(c.handle)
 	c.handle = nil
@@ -237,6 +262,9 @@ func (c *Context) decodeChunk(cb C.struct_llama_batch) error {
 	if ret := C.llama_decode(c.handle, cb); ret != 0 {
 		return newError("llama_decode")
 	}
+	if c.mtp != nil {
+		return c.mtp.process(cb)
+	}
 	return nil
 }
 
@@ -268,7 +296,12 @@ func (c *Context) LogitsIth(i int32) []float32 {
 // Context rather than continue decoding into it.
 func (c *Context) TrimSequence(seqID int32, p0 int32) bool {
 	mem := C.llama_get_memory(c.handle)
-	return bool(C.llama_memory_seq_rm(mem, C.llama_seq_id(seqID), C.llama_pos(p0), C.llama_pos(-1)))
+	ok := bool(C.llama_memory_seq_rm(mem, C.llama_seq_id(seqID), C.llama_pos(p0), C.llama_pos(-1)))
+	if c.mtp != nil {
+		dmem := C.llama_get_memory(c.mtp.dft)
+		ok = bool(C.llama_memory_seq_rm(dmem, C.llama_seq_id(seqID), C.llama_pos(p0), C.llama_pos(-1))) && ok
+	}
+	return ok
 }
 
 // CopySeq copies every cached token of srcSeq in [p0, p1) into dstSeq,
@@ -288,6 +321,10 @@ func (c *Context) TrimSequence(seqID int32, p0 int32) bool {
 func (c *Context) CopySeq(srcSeq, dstSeq int32, p0, p1 int32) {
 	mem := C.llama_get_memory(c.handle)
 	C.llama_memory_seq_cp(mem, C.llama_seq_id(srcSeq), C.llama_seq_id(dstSeq), C.llama_pos(p0), C.llama_pos(p1))
+	if c.mtp != nil {
+		dmem := C.llama_get_memory(c.mtp.dft)
+		C.llama_memory_seq_cp(dmem, C.llama_seq_id(srcSeq), C.llama_seq_id(dstSeq), C.llama_pos(p0), C.llama_pos(p1))
+	}
 }
 
 // StateSeqSize returns the exact number of bytes SaveSeq(seqID) would
@@ -312,13 +349,13 @@ func (c *Context) StateSeqSize(seqID int32) int {
 // architectures can decline. Returns nil if there's nothing to save
 // (StateSeqSize would be 0).
 func (c *Context) SaveSeq(seqID int32) []byte {
-	size := C.llama_state_seq_get_size(c.handle, C.llama_seq_id(seqID))
-	if size == 0 {
-		return nil
+	tgt := seqStateGet(c.handle, seqID)
+	if c.mtp == nil || tgt == nil {
+		return tgt
 	}
-	buf := make([]byte, size)
-	n := C.llama_state_seq_get_data(c.handle, (*C.uint8_t)(unsafe.Pointer(&buf[0])), size, C.llama_seq_id(seqID))
-	return buf[:n]
+	// With MTP the snapshot also carries the draft context's own KV for
+	// the sequence, so a restored prefix drafts as well as a decoded one.
+	return joinMTPState(tgt, seqStateGet(c.mtp.dft, seqID))
 }
 
 // RestoreSeq restores seqID's state from data previously returned by
@@ -331,9 +368,21 @@ func (c *Context) SaveSeq(seqID int32) []byte {
 // failed load in - callers should treat it as untrustworthy, the same as a
 // false return from TrimSequence.
 func (c *Context) RestoreSeq(seqID int32, data []byte) bool {
-	if len(data) == 0 {
+	tgt, dft, joined := splitMTPState(data)
+	if !joined {
+		tgt = data
+	}
+	if !seqStateSet(c.handle, seqID, tgt) {
 		return false
 	}
-	n := C.llama_state_seq_set_data(c.handle, (*C.uint8_t)(unsafe.Pointer(&data[0])), C.size_t(len(data)), C.llama_seq_id(seqID))
-	return n > 0
+	if c.mtp == nil {
+		return true
+	}
+	if !joined || !seqStateSet(c.mtp.dft, seqID, dft) {
+		// A plain snapshot (or a bad draft half) leaves the draft side
+		// empty for this prefix, which would misalign every later draft.
+		c.TrimSequence(seqID, 0)
+		return false
+	}
+	return true
 }

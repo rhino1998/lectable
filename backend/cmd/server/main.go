@@ -63,7 +63,7 @@ func main() {
 	// separate Python service; LECTABLE_TTS_WORKER_BIN/LECTABLE_AUDIOCPP_LIB_DIR replace the
 	// old TTS_SERVICE_URL.
 	ttsWorkerBin := getenv("LECTABLE_TTS_WORKER_BIN", "./ttsworker")
-	audiocppLibDir := getenv("LECTABLE_AUDIOCPP_LIB_DIR", homePath("audio.cpp", "build", "bin"))
+	audiocppLibDir := getenv("LECTABLE_AUDIOCPP_LIB_DIR", homePath("audio.cpp", "build-rocm7", "bin"))
 	ttsWorkerPort := 0
 	if v := os.Getenv("LECTABLE_TTS_WORKER_PORT"); v != "" {
 		if p, err := strconv.Atoi(v); err == nil {

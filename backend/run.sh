@@ -10,10 +10,17 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 # llama.cpp (linked into server, for speaker attribution). Both binaries'
 # builds need both on CGO_LDFLAGS; both need audio.cpp's on LD_LIBRARY_PATH
 # at runtime for ttsworker's dynamic linking, llama.cpp's for server's own.
-AUDIOCPP_DIR="${AUDIOCPP_DIR:-$HOME/audio.cpp/build/bin}"
-LLAMACPP_DIR="${LLAMACPP_DIR:-$HOME/llama-cpp-py-sync/vendor/llama.cpp/build/bin}"
+AUDIOCPP_DIR="${AUDIOCPP_DIR:-$HOME/audio.cpp/build-rocm7/bin}"
+LLAMACPP_DIR="${LLAMACPP_DIR:-$HOME/llama.cpp-latest/build-live/bin}"
+# ROCm 7.2.4, unpacked user-space (see the root Makefile): ahead of the
+# system's 6.4.4 on the library path, and reached via librocdxg under WSL.
+ROCM_DIR="${ROCM_DIR:-$HOME/rocm7-user/root/opt/rocm-7.2.4}"
 export CGO_LDFLAGS="-L${AUDIOCPP_DIR} -L${LLAMACPP_DIR}"
-export LD_LIBRARY_PATH="${LLAMACPP_DIR}:${AUDIOCPP_DIR}:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="${LLAMACPP_DIR}:${AUDIOCPP_DIR}:${ROCM_DIR}/lib:${ROCM_DIR}/llvm/lib:${LD_LIBRARY_PATH:-}"
+export HSA_ENABLE_DXG_DETECTION=1
+# cmd/server puts this first on ttsworker's own LD_LIBRARY_PATH; left at its
+# default it could load a different libaudiocpp than the one linked here.
+export LECTABLE_AUDIOCPP_LIB_DIR="${LECTABLE_AUDIOCPP_LIB_DIR:-$AUDIOCPP_DIR}"
 
 export LECTABLE_DATA_DIR="${LECTABLE_DATA_DIR:-$(pwd)/data}"
 export LECTABLE_SPEAKER_LLM_GPU_LAYERS="${LECTABLE_SPEAKER_LLM_GPU_LAYERS:--1}"

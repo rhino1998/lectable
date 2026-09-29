@@ -126,8 +126,12 @@ func main() {
 		NCtx:          uint32(envIntOr("LECTABLE_SPEAKER_LLM_CTX", speakerattr.SlotNCtx())),
 		MaxConcurrent: envIntOr("LECTABLE_SPEAKER_LLM_MAX_CONCURRENT", 2),
 		// Opt-in: see llmworker.Config.PrimeAsState/NUBatch.
-		PrimeAsState:    envOr("LECTABLE_SPEAKER_LLM_PRIME_STATE", "") == "true",
-		NUBatch:         uint32(envIntOr("LECTABLE_SPEAKER_LLM_UBATCH", 0)),
+		PrimeAsState: envOr("LECTABLE_SPEAKER_LLM_PRIME_STATE", "") == "true",
+		// 2048 reads prompts ~35% faster than libllama's 512 (llama-bench,
+		// Qwen3.6-35B-A3B on the RX 7900 XTX, 2026-09-28); 4096 adds ~1%.
+		NUBatch: uint32(envIntOr("LECTABLE_SPEAKER_LLM_UBATCH", 2048)),
+		// Draft length for MTP speculative decoding; 0 turns it off.
+		MTPDraft:        envIntOr("LECTABLE_SPEAKER_LLM_MTP", 3),
 		SystemPrompts:   speakerattr.SystemPrompts(),
 		IdleUnloadAfter: idleUnloadAfter,
 		// Free every resident clone model before the LLM's own (lazy,

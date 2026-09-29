@@ -29,6 +29,7 @@ only works with both living in the same process.
   (tokenize/detokenize/chat template), `context.go`, `batch.go`,
   `sampler.go`, `generate.go` (the high-level single-sequence decode loop),
   `scheduler.go` (multi-sequence batching across concurrent callers - see
+  below), `mtp.go` + `mtp.cpp`/`mtp.h` (MTP speculative decoding - see
   below).
 - `llamacpp/include/` -- vendored copies of llama.cpp's `llama.h` and the
   ggml/gguf headers it `#include`s (`ggml.h`, `ggml-cpu.h`,
@@ -36,7 +37,11 @@ only works with both living in the same process.
   audio.cpp's single dependency-free header, llama.cpp's API drags in
   ggml's headers, so all of these travel together -- if any need updating,
   copy the full set from the same llama.cpp checkout's `include/` and
-  `ggml/include/`, verbatim, don't hand-edit.
+  `ggml/include/`, verbatim, don't hand-edit. `common.h`,
+  `speculative.h` and `llama-cpp.h` (from `common/` and `include/`) are
+  vendored too, for `mtp.cpp`: it passes C++ structs across into
+  `libllama-common`, so they must come from the exact commit that library
+  was built from (currently `~/llama.cpp-latest` at 526c43b).
 - `llamacpp/smoke_test.go` -- an unconditional library-info test (still
   needs libllama linked) plus a generation test gated on
   `LLAMACPP_TEST_MODEL` pointing at a real local GGUF file (llama.cpp
@@ -179,4 +184,51 @@ real GPU time - `llama_decode` only queues work, and without the sync a
 decode-only round measured ~1ms. `ContextParams` also exposes `NUBatch`,
 `FlashAttn` (auto already resolves to on here; off is 2-2.5x slower) and
 `TypeK`/`TypeV`. `LLAMACPP_LOG=1` copies every libllama log line to stderr.
+
+## MTP speculative decoding
+
+`Context.EnableMTP(params, nMax)` attaches a second, `LLAMA_CONTEXT_TYPE_MTP`
+context running the model's own MTP (multi-token prediction) head - the
+model must be loaded with `ModelParams.LoadMTP` from a GGUF that has one
+(e.g. Unsloth's `Qwen3.6-35B-A3B-MTP-UD-IQ4_XS`). Drafting itself is
+llama.cpp's `common_speculative` draft-mtp driver, reached through a small C
+shim (`mtp.cpp`/`mtp.h`) since it's C++ only; it links `libllama-common`,
+so the llama.cpp build needs `LLAMA_BUILD_COMMON=ON`. Once enabled, every
+`Decode` also feeds the draft context and `TrimSequence`/`CopySeq`/
+`SaveSeq`/`RestoreSeq` apply to both, so priming, `PrimedSeq` and
+`PrefixState` work unchanged (a `SaveSeq` snapshot then carries both
+halves). `Scheduler` drafts for every generating slot before each round,
+decodes each slot's next token plus its draft in the shared batch, samples
+row by row while the target agrees with the draft, then trims the rejected
+tokens from both contexts. A hybrid (recurrent) model needs
+`ContextParams.NRsSeq >= nMax` for that rollback.
+
+Measured 2026-09-28 (Qwen3.6-35B-A3B, RX 7900 XTX, ROCm 7.2.4): 89% of
+drafted tokens accepted on attribution-style JSON, decode rounds 238 -> 64,
+live summary pass generating at ~190 vs ~105 tok/s. Gotchas hit building it:
+
+- **Draft positions must be dropped after drafting.** Drafting decodes into
+  the draft context from the pending token's position on, and the verify
+  batch then re-feeds those positions; without the `seq_rm` in
+  `lcg_mtp_draft` (llama-server does the same) every verify fails with
+  "inconsistent sequence positions".
+- **VRAM.** A context reserves logits for every token of a ubatch unless
+  `ContextParams.NOutputsMax` caps it - ~2 GiB at ubatch 2048 for a 248K
+  vocab, and the draft context another 1-4 GiB. Past 24 GB the Windows
+  driver spills into shared memory and every decode crawls (a 7x slowdown
+  that looked like an MTP bug). `llmworker` caps outputs at
+  `MaxConcurrent x (1 + draft)` and the shim caps the draft context at one
+  output per sequence and ubatch 512: compute buffers 2.0 GiB -> 0.4 and
+  3.9 -> 0.1.
+- **Output isn't byte-identical to plain decoding**, and can't be:
+  verifying several tokens per sequence runs different GPU kernels, which
+  flip near-tie argmaxes (plain decoding disagrees with a replay of itself
+  the same way). `TestSchedulerMTPIsGreedy` instead replays each output
+  through a fresh Context and fails on any token that isn't its argmax by
+  more than 1.5 logits (`requireGreedy`, also used by
+  `TestSchedulerWithPrefixState` since llama.cpp 526c43b's kernels flip one
+  of its near-ties). Gated on `LLAMACPP_TEST_MTP_MODEL`.
+- MTP keeps no saveable per-sequence state, so the first token after a
+  restored or kept prefix pairs with a stale hidden row - one draft-KV
+  entry, costing draft quality only, never output.
 
