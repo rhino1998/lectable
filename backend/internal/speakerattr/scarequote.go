@@ -230,12 +230,11 @@ type scareQuoteItem struct {
 // (its only field is "idx", an easy one to collapse to just the value)
 // that would otherwise cost a full retry every time it happens.
 func parseScareQuoteItems(content string) (map[int]bool, error) {
-	start := strings.IndexByte(content, '[')
-	end := strings.LastIndexByte(content, ']')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '[')
+	if !found {
 		return nil, fmt.Errorf("no JSON array found in response: %s", truncate(content, 200))
 	}
-	raw := content[start : end+1]
+	raw := value
 
 	out := make(map[int]bool)
 	var items []scareQuoteItem

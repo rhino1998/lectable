@@ -102,6 +102,7 @@ type Store interface {
 	SetChapterScareQuoted(chapterID string) error
 	SetCharacterAliases(characterID string, aliases []string) error
 	SetCharacterInvalid(id string, invalid bool) error
+	RenameCharacter(id, name string) error
 	SetCharacterRole(id string, isRole bool) error
 	SetCharacterPronouns(id, pronouns string) error
 	SetCharacterSummary(id, summary, refLine string) error

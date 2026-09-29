@@ -363,6 +363,7 @@ var kindPool = map[Kind]taskqueue.PoolKey{
 	KindDescription:             poolLLM,
 	KindPronunciation:           poolLLM,
 	KindSummary:                 poolLLM,
+	KindBookSetting:             poolLLM,
 }
 
 // poolFor reports which slot pool kind draws from - see kindPool.
@@ -633,6 +634,11 @@ const (
 	// and cast. KindScareQuote's shape; attribution and the ambience pass
 	// depend on it (summaryDependency).
 	KindSummary Kind = "chapter_summary"
+	// KindBookSetting is a book's setting pass (internal/speakerattr.Client.
+	// DescribeSetting, via httpapi.deriveBookSetting) - one per book, keyed
+	// by it. The ambience, characterization and summary tasks that read the
+	// setting depend on it (bookSettingDependency) when the book has none.
+	KindBookSetting Kind = "book_setting"
 )
 
 // Tier is shared across every chapter/paragraph-scoped Kind - a
@@ -995,6 +1001,8 @@ func (t *task) dedupKey() string {
 		return "pronunciation:" + t.llmKey
 	case KindSummary:
 		return "summary:" + t.llmKey
+	case KindBookSetting:
+		return "book_setting:" + t.llmKey
 	default:
 		return t.paragraph.ID
 	}
@@ -1088,6 +1096,7 @@ var kindCompare = map[Kind]func(a, b *task) int{
 	KindDescription:             comparePosition,
 	KindPronunciation:           comparePosition,
 	KindSummary:                 comparePosition,
+	KindBookSetting:             comparePosition,
 }
 
 // Less breaks a same-pool, same-(promoted-)tier tie between t and other -
@@ -1442,6 +1451,12 @@ type ChapterScareQuoter func(ctx context.Context, book *store.Book, ch *store.Ch
 // on summaries.
 type ChapterSummarizer func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error)
 
+// BookSettingDeriver runs one book's setting pass (setting its stored
+// setting profile) - the work behind a KindBookSetting task that
+// bookSettingDependency creates. Never configured (nil) means nothing waits
+// on a setting.
+type BookSettingDeriver func(ctx context.Context, book *store.Book) error
+
 // SummaryFunc performs one chapter's summary pass - the work behind a
 // KindSummary task. DirectionFunc's shape.
 type SummaryFunc func(ctx context.Context) (int, func(), error)
@@ -1461,18 +1476,23 @@ type Manager struct {
 	// ambienceLocks: see lockAmbience.
 	ambienceLocks sync.Map
 
-	store        store.Store
-	tts          *ttsworker.Manager
-	dataDir      string
-	narration    *narration.Resolver
-	provision    CharacterVoiceProvisioner
-	characterize CharacterCharacterizer
-	direct       ChapterDirector
-	attribute    ChapterAttributor
-	runAmbience  AmbienceRunner
-	scareQuote   ChapterScareQuoter
-	pronounce    ChapterPronouncer
-	summarize    ChapterSummarizer
+	store         store.Store
+	tts           *ttsworker.Manager
+	dataDir       string
+	narration     *narration.Resolver
+	provision     CharacterVoiceProvisioner
+	characterize  CharacterCharacterizer
+	direct        ChapterDirector
+	attribute     ChapterAttributor
+	runAmbience   AmbienceRunner
+	scareQuote    ChapterScareQuoter
+	pronounce     ChapterPronouncer
+	summarize     ChapterSummarizer
+	deriveSetting BookSettingDeriver
+	// settingTried is the set of books (bookID -> true) whose setting pass
+	// has run in this process, whatever the outcome - see
+	// bookSettingDependency.
+	settingTried sync.Map
 	ctx          context.Context // set by Start; used by fire-and-forget Enqueue* resolution goroutines
 
 	// queue is this package's whole priority/dependency/pool-dispatch
@@ -1670,6 +1690,12 @@ func (m *Manager) SetAmbienceRunner(fn AmbienceRunner) {
 // httpapi.NewRouter, the same place/timing as SetChapterDirector.
 func (m *Manager) SetChapterScareQuoter(fn ChapterScareQuoter) {
 	m.scareQuote = fn
+}
+
+// SetBookSettingDeriver wires fn in as the lazy setting pass - see
+// BookSettingDeriver. Called once from httpapi.NewRouter.
+func (m *Manager) SetBookSettingDeriver(fn BookSettingDeriver) {
+	m.deriveSetting = fn
 }
 
 // SetChapterSummarizer wires fn in as the lazy summarizer - see
@@ -2742,6 +2768,11 @@ func (m *Manager) resolveDependencies(lq *taskqueue.LockedQueue, tk taskqueue.Ta
 			deps = append(deps, d)
 		}
 	}
+	if t.kind == KindAmbience || t.kind == KindSummary || t.kind == KindSpeakerCharacterization || t.kind == KindSpeakerAttribution {
+		if d := m.bookSettingDependency(lq, t); d != nil {
+			deps = append(deps, d)
+		}
+	}
 	if t.kind == KindMusicLiveGeneration {
 		if d := m.liveMusicDependency(lq, t); d != nil {
 			deps = append(deps, d)
@@ -3114,6 +3145,78 @@ func (m *Manager) summaryDependency(lq *taskqueue.LockedQueue, t *task) taskqueu
 		seriesIndex: book.SeriesIndex,
 	}
 	return m.pushDependency(lq, nt)
+}
+
+// bookSettingDependency makes t's book's setting pass (KindBookSetting) a
+// dependency of the tasks whose prompts read the setting (ambience,
+// summary, characterization) while the book has no setting: the book's
+// queued or in-flight KindBookSetting task, or a lazily created one. Unlike
+// scareQuoteDependency, a failed run doesn't keep blocking them - those
+// passes work without a setting, as they did before it existed - so a book
+// whose setting pass has run in this process (m.settingTried) is never
+// waited on again; a later explicit re-derive (EnqueueBookSetting) still
+// can be.
+func (m *Manager) bookSettingDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+	if t.bookID == "" {
+		return nil
+	}
+	if found, ok := lq.Get("book_setting:" + t.bookID); ok {
+		return found
+	}
+	if m.deriveSetting == nil {
+		return nil
+	}
+	if _, tried := m.settingTried.Load(t.bookID); tried {
+		return nil
+	}
+	has := lq.Memo("setting:"+t.bookID, func() any {
+		st, err := m.store.GetBookSetting(t.bookID)
+		return err != nil || st != nil // an error: don't block on it
+	}).(bool)
+	if has {
+		return nil
+	}
+	book, err := m.memoBook(lq, t.bookID)
+	if err != nil || book == nil {
+		return nil
+	}
+	nt := &task{
+		kind:        KindBookSetting,
+		tier:        t.tier,
+		bookID:      t.bookID,
+		llmKey:      t.bookID,
+		label:       "Book setting",
+		runLLM:      m.settingRun(book, m.deriveSetting),
+		seriesName:  book.SeriesName,
+		seriesIndex: book.SeriesIndex,
+	}
+	return m.pushDependency(lq, nt)
+}
+
+// settingRun wraps a setting-pass run as a KindBookSetting task's work,
+// marking the book tried whatever the outcome (see bookSettingDependency).
+func (m *Manager) settingRun(book *store.Book, fn BookSettingDeriver) func(ctx context.Context) (int, func(), error) {
+	return func(ctx context.Context) (int, func(), error) {
+		err := fn(ctx, book)
+		m.settingTried.Store(book.ID, true)
+		return 0, nil, err
+	}
+}
+
+// EnqueueBookSetting queues bookID's setting pass now (the Speakers page's
+// re-read button), at TierUrgent like a characterization - one short call.
+// fn is the work; deduped per book with any lazily-created one.
+func (m *Manager) EnqueueBookSetting(book *store.Book, fn BookSettingDeriver) {
+	m.pushTask(&task{
+		kind:        KindBookSetting,
+		tier:        TierUrgent,
+		bookID:      book.ID,
+		llmKey:      book.ID,
+		label:       "Book setting",
+		runLLM:      m.settingRun(book, fn),
+		seriesName:  book.SeriesName,
+		seriesIndex: book.SeriesIndex,
+	})
 }
 
 // referenceClipDependency returns t's own "ensure reference clip" task -

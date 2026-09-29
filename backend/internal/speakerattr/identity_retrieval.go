@@ -302,13 +302,12 @@ func (c *Client) MatchIdentity(ctx context.Context, bookTitle, phrase string, ev
 		user.WriteString("\n/no_think")
 	}
 	raw, err := generateAndParse(ctx, c, identitySystemPrompt, user.String(), 0, 512, func(content string) (identityRaw, error) {
-		start := strings.IndexByte(content, '{')
-		end := strings.LastIndexByte(content, '}')
-		if start == -1 || end < start {
+		value, found := firstJSONValue(content, '{')
+		if !found {
 			return identityRaw{}, fmt.Errorf("no JSON object found in response: %s", truncate(content, 200))
 		}
 		var r identityRaw
-		if err := json.Unmarshal([]byte(content[start:end+1]), &r); err != nil {
+		if err := json.Unmarshal([]byte(value), &r); err != nil {
 			return identityRaw{}, fmt.Errorf("parse JSON object: %w", err)
 		}
 		return r, nil

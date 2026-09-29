@@ -435,6 +435,19 @@ export const api = {
   // stops creating/assigning the name - non-destructive: their current
   // lines, summary, and voice stay as they are. Auto Split sets this too.
   // See httpapi.handleSetCharacterInvalid.
+  // Merges the roster's duplicate names (first-person placeholders, case
+  // variants, articleless descriptions, first names of full names) - see
+  // backend dedupeCharacters. Replies with every merge made.
+  dedupeCharacters: (bookId: string) =>
+    call('POST /api/books/{id}/characters/dedupe', { path: { id: bookId } }),
+
+  // Marks (or unmarks) a character as a role label - see Speaker.role.
+  setCharacterRole: (bookId: string, characterId: string, role: boolean) =>
+    call('PUT /api/books/{id}/characters/{characterId}/role', {
+      path: { id: bookId, characterId },
+      body: { role },
+    }),
+
   setCharacterInvalid: (bookId: string, characterId: string, invalid: boolean) =>
     call('PUT /api/books/{id}/characters/{characterId}/invalid', {
       path: { id: bookId, characterId },
@@ -573,8 +586,8 @@ export const api = {
   setBookSetting: (bookId: string, body: BookSetting) =>
     call('PUT /api/books/{id}/setting', { path: { id: bookId }, body }),
 
-  // Re-runs the setting pass now (one LLM call), replacing even a manual
-  // edit - see backend handleDeriveBookSetting.
+  // Queues the setting pass now (a book_setting job), replacing even a
+  // manual edit - see backend handleDeriveBookSetting.
   deriveBookSetting: (bookId: string) =>
     call('POST /api/books/{id}/setting/derive', { path: { id: bookId } }),
 

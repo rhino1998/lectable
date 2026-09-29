@@ -90,7 +90,11 @@ func (s *DuckStore) GetCharacter(id string) (*Character, error) {
 
 func (s *DuckStore) GetCharacterByName(scope, name string) (*Character, error) {
 	var c Character
-	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, pronouns, created_at FROM characters WHERE scope = ? AND name = ?`, scope, name).
+	// Case-insensitive, an exact-case match first: "woman" is "Woman", so
+	// attribution's UpsertCharacter never makes a second row that differs
+	// only in case (Arise had woman/Woman, doctor/Doctor, barmaid/Barmaid).
+	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, pronouns, created_at FROM characters
+		WHERE scope = ? AND lower(name) = lower(?) ORDER BY name = ? DESC, created_at LIMIT 1`, scope, name, name).
 		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.Pronouns, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -251,6 +255,13 @@ func (s *DuckStore) SyncCharacterSummariesFromPreset(presetID, instruct, refText
 // them. Callers normalize first (speakerattr.NormalizePronouns).
 func (s *DuckStore) SetCharacterPronouns(id, pronouns string) error {
 	_, err := s.db.Exec(`UPDATE characters SET pronouns = ? WHERE id = ?`, pronouns, id)
+	return err
+}
+
+// RenameCharacter changes id's name - its row only; callers move the
+// paragraphs attributed to the old name (ReassignCharacterSpeaker).
+func (s *DuckStore) RenameCharacter(id, name string) error {
+	_, err := s.db.Exec(`UPDATE characters SET name = ? WHERE id = ?`, name, id)
 	return err
 }
 

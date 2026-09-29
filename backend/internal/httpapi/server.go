@@ -128,6 +128,7 @@ func NewRouter(s *Server) http.Handler {
 			s.Jobs.SetChapterScareQuoter(s.scareQuoteChapterForJob)
 			s.Jobs.SetChapterPronouncer(s.pronounceChapterForJob)
 			s.Jobs.SetChapterSummarizer(s.summarizeChapter)
+			s.Jobs.SetBookSettingDeriver(s.deriveBookSettingForJob)
 			// ambienceChapter itself calls s.Speaker.ScoreMusic - same
 			// s.Speaker-configured gate as the three above, and the same
 			// reason jobs.Manager.maybeRunChapterAmbience's own nil-scorer
@@ -220,6 +221,8 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/voices/variants/{presetId}/{emotion}/audio", s.handleVariantAudio)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/voice", s.handleSetCharacterVoice)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/invalid", s.handleSetCharacterInvalid)
+	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/role", s.handleSetCharacterRole)
+	mux.HandleFunc("POST /api/books/{id}/characters/dedupe", s.handleDedupeCharacters)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/aliases", s.handleSetCharacterAliases)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/pronouns", s.handleSetCharacterPronouns)
 	mux.HandleFunc("DELETE /api/books/{id}/characters/{characterId}", s.handleDeleteCharacter)

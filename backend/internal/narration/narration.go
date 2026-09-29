@@ -171,7 +171,11 @@ func (r *Resolver) ForParagraph(book *store.Book, speaker string) (ResolvedVoice
 	if err != nil {
 		return ResolvedVoice{}, err
 	}
-	if char == nil {
+	// Exact name only, like BookVoices and every other bulk resolver:
+	// GetCharacterByName folds case (for UpsertCharacter's dedup), and a
+	// case-folded hit here - e.g. "Unknown" onto an invalid "unknown" row -
+	// resolved a voice the chapter topic never reported, so its clip 404'd.
+	if char == nil || char.Name != speaker {
 		return bookVoice, nil
 	}
 	// A character's assigned voice is per clone model (see

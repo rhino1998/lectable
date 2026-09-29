@@ -1,6 +1,7 @@
 package speakerattr
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -63,5 +64,37 @@ func TestResolveCastRefsDropsSharedRefs(t *testing.T) {
 	got := ResolveCastRefs(map[int]string{1: "the nobleman", 2: "the old merfolk"}, cast)
 	if got[1] != "the nobleman" || got[2] != "Count" {
 		t.Fatalf("ResolveCastRefs = %v", got)
+	}
+}
+
+// summaryOnlyLLM returns a fixed summary reply.
+type summaryOnlyLLM string
+
+func (l summaryOnlyLLM) LLMGenerate(context.Context, string, string, float32, int) (string, error) {
+	return string(l), nil
+}
+
+// A speaker the text tags is added to the cast even when the model left
+// them out (it once returned no cast for a chapter set in a mind-space).
+func TestSummarizeChapterAddsTaggedSpeakers(t *testing.T) {
+	paras := []ParagraphInput{
+		{Idx: 0, Text: "Chapter 50"},
+		{Idx: 1, Text: "“So,”", IsQuote: true},
+		{Idx: 2, Text: "Fritz started as he paced.", Inline: true},
+		{Idx: 3, Text: "“Really?!”", IsQuote: true},
+		{Idx: 4, Text: "Bert exclaimed.", Inline: true},
+	}
+	roster := Roster{Names: []string{"Fritz", "Bert", "Sid"}, Pronouns: map[string]string{"Bert": PronounsHe}}
+	llm := summaryOnlyLLM(`{"summary": "They talk in the Sanctum.", "scenes": [{"start": 0, "location": "the Sanctum", "time": "", "present": []}], "cast": []}`)
+	got, err := NewClient(Config{}, llm).SummarizeChapter(context.Background(), "B", "C", nil, roster, paras)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, m := range got.Cast {
+		names = append(names, m.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"Fritz", "Bert"}) || got.Cast[1].Pronouns != PronounsHe {
+		t.Fatalf("cast = %+v, want the tagged Fritz and Bert", got.Cast)
 	}
 }

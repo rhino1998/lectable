@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"regexp"
+	"strings"
 )
 
 // repairDroppedClosingQuoteInArray is a targeted, narrow fixup for one
@@ -101,4 +102,75 @@ func unmarshalRepairedArray(raw string, v any) error {
 		return nil
 	}
 	return err
+}
+
+// firstJSONValue returns the first JSON array or object in content (the
+// first open byte, '[' or '{', through its matching close), so prose or a
+// code fence around it doesn't matter. It stops at the matching close
+// rather than the last close in the reply: Qwen3.6 sometimes adds a stray
+// character after a complete value ("[...]]", "[...]}", "[...]\""), and
+// cutting at the last ']' kept the stray one. A close that doesn't match
+// the open it would end is replaced with the one that does ("[{...}}" ->
+// "[{...}]"), and a reply that stops before closing everything gets the
+// missing closes appended. If that still isn't valid JSON - a dropped
+// closing quote (see repairDroppedClosingQuoteInArray) throws off which
+// brackets are inside strings - it falls back to the first open through
+// the last close of the same kind, for the caller's own repair. ok is false when content has no open byte, or (on that
+// fallback) no close after it.
+func firstJSONValue(content string, open byte) (string, bool) {
+	start := strings.IndexByte(content, open)
+	if start == -1 {
+		return "", false
+	}
+	var out []byte
+	var stack []byte
+	inString, escaped := false, false
+	for i := start; i < len(content); i++ {
+		b := content[i]
+		switch {
+		case inString:
+			switch {
+			case escaped:
+				escaped = false
+			case b == '\\':
+				escaped = true
+			case b == '"':
+				inString = false
+			}
+		case b == '"':
+			inString = true
+		case b == '[' || b == '{':
+			stack = append(stack, b)
+		case b == ']' || b == '}':
+			want := byte(']')
+			if stack[len(stack)-1] == '{' {
+				want = '}'
+			}
+			b = want
+			stack = stack[:len(stack)-1]
+		}
+		out = append(out, b)
+		if len(stack) == 0 {
+			break
+		}
+	}
+	for i := len(stack) - 1; i >= 0 && !inString; i-- {
+		if stack[i] == '[' {
+			out = append(out, ']')
+		} else {
+			out = append(out, '}')
+		}
+	}
+	if !inString && json.Valid(out) {
+		return string(out), true
+	}
+	closeByte := byte(']')
+	if open == '{' {
+		closeByte = '}'
+	}
+	end := strings.LastIndexByte(content, closeByte)
+	if end < start {
+		return "", false
+	}
+	return content[start : end+1], true
 }

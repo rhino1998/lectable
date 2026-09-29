@@ -53,11 +53,12 @@ First collect evidence, then decide from it:
 - "place": the region or world, e.g. "a fictional desert empire", "Crete and the Mediterranean", "London", "a generation starship".
 - "accent": the accent most of the main characters speak with - only when the excerpts make it clear (a stated nationality or hometown, dialect spelling, a real-world place they're from). "" for an invented world.
 - "genre": 1-3 words, e.g. "epic fantasy", "cozy mystery", "LitRPG".
+- "narrator": if the book is told in the first person ("I"), that narrator's name as other characters call them in the excerpts; "" for a third-person book, or when the narrator is never named.
 - Only state what the text supports; use "" for anything it doesn't show. Each field at most 12 words. Never mention plot events or character names.
 
 Reply with a compact JSON object on a single line only, no other text, no markdown code fence:
 
-{"evidence": ["...", "..."], "technology": "...", "era": "...", "place": "...", "accent": "...", "genre": "..."}`
+{"evidence": ["...", "..."], "technology": "...", "era": "...", "place": "...", "accent": "...", "genre": "...", "narrator": "..."}`
 
 // BookSetting is one book's setting profile - store.BookSetting's own
 // shape, kept as a plain value here rather than importing store (see
@@ -68,11 +69,15 @@ type BookSetting struct {
 	Place      string
 	Accent     string
 	Genre      string
+	// Narrator is a first-person book's narrator (the "I"), "" for a
+	// third-person book or an unnamed narrator. Attribution credits "I
+	// said" lines to them (Roster.FirstPerson).
+	Narrator string
 }
 
 // IsZero reports whether s says nothing at all.
 func (s *BookSetting) IsZero() bool {
-	return s == nil || s.Era == "" && s.Technology == "" && s.Place == "" && s.Accent == "" && s.Genre == ""
+	return s == nil || s.Era == "" && s.Technology == "" && s.Place == "" && s.Accent == "" && s.Genre == "" && s.Narrator == ""
 }
 
 // promptLines renders the world for the ambience and lighting prompts -
@@ -257,6 +262,7 @@ type settingRaw struct {
 	Place      string `json:"place"`
 	Accent     string `json:"accent"`
 	Genre      string `json:"genre"`
+	Narrator   string `json:"narrator"`
 }
 
 // DescribeSetting writes a book's setting profile from counts (the whole
@@ -285,13 +291,12 @@ func (c *Client) settingUserPrompt(bookTitle, author string, counts TechCounts, 
 }
 
 func parseSetting(content string) (BookSetting, error) {
-	start := strings.IndexByte(content, '{')
-	end := strings.LastIndexByte(content, '}')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '{')
+	if !found {
 		return BookSetting{}, fmt.Errorf("no JSON object found in response: %s", truncate(content, 200))
 	}
 	var raw settingRaw
-	if err := json.Unmarshal([]byte(content[start:end+1]), &raw); err != nil {
+	if err := json.Unmarshal([]byte(value), &raw); err != nil {
 		return BookSetting{}, fmt.Errorf("parse JSON object: %w", err)
 	}
 	s := BookSetting{
@@ -300,6 +305,7 @@ func parseSetting(content string) (BookSetting, error) {
 		Place:      cleanSettingField(raw.Place),
 		Accent:     cleanSettingField(raw.Accent),
 		Genre:      cleanSettingField(raw.Genre),
+		Narrator:   cleanSettingField(raw.Narrator),
 	}
 	if s.IsZero() {
 		return BookSetting{}, fmt.Errorf("empty setting")

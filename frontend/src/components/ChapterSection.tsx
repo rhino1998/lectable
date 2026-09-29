@@ -1,4 +1,4 @@
-import { Fragment, createElement, memo, useEffect, useState } from 'react'
+import { Fragment, createElement, memo, useState } from 'react'
 import {
   RiBookmarkFill,
   RiBookmarkLine,
@@ -9,8 +9,6 @@ import {
   RiDoubleQuotesL,
   RiEmotionLine,
   RiMusic2Line,
-  RiPauseFill,
-  RiPlayFill,
   RiPriceTag3Line,
   RiRefreshLine,
   RiSpeakLine,
@@ -20,7 +18,15 @@ import {
   RiWindyLine,
   RiLightbulbLine,
 } from 'react-icons/ri'
-import type { ChapterDetail, ContentItem, Lighting, MusicRegion, Paragraph } from '../api/types'
+import type {
+  ChapterDetail,
+  ChapterNotes,
+  ContentItem,
+  Lighting,
+  MusicRegion,
+  Paragraph,
+  SummaryScene,
+} from '../api/types'
 import { LIGHT_EFFECT_LABELS } from '../api/types'
 import { hasActiveTextSelection } from '../utils/selection'
 import { emotionIcon, emotionLabel } from '../utils/emotions'
@@ -28,6 +34,7 @@ import { annotationKind, annotationTitle, matchesSelectedSpeaker } from '../util
 import { resolveGenerationText } from '../utils/resolveGenerationText'
 import { ParagraphText } from './ParagraphText'
 import { LightingSwatch } from './LightingSwatch'
+import { MusicRegionPreviewButton } from './MusicRegionPreviewButton'
 
 // One rendered visual block: either a single image, or one or more
 // paragraphs joined with no break between them - a non-inline paragraph
@@ -476,6 +483,43 @@ function paragraphGroupPropsEqual(prev: ParagraphGroupProps, next: ParagraphGrou
   return true
 }
 
+// ChapterSummaryBlock is annotations view's chapter summary under the
+// heading (backend summary pass - see ChapterPassTable's Summary column):
+// what happens, and who's in the chapter with what the text calls them.
+function ChapterSummaryBlock({ notes }: { notes: ChapterNotes }) {
+  return (
+    <div className="chapter-summary-annotation">
+      {notes.summary && <p>{notes.summary}</p>}
+      {notes.cast.length > 0 && (
+        <p className="chapter-summary-cast">
+          <span className="muted">Cast: </span>
+          {notes.cast.map((m, i) => (
+            <span key={m.name}>
+              {i > 0 && ', '}
+              {m.name}
+              {m.role && <span className="muted"> (role)</span>}
+              {m.refs.length > 0 && <span className="muted"> — {m.refs.join('; ')}</span>}
+            </span>
+          ))}
+        </p>
+      )}
+    </div>
+  )
+}
+
+// SceneBoundary marks where one of the chapter summary's scenes starts
+// (annotations view only): where, when, and who's there - what ambience
+// and lighting are told about the stretch.
+function SceneBoundary({ scene }: { scene: SummaryScene }) {
+  return (
+    <div className="chapter-scene-boundary">
+      <span className="chapter-scene-boundary-place">{scene.location || 'Scene'}</span>
+      {scene.time && <span className="muted"> · {scene.time}</span>}
+      {scene.present.length > 0 && <span className="muted"> — {scene.present.join(', ')}</span>}
+    </div>
+  )
+}
+
 // formatMusicStatus is MusicRegionBoundary's own status label for a region
 // that hasn't finished generating yet (or failed) - a region that's
 // already 'ready' shows no status suffix at all, since "this region's
@@ -618,55 +662,6 @@ function lightingSummary(l: Lighting): string {
   return `${what}${LIGHT_EFFECT_LABELS[l.effect]}, ${l.brightness}% (${colors})`
 }
 
-// A standalone, isolated preview of one region's own generated clip - its
-// own plain <audio> (not tied to usePlayback's narration element or
-// useBackgroundMusic's own live-mixing Web Audio graph at all), the same
-// "quick audition, nothing else on the page needs to know about it" shape
-// the SFX panel's own <audio controls> preview already has, just a single
-// icon toggle instead of the browser's own full control bar (this sits
-// inside a small pill, not a whole panel). Playing a preview does not
-// pause/duck narration or the live background-music mix - both keep
-// running underneath, exactly like clicking the SFX panel's preview does.
-function MusicRegionPreviewButton({ audioUrl }: { audioUrl: string }) {
-  const [playing, setPlaying] = useState(false)
-  // Created once, on first render - like the ref it replaces, the clip
-  // stays the one this button first mounted with.
-  const [audio] = useState(() => {
-    const a = new Audio(audioUrl)
-    a.addEventListener('ended', () => setPlaying(false))
-    a.addEventListener('pause', () => setPlaying(false))
-    return a
-  })
-
-  // Stops playback if this marker's own chapter scrolls out of the render
-  // window (ChapterSection's renderFull/placeholderHeight) and unmounts
-  // mid-preview - otherwise the clip would keep playing invisibly with no
-  // way left on screen to stop it.
-  useEffect(() => {
-    return () => {
-      audio.pause()
-    }
-  }, [audio])
-
-  return (
-    <button
-      className="chapter-music-boundary-preview"
-      onClick={(e) => {
-        e.stopPropagation()
-        if (playing) {
-          audio.pause()
-        } else {
-          void audio.play()
-          setPlaying(true)
-        }
-      }}
-      title={playing ? 'Pause preview' : 'Preview this region’s generated music'}
-    >
-      {playing ? <RiPauseFill /> : <RiPlayFill />}
-    </button>
-  )
-}
-
 interface ChapterSectionProps {
   idx: number
   chapter: ChapterDetail | undefined
@@ -734,6 +729,9 @@ interface ChapterSectionProps {
   // music regions at all while annotationsView is true - see its own
   // useChapterMusicRange call).
   musicRegions: MusicRegion[]
+  // The chapter's summary notes (annotations view only), null until
+  // summarized or while annotations view is off.
+  notes: ChapterNotes | null
   onRegenerateMusic: (chapterIdx: number, regionId: string) => void
   registerSectionRef: (idx: number, el: HTMLElement | null) => void
   onSeek: (seconds: number) => void
@@ -797,6 +795,7 @@ export const ChapterSection = memo(function ChapterSection({
   onRunAmbience,
   onGenerate,
   musicRegions,
+  notes,
   onRegenerateMusic,
   registerSectionRef,
   onSeek,
@@ -829,6 +828,9 @@ export const ChapterSection = memo(function ChapterSection({
   // startIdx is exactly "annotations view should show that region's own
   // boundary marker right before this group".
   const musicRegionsByStartIdx = new Map(musicRegions.map((r) => [r.startIdx, r]))
+  // Scene starts, keyed the same way - a scene always starts at a real
+  // paragraph (see backend speakerattr.sceneStarts), so at a group's first.
+  const scenesByStartIdx = new Map((notes?.scenes ?? []).map((sc) => [sc.startIdx, sc]))
 
   return (
     <section
@@ -957,13 +959,17 @@ export const ChapterSection = memo(function ChapterSection({
           </button>
         </span>
       </div>
+      {annotationsView && notes && <ChapterSummaryBlock notes={notes} />}
       {!chapter && <p className="muted">Loading chapter…</p>}
       <div className="paragraph-list">
         {groups.map((group) => {
           const startingRegion =
             group.kind === 'text' ? musicRegionsByStartIdx.get(group.paragraphs[0].idx) : undefined
+          const startingScene =
+            group.kind === 'text' ? scenesByStartIdx.get(group.paragraphs[0].idx) : undefined
           return (
             <Fragment key={group.key}>
+              {annotationsView && startingScene && <SceneBoundary scene={startingScene} />}
               {annotationsView && startingRegion && (
                 <MusicRegionBoundary
                   region={startingRegion}

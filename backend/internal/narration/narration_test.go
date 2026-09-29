@@ -192,6 +192,53 @@ func TestForParagraphMultiVoiceOnUsesCharacterVoice(t *testing.T) {
 	}
 }
 
+// TestForParagraphAgreesWithBookVoicesOnCase: the audio endpoint resolves
+// through ForParagraph and the chapter topic through BookVoices - a speaker
+// matching a character only case-insensitively ("Unknown" vs an "unknown"
+// row) must resolve to the same voice through both, or the chapter reports a
+// clip ready that the audio endpoint 404s.
+func TestForParagraphAgreesWithBookVoicesOnCase(t *testing.T) {
+	s := openTestStore(t)
+	book := createBook(t, s)
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CloneModel, store.CharacterVoiceModeAssigned, false, false); err != nil {
+		t.Fatalf("UpdateVoice (enable MultiVoice): %v", err)
+	}
+	book, err := s.GetBook(book.ID)
+	if err != nil {
+		t.Fatalf("GetBook: %v", err)
+	}
+	char, _, err := s.UpsertCharacter(store.SeriesScope(book), "unknown", false)
+	if err != nil {
+		t.Fatalf("UpsertCharacter: %v", err)
+	}
+	preset, err := s.CreateVoicePreset("Unknown Voice", "speak flatly", "ref", 1, 1.0, voices.DefaultDesignModel)
+	if err != nil {
+		t.Fatalf("CreateVoicePreset: %v", err)
+	}
+	if err := s.SetCharacterVoice(char.ID, voices.DefaultCloneModel, preset.ID); err != nil {
+		t.Fatalf("SetCharacterVoice: %v", err)
+	}
+
+	r := NewResolver(s)
+	bv, err := r.BookVoices(book)
+	if err != nil {
+		t.Fatalf("BookVoices: %v", err)
+	}
+	for _, speaker := range []string{"Unknown", "unknown"} {
+		one, err := r.ForParagraph(book, speaker)
+		if err != nil {
+			t.Fatalf("ForParagraph(%q): %v", speaker, err)
+		}
+		bulk, err := bv.ForSpeaker(speaker)
+		if err != nil {
+			t.Fatalf("ForSpeaker(%q): %v", speaker, err)
+		}
+		if one.VoiceID() != bulk.VoiceID() {
+			t.Fatalf("speaker %q: ForParagraph voice %s, BookVoices voice %s", speaker, one.VoiceID(), bulk.VoiceID())
+		}
+	}
+}
+
 func TestForParagraphFallsBackWhenCharacterHasNoVoiceYet(t *testing.T) {
 	s := openTestStore(t)
 	book := createBook(t, s)

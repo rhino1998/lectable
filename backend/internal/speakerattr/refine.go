@@ -79,8 +79,11 @@ var (
 	trailingNameVerb = regexp.MustCompile(`^(?:[a-z]+ly |then )?(` + nameRe + `)(?: [a-z]+ly| then| finally)? (?:` + verbAlt + `)\b`)
 	trailingVerbName = regexp.MustCompile(`^(?:` + verbAlt + `)(?: [a-z]+ly)? (` + nameRe + `)\b`)
 	// "Toby and Jane said together" - a tag, but naming no single speaker.
-	trailingJoint   = regexp.MustCompile(`^(?:` + nameRe + `)(?:,? (?:and|&) |, )(?:` + nameRe + `)(?: [a-z]+ly)? (?:` + verbAlt + `)\b`)
-	trailingPronoun = regexp.MustCompile(`^(?:[a-z]+ly |then )?(?i:he|she|they|I|we)(?: [a-z]+ly| then)? (?:` + verbAlt + `)\b`)
+	trailingJoint = regexp.MustCompile(`^(?:` + nameRe + `)(?:,? (?:and|&) |, )(?:` + nameRe + `)(?: [a-z]+ly)? (?:` + verbAlt + `)\b`)
+	// “…,” I muttered - a first-person narrator's own tag (see
+	// SpeakerNameResolver.WithFirstPerson). Case-sensitive: "I" only.
+	trailingFirstPerson = regexp.MustCompile(`^(?:[a-z]+ly |then )?I(?: [a-z]+ly| then)? (?:` + verbAlt + `)\b`)
+	trailingPronoun     = regexp.MustCompile(`^(?:[a-z]+ly |then )?(?i:he|she|they|I|we)(?: [a-z]+ly| then)? (?:` + verbAlt + `)\b`)
 
 	// Lead-in tags, matched at the end of the narration right before a
 	// quote: Bert said, “…” / said Bert: “…” / Bert stood, saying, “…”.
@@ -182,6 +185,10 @@ func leadInTag(text string, resolver *SpeakerNameResolver) (name string, pronoun
 		if object {
 			continue
 		}
+		if word == "I" && resolver.narrator() != "" {
+			name, pronoun = resolver.narrator(), false
+			continue
+		}
 		if pronounSubjects[strings.ToLower(word)] {
 			name, pronoun = "", true
 			continue
@@ -203,6 +210,29 @@ func startsLower(s string) bool {
 type SpeakerNameResolver struct {
 	exact map[string]string // lower-cased full name or alias -> canonical
 	token map[string]string // lower-cased single word -> canonical, "" if ambiguous
+	// firstPerson is a first-person book's narrator: an "I said" tag
+	// credits them (see WithFirstPerson). "" for none.
+	firstPerson string
+}
+
+// narrator is r's first-person narrator, "" for none (or a nil r).
+func (r *SpeakerNameResolver) narrator() string {
+	if r == nil {
+		return ""
+	}
+	return r.firstPerson
+}
+
+// WithFirstPerson returns r crediting "I said"/"I asked, “…”" tags to name
+// - a first-person book's narrator (BookSetting.Narrator). "" leaves r as
+// is: "I" stays an unresolvable pronoun.
+func (r *SpeakerNameResolver) WithFirstPerson(name string) *SpeakerNameResolver {
+	if r == nil || name == "" {
+		return r
+	}
+	out := *r
+	out.firstPerson = name
+	return &out
 }
 
 // titleWords never resolve a character on their own - "Captain said" or
@@ -215,6 +245,10 @@ var titleWords = map[string]bool{
 	"sergeant": true, "commander": true, "chief": true, "duke": true, "duchess": true, "count": true,
 	"countess": true, "father": true, "mother": true, "brother": true, "sister": true,
 }
+
+// IsTitleWord reports whether w is a title that names no one on its own
+// ("Lord", "Captain", "Mr").
+func IsTitleWord(w string) bool { return titleWords[strings.ToLower(strings.TrimSpace(w))] }
 
 // NewSpeakerNameResolver builds a resolver over the known characters'
 // names plus their aliases (canonical name -> aliases). A single word
@@ -309,6 +343,41 @@ func isSentinel(name string) bool {
 // before it in the same paragraph (a lead-in). pronoun is true when a tag
 // is there but only says "he"/"she" - no name to bind, but enough to know
 // the line isn't simply continuing the previous quote's speaker.
+// TaggedSpeakers lists the known characters (resolver's) that an explicit
+// speech tag in paras credits with a line ("…,” Bert said", "Sid asked,
+// “…”") - tagFor over every quoted paragraph, in first-tagged order. The
+// summary pass uses it to make sure everyone who demonstrably speaks is in
+// the chapter's cast, whatever the model listed.
+func TaggedSpeakers(paras []ParagraphInput, resolver *SpeakerNameResolver) []string {
+	var out []string
+	seen := map[string]bool{}
+	for start := 0; start < len(paras); {
+		end := start + 1
+		for end < len(paras) && paras[end].Inline {
+			end++
+		}
+		group := paras[start:end]
+		for i := range group {
+			if !group[i].IsQuote {
+				continue
+			}
+			var prev, next *ParagraphInput
+			if i > 0 && !group[i-1].IsQuote {
+				prev = &group[i-1]
+			}
+			if i+1 < len(group) && !group[i+1].IsQuote {
+				next = &group[i+1]
+			}
+			if name, _ := tagFor(prev, next, resolver); name != "" && !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+		start = end
+	}
+	return out
+}
+
 func tagFor(prev, next *ParagraphInput, resolver *SpeakerNameResolver) (name string, pronoun bool) {
 	if next != nil {
 		text := strings.TrimLeft(next.Text, " ,.;:-—–")
@@ -318,6 +387,9 @@ func tagFor(prev, next *ParagraphInput, resolver *SpeakerNameResolver) (name str
 					return c, false
 				}
 			}
+		}
+		if resolver.narrator() != "" && trailingFirstPerson.MatchString(text) {
+			return resolver.narrator(), false
 		}
 		if trailingPronoun.MatchString(text) || trailingJoint.MatchString(text) {
 			pronoun = true

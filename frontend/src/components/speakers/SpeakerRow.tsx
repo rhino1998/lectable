@@ -4,6 +4,7 @@ import {
   RiEqualizerLine,
   RiForbidLine,
   RiGitMergeLine,
+  RiGroupLine,
   RiPauseFill,
   RiPlayFill,
   RiRefreshLine,
@@ -44,6 +45,8 @@ export function SpeakerRow({
   deleting,
   onToggleInvalid,
   togglingInvalid,
+  onToggleRole,
+  togglingRole,
   mergeTargets,
   onMerge,
   merging,
@@ -83,6 +86,8 @@ export function SpeakerRow({
   deleting: boolean
   onToggleInvalid: () => void
   togglingInvalid: boolean
+  onToggleRole: () => void
+  togglingRole: boolean
   mergeTargets: string[]
   onMerge: (targetName: string) => void
   merging: boolean
@@ -118,6 +123,14 @@ export function SpeakerRow({
       <div className="speaker-row-main">
         <span>
           {speaker.name}
+          {speaker.role && (
+            <span
+              className="speaker-role-badge"
+              title="A role label — several unnamed people of one kind, not one individual"
+            >
+              role
+            </span>
+          )}
           {speaker.invalid && (
             <span
               className="speaker-invalid-badge"
@@ -253,6 +266,18 @@ export function SpeakerRow({
               title="Merge into another speaker"
             >
               <RiGitMergeLine />
+            </button>
+            <button
+              className={'icon-action-button' + (speaker.role ? ' icon-action-button-active' : '')}
+              onClick={onToggleRole}
+              disabled={togglingRole}
+              title={
+                speaker.role
+                  ? 'Marked as a role — click to treat this name as one individual again'
+                  : 'Mark as a role — a label for several unnamed people of one kind ("Guard", "Woman"), not one individual'
+              }
+            >
+              <RiGroupLine />
             </button>
             <button
               className={

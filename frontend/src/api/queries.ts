@@ -160,6 +160,24 @@ export function useChapterMusicRange(
   return useLiveMany('chapterMusic', params)
 }
 
+// useChapterMusicRange's counterpart for chapter summary notes - backs the
+// annotations view's summary block and scene markers (ChapterSection) for
+// every chapter in the reader's scroll window, subscribed only while
+// `enabled` (annotations view) is on.
+export function useChapterNotesRange(
+  bookId: string,
+  start: number,
+  end: number,
+  enabled: boolean,
+): LiveResult<ChapterNotesResponse>[] {
+  const params = useMemo(() => {
+    const out: { bookId: string; chapterIdx: number }[] = []
+    if (enabled) for (let i = Math.max(start, 0); i <= end; i++) out.push({ bookId, chapterIdx: i })
+    return out
+  }, [bookId, start, end, enabled])
+  return useLiveMany('chapterNotes', params)
+}
+
 // Triggers background-music tone-region scoring for one chapter - fire and
 // forget (see api.runChapterAmbience/useAmbienceChapters for tracking
 // completion).
@@ -521,6 +539,17 @@ export function useSetCharacterVoice(bookId: string) {
   })
 }
 
+export function useDedupeCharacters(bookId: string) {
+  return useMutation({ mutationFn: () => api.dedupeCharacters(bookId) })
+}
+
+export function useSetCharacterRole(bookId: string) {
+  return useMutation({
+    mutationFn: ({ characterId, role }: { characterId: string; role: boolean }) =>
+      api.setCharacterRole(bookId, characterId, role),
+  })
+}
+
 export function useSetCharacterInvalid(bookId: string) {
   return useMutation({
     mutationFn: ({ characterId, invalid }: { characterId: string; invalid: boolean }) =>
@@ -712,8 +741,15 @@ export function useSetBookSetting(bookId: string) {
   })
 }
 
+// Queues the book's setting pass (a book_setting job) - fire-and-forget;
+// useBookSettingDeriving tracks the run, the bookSetting topic its result.
 export function useDeriveBookSetting(bookId: string) {
   return useMutation({ mutationFn: () => api.deriveBookSetting(bookId) })
+}
+
+// Whether bookId's setting pass is queued or running.
+export function useBookSettingDeriving(bookId: string): boolean {
+  return useBookJobs(bookId, 'book_setting').length > 0
 }
 
 // The book's series pronunciation lexicon (live topic) and its edits.

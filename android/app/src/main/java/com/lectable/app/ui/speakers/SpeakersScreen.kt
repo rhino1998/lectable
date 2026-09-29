@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.border
 import androidx.compose.material.icons.filled.Block
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material.icons.filled.Close
@@ -225,6 +226,8 @@ fun SpeakersScreen(
                         deleting = speaker.id in uiState.deletingIds,
                         togglingInvalid = speaker.id in uiState.togglingInvalidIds,
                         onToggleInvalid = { viewModel.setInvalid(speaker.id, !speaker.invalid) },
+                        togglingRole = speaker.id in uiState.togglingRoleIds,
+                        onToggleRole = { viewModel.setRole(speaker.id, !speaker.role) },
                         reassignTargets = { otherTargets(speaker.id) },
                         playingUrl = uiState.playingUrl,
                         onPlay = { speaker.refAudioUrl?.let(viewModel::playUrl) },
@@ -320,6 +323,8 @@ private fun SpeakerRow(
     deleting: Boolean,
     togglingInvalid: Boolean,
     onToggleInvalid: () -> Unit,
+    togglingRole: Boolean,
+    onToggleRole: () -> Unit,
     reassignTargets: () -> List<String>,
     // The relative URL currently playing via SpeakerViewModel.playUrl, or null - compared
     // against this row's/each nested row's own audioUrl to decide Play vs. Stop (see
@@ -369,6 +374,19 @@ private fun SpeakerRow(
                         style = MaterialTheme.typography.bodyLarge,
                         color = if (speaker.invalid) MaterialTheme.colorScheme.onSurfaceVariant else Color.Unspecified,
                     )
+                    // A role label ("Guard", "Woman"): several unnamed people of one kind,
+                    // not one individual - mirrors the web roster's "role" badge.
+                    if (speaker.role) {
+                        Text(
+                            "role",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier
+                                .padding(start = 6.dp)
+                                .border(1.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp))
+                                .padding(horizontal = 4.dp),
+                        )
+                    }
                     // Not a real speaker (marked invalid): attribution won't assign this name
                     // again - mirrors the web roster's "invalid" badge.
                     if (speaker.invalid) {
@@ -438,6 +456,20 @@ private fun SpeakerRow(
                             leadingIcon = { Icon(Icons.Filled.Block, contentDescription = null) },
                             enabled = !togglingInvalid,
                             onClick = { onToggleInvalid(); showMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    when {
+                                        togglingRole -> "Updating…"
+                                        speaker.role -> "Treat as one individual (unmark role)"
+                                        else -> "Mark as a role (several unnamed people)"
+                                    },
+                                )
+                            },
+                            leadingIcon = { Icon(Icons.Filled.Groups, contentDescription = null) },
+                            enabled = !togglingRole,
+                            onClick = { onToggleRole(); showMenu = false },
                         )
                         DropdownMenuItem(
                             text = { Text("Merge into…") },

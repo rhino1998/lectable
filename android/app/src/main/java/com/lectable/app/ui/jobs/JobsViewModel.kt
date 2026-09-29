@@ -163,6 +163,7 @@ fun kindLabel(kind: String): String = when (kind) {
     "scare_quote_tagging" -> "Scare Quote Tagging"
     "description_tagging" -> "Description Tagging"
     "chapter_summary" -> "Summary"
+    "book_setting" -> "Book Setting"
     "pipeline_summary" -> "Preprocess: Summary"
     "pipeline_bulk_summary" -> "Bulk: Summary"
     "pipeline_generate_chapter" -> "Generate: Chapter"

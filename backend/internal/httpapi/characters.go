@@ -63,6 +63,9 @@ type speakerDTO struct {
 	// Invalid mirrors store.Character.Invalid - this name has been ruled
 	// out as a real speaker, and attribution will no longer assign it.
 	Invalid bool `json:"invalid,omitempty"`
+	// Role mirrors store.Character.IsRole - a generic role label ("Guard",
+	// "Woman") that may cover several unnamed people, not one individual.
+	Role bool `json:"role,omitempty"`
 	// Aliases mirrors store.Character.Aliases - other names this speaker
 	// goes by.
 	Aliases []string `json:"aliases,omitempty"`
@@ -249,6 +252,7 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 			row.Summary = c.Summary
 			row.RefLine = c.RefLine
 			row.Invalid = c.Invalid
+			row.Role = c.IsRole
 			row.Aliases = c.Aliases
 			row.Pronouns = c.Pronouns
 		}
@@ -502,6 +506,13 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		if target.ID == char.ID {
+			// The lookup ignores case, so "woman" -> "Woman" with no
+			// separate "Woman" finds the character itself.
+			writeError(w, http.StatusBadRequest, "that's this character's own name (names are matched ignoring case)")
+			return
+		}
+		storeTargetName = target.Name
 		if req.AsRole && !target.IsRole {
 			if err := s.Store.SetCharacterRole(target.ID, true); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
@@ -805,6 +816,38 @@ func (s *Server) handleSetCharacterPronouns(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, pronounsResponse{Pronouns: pronouns})
+}
+
+type setCharacterRoleRequest struct {
+	Role bool `json:"role"`
+}
+
+// handleSetCharacterRole marks (or unmarks) a character as a generic role
+// label (store.Character.IsRole) - several unnamed people of one kind
+// ("Guard", "Woman") rather than one individual. Attribution lists it as
+// "[role]", characterization casts the type, and pronouns aren't tracked
+// for it. Nothing else changes: its lines, voice and aliases stay.
+func (s *Server) handleSetCharacterRole(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("characterId")
+	var req setCharacterRoleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	char, err := s.Store.GetCharacter(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if char == nil {
+		writeError(w, http.StatusNotFound, "character not found")
+		return
+	}
+	if err := s.Store.SetCharacterRole(id, req.Role); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeNoContent(w)
 }
 
 type setCharacterInvalidRequest struct {

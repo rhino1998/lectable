@@ -1,10 +1,22 @@
 import { useState } from 'react'
 import { RiRefreshLine, RiSave3Line } from 'react-icons/ri'
 import { ApiError } from '../../api/client'
-import { useBookSetting, useDeriveBookSetting, useSetBookSetting } from '../../api/queries'
+import {
+  useBookSetting,
+  useBookSettingDeriving,
+  useDeriveBookSetting,
+  useSetBookSetting,
+} from '../../api/queries'
 import type { BookSetting } from '../../api/types'
 
-const EMPTY: BookSetting = { era: '', technology: '', place: '', accent: '', genre: '' }
+const EMPTY: BookSetting = {
+  era: '',
+  technology: '',
+  place: '',
+  accent: '',
+  genre: '',
+  narrator: '',
+}
 
 const FIELDS: { key: keyof BookSetting; label: string; placeholder: string; title: string }[] = [
   {
@@ -34,6 +46,13 @@ const FIELDS: { key: keyof BookSetting; label: string; placeholder: string; titl
       "The main characters' accent - voice characterization's default when a character's own lines don't say",
   },
   { key: 'genre', label: 'Genre', placeholder: 'e.g. epic fantasy', title: 'The genre' },
+  {
+    key: 'narrator',
+    label: 'Narrator',
+    placeholder: 'first-person books only, e.g. Steve',
+    title:
+      'Who the "I" is in a first-person book - attribution gives them the lines tagged "I said". Empty for third-person books.',
+  },
 ]
 
 // The Speakers page's book setting profile (backend httpapi/setting.go):
@@ -45,6 +64,8 @@ export function SettingPanel({ bookId }: { bookId: string }) {
   const settingQuery = useBookSetting(bookId)
   const save = useSetBookSetting(bookId)
   const derive = useDeriveBookSetting(bookId)
+  // The pass runs as a job; its result arrives on the bookSetting topic.
+  const deriving = useBookSettingDeriving(bookId) || derive.isPending
   const stored = settingQuery.data?.setting ?? null
   const source = settingQuery.data?.source
   // The reader's unsaved edit, null while not editing - the form shows the
@@ -88,10 +109,10 @@ export function SettingPanel({ bookId }: { bookId: string }) {
           <button
             className="icon-action-button"
             onClick={runDerive}
-            disabled={derive.isPending}
+            disabled={deriving}
             title="Read the setting from the book now (one LLM call over excerpts and technology words from across it)"
           >
-            <RiRefreshLine className={derive.isPending ? 'spin' : undefined} />
+            <RiRefreshLine className={deriving ? 'spin' : undefined} />
           </button>
         </div>
       </div>

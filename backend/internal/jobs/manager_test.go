@@ -928,6 +928,42 @@ func TestSummaryDependencyBlocksAttributionAndAmbience(t *testing.T) {
 	}
 }
 
+// TestBookSettingDependency covers bookSettingDependency: an ambience task
+// for a book with no setting waits on one lazily-created KindBookSetting
+// task, and once that has run - even if it failed - nothing waits on it
+// again.
+func TestBookSettingDependency(t *testing.T) {
+	s := openTestStore(t)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "Some narration.")
+	if err := s.SetChapterNotes(chapterID, store.ChapterNotes{Summary: "x"}); err != nil {
+		t.Fatal(err) // so only the setting gates ambience
+	}
+	calls := 0
+	mgr := newTestManagerWithStore(s)
+	mgr.deriveSetting = func(ctx context.Context, book *store.Book) error {
+		calls++
+		return errors.New("model hiccup")
+	}
+	amb := &task{kind: KindAmbience, bookID: book.ID, chapterID: chapterID, tier: TierBackground, llmKey: chapterID}
+	mgr.pushTask(amb)
+
+	got, ok := mgr.queue.Pop()
+	if !ok || got.(*task).kind != KindBookSetting {
+		t.Fatalf("expected the book setting task first, got %v", got)
+	}
+	if _, ok := mgr.queue.Pop(); ok {
+		t.Fatal("ambience should wait while the setting pass is in flight")
+	}
+	blocker := got.(*task)
+	_, _, _ = blocker.runLLM(t.Context())
+	mgr.queue.Finish(blocker.dedupKey())
+
+	got, ok = mgr.queue.Pop()
+	if !ok || got.(*task) != amb || calls != 1 {
+		t.Fatalf("after a failed setting run ambience should go ahead without it: got %v, %d runs", got, calls)
+	}
+}
+
 // TestAttributionOrderDependencyJoinsAnAlreadyQueuedTask covers the actual
 // production shape (preprocessAttributionPhase/"Attribute all" pushing
 // every not-yet-attributed chapter's own task at once, before any of them

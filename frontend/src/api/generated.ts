@@ -282,6 +282,11 @@ export interface BookSetting {
    */
   accent: string
   genre: string
+  /**
+   * Narrator is a first-person book's narrator (the "I" - attribution
+   * credits "I said" lines to them), "" for a third-person book.
+   */
+  narrator: string
 }
 
 /**
@@ -436,6 +441,16 @@ export interface ChapterSummary {
  */
 export interface CharacterIDsRequest {
   characterIds: string[]
+}
+
+/**
+ * characterMergeDTO is one merge dedupeCharacters made: From's lines now
+ * belong to To.
+ */
+export interface CharacterMerge {
+  from: string
+  to: string
+  reason: string
 }
 
 /**
@@ -599,6 +614,13 @@ export interface CustomVoicePresetInput {
    * DefaultDesignModel's own doc comment); nil on update = unchanged.
    */
   designModel?: string | null
+}
+
+/**
+ * dedupeResponse is POST .../characters/dedupe's reply.
+ */
+export interface DedupeResponse {
+  merges: CharacterMerge[]
 }
 
 /**
@@ -1218,7 +1240,7 @@ export interface QueueTask {
    * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
    * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
    * | "speech_direction" | "ambience" | "scare_quote_tagging" |
-   * "description_tagging" | "chapter_summary" (per-item work, see
+   * "description_tagging" | "chapter_summary" | "book_setting" (per-item work, see
    * jobs.Kind) or
    * "pipeline_scare_quote" | "pipeline_attribution" |
    * "pipeline_description" | "pipeline_characterization" |
@@ -1348,6 +1370,10 @@ export interface SetCharacterPronounsRequest {
   pronouns: string
 }
 
+export interface SetCharacterRoleRequest {
+  role: boolean
+}
+
 export interface SetCharacterVoiceRequest {
   voicePresetId: string
 }
@@ -1448,6 +1474,11 @@ export interface Speaker {
    * out as a real speaker, and attribution will no longer assign it.
    */
   invalid?: boolean
+  /**
+   * Role mirrors store.Character.IsRole - a generic role label ("Guard",
+   * "Woman") that may cover several unnamed people, not one individual.
+   */
+  role?: boolean
   /**
    * Aliases mirrors store.Character.Aliases - other names this speaker
    * goes by.
@@ -2336,6 +2367,21 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleDedupeCharacters serves POST /api/books/{id}/characters/dedupe - the
+   * Speakers page's "merge duplicate names" action (see dedupeCharacters),
+   * replying with every merge it made. Attribution already avoids making new
+   * duplicates (case-insensitive lookup, descriptions to roles, first names
+   * folded into full ones as they appear); this cleans up a roster built
+   * before that, or across chapters attributed out of order.
+   */
+  'POST /api/books/{id}/characters/dedupe': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: DedupeResponse
+    errorCode: never
+  }
+  /**
    * handleGenerateCharacterVoices batch-provisions a voice for every given
    * character in one request - SpeakersPage's "Generate all voices",
    * fire-and-forget (202 Accepted, no result body), the same rationale as
@@ -2580,6 +2626,20 @@ export interface Routes {
     query: Record<never, never>
     body: SetCharacterPronounsRequest
     response: PronounsResponse
+    errorCode: never
+  }
+  /**
+   * handleSetCharacterRole marks (or unmarks) a character as a generic role
+   * label (store.Character.IsRole) - several unnamed people of one kind
+   * ("Guard", "Woman") rather than one individual. Attribution lists it as
+   * "[role]", characterization casts the type, and pronouns aren't tracked
+   * for it. Nothing else changes: its lines, voice and aliases stay.
+   */
+  'PUT /api/books/{id}/characters/{characterId}/role': {
+    path: { id: string; characterId: string }
+    query: Record<never, never>
+    body: SetCharacterRoleRequest
+    response: void
     errorCode: never
   }
   /**
@@ -2896,15 +2956,15 @@ export interface Routes {
   }
   /**
    * handleDeriveBookSetting serves POST /api/books/{id}/setting/derive:
-   * re-runs the setting pass now (one LLM call, through the Jobs page's
-   * preview slot), replacing whatever the book had - a manual edit
-   * included.
+   * queues the setting pass now (a jobs.KindBookSetting task at urgent
+   * priority), replacing whatever the book had - a manual edit included.
+   * The bookSetting live topic carries the result.
    */
   'POST /api/books/{id}/setting/derive': {
     path: { id: string }
     query: Record<never, never>
     body: never
-    response: BookSettingResponse
+    response: QueuedResponse
     errorCode: never
   }
   /**
@@ -3521,6 +3581,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/tag-directions': 'json',
   'GET /api/books/{id}/characters': 'json',
   'POST /api/books/{id}/characters/characterize': 'json',
+  'POST /api/books/{id}/characters/dedupe': 'json',
   'POST /api/books/{id}/characters/generate-voice': 'json',
   'POST /api/books/{id}/characters/regenerate-voice': 'json',
   'DELETE /api/books/{id}/characters/{characterId}': 'none',
@@ -3532,6 +3593,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'PUT /api/books/{id}/characters/{characterId}/invalid': 'none',
   'POST /api/books/{id}/characters/{characterId}/merge': 'none',
   'PUT /api/books/{id}/characters/{characterId}/pronouns': 'json',
+  'PUT /api/books/{id}/characters/{characterId}/role': 'none',
   'PUT /api/books/{id}/characters/{characterId}/voice': 'none',
   'GET /api/books/{id}/cover': 'binary',
   'GET /api/books/{id}/exports': 'json',

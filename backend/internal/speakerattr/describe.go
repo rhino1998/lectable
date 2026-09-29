@@ -172,13 +172,12 @@ type describeItem struct {
 // prompt asking for JSON only - the same tolerance parseAttributions
 // applies for AttributeChapter's own response.
 func parseDescribeItems(content string) (map[int][]string, error) {
-	start := strings.IndexByte(content, '[')
-	end := strings.LastIndexByte(content, ']')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '[')
+	if !found {
 		return nil, fmt.Errorf("no JSON array found in response: %s", truncate(content, 200))
 	}
 	var items []describeItem
-	if err := json.Unmarshal([]byte(content[start:end+1]), &items); err != nil {
+	if err := json.Unmarshal([]byte(value), &items); err != nil {
 		return nil, fmt.Errorf("parse JSON array: %w", err)
 	}
 	out := make(map[int][]string, len(items))

@@ -474,6 +474,11 @@ data class BookSettingDto(
      */
     val accent: String = "",
     val genre: String = "",
+    /**
+     * Narrator is a first-person book's narrator (the "I" - attribution
+     * credits "I said" lines to them), "" for a third-person book.
+     */
+    val narrator: String = "",
 )
 
 /**
@@ -640,6 +645,17 @@ data class ChapterSummaryDto(
 @Serializable
 data class CharacterIDsRequestDto(
     val characterIds: List<String> = emptyList(),
+)
+
+/**
+ * characterMergeDTO is one merge dedupeCharacters made: From's lines now
+ * belong to To.
+ */
+@Serializable
+data class CharacterMergeDto(
+    val from: String = "",
+    val to: String = "",
+    val reason: String = "",
 )
 
 /**
@@ -841,6 +857,14 @@ data class CustomVoicePresetInputDto(
      * DefaultDesignModel's own doc comment); nil on update = unchanged.
      */
     val designModel: String? = null,
+)
+
+/**
+ * dedupeResponse is POST .../characters/dedupe's reply.
+ */
+@Serializable
+data class DedupeResponseDto(
+    val merges: List<CharacterMergeDto> = emptyList(),
 )
 
 /**
@@ -1489,7 +1513,7 @@ data class QueueTaskDto(
      * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
      * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
      * | "speech_direction" | "ambience" | "scare_quote_tagging" |
-     * "description_tagging" | "chapter_summary" (per-item work, see
+     * "description_tagging" | "chapter_summary" | "book_setting" (per-item work, see
      * jobs.Kind) or
      * "pipeline_scare_quote" | "pipeline_attribution" |
      * "pipeline_description" | "pipeline_characterization" |
@@ -1628,6 +1652,11 @@ data class SetCharacterPronounsRequestDto(
 )
 
 @Serializable
+data class SetCharacterRoleRequestDto(
+    val role: Boolean = false,
+)
+
+@Serializable
 data class SetCharacterVoiceRequestDto(
     val voicePresetId: String = "",
 )
@@ -1735,6 +1764,11 @@ data class SpeakerDto(
      * out as a real speaker, and attribution will no longer assign it.
      */
     val invalid: Boolean = false,
+    /**
+     * Role mirrors store.Character.IsRole - a generic role label ("Guard",
+     * "Woman") that may cover several unnamed people, not one individual.
+     */
+    val role: Boolean = false,
     /**
      * Aliases mirrors store.Character.Aliases - other names this speaker
      * goes by.

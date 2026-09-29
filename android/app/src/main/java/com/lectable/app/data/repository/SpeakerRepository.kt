@@ -5,6 +5,7 @@ import com.lectable.app.data.remote.dto.CharacterizeResponseDto
 import com.lectable.app.data.remote.dto.GenerateVoiceResponseDto
 import com.lectable.app.data.remote.dto.MergeCharacterRequestDto
 import com.lectable.app.data.remote.dto.SetCharacterInvalidRequestDto
+import com.lectable.app.data.remote.dto.SetCharacterRoleRequestDto
 import com.lectable.app.data.remote.dto.SetCharacterVoiceRequestDto
 import com.lectable.app.data.remote.dto.SpeakerAppearanceDto
 import javax.inject.Inject
@@ -21,6 +22,11 @@ class SpeakerRepository @Inject constructor(
 ) {
     suspend fun setCharacterVoice(bookId: String, characterId: String, voicePresetId: String) {
         api.setCharacterVoice(bookId, characterId, SetCharacterVoiceRequestDto(voicePresetId))
+    }
+
+    /** Marks (or unmarks) a character as a role label - several unnamed people of one kind. */
+    suspend fun setCharacterRole(bookId: String, characterId: String, role: Boolean) {
+        api.setCharacterRole(bookId, characterId, SetCharacterRoleRequestDto(role = role))
     }
 
     /** Marks (or unmarks) a character as not a real speaker - attribution won't create or

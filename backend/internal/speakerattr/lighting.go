@@ -228,13 +228,12 @@ func (c *Client) DescribeLighting(ctx context.Context, bookTitle, chapterTitle s
 // flameSourceWords), which lets a flicker stand even when the model's
 // description forgot to mention the lantern.
 func parseLighting(content string, flameInText bool) (Lighting, error) {
-	start := strings.IndexByte(content, '{')
-	end := strings.LastIndexByte(content, '}')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '{')
+	if !found {
 		return Lighting{}, fmt.Errorf("no JSON object found in response: %s", truncate(content, 200))
 	}
 	var raw lightingRaw
-	if err := json.Unmarshal([]byte(content[start:end+1]), &raw); err != nil {
+	if err := json.Unmarshal([]byte(value), &raw); err != nil {
 		return Lighting{}, fmt.Errorf("parse JSON object: %w", err)
 	}
 	color, ok := normalizeHexColor(raw.Color)

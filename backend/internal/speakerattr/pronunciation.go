@@ -617,13 +617,12 @@ func parsePronunciationChoices(content string, terms []pronunciationTerm) map[in
 		out[t.ID] = 0
 		byID[t.ID] = t
 	}
-	start := strings.IndexByte(content, '{')
-	end := strings.LastIndexByte(content, '}')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '{')
+	if !found {
 		return out
 	}
 	var choices map[string]string
-	if err := json.Unmarshal([]byte(content[start:end+1]), &choices); err != nil {
+	if err := json.Unmarshal([]byte(value), &choices); err != nil {
 		return out
 	}
 	for key, letter := range choices {

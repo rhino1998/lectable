@@ -44,3 +44,38 @@ func TestUnmarshalRepairedArrayGenuinelyBroken(t *testing.T) {
 		t.Fatalf("expected an error for genuinely malformed JSON, got items: %+v", items)
 	}
 }
+
+func TestFirstJSONValue(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+		open     byte
+	}{
+		// Stray characters Qwen3.6 added after a complete array.
+		{`[{"idx": 158, "describes": ["Ingrid"]}]]`, `[{"idx": 158, "describes": ["Ingrid"]}]`, '['},
+		{`[{"idx": 49, "describes": ["Ingrid"]}]}`, `[{"idx": 49, "describes": ["Ingrid"]}]`, '['},
+		{`[{"idx": 212, "describes": ["leader"]}]"`, `[{"idx": 212, "describes": ["leader"]}]`, '['},
+		// A mismatched close, and a reply cut short.
+		{`[{"idx": 49, "describes": ["Ingrid"]}}`, `[{"idx": 49, "describes": ["Ingrid"]}]`, '['},
+		{`[{"idx": 49, "describes": ["Ingrid"]}`, `[{"idx": 49, "describes": ["Ingrid"]}]`, '['},
+		// Fences and prose around it; brackets inside strings.
+		{"```json\n[\n  {\"idx\": 49}\n]\n```", "[\n  {\"idx\": 49}\n]", '['},
+		{`Sure: {"a": "x ] } [", "b": "q\"]"} done}`, `{"a": "x ] } [", "b": "q\"]"}`, '{'},
+		// An unterminated string falls back to first open .. last close.
+		{`[{"idx": 1, "speaker": "Bert said.”}, {"idx": 2, "speaker": "Sid"}]`, `[{"idx": 1, "speaker": "Bert said.”}, {"idx": 2, "speaker": "Sid"}]`, '['},
+	} {
+		got, ok := firstJSONValue(tc.in, tc.open)
+		if !ok || got != tc.want {
+			t.Errorf("firstJSONValue(%q) = %q, %v; want %q", tc.in, got, ok, tc.want)
+		}
+	}
+	if _, ok := firstJSONValue("no json here", '['); ok {
+		t.Error("found a value in text with no open bracket")
+	}
+}
+
+func TestParseDescribeItemsStrayClose(t *testing.T) {
+	got, err := parseDescribeItems(`[{"idx": 158, "describes": ["Ingrid"]}]]`)
+	if err != nil || len(got[158]) != 1 || got[158][0] != "Ingrid" {
+		t.Fatalf("got %v, %v", got, err)
+	}
+}

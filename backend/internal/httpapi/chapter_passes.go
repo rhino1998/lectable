@@ -227,6 +227,7 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	// silently stuck half-done with nothing left in the queue to ever
 	// pick them back up).
 	attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+	attrRoster = s.withFirstPerson(attrRoster, book)
 	// The chapter's cast from its summary, when it has one: listed in every
 	// batch with what the chapter calls them, so a batch that only says
 	// "the smith" or "he" still sees who's in the scene.
@@ -239,6 +240,7 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	}
 
 	bySpeakerIdx := make(map[int]string, len(speakers))
+	var newChars []store.Character // created by this run - see absorbShortNames
 	for idx, name := range speakers {
 		if name == "" {
 			continue
@@ -266,9 +268,15 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		if name == "Narrator" || name == "Unknown" {
 			continue
 		}
-		char, _, uerr := s.Store.UpsertCharacter(scope, name, roleNames[name])
+		char, created, uerr := s.Store.UpsertCharacter(scope, name, roleNames[name])
 		if uerr != nil {
 			return 0, nil, uerr
+		}
+		// The row's own spelling: the lookup is case-insensitive, so
+		// "woman" lands on an existing "Woman".
+		bySpeakerIdx[idx] = char.Name
+		if created {
+			newChars = append(newChars, char)
 		}
 		// Attribution only fills pronouns in - an established value (an
 		// earlier chapter's, or a reader's edit) always wins.
@@ -286,6 +294,12 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	// earlier batches in *this same call* actually did succeed at.
 	if serr := s.Store.SetParagraphSpeakers(ch.ID, bySpeakerIdx); serr != nil {
 		return 0, nil, serr
+	}
+	// A full name met for the first time absorbs a first-name-only
+	// character made earlier ("Lars" into "Lars Machmüller") - after the
+	// lines above are stored, so this chapter's own "Lars" lines move too.
+	for _, c := range newChars {
+		s.absorbShortNames(book, c)
 	}
 
 	if attrErr != nil {
@@ -442,6 +456,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	var attrErr error
 	if len(retry) > 0 {
 		attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+		attrRoster = s.withFirstPerson(attrRoster, book)
 		// The chapter's cast from its summary, when it has one: listed in every
 		// batch with what the chapter calls them, so a batch that only says
 		// "the smith" or "he" still sees who's in the scene.
@@ -480,9 +495,11 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 		if name == "Narrator" || name == "Unknown" {
 			continue
 		}
-		if _, _, uerr := s.Store.UpsertCharacter(scope, name, roleNames[name]); uerr != nil {
+		char, _, uerr := s.Store.UpsertCharacter(scope, name, roleNames[name])
+		if uerr != nil {
 			return 0, nil, uerr
 		}
+		bySpeakerIdx[idx] = char.Name // the row's own spelling
 	}
 	// Persisted regardless of attrErr - keep whatever actually succeeded;
 	// a target the failed widening never reached keeps excludeName, so a
@@ -563,15 +580,18 @@ func (s *Server) describeChapter(ctx context.Context, book *store.Book, ch *stor
 		if len(names) == 0 {
 			continue
 		}
-		byDescribesIdx[idx] = names
-		for _, name := range names {
+		for i, name := range names {
 			// A description can register a character not yet in scope -
 			// see DescribeChapter's own doc comment: a character can be
 			// discovered by how they're described before they ever speak.
-			if _, _, uerr := s.Store.UpsertCharacter(scope, name, false); uerr != nil {
+			char, _, uerr := s.Store.UpsertCharacter(scope, name, false)
+			if uerr != nil {
 				log.Printf("describeChapter: upsert character %q for chapter %s: %v", name, ch.ID, uerr)
+				continue
 			}
+			names[i] = char.Name // the row's own spelling
 		}
+		byDescribesIdx[idx] = names
 	}
 	if serr := s.Store.SetParagraphDescriptions(ch.ID, byDescribesIdx); serr != nil {
 		return fmt.Errorf("persist descriptions: %w", serr)

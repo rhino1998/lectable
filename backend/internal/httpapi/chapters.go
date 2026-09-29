@@ -860,10 +860,12 @@ func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Reques
 		speaker = rosterResolver(roster).Canonical(speaker)
 	}
 	if speaker != "" {
-		if _, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), speaker, false); err != nil {
+		char, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), speaker, false)
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		speaker = char.Name // the row's own spelling (the lookup ignores case)
 	}
 
 	if err := s.Store.SetParagraphSpeaker(paragraphID, speaker); err != nil {
@@ -961,10 +963,12 @@ func (s *Server) handleSetParagraphDescription(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if to != "" {
-		if _, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), to, false); err != nil {
+		char, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), to, false)
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		to = char.Name // the row's own spelling (the lookup ignores case)
 	}
 
 	names := make([]string, 0, len(p.DescribesCharacters)+1)

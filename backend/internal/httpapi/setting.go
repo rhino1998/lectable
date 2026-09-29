@@ -25,6 +25,9 @@ type bookSettingDTO struct {
 	// it clear.
 	Accent string `json:"accent"`
 	Genre  string `json:"genre"`
+	// Narrator is a first-person book's narrator (the "I" - attribution
+	// credits "I said" lines to them), "" for a third-person book.
+	Narrator string `json:"narrator"`
 }
 
 // bookSettingResponse is GET/PUT/POST .../setting's reply. Setting is nil
@@ -63,15 +66,13 @@ func (s *Server) lockBookSetting(bookID string) func() {
 	return mu.Unlock
 }
 
-// bookSetting is book's setting profile for a pass's prompt, deriving and
-// storing it first if the book has none. Best-effort: a failed derivation
-// is logged and the pass runs without one (nil), as it did before setting
-// profiles existed - it's retried the next time a pass asks.
-func (s *Server) bookSetting(ctx context.Context, book *store.Book) *speakerattr.BookSetting {
+// bookSetting is book's setting profile for a pass's prompt, nil when it
+// has none. Never derives one itself: the setting pass is its own
+// jobs.KindBookSetting task, which the passes reading it wait on while the
+// book has none (jobs.Manager.bookSettingDependency) - if it failed, they
+// simply run without it, as before setting profiles existed.
+func (s *Server) bookSetting(_ context.Context, book *store.Book) *speakerattr.BookSetting {
 	st, err := s.Store.GetBookSetting(book.ID)
-	if err == nil && st == nil {
-		st, err = s.deriveBookSetting(ctx, book, false)
-	}
 	if err != nil {
 		log.Printf("httpapi: book setting for %s: %v", book.ID, err)
 		return nil
@@ -152,6 +153,13 @@ func (s *Server) buildBookSetting(bookID string) (bookSettingResponse, error) {
 	return bookSettingResponseFrom(st), nil
 }
 
+// deriveBookSettingForJob is a lazily-created jobs.KindBookSetting task's
+// work: derive book's setting unless it already has one.
+func (s *Server) deriveBookSettingForJob(ctx context.Context, book *store.Book) error {
+	_, err := s.deriveBookSetting(ctx, book, false)
+	return err
+}
+
 // handleGetBookSetting serves GET /api/books/{id}/setting.
 func (s *Server) handleGetBookSetting(w http.ResponseWriter, r *http.Request) {
 	v, err := s.buildBookSetting(r.PathValue("id"))
@@ -184,9 +192,9 @@ func (s *Server) handleSetBookSetting(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeriveBookSetting serves POST /api/books/{id}/setting/derive:
-// re-runs the setting pass now (one LLM call, through the Jobs page's
-// preview slot), replacing whatever the book had - a manual edit
-// included.
+// queues the setting pass now (a jobs.KindBookSetting task at urgent
+// priority), replacing whatever the book had - a manual edit included.
+// The bookSetting live topic carries the result.
 func (s *Server) handleDeriveBookSetting(w http.ResponseWriter, r *http.Request) {
 	book, ok := s.lexiconBook(w, r.PathValue("id"))
 	if !ok {
@@ -196,15 +204,9 @@ func (s *Server) handleDeriveBookSetting(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusServiceUnavailable, "speaker attribution LLM not configured")
 		return
 	}
-	var st *store.StoredBookSetting
-	_, err := s.Jobs.RunLLMPreview(r.Context(), "Book setting: "+book.Title, func(ctx context.Context) (string, error) {
-		var err error
-		st, err = s.deriveBookSetting(ctx, book, true)
-		return "", err
+	s.Jobs.EnqueueBookSetting(book, func(ctx context.Context, book *store.Book) error {
+		_, err := s.deriveBookSetting(ctx, book, true)
+		return err
 	})
-	if err != nil {
-		writeError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	writeJSON(w, http.StatusOK, bookSettingResponseFrom(st))
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }

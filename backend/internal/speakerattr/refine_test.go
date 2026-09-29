@@ -137,3 +137,23 @@ func TestResolverCanonical(t *testing.T) {
 		t.Errorf("Canonical must only fold exact names/aliases, got %q", got)
 	}
 }
+
+func TestFirstPersonTags(t *testing.T) {
+	paras := []ParagraphInput{
+		{Idx: 0, Text: "“It’s dead,”", IsQuote: true},
+		{Idx: 1, Text: "I whispered without thinking.", Inline: true},
+		{Idx: 2, Text: "Dave grinned and I said,"},
+		{Idx: 3, Text: "“Yeah.”", IsQuote: true, Inline: true},
+	}
+	base := NewSpeakerNameResolver([]string{"Steve", "Dave"}, nil)
+	if got := TaggedSpeakers(paras, base); len(got) != 0 {
+		t.Fatalf("without a first-person narrator, I tags name no one: %v", got)
+	}
+	got, _ := RefineWithSpeechTags(paras, map[int]string{0: "Unknown", 3: "Unknown"}, base.WithFirstPerson("Steve"))
+	if got[0] != "Steve" || got[3] != "Steve" {
+		t.Fatalf("I tags = %v, want Steve for both", got)
+	}
+	if firstPersonAnswer("Protagonist", "Steve") != "Steve" || firstPersonAnswer("Protagonist", "") != "Protagonist" || firstPersonAnswer("Dave", "Steve") != "Dave" {
+		t.Fatal("firstPersonAnswer")
+	}
+}

@@ -165,7 +165,10 @@ byte-for-byte.
   in `src/components/speakers/`: `SpeakerSettings` (book-wide switches),
   `ChapterPassTable` (per-chapter pass table + whole-book Rest/All/Reset
   rows; its Summary column's eye icon expands a row with the chapter's
-  summary notes - `chapterNotes` live topic), `SpeakerRow` (+ aliases/pronouns/emotions/merge),
+  summary notes - `chapterNotes` live topic - and its Ambience column's
+  eye icon a per-region ambience preview, `AmbiencePreview`: mood,
+  lighting swatch, soundscape, music prompt and a play button for
+  generated regions), `SpeakerRow` (+ aliases/pronouns/emotions/merge),
   `SpeakerEvidence` (appearance/description rows), `CharacterVoiceEditor`,
   `PassStatus` (status cells, bulk button), `SettingPanel` (the book's
   setting profile - `bookSetting` live topic, editable, with a re-read

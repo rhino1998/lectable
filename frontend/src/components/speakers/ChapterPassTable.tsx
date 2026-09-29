@@ -39,6 +39,7 @@ import { ApiError } from '../../api/client'
 import { useReimportChapterAction } from '../../hooks/useReimportChapterAction'
 import type { BookDetail, BulkAction, BulkScope, ResetPass } from '../../api/types'
 import { BulkActionButton, CountStatus, PassStatus } from './PassStatus'
+import { AmbiencePreview } from './AmbiencePreview'
 
 // The Speakers page's per-chapter pass table: one row per chapter with each
 // pass's run button and status (attribution, descriptions, scare quotes,
@@ -71,8 +72,13 @@ export function ChapterPassTable({
   const summarizeChapter = useSummarizeChapter(bookId)
   const summarizingIdxs = useSummarizingChapters(bookId)
   const [summaryError, setSummaryError] = useState<string | null>(null)
-  // The chapter whose summary notes are shown in an expanded row, if any.
-  const [notesFor, setNotesFor] = useState<number | null>(null)
+  // The chapter whose summary notes or ambience preview is shown in an
+  // expanded row, if any.
+  const [expanded, setExpanded] = useState<{ idx: number; view: 'notes' | 'ambience' } | null>(null)
+  const toggleExpanded = (idx: number, view: 'notes' | 'ambience') =>
+    setExpanded((cur) => (cur?.idx === idx && cur.view === view ? null : { idx, view }))
+  const isExpanded = (idx: number, view: 'notes' | 'ambience') =>
+    expanded?.idx === idx && expanded.view === view
 
   // Derived from the shared backend job queue (the live jobs topic), not
   // local mutation state - attribution is fire-and-forget now (see useAttributingChapters'
@@ -589,9 +595,11 @@ export function ChapterPassTable({
                       {c.passes.summary && (
                         <button
                           className="icon-action-button"
-                          onClick={() => setNotesFor((cur) => (cur === c.idx ? null : c.idx))}
+                          onClick={() => toggleExpanded(c.idx, 'notes')}
                           title={
-                            notesFor === c.idx ? 'Hide summary' : 'Show summary, scenes and cast'
+                            isExpanded(c.idx, 'notes')
+                              ? 'Hide summary'
+                              : 'Show summary, scenes and cast'
                           }
                         >
                           <RiEyeLine />
@@ -716,6 +724,19 @@ export function ChapterPassTable({
                             : 'Ambience'
                         }
                       />
+                      {c.passes.ambience && (
+                        <button
+                          className="icon-action-button"
+                          onClick={() => toggleExpanded(c.idx, 'ambience')}
+                          title={
+                            isExpanded(c.idx, 'ambience')
+                              ? 'Hide ambience'
+                              : 'Preview ambience — each music region’s mood, lighting, soundscape and generated audio'
+                          }
+                        >
+                          <RiEyeLine />
+                        </button>
+                      )}
                     </div>
                   </td>
                   <td>
@@ -780,10 +801,14 @@ export function ChapterPassTable({
                     </div>
                   </td>
                 </tr>
-                {notesFor === c.idx && (
+                {expanded?.idx === c.idx && (
                   <tr className="chapter-notes-row">
                     <td colSpan={10}>
-                      <ChapterNotesView bookId={bookId} chapterIdx={c.idx} />
+                      {expanded.view === 'notes' ? (
+                        <ChapterNotesView bookId={bookId} chapterIdx={c.idx} />
+                      ) : (
+                        <AmbiencePreview bookId={bookId} chapterIdx={c.idx} />
+                      )}
                     </td>
                   </tr>
                 )}

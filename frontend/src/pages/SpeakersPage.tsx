@@ -1,6 +1,12 @@
 import { useMemo, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
-import { RiDeleteBinLine, RiRefreshLine, RiUserHeartLine, RiUserVoiceLine } from 'react-icons/ri'
+import {
+  RiDeleteBinLine,
+  RiGitMergeLine,
+  RiRefreshLine,
+  RiUserHeartLine,
+  RiUserVoiceLine,
+} from 'react-icons/ri'
 import {
   useBulkAction,
   useBulkActionsRunning,
@@ -18,6 +24,8 @@ import {
   useReattributeSpeaker,
   useReattributingSpeakers,
   useSetCharacterInvalid,
+  useSetCharacterRole,
+  useDedupeCharacters,
   useSpeakers,
   useVoice,
   useVoicePresets,
@@ -54,6 +62,10 @@ export function SpeakersPage() {
   const deleteSpeakerData = useDeleteSpeakerData(bookId)
   const deleteCharacter = useDeleteCharacter(bookId)
   const setCharacterInvalid = useSetCharacterInvalid(bookId)
+  const setCharacterRole = useSetCharacterRole(bookId)
+  const dedupeCharacters = useDedupeCharacters(bookId)
+  const [dedupeNote, setDedupeNote] = useState<string | null>(null)
+  const [togglingRoleId, setTogglingRoleId] = useState<string | null>(null)
   const mergeCharacter = useMergeCharacter(bookId)
   const reattributeSpeaker = useReattributeSpeaker(bookId)
   const generateVoice = useGenerateCharacterVoice(bookId)
@@ -196,6 +208,46 @@ export function SpeakersPage() {
         ),
       onSettled: () => setDeletingCharacterId(null),
     })
+  }
+
+  // "Merge duplicate names" - see api.dedupeCharacters. Merges can't be
+  // undone in one click (each merged-away character is deleted), hence the
+  // confirm.
+  const runDedupe = () => {
+    if (
+      !confirm(
+        'Merge duplicate names? Folds "Protagonist"-style placeholders into the first-person narrator, case variants ("woman"/"Woman") together, descriptions like "bearded man" into their role, and first names into the one full name containing them ("Lars" into "Lars Machmüller"). Numbered names like "Neighbor 1" are kept.',
+      )
+    ) {
+      return
+    }
+    setDedupeNote(null)
+    dedupeCharacters.mutate(undefined, {
+      onSuccess: ({ merges }) =>
+        setDedupeNote(
+          merges.length === 0
+            ? 'No duplicate names found.'
+            : `Merged ${merges.length}: ` + merges.map((m) => `${m.from} → ${m.to}`).join(', '),
+        ),
+      onError: (err) =>
+        setDedupeNote(err instanceof ApiError ? err.message : 'Could not merge duplicate names'),
+    })
+  }
+
+  // Non-destructive toggle - see api.setCharacterRole.
+  const runToggleRole = (characterId: string, role: boolean) => {
+    setInvalidError(null)
+    setTogglingRoleId(characterId)
+    setCharacterRole.mutate(
+      { characterId, role },
+      {
+        onError: (err) =>
+          setInvalidError(
+            err instanceof ApiError ? err.message : 'Could not update this character',
+          ),
+        onSettled: () => setTogglingRoleId(null),
+      },
+    )
   }
 
   // Non-destructive toggle - see api.setCharacterInvalid. No confirm:
@@ -434,6 +486,14 @@ export function SpeakersPage() {
               )}
               <button
                 className="icon-action-button"
+                onClick={runDedupe}
+                disabled={dedupeCharacters.isPending}
+                title="Merge duplicate names — placeholders like “Protagonist” into the first-person narrator, case variants, descriptions into their role, first names into full names"
+              >
+                <RiGitMergeLine className={dedupeCharacters.isPending ? 'spin' : undefined} />
+              </button>
+              <button
+                className="icon-action-button"
                 onClick={runDeleteSpeakerData}
                 disabled={deleteSpeakerData.isPending}
                 title="Delete all speaker data for this book"
@@ -453,6 +513,7 @@ export function SpeakersPage() {
         {deleteSpeakerError && <p className="error-text">{deleteSpeakerError}</p>}
         {characterizeError && <p className="error-text">{characterizeError}</p>}
         {characterizeNote && <p className="muted">{characterizeNote}</p>}
+        {dedupeNote && <p className="muted">{dedupeNote}</p>}
         {deleteCharacterError && <p className="error-text">{deleteCharacterError}</p>}
         {invalidError && <p className="error-text">{invalidError}</p>}
         {mergeError && <p className="error-text">{mergeError}</p>}
@@ -502,6 +563,8 @@ export function SpeakersPage() {
                 deleting={deletingCharacterId === s.id}
                 onToggleInvalid={() => s.id && runToggleInvalid(s.id, !s.invalid)}
                 togglingInvalid={togglingInvalidId === s.id}
+                onToggleRole={() => s.id && runToggleRole(s.id, !s.role)}
+                togglingRole={togglingRoleId === s.id}
                 mergeTargets={otherTargets}
                 onMerge={(targetName) => s.id && runMerge(s.id, s.name, targetName)}
                 merging={mergingId === s.id}

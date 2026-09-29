@@ -32,7 +32,7 @@ Reply with a compact JSON object only, no other text, no markdown code fence:
 
 - "summary": 2-4 sentences on what happens, naming the characters involved.
 - "scenes": in order. A new scene starts where the story moves to a different place, jumps in time, or switches to other characters. "start" is the number printed before the scene's first paragraph; the first scene starts at the first number shown. "location": where it happens, at most 8 words (e.g. "a cramped cellar beneath the inn", "the docks at low tide"), "" if the text doesn't say. "time": the time of day if the text shows it ("dawn", "midday", "night"), otherwise "". "present": the cast members physically there, by their cast "name".
-- "cast": every character who speaks or is physically present in this chapter - never someone only mentioned, remembered or talked about. "name": a known character's exact main name when it is them (never one of their "also called" names); a new character's proper name as the text gives it; one specific person known only by a title, the bare title with no article ("King", "Count"); unnamed minor people, just their kind ("Guard", "Woman", "Thug") with "role": true - several of one kind share one entry. "pronoun": "he", "she", "they", "it", or "" if the text doesn't show it. "refs": short phrases copied exactly from the text that it uses for that one person instead of their name - a title, epithet or description like "the ferrywoman" - only when they clearly mean that person; [] otherwise. Never a bare pronoun, never their own name.
+- "cast": every character who speaks or acts in this chapter - including in a dream, vision, memory being relived, or a mental or magical space, which counts as being there - never someone only mentioned, remembered or talked about. Anyone the text credits with a line of dialogue belongs here. "name": a known character's exact main name when it is them (never one of their "also called" names); a new character's proper name as the text gives it; one specific person known only by a title, the bare title with no article ("King", "Count"); unnamed minor people, just their kind ("Guard", "Woman", "Thug") with "role": true - several of one kind share one entry. "pronoun": "he", "she", "they", "it", or "" if the text doesn't show it. "refs": short phrases copied exactly from the text that it uses for that one person instead of their name - a title, epithet or description like "the ferrywoman" - only when they clearly mean that person; [] otherwise. Never a bare pronoun, never their own name.
 - Only state what the text supports.`
 
 // ChapterSummary is one chapter's summary-pass notes - store.ChapterSummary's
@@ -105,7 +105,7 @@ func (s *Scene) promptLines() string {
 // answers (a description becomes a role label - see RoleLabel), and a
 // reference survives only if it appears word for word in the text.
 func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, roster Roster, paragraphs []ParagraphInput) (ChapterSummary, error) {
-	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases)
+	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases).WithFirstPerson(roster.FirstPerson)
 	var out ChapterSummary
 	castIndex := map[string]int{}
 	for _, window := range summaryWindows(paragraphs) {
@@ -158,6 +158,16 @@ func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle s
 			out.Summary += s
 		}
 	}
+	// Whoever an explicit speech tag credits with a line is in the chapter,
+	// whatever the model listed - it once left a whole chapter's cast empty
+	// because its three speakers talked inside a character's mind-space.
+	for _, name := range TaggedSpeakers(paragraphs, resolver) {
+		if _, ok := castIndex[strings.ToLower(name)]; ok {
+			continue
+		}
+		castIndex[strings.ToLower(name)] = len(out.Cast)
+		out.Cast = append(out.Cast, CastMember{Name: name, Pronouns: roster.Pronouns[name], Role: roster.Roles[name]})
+	}
 	return out, nil
 }
 
@@ -203,6 +213,9 @@ func (c *Client) summarizeWindow(ctx context.Context, bookTitle, chapterTitle st
 		}
 		fmt.Fprintf(&user, "\nKnown characters: %s\n", strings.Join(entries, ", "))
 	}
+	if roster.FirstPerson != "" {
+		fmt.Fprintf(&user, "\nThis book is narrated in the first person by %s - the \"I\" is %s, a cast member like anyone else.\n", roster.FirstPerson, roster.FirstPerson)
+	}
 	user.WriteString("\nParagraphs:\n")
 	for i, p := range window {
 		// An Inline paragraph continues the one before it - folded onto
@@ -241,13 +254,12 @@ type summaryRaw struct {
 }
 
 func parseSummary(content string) (summaryRaw, error) {
-	start := strings.IndexByte(content, '{')
-	end := strings.LastIndexByte(content, '}')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '{')
+	if !found {
 		return summaryRaw{}, fmt.Errorf("no JSON object found in response: %s", truncate(content, 200))
 	}
 	var raw summaryRaw
-	if err := json.Unmarshal([]byte(content[start:end+1]), &raw); err != nil {
+	if err := json.Unmarshal([]byte(value), &raw); err != nil {
 		return summaryRaw{}, fmt.Errorf("parse JSON object: %w", err)
 	}
 	if strings.TrimSpace(raw.Summary) == "" {

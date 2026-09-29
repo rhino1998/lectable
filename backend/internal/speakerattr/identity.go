@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // descriptorLead matches the opening of a speaker answer that describes
@@ -67,7 +68,7 @@ func RoleLabel(answer string) (label string, isTitle, ok bool) {
 	if len(words) == 0 {
 		return "", false, false
 	}
-	if lead == "" && len(words) == len(strings.Fields(s)) {
+	if lead == "" && len(words) == len(strings.Fields(s)) && !DescriptorWithoutArticle(s) {
 		// No article and nothing cut: a proper name ("Jeb", "Quin
 		// Cold") or already a role label ("Guard").
 		return "", false, false
@@ -90,6 +91,47 @@ func UnusableDescription(answer string) bool {
 	}
 	rest := strings.TrimSpace(descriptorLead.ReplaceAllString(answer, ""))
 	return descriptorLead.MatchString(answer) && !startsUpper(rest) && !strings.Contains(rest, "'s ") && !strings.Contains(rest, "’s ")
+}
+
+// nameConnectors are lower-case words a proper name can contain ("Lady of
+// the Lake", "Ludwig van Beethoven") - see DescriptorWithoutArticle.
+var nameConnectors = map[string]bool{
+	"of": true, "the": true, "de": true, "del": true, "da": true, "van": true, "von": true,
+	"der": true, "den": true, "al": true, "bin": true, "le": true, "la": true, "du": true, "y": true,
+}
+
+// DescriptorWithoutArticle reports whether an answer with no article still
+// reads as a description rather than a name: all lower case ("woman",
+// "doctor", "bearded man"), or a capitalized first word followed by a
+// lower-case one ("Older man"). A number anywhere ("Neighbor 1", "Thug 2")
+// keeps it a deliberate label for one of several people in a scene, and a
+// possessive ("Ingrid's friend") one specific person.
+func DescriptorWithoutArticle(s string) bool {
+	words := strings.Fields(strings.TrimSpace(s))
+	if len(words) == 0 {
+		return false
+	}
+	for _, w := range words {
+		for _, r := range w {
+			if unicode.IsDigit(r) {
+				return false
+			}
+		}
+		// "Ingrid's friend", "the Duke's son": one specific person, named
+		// by who they belong to.
+		if strings.HasSuffix(w, "'s") || strings.HasSuffix(w, "’s") {
+			return false
+		}
+	}
+	if !startsUpper(words[0]) {
+		return true
+	}
+	for _, w := range words[1:] {
+		if !startsUpper(w) && !nameConnectors[strings.ToLower(w)] {
+			return true
+		}
+	}
+	return false
 }
 
 // allCapitalized reports whether every word of s starts upper case - a
@@ -144,7 +186,8 @@ func resolveIdentities(speakers map[int]string, resolver *SpeakerNameResolver, r
 		if isSentinel(sp) || roles[sp] {
 			continue
 		}
-		if _, ok := resolver.Resolve(sp); ok {
+		if n, ok := resolver.Resolve(sp); ok {
+			out[idx] = n // the known character's own spelling
 			continue
 		}
 		label, isTitle, ok := RoleLabel(sp)

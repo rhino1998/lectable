@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -136,7 +137,27 @@ func (s *Server) summaryRoster(book *store.Book, ch *store.Chapter) (speakerattr
 		}
 	}
 	r.Prominent = s.prominentSpeakers(book.ID, ch.Idx, r.Names)
-	return r, nil
+	return s.withFirstPerson(r, book), nil
+}
+
+// withFirstPerson sets r.FirstPerson from book's setting (its first-person
+// narrator), resolved onto r's names so "Steve" matches an existing Steve,
+// and makes sure every batch lists them. r unchanged for a third-person
+// book or one with no setting yet.
+func (s *Server) withFirstPerson(r speakerattr.Roster, book *store.Book) speakerattr.Roster {
+	st, err := s.Store.GetBookSetting(book.ID)
+	if err != nil || st == nil || st.Setting.Narrator == "" {
+		return r
+	}
+	name := st.Setting.Narrator
+	if c, ok := speakerattr.NewSpeakerNameResolver(r.Names, r.Aliases).Resolve(name); ok {
+		name = c
+	}
+	r.FirstPerson = name
+	if !slices.Contains(r.Prominent, name) {
+		r.Prominent = append(append([]string(nil), r.Prominent...), name)
+	}
+	return r
 }
 
 // summarizeChapter is a jobs.KindSummary task's work: one chapter's summary

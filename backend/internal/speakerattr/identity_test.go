@@ -27,7 +27,7 @@ func TestRoleLabel(t *testing.T) {
 			t.Errorf("RoleLabel(%q) = %q, %v; want %q", in, got, ok, want)
 		}
 	}
-	for _, in := range []string{"Jeb", "Lady Joyous Greysail", "The Nightshark", "the other", "one argued", "the first", "Quin Cold", "The Duchess Blackbrine", "The Rat Cleaver", "The Duke's son", "the older of the pair", "The voice beyond the door", "One asked"} {
+	for _, in := range []string{"Jeb", "Lady Joyous Greysail", "The Nightshark", "the other", "one argued", "the first", "Quin Cold", "The Duchess Blackbrine", "The Rat Cleaver", "The Duke's son", "the older of the pair", "The voice beyond the door", "One asked", "Neighbor 1", "Thug 2", "Lady of the Lake", "Bearded Man", "Lars Machmüller", "Ingrid's friend"} {
 		if got, _, ok := RoleLabel(in); ok {
 			t.Errorf("RoleLabel(%q) = %q, want not a role", in, got)
 		}

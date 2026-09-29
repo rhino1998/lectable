@@ -16,7 +16,7 @@ type queueTaskDTO struct {
 	// Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
 	// | "voice_provision" | "speaker_attribution" | "speaker_characterization"
 	// | "speech_direction" | "ambience" | "scare_quote_tagging" |
-	// "description_tagging" | "chapter_summary" (per-item work, see
+	// "description_tagging" | "chapter_summary" | "book_setting" (per-item work, see
 	// jobs.Kind) or
 	// "pipeline_scare_quote" | "pipeline_attribution" |
 	// "pipeline_description" | "pipeline_characterization" |

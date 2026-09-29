@@ -19,6 +19,8 @@ type BookSetting struct {
 	Place      string `json:"place"`
 	Accent     string `json:"accent"`
 	Genre      string `json:"genre"`
+	// Narrator is a first-person book's narrator (the "I"), "" otherwise.
+	Narrator string `json:"narrator"`
 }
 
 // BookSettingSource says who wrote a stored BookSetting.

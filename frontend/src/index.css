@@ -526,6 +526,18 @@ label {
   background: color-mix(in srgb, var(--error) 15%, transparent);
   color: var(--error);
 }
+.speaker-role-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+}
 
 .speaker-aliases {
   display: flex;
@@ -2726,6 +2738,55 @@ label {
 .lighting-cue-swatch-large {
   width: 2.5rem;
   height: 2.5rem;
+}
+
+/* Reader annotations view: chapter summary and scene markers
+   (ChapterSection's ChapterSummaryBlock/SceneBoundary). */
+.chapter-summary-annotation {
+  margin: 0.2rem 0 1rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--accent);
+  font-size: 0.9rem;
+}
+.chapter-summary-annotation p {
+  margin: 0 0 0.35rem;
+}
+.chapter-summary-annotation p:last-child {
+  margin-bottom: 0;
+}
+.chapter-scene-boundary {
+  margin: 0.8rem 0 0.4rem;
+  padding-top: 0.3rem;
+  border-top: 1px dashed var(--border);
+  font-size: 0.85rem;
+}
+.chapter-scene-boundary-place {
+  font-weight: 600;
+}
+
+/* ChapterPassTable's expanded ambience preview (AmbiencePreview). */
+.ambience-preview {
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  margin: 0.4rem 0 0.6rem 1.5rem;
+}
+.ambience-preview th,
+.ambience-preview td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.25rem 0.9rem 0.25rem 0;
+}
+.ambience-preview-cut td {
+  border-top: 1px dashed var(--border);
+}
+.ambience-preview-light {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: flex-start;
+}
+.ambience-preview-prompt {
+  max-width: 22rem;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
 }
 
 /* ChapterPassTable's expanded summary-notes row (ChapterNotesView). */

@@ -31,8 +31,8 @@ func (l *settingLLM) LLMGenerate(_ context.Context, sys, user string, _ float32,
 	return "", nil
 }
 
-// TestAmbienceDerivesBookSettingOnce: the first pass needing the setting
-// derives and stores it with one call; lighting sees the world but not the
+// TestAmbienceDerivesBookSettingOnce: the setting task derives and stores
+// it with one call; lighting sees the world but not the
 // accent; a later caller reuses the stored one.
 func TestAmbienceDerivesBookSettingOnce(t *testing.T) {
 	srv, s, _, _ := newTestServer(t)
@@ -54,6 +54,16 @@ func TestAmbienceDerivesBookSettingOnce(t *testing.T) {
 	}
 	book, _ := s.GetBook(bookID)
 	ch, _ = s.GetChapterByID(ch.ID)
+	// Lighting alone never derives a setting - that's the setting task's
+	// job (jobs.Manager.bookSettingDependency runs it first).
+	if srv.bookSetting(context.Background(), book) != nil || llm.settings != 0 {
+		t.Fatal("bookSetting derived inline")
+	}
+	for range 2 { // the second, lazy (non-forced) run finds one and skips
+		if err := srv.deriveBookSettingForJob(context.Background(), book); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, _, err := srv.lightChapter(context.Background(), book, ch); err != nil {
 		t.Fatal(err)
 	}

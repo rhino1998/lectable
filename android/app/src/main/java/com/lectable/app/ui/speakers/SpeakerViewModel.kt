@@ -41,6 +41,7 @@ data class SpeakerUiState(
     val generatingVoiceIds: Set<String> = emptySet(),
     val deletingIds: Set<String> = emptySet(),
     val togglingInvalidIds: Set<String> = emptySet(),
+    val togglingRoleIds: Set<String> = emptySet(),
     // Which character's "View appearances" is currently expanded - null when none is.
     val appearancesFor: String? = null,
     val appearances: List<SpeakerAppearanceDto> = emptyList(),
@@ -227,6 +228,16 @@ class SpeakerViewModel @Inject constructor(
             runCatching { speakerRepository.setCharacterInvalid(bookId, characterId, invalid) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             _uiState.update { it.copy(togglingInvalidIds = it.togglingInvalidIds - characterId) }
+        }
+    }
+
+    /** Marks or unmarks a role label - one tap to undo, like setInvalid. */
+    fun setRole(characterId: String, role: Boolean) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(togglingRoleIds = it.togglingRoleIds + characterId) }
+            runCatching { speakerRepository.setCharacterRole(bookId, characterId, role) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+            _uiState.update { it.copy(togglingRoleIds = it.togglingRoleIds - characterId) }
         }
     }
 

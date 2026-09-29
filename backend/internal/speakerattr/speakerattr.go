@@ -506,7 +506,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 			}
 		}
 		pronouns = votes.winners()
-		canon, _ = RefineWithSpeechTags(paragraphs, canon, NewSpeakerNameResolver(known, roster.Aliases))
+		canon, _ = RefineWithSpeechTags(paragraphs, canon, NewSpeakerNameResolver(known, roster.Aliases).WithFirstPerson(roster.FirstPerson))
 		roleNames = make(map[string]bool, len(isRoleByIdx))
 		for idx, isRole := range isRoleByIdx {
 			if !isRole {
@@ -599,7 +599,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 				return
 			}
 			for idx, a := range result {
-				speaker, role := sanitizeSpeaker(a.Speaker, a.Role)
+				speaker, role := sanitizeSpeaker(firstPersonAnswer(a.Speaker, roster.FirstPerson), a.Role)
 				speaker = resolver.Canonical(speaker)
 				speaker = disallowNarratorForDialogue(isQuoteByIdx[idx], speaker)
 				out[idx] = speaker
@@ -956,6 +956,39 @@ type Roster struct {
 	// has none: an answer that is one of a member's references ("the old
 	// sailor") becomes their name.
 	Cast []CastMember
+	// FirstPerson is a first-person book's narrator (BookSetting.Narrator,
+	// resolved onto the roster), "" for a third-person book. Every batch is
+	// told who "I" is, an "I said" tag credits them, and an answer that
+	// names the "I" without a name ("Protagonist", "Narrator" on a line of
+	// dialogue) becomes them - see firstPersonAnswer.
+	FirstPerson string
+}
+
+// firstPersonLabels are answers a model gives for a first-person
+// narrator's own lines when it doesn't know (or ignores) their name -
+// Qwen3.6 labeled 1,437 of Arise's lines "Protagonist".
+var firstPersonLabels = map[string]bool{
+	"i": true, "me": true, "myself": true, "protagonist": true, "the protagonist": true,
+	"main character": true, "the main character": true, "mc": true, "narrator": true,
+	"the narrator": true, "first-person narrator": true, "the first-person narrator": true,
+	"narrator (i)": true, "hero": true, "the hero": true, "pov character": true,
+}
+
+// IsFirstPersonLabel reports whether name is a placeholder a model uses for
+// a first-person narrator ("Protagonist", "Main character", "I") rather
+// than anyone's name.
+func IsFirstPersonLabel(name string) bool {
+	return firstPersonLabels[strings.ToLower(strings.TrimSpace(name))]
+}
+
+// firstPersonAnswer maps a raw answer that stands for the "I" to the
+// book's first-person narrator; other answers (and every answer in a
+// third-person book) pass through.
+func firstPersonAnswer(raw, firstPerson string) string {
+	if firstPerson != "" && firstPersonLabels[strings.ToLower(strings.TrimSpace(raw))] {
+		return firstPerson
+	}
+	return raw
 }
 
 // relevantNames picks which of roster.Names to list in a prompt for
@@ -1089,6 +1122,9 @@ func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle
 		fmt.Fprintf(&user, "Known characters: %s\n", strings.Join(entries, ", "))
 	}
 
+	if roster.FirstPerson != "" {
+		fmt.Fprintf(&user, "This book is narrated in the first person by %s: \"I\" and \"me\" in the narration are %s, so a line the narration tags \"I said\" is %s's.\n", roster.FirstPerson, roster.FirstPerson, roster.FirstPerson)
+	}
 	user.WriteString("\nLines:\n")
 	for i, p := range lines {
 		// A blank line marks a real paragraph break - see systemPrompt.
@@ -1189,13 +1225,12 @@ func parseAttributionLines(content string, answer map[int]bool) (map[int]Attribu
 // comment) gets one repair attempt before being treated as a genuine parse
 // failure.
 func parseAttributions(content string) (map[int]Attributed, error) {
-	start := strings.IndexByte(content, '[')
-	end := strings.LastIndexByte(content, ']')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '[')
+	if !found {
 		return nil, fmt.Errorf("no JSON array found in response: %s", truncate(content, 200))
 	}
 	var items []attribution
-	if err := unmarshalRepairedArray(content[start:end+1], &items); err != nil {
+	if err := unmarshalRepairedArray(value, &items); err != nil {
 		return nil, fmt.Errorf("parse JSON array: %w", err)
 	}
 	out := make(map[int]Attributed, len(items))
@@ -1412,13 +1447,12 @@ type characterization struct {
 // finish. minCharacterizeWords/minRefLineWords are well under what even a
 // terse but complete instruct/refLine would ever come in at.
 func parseCharacterization(content string) (characterization, error) {
-	start := strings.IndexByte(content, '{')
-	end := strings.LastIndexByte(content, '}')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '{')
+	if !found {
 		return characterization{}, fmt.Errorf("no JSON object found in response: %s", truncate(content, 200))
 	}
 	var result characterization
-	if err := json.Unmarshal([]byte(content[start:end+1]), &result); err != nil {
+	if err := json.Unmarshal([]byte(value), &result); err != nil {
 		return characterization{}, fmt.Errorf("parse JSON object: %w", err)
 	}
 	result.Instruct = strings.TrimSpace(result.Instruct)

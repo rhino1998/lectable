@@ -4,6 +4,7 @@ import {
   useBook,
   useBookmarks,
   useChapterMusicRange,
+  useChapterNotesRange,
   useChapterRange,
   useCreateBookmark,
   useDeleteBookmark,
@@ -34,7 +35,7 @@ import { PlayerBar } from '../components/PlayerBar'
 import { ChapterSection } from '../components/ChapterSection'
 import { AnnotationTooltip } from '../components/AnnotationTooltip'
 import type { AnnotationTooltipHandle } from '../components/AnnotationTooltip'
-import type { ChapterDetail, MusicRegion, Paragraph } from '../api/types'
+import type { ChapterDetail, ChapterNotes, MusicRegion, Paragraph } from '../api/types'
 import { matchesSelectedSpeaker } from '../utils/annotations'
 
 // How many loaded chapters on each side of whichever one is actually on
@@ -240,6 +241,25 @@ export function ReaderPage() {
     })
     return map
   }, [musicResults, range])
+
+  // Summary notes (summary, cast, scenes) for every loaded chapter -
+  // annotations view's chapter summary block and scene markers
+  // (ChapterSection), subscribed only while annotations view is on, like
+  // the music regions above.
+  const notesResults = useChapterNotesRange(
+    bookId,
+    range?.start ?? 0,
+    range?.end ?? -1,
+    annotationsView,
+  )
+  const chapterNotesByIdx = useMemo(() => {
+    const map = new Map<number, ChapterNotes>()
+    const start = range?.start ?? 0
+    notesResults.forEach((r, i) => {
+      if (r.data?.notes) map.set(start + i, r.data.notes)
+    })
+    return map
+  }, [notesResults, range])
 
   const expandDown = useCallback(() => {
     setRange((r) => (r ? { ...r, end: Math.min(r.end + 1, totalChapters - 1) } : r))
@@ -724,6 +744,7 @@ export function ReaderPage() {
                 onRunAmbience={runAmbienceChapter}
                 onGenerate={runGenerateChapter}
                 musicRegions={chapterMusicRegions.get(idx) ?? EMPTY_MUSIC_REGIONS}
+                notes={chapterNotesByIdx.get(idx) ?? null}
                 onRegenerateMusic={runRegenerateMusic}
                 registerSectionRef={registerChapterSectionRef}
                 onSeek={seek}

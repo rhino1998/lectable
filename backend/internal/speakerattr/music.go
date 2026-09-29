@@ -221,13 +221,12 @@ func parseMusicBoundaries(content string, shown []ParagraphInput, batchStart int
 		}
 	}
 
-	start := strings.IndexByte(content, '[')
-	end := strings.LastIndexByte(content, ']')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '[')
+	if !found {
 		return nil, fmt.Errorf("no JSON array found in response: %s", truncate(content, 200))
 	}
 	var raw []musicBoundaryRaw
-	if err := unmarshalRepairedArray(content[start:end+1], &raw); err != nil {
+	if err := unmarshalRepairedArray(value, &raw); err != nil {
 		return nil, fmt.Errorf("parse JSON array: %w", err)
 	}
 	if len(raw) == 0 {
@@ -724,13 +723,12 @@ func sameAmbience(a, b string) bool {
 }
 
 func parseMusicRegionDescription(content string) (musicDescriptionRaw, error) {
-	start := strings.IndexByte(content, '{')
-	end := strings.LastIndexByte(content, '}')
-	if start == -1 || end == -1 || end < start {
+	value, found := firstJSONValue(content, '{')
+	if !found {
 		return musicDescriptionRaw{}, fmt.Errorf("no JSON object found in response: %s", truncate(content, 200))
 	}
 	var raw musicDescriptionRaw
-	if err := json.Unmarshal([]byte(content[start:end+1]), &raw); err != nil {
+	if err := json.Unmarshal([]byte(value), &raw); err != nil {
 		return musicDescriptionRaw{}, fmt.Errorf("parse JSON object: %w", err)
 	}
 	raw.Mood = strings.TrimSpace(raw.Mood)

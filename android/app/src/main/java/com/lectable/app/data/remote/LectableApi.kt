@@ -534,6 +534,19 @@ interface LectableApi {
     ): QueuedResponseDto
 
     /**
+     * handleDedupeCharacters serves POST /api/books/{id}/characters/dedupe - the
+     * Speakers page's "merge duplicate names" action (see dedupeCharacters),
+     * replying with every merge it made. Attribution already avoids making new
+     * duplicates (case-insensitive lookup, descriptions to roles, first names
+     * folded into full ones as they appear); this cleans up a roster built
+     * before that, or across chapters attributed out of order.
+     */
+    @POST("api/books/{id}/characters/dedupe")
+    suspend fun dedupeCharacters(
+        @Path("id") id: String,
+    ): DedupeResponseDto
+
+    /**
      * handleGenerateCharacterVoices batch-provisions a voice for every given
      * character in one request - SpeakersPage's "Generate all voices",
      * fire-and-forget (202 Accepted, no result body), the same rationale as
@@ -772,6 +785,20 @@ interface LectableApi {
         @Path("characterId") characterId: String,
         @Body body: SetCharacterPronounsRequestDto,
     ): PronounsResponseDto
+
+    /**
+     * handleSetCharacterRole marks (or unmarks) a character as a generic role
+     * label (store.Character.IsRole) - several unnamed people of one kind
+     * ("Guard", "Woman") rather than one individual. Attribution lists it as
+     * "[role]", characterization casts the type, and pronouns aren't tracked
+     * for it. Nothing else changes: its lines, voice and aliases stay.
+     */
+    @PUT("api/books/{id}/characters/{characterId}/role")
+    suspend fun setCharacterRole(
+        @Path("id") id: String,
+        @Path("characterId") characterId: String,
+        @Body body: SetCharacterRoleRequestDto,
+    ): Unit
 
     /**
      * handleSetCharacterVoice assigns (or, with "", clears) a character's own
@@ -1060,14 +1087,14 @@ interface LectableApi {
 
     /**
      * handleDeriveBookSetting serves POST /api/books/{id}/setting/derive:
-     * re-runs the setting pass now (one LLM call, through the Jobs page's
-     * preview slot), replacing whatever the book had - a manual edit
-     * included.
+     * queues the setting pass now (a jobs.KindBookSetting task at urgent
+     * priority), replacing whatever the book had - a manual edit included.
+     * The bookSetting live topic carries the result.
      */
     @POST("api/books/{id}/setting/derive")
     suspend fun deriveBookSetting(
         @Path("id") id: String,
-    ): BookSettingResponseDto
+    ): QueuedResponseDto
 
     /**
      * handleListSpeakers reports every speaker recognized in bookID so far -
