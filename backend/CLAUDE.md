@@ -24,7 +24,7 @@ does `prefill_graph_.reset(); prefill_graph_ = make_unique<...>(); ...run();
 prefill_graph_.reset();` every call), and its decode graph/KV cache rebuild
 whenever the bucketed cache size changes or grows mid-generation on a long
 paragraph. All five of the graph-owning classes' destructors in that file
-(`HiggsARDecodeGraph::Impl`, `HiggsARPrefillGraph::Impl`, and the
+(`HiggsQwen3DecodeGraph::Impl`, `HiggsQwen3PrefillGraph::Impl`, and the
 long-reference-prefill-only `EmbeddingGraph`/`LayerGraph`/`FinalGraph`) call
 `engine::core::release_backend_graph_resources(runtime->backend(), graph)` -
 the **2-argument overload**, which defaults its `evict_cuda_graph_cache`
@@ -116,13 +116,26 @@ working tree - check `git diff --stat` in `/home/rhino/audio.cpp` before
 rebuilding; a full copy of every local patch is kept at
 `/home/rhino/audio.cpp/lectable-local-patches.diff`.)
 
+**Patch base.** Rebased 2026-09-29 onto upstream `ed96b730`: `main` there
+sits at that commit with the patch uncommitted, and the same patch is also
+committed as branch `lectable-patches` (the pre-rebase version, on
+`e3de8e3f`, is tag `lectable-patches-e3de8e3` and
+`lectable-local-patches.e3de8e3.diff`). Upstream renamed `HiggsAR*` to
+`HiggsQwen3*` (our own `HiggsARBatchedDecodeGraph` kept its name) and
+`modules::QwenDecoderLayer*` to `modules::DecoderLayer*`. Upstream's
+gallocr prefill (#704/#722, on for HIP) is kept: seeded output is
+byte-identical, and peak VRAM on a reference prefill drops ~2 GiB.
+Upstream's CUDA-only spare KV cache (#669) was dropped in favor of our
+`kv_cache_slots_`. Its `lazy_import_scratch` is kept, and now also on for
+HIP.
+
 **Higgs throughput patches, same local checkout, same caveats.** Profiled
 2026-09-24 against 37-120 real paragraphs (book "Spire's Spite" ch. 41,
 Q8, RX 7900 XTX): single-stream RTF 0.34 -> 0.28, and 0.30 -> 0.108
 throughput RTF at batch 4 (0.094 at batch 8, the default). Each piece, all in
 `src/models/higgs_audio_tts/` plus their headers:
 - **Reference-prefix KV snapshots** (`higgs_audio_tts.reference_kv_slots`,
-  `generator.cpp`/`ar.cpp` `HiggsARKVPrefixSnapshot`): an LRU of
+  `generator.cpp`/`ar.cpp` `HiggsQwen3KVPrefixSnapshot`): an LRU of
   device-resident copies of each reference clip's prompt-prefix KV rows,
   restored on-device (~0.7ms) instead of re-prefilling the whole reference
   (~400ms for a 20s clip). Upstream only reused the *last* voice's prefix,
@@ -130,7 +143,7 @@ throughput RTF at batch 4 (0.094 at batch 8, the default). Each piece, all in
   prefix + text-only prefill is not bit-identical to one full prefill
   (first-step logits differ ~0.1-0.2%, same as upstream's own prefix reuse),
   so seeded output differs between the two paths.
-- **KV cache churn**: `HiggsARKVCache::reset()` is now logical (it used to
+- **KV cache churn**: `HiggsQwen3KVCache::reset()` is now logical (it used to
   re-upload the whole cache as zeros from the host, ~120ms per call); the
   buffer is zeroed on-device once at allocation instead, since masked rows
   must never hold NaN. Buckets are powers of two, one resident cache +
