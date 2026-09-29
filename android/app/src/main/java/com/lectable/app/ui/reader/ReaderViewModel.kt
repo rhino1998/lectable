@@ -405,13 +405,18 @@ class ReaderViewModel @Inject constructor(
     }
 
     private fun startFromLiveBook(book: BookDetailDto) {
-        val startChapterIdx = book.posChapterIdx
+        // Reopening the reader while this book keeps playing in the background (or sits paused
+        // where it was left): follow the player. The saved position trails it by up to
+        // POSITION_SAVE_MIN_INTERVAL_MS, and seeking there jumped playback back and paused it.
+        val resumePlayer = player.hasPositionIn(bookId)
+        val startChapterIdx = if (resumePlayer) player.state.value.chapterIdx else book.posChapterIdx
         _uiState.update { it.copy(range = startChapterIdx..startChapterIdx) }
         player.setBookInfo(bookId, book.title, book.author, book.coverUrl)
         viewModelScope.launch {
             // Loaded (and fed to the player) before playFrom below, so playFrom finds the
             // chapter already there instead of racing a duplicate load via onNeedChapter.
             awaitChapter(startChapterIdx)
+            if (resumePlayer) return@launch
             // Seeks the player without auto-playing - the user presses play explicitly.
             player.playFrom(startChapterIdx, book.posParagraphIdx, book.posSeconds)
             player.pause()
@@ -431,7 +436,13 @@ class ReaderViewModel @Inject constructor(
         val downloadedIdx = cachedBook.chapters.mapTo(mutableSetOf()) { it.idx }
         val pending = downloadRepository.pendingPosition(bookId)?.takeIf { it.chapterIdx in downloadedIdx }
         val serverPos = cachedBook.takeIf { pending == null && it.posChapterIdx in downloadedIdx }
-        val startChapterIdx = pending?.chapterIdx ?: serverPos?.posChapterIdx ?: (cachedBook.chapters.firstOrNull()?.idx ?: 0)
+        // Same as startFromLiveBook: a player already on this book keeps its own position.
+        val resumePlayer = player.hasPositionIn(bookId) && player.state.value.chapterIdx in downloadedIdx
+        val startChapterIdx = if (resumePlayer) {
+            player.state.value.chapterIdx
+        } else {
+            pending?.chapterIdx ?: serverPos?.posChapterIdx ?: (cachedBook.chapters.firstOrNull()?.idx ?: 0)
+        }
         _uiState.update { it.copy(loading = false, book = cachedBook, range = startChapterIdx..startChapterIdx, error = null) }
         player.setBookInfo(bookId, cachedBook.title, cachedBook.author, cachedBook.coverUrl)
         awaitChapter(startChapterIdx)
@@ -440,6 +451,7 @@ class ReaderViewModel @Inject constructor(
             player.setVoiceKey(voiceKey)
             _uiState.update { it.copy(voiceKey = voiceKey) }
         }
+        if (resumePlayer) return
         player.playFrom(
             startChapterIdx,
             pending?.paragraphIdx ?: serverPos?.posParagraphIdx ?: 0,

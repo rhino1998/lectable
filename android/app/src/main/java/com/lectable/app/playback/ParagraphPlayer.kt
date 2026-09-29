@@ -10,6 +10,7 @@ import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -60,6 +61,12 @@ private const val QUEUE_AHEAD_SECONDS = 30.0
 
 /** Cap on queued clips, whatever their durations. */
 private const val MAX_QUEUED_CLIPS = 20
+
+/** How many times [ParagraphPlayer] re-prepares after a clip fails to load before pausing. */
+private const val MAX_LOAD_RETRIES = 4
+
+/** Delay before the first re-prepare; each later one waits this much longer. */
+private const val LOAD_RETRY_DELAY_MS = 1_500L
 
 /**
  * Owns one ExoPlayer instance and advances through a book's paragraphs one
@@ -158,6 +165,10 @@ class ParagraphPlayer @Inject constructor(
     val state: StateFlow<PlaybackState> = _state
 
     private var sleepTimerJob: Job? = null
+
+    // Consecutive failed loads since audio last actually played - see onPlayerError.
+    private var loadRetries = 0
+    private var loadRetryJob: Job? = null
     private val _sleepTimer = MutableStateFlow(SleepTimerState())
     val sleepTimer: StateFlow<SleepTimerState> = _sleepTimer
 
@@ -183,8 +194,26 @@ class ParagraphPlayer @Inject constructor(
                 if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && mediaItem != null) onQueuedClipStarted(mediaItem)
             }
 
+            // A clip that fails to load (a dropped connection, the backend briefly 404ing it)
+            // leaves ExoPlayer idle with the playlist intact - without this, playback just
+            // stopped there for good. prepare() resumes the same clip at the same position.
+            override fun onPlayerError(error: PlaybackException) {
+                loadRetryJob?.cancel()
+                if (loadRetries >= MAX_LOAD_RETRIES) {
+                    player.pause()
+                    return
+                }
+                loadRetries++
+                val delayMs = LOAD_RETRY_DELAY_MS * loadRetries
+                loadRetryJob = scope.launch {
+                    delay(delayMs)
+                    if (player.playerError != null) player.prepare()
+                }
+            }
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 _state.update { it.copy(isPlaying = isPlaying) }
+                if (isPlaying) loadRetries = 0
                 // Promotes PlaybackService to a foreground service the moment audio actually
                 // starts, rather than keeping it running unconditionally from app start - a
                 // service that's merely declared/injectable isn't "started" on its own.
@@ -229,6 +258,14 @@ class ParagraphPlayer @Inject constructor(
      *  separately from the DTOs passed to [setChapter] purely so [playParagraph] can check
      *  [DownloadRepository] for a local copy before resolving a streaming URL. */
     fun setBookInfo(bookId: String, title: String, author: String?, coverUrl: String?) {
+        if (this.bookId != null && this.bookId != bookId) {
+            // [chapters] is keyed by index alone - another book's would otherwise be queued
+            // across this one's chapter boundaries.
+            player.stop()
+            player.clearMediaItems()
+            clearChapters()
+            _state.update { it.copy(chapterIdx = -1, paragraphIdx = -1, positionSeconds = 0.0) }
+        }
         this.bookId = bookId
         _bookTitle.value = title
         bookAuthor = author
@@ -262,12 +299,26 @@ class ParagraphPlayer @Inject constructor(
         }
     }
 
+    /** Whether this player already has a position in [bookId] - e.g. it kept narrating in the
+     *  background while the reader was closed - so a newly opened reader follows it instead of
+     *  seeking it back to the book's last saved position. */
+    fun hasPositionIn(bookId: String): Boolean = this.bookId == bookId && _state.value.chapterIdx >= 0
+
     fun playFrom(chapterIdx: Int, paragraphIdx: Int, startSeconds: Double = 0.0) {
         playParagraph(chapterIdx, paragraphIdx, startSeconds)
     }
 
     fun togglePlayPause() {
-        if (player.isPlaying) player.pause() else player.play()
+        if (player.isPlaying) {
+            player.pause()
+            return
+        }
+        // Gave up after repeated load failures (see onPlayerError) - play means try again.
+        if (player.playerError != null) {
+            loadRetries = 0
+            player.prepare()
+        }
+        player.play()
     }
 
     fun pause() = player.pause()
