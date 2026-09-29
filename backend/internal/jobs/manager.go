@@ -27,6 +27,11 @@ import (
 // caller doesn't ask for a specific count.
 const LookaheadParagraphCount = 25
 
+// LookaheadUrgentParagraphCount is how many paragraph positions, starting
+// at the reader's own, EnqueueLookahead pushes at TierUrgent instead of
+// TierLookahead (across chapter boundaries, like the window itself).
+const LookaheadUrgentParagraphCount = 8
+
 // MaxLookaheadParagraphCount caps a caller-requested lookahead window (see
 // EnqueueLookahead), so one client setting can't queue an arbitrarily
 // large chunk of a book at TierLookahead - generating a whole book is

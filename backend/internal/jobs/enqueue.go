@@ -641,11 +641,13 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 // before fromParagraphIdx in the starting chapter are left alone (no point
 // generating audio for ones already played past).
 //
-// The paragraph at exactly (fromChapterIdx, fromParagraphIdx) - if it needs
-// generation at all - is pushed at TierUrgent rather than TierLookahead:
-// this is also the request the reader/mobile client fires the moment they
-// select a not-yet-generated paragraph (see httpapi.handleLookahead), so
-// "jump to this paragraph" should generate it before any other lookahead
+// The first LookaheadUrgentParagraphCount paragraph positions from
+// (fromChapterIdx, fromParagraphIdx) - counted by position, generated or
+// not, and crossing chapter boundaries - are pushed at TierUrgent rather
+// than TierLookahead if they need generation: this is also the request the
+// reader/mobile client fires the moment they select a not-yet-generated
+// paragraph (see httpapi.handleLookahead), so "jump to this paragraph"
+// should generate it and the few right after it before any other lookahead
 // work. Every other paragraph in the window stays at TierLookahead, ordered
 // among themselves like any other same-tier poolGeneration work - by plain
 // book/chapter/paragraph position (see lessByPosition), not by distance
@@ -712,6 +714,9 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 
 	chapterIdx := fromChapterIdx
 	remaining := count
+	// Positions still inside the urgent window at the start of the
+	// current chapter's unplayed paragraphs.
+	urgentLeft := LookaheadUrgentParagraphCount
 	for remaining > 0 {
 		select {
 		case <-m.ctx.Done():
@@ -739,12 +744,21 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 		if len(resolved) > remaining {
 			resolved = resolved[:remaining]
 		}
+		firstIdx := 0
+		if chapterIdx == fromChapterIdx {
+			firstIdx = fromParagraphIdx
+		}
 		for _, rp := range resolved {
 			tier := TierLookahead
-			if chapterIdx == fromChapterIdx && rp.paragraph.Idx == fromParagraphIdx {
+			if rp.paragraph.Idx-firstIdx < urgentLeft {
 				tier = TierUrgent
 			}
 			m.pushResolvedTask(bookID, ch.ID, chapterIdx, tier, rp, all)
+		}
+		for _, p := range all {
+			if p.Idx >= firstIdx {
+				urgentLeft--
+			}
 		}
 		if chapterIdx == fromChapterIdx {
 			// Background music should be at least as responsive to reader
