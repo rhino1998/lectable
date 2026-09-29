@@ -205,7 +205,16 @@ func main() {
 	}
 	handler := httpapi.NewRouter(server)
 
-	httpServer := &http.Server{Addr: addr, Handler: handler}
+	// Only header and keep-alive idle timeouts: a ReadTimeout would cut off
+	// multi-gigabyte export uploads, and a WriteTimeout long clip/export
+	// downloads (the /api/events WebSocket is hijacked, so neither applies
+	// to it anyway).
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 
 	var mdnsServer *mdnsadvert.Server
 	if port, err := strconv.Atoi(portStr); err != nil {
