@@ -26,3 +26,17 @@ func TestScareQuoteCandidates(t *testing.T) {
 		t.Fatalf("candidates = %v, want %v", got, want)
 	}
 }
+
+func TestParseScareQuoteVerdicts(t *testing.T) {
+	asked := map[int]bool{3: true, 5: true, 9: true}
+	got, err := parseScareQuoteVerdicts("3: not spoken\n5 (?): Spoken\n9 - Not Spoken\n12: not spoken\n", asked)
+	if err != nil || !got[3] || got[5] || !got[9] || got[12] {
+		t.Fatalf("verdicts = %v, %v (want 3 and 9 only; 12 wasn't asked)", got, err)
+	}
+	if got, err := parseScareQuoteVerdicts(`[{"idx": 5}]`, asked); err != nil || !got[5] {
+		t.Fatalf("old JSON shape = %v, %v", got, err)
+	}
+	if _, err := parseScareQuoteVerdicts("I can't tell.", asked); err == nil {
+		t.Fatal("a reply with no verdicts should fail (and so retry)")
+	}
+}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"unicode"
@@ -38,17 +40,25 @@ import (
 // paragraph (store.Paragraph.Inline's own doc comment) and generates them
 // as one TTS call, later sliced back into each paragraph's own audio file
 // by forced alignment - paragraph rows/indices themselves never change.
-const scareQuoteSystemPrompt = `You are a literary analysis assistant. Given numbered lines from a novel (a mix of narration and quoted spans), find the very rare quoted lines that are NOT actually spoken aloud by a character - a "scare quote" - as opposed to real spoken dialogue.
-Reply with ONLY a JSON array, no other text: [{"idx": <line number>}, ...] - include an entry ONLY for a line that clears the bar below; omit every other line entirely, including every narration line. Expect this list to almost always be completely empty - the overwhelming majority of chapters contain zero scare quotes. Only flag a line you are confident about.
-Rules:
-- Only a line already given to you as a quoted span (its own text starts and ends with quotation marks) can ever belong in this list. Never include a plain narration line.
-- The default assumption for EVERY quoted line is that it is real spoken dialogue. A quoted line followed or preceded by an ordinary narration line naming who said it - any speech/reaction verb at all (said, asked, replied, muttered, ordered, sputtered, grunted, hissed, groused, called, whispered, yelled, and so on) - is real dialogue, full stop, never a scare quote, no matter how that narration is worded. This is the single most common pattern in the whole book and must never be flagged. This still applies inside one long back-and-forth monologue built from several quote+tag beats strung together in one source paragraph (quote, tag, quote, tag, quote...) - every quote in that chain is still real dialogue, not a scare quote, no matter how short any one beat is.
-- A quoted line with NO narration tag at all - a bare reply in the middle of a back-and-forth exchange, a one-word answer, an exclamation - is still real dialogue by default, not a scare quote, exactly the same as a tagged one. Untagged is the normal way a fast exchange is written; it is never on its own a reason to flag a line.
-- A "scare quote" is something categorically different from ordinary dialogue: quotation marks wrapped around a single word or short phrase that is grammatically embedded INSIDE a narration sentence which has its own separate subject and main verb having nothing to do with speaking - the quoted words are functioning as a noun or modifier in that sentence, not standing on their own as an utterance. Concrete examples: their so-called "expert" had no idea what he was doing - "expert" is one word embedded in a sentence about what the expert lacked, not something anyone said aloud right then. What they called the "Long Winter" finally broke - "Long Winter" is a label, embedded in a sentence about the season ending. He'd learned to spot a "friendly" wager from a mile away - "friendly" is a skeptical aside inside a sentence about his own skill at spotting something.
-- A scare quote is always a fragment - a word or short phrase - never a full sentence, question, or exclamation on its own, and it never has its own dialogue-shaped punctuation (a standalone line ending in "." "?" or "!" with nothing else in the sentence around it is dialogue, not a scare quote). If the quoted span, with the marks removed, could stand alone as a complete thing someone might say out loud, it is dialogue, even if it also happens to sit inside a longer narration sentence.
-- Quoting a written source - a sign, book, inscription, or letter someone is reading rather than speaking - also counts as a scare quote, but only when the surrounding narration makes clear it's being read from a page/surface, not spoken.
-- When genuinely torn, leave it out - an empty list is very often the fully correct answer, and defaulting to "real dialogue" is always the safer error.
-- Each entry's "idx" must be copied exactly from the number printed right before that line in "Lines:" - never shift it to a neighboring line.`
+const scareQuoteSystemPrompt = `You are a literary analysis assistant preparing a novel for an audiobook. Given numbered lines from a novel (narration and quoted spans), decide for each line marked "(?)" whether its quoted words are spoken aloud by a character at that moment in the scene - or whether the quotation marks are the narrator's own, a "scare quote" the narrator should read as part of the sentence.
+Reply with ONLY plain text lines, no commentary: one per "(?)" line, its number, a colon and a space, then "spoken" or "not spoken". For example:
+
+12: spoken
+15: not spoken
+
+Every "(?)" line gets exactly one reply line; the other lines are context only. Copy each number exactly as printed.
+
+The "(?)" lines all sit inside narration sentences, so most of them are the narrator's own quotation marks. Answer "spoken" only when the sentence itself shows a character saying those words aloud at that moment (said, asked, called, barked, gasped, getting a hurried "..." from someone) - never on a guess that someone might have said them.
+
+"not spoken" - nobody says these words aloud right then:
+- a term, name, nickname, label, title, sign, or screen/system text, or a word being talked about: the "custodian" class, a big "no smoking" sign, the one marked as "Leo", the local word for "hello," phrases like "field genomics" were tossed about
+- a choice picked from a menu, list or prompt: selecting "high" and "fast."
+- sarcasm or skepticism: a "friendly" wager, the government's "temporary" fix
+- words thought, felt, meant, imagined, held back or only mouthed: nobody would think "he's a lunatic," the usual feeling of "now I'm in trouble," a look that clearly said "goodbye," I stopped myself from screaming "no," she mouthed "later."
+- words reported, paraphrased or summed up inside a narration sentence rather than said in the scene: grumbling something about "not an errand boy," his questions like "are you okay?", what he called "taking some time out," a chorus of "good luck" coming back, a "wait" gesture
+- a translation or gloss of what someone said: literally saying "I speak a little Danish."
+
+"spoken" - a character says these words aloud right then, even when the quote sits inside a narration sentence: she barked at him to "Run, you idiot!", getting a hurried "thank you" as she closed the door, a gasped "Yes.", he said, shaking his head, "They took her." When the words are said aloud in the scene, it is "spoken", however the sentence around them is built.`
 
 // scareQuoteBatchParagraphs is how many paragraphs one scare-quote call
 // judges; a batch with no candidate (scareQuoteCandidates) makes no call.
@@ -123,7 +133,7 @@ func (c *Client) ScareQuoteChapter(ctx context.Context, bookTitle, chapterTitle 
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			raw, berr := c.scareQuoteBatch(ctx, bookTitle, chapterTitle, batch)
+			raw, berr := c.scareQuoteBatch(ctx, bookTitle, chapterTitle, batch, candidate)
 			mu.Lock()
 			defer mu.Unlock()
 			if berr != nil {
@@ -171,6 +181,12 @@ func (c *Client) ScareQuoteChapter(ctx context.Context, bookTitle, chapterTitle 
 // 41 of Qwen3.6's 42 new batch-20 flags (the other was a spoken line with
 // a nested ‘scare quote’ inside it) and none of the dialogue lines batch 40
 // wrongly flagged ("“Why?” Ingrid asked").
+// ScareQuoteCandidates is scareQuoteCandidates for callers outside the
+// package (the scare-quote preview reports which lines were asked about).
+func ScareQuoteCandidates(paragraphs []ParagraphInput) map[int]bool {
+	return scareQuoteCandidates(paragraphs)
+}
+
 func scareQuoteCandidates(paragraphs []ParagraphInput) map[int]bool {
 	out := map[int]bool{}
 	for i, p := range paragraphs {
@@ -200,7 +216,7 @@ func scareQuoteCandidates(paragraphs []ParagraphInput) map[int]bool {
 // scareQuoteMaxWords bounds scareQuoteCandidates' short-quote rule.
 const scareQuoteMaxWords = 6
 
-func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle string, batch []ParagraphInput) (map[int]bool, error) {
+func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle string, batch []ParagraphInput, candidate map[int]bool) (map[int]bool, error) {
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
 	user.WriteString("\nLines:\n")
@@ -208,13 +224,53 @@ func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle st
 		if i > 0 && !p.Inline {
 			user.WriteString("\n")
 		}
-		fmt.Fprintf(&user, "%d: %s\n", p.Idx, oneLine(p.Text))
+		if candidate[p.Idx] {
+			fmt.Fprintf(&user, "%d (?): %s\n", p.Idx, oneLine(p.Text))
+		} else {
+			fmt.Fprintf(&user, "%d: %s\n", p.Idx, oneLine(p.Text))
+		}
 	}
 	if c.cfg.NoThink {
 		user.WriteString("\n/no_think")
 	}
 
-	return generateAndParse(ctx, c, scareQuoteSystemPrompt, user.String(), 0, jsonPassMaxTokens, parseScareQuoteItems)
+	return generateAndParse(ctx, c, scareQuoteSystemPrompt, user.String(), 0, jsonPassMaxTokens, func(content string) (map[int]bool, error) {
+		return parseScareQuoteVerdicts(content, candidate)
+	})
+}
+
+// scareQuoteVerdictRe matches one reply line: "<idx>: spoken" / "<idx>:
+// not spoken", tolerating a copied "(?)" marker.
+var scareQuoteVerdictRe = regexp.MustCompile(`(?i)^\s*(\d+)\s*(?:\(\?\))?\s*[:\-–]\s*(not\s+spoken|spoken)\b`)
+
+// parseScareQuoteVerdicts reads scareQuoteBatch's reply: the asked lines
+// answered "not spoken". A reply with no verdict line at all is an error
+// (so generateAndParse retries it); a model falling back to the old JSON
+// array of flagged lines still parses.
+func parseScareQuoteVerdicts(content string, asked map[int]bool) (map[int]bool, error) {
+	out := map[int]bool{}
+	answered := 0
+	for _, line := range strings.Split(content, "\n") {
+		m := scareQuoteVerdictRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		idx, _ := strconv.Atoi(m[1])
+		if !asked[idx] {
+			continue
+		}
+		answered++
+		if strings.HasPrefix(strings.ToLower(m[2]), "not") {
+			out[idx] = true
+		}
+	}
+	if answered == 0 {
+		if items, err := parseScareQuoteItems(content); err == nil {
+			return items, nil
+		}
+		return nil, fmt.Errorf("no verdict lines in response: %s", truncate(content, 200))
+	}
+	return out, nil
 }
 
 type scareQuoteItem struct {

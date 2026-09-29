@@ -757,7 +757,20 @@ building/running `ttsworker` does, since both now link into that binary.
        Can discover a brand-new character (one described before they ever
        speak).
 
-  **Scare-quote tagging** (`Client.ScareQuoteChapter`) only asks about
+  **Scare-quote tagging** (`Client.ScareQuoteChapter`) marks each candidate
+  "(?)" in the batch and asks for a "spoken"/"not spoken" verdict on every
+  one (`parseScareQuoteVerdicts`) - the earlier prompt asked the model to
+  list the "very rare" scare quotes in an unmarked batch, written for
+  Qwen3-4B's over-tagging, and with the candidate filter already ruling out
+  dialogue that caution only cost recall. The prompt defines "not spoken" by
+  kind (terms/labels/signs/menu choices, sarcasm, thought/held-back/mouthed
+  words, reported or paraphrased words, translations) and makes "spoken"
+  need the sentence to show the words said aloud - the model otherwise
+  assumed a menu choice ("selecting “lethal”") was said. On Arise: Alpha ch.
+  0-37's reviewed candidates (`attreval.py sq`): one run found 48/112 before,
+  98/112 after, 0 of 8 embedded real-speech lines flagged either way, and no
+  new flags on 11 Spire's Spite / Jake's Magical Market control chapters.
+  It only asks about
   quoted spans shaped like a scare quote (`scareQuoteCandidates`: an
   Inline segment whose preceding narration ends mid-sentence on a word, or
   a short quote with no closing punctuation that the sentence continues
