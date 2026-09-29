@@ -441,6 +441,15 @@ type Manager struct {
 	// graceful-drain behavior elsewhere - nothing here ever force-cancels
 	// in-flight work.
 	paused bool
+	// drained is set once a Pause has seen its in-flight work finish and
+	// the models it left resident unloaded (unloadAllOnceIdle), cleared
+	// again by Pause/Resume. While paused and drained, worker still
+	// dispatches explicit previews (isExplicitPreview) - one at a time in
+	// their own pool, with nothing else running - so a batch of them (an
+	// attribution eval) never interleaves with generation, never triggers
+	// a TTS<->LLM model swap per call, and never has a model unloaded out
+	// from under it. See WaitDrained.
+	drained bool
 
 	// activeFamily/activeFamilyKnown track which native model family
 	// (see familyOf) the queue's currently-active pool last belonged to -
@@ -722,8 +731,12 @@ func (m *Manager) IsGenerating(chapterID string) bool {
 // AFTER) eventually gets around to it.
 func (m *Manager) Pause() {
 	m.mu.Lock()
+	wasPaused := m.paused
 	m.paused = true
 	m.mu.Unlock()
+	if wasPaused {
+		return // a drain (and its unload) is already under way or done
+	}
 	select {
 	case m.wake <- struct{}{}:
 	default:
@@ -737,6 +750,7 @@ func (m *Manager) Pause() {
 func (m *Manager) Resume() {
 	m.mu.Lock()
 	m.paused = false
+	m.drained = false
 	m.mu.Unlock()
 	select {
 	case m.wake <- struct{}{}:
@@ -841,6 +855,60 @@ func (m *Manager) unloadAllOnceIdle() {
 	if err := m.tts.UnloadLLM(m.ctx); err != nil {
 		log.Printf("jobs: unload LLM models on pause: %v", err)
 	}
+
+	m.mu.Lock()
+	m.drained = m.paused // a Resume meanwhile means there's nothing to report
+	m.mu.Unlock()
+	select {
+	case m.wake <- struct{}{}: // previews queued meanwhile can go now
+	default:
+	}
+	m.notifyChanged()
+}
+
+// WaitDrained blocks until a Pause has fully drained - everything that was
+// in flight has finished and resident models are unloaded - or ctx ends,
+// or the queue is resumed (reported as an error: there's nothing to wait
+// for). From then until Resume, only explicit previews run, alone (see
+// Manager.drained): a caller about to queue many of them (an eval run)
+// pauses, waits here, runs them, then resumes.
+func (m *Manager) WaitDrained(ctx context.Context) error {
+	for {
+		m.mu.Lock()
+		paused, drained := m.paused, m.drained
+		m.mu.Unlock()
+		switch {
+		case !paused:
+			return errors.New("job queue is not paused")
+		case drained:
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+}
+
+// Drained reports whether the queue is paused and fully drained - see
+// WaitDrained.
+func (m *Manager) Drained() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.paused && m.drained
+}
+
+// isExplicitPreview reports whether t is a one-off preview a person or an
+// eval asked for (a voice-design or SFX test render, an LLM prompt or
+// attribution/scare-quote preview) - the only work a paused, drained queue
+// still dispatches.
+func isExplicitPreview(t taskqueue.Task) bool {
+	switch t.(*task).kind {
+	case KindLLMPreview, KindVoiceDesignPreview, KindSFXPreview:
+		return true
+	}
+	return false
 }
 
 // totalSlots is every worker slot across all pools - see taskPool. Slots
@@ -879,12 +947,16 @@ func (m *Manager) worker(ctx context.Context) {
 			default:
 			}
 			m.mu.Lock()
-			paused := m.paused
+			paused, drained := m.paused, m.drained
 			m.mu.Unlock()
+			var match func(taskqueue.Task) bool
 			if paused {
-				return
+				if !drained {
+					return // let in-flight work finish and the unload run first
+				}
+				match = isExplicitPreview
 			}
-			tk, ok := m.queue.Pop()
+			tk, ok := m.queue.PopWhere(match)
 			if !ok {
 				return
 			}

@@ -210,6 +210,17 @@ var llmPreviewSeq int64
 // (mirrors RunSFXPreview's own prompt param) - this package never
 // inspects it.
 func (m *Manager) RunLLMPreview(ctx context.Context, userPrompt string, fn func(ctx context.Context) (string, error)) (string, error) {
+	return m.RunLLMPreviewAt(ctx, TierUrgent, fmt.Sprintf("llm preview #%d", atomic.AddInt64(&llmPreviewSeq, 1)), userPrompt, fn)
+}
+
+// RunLLMPreviewAt is RunLLMPreview at a caller-chosen tier and label - for
+// a diagnostic that makes many LLM calls (httpapi.handlePreviewAttribution
+// runs a whole chapter's attribution), which must still go through poolLLM
+// rather than calling the worker directly: outside the queue its LLM calls
+// overlapped TTS generation in the worker and crashed it
+// (GGML_ASSERT(stat == cudaSuccess) in audio.cpp, 2026-09-29), but at
+// TierUrgent it would stall a reader's lookahead for minutes.
+func (m *Manager) RunLLMPreviewAt(ctx context.Context, tier int, label, userPrompt string, fn func(ctx context.Context) (string, error)) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -217,9 +228,9 @@ func (m *Manager) RunLLMPreview(ctx context.Context, userPrompt string, fn func(
 	seq := atomic.AddInt64(&llmPreviewSeq, 1)
 	m.pushTask(&task{
 		kind:               KindLLMPreview,
-		tier:               TierUrgent,
+		tier:               tier,
 		llmKey:             fmt.Sprintf("%d", seq),
-		label:              fmt.Sprintf("llm preview #%d", seq),
+		label:              label,
 		instruct:           userPrompt,
 		runPreviewText:     fn,
 		previewTextWaiters: []chan previewTextOutcome{resultCh},

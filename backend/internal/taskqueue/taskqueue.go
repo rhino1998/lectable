@@ -697,12 +697,22 @@ type taskState struct {
 //
 // Must be called with q.mu already held.
 func (q *Queue) computeState(create bool) map[string]*taskState {
+	return q.computeStateFor(create, nil)
+}
+
+// computeStateFor is computeState starting only from the queued tasks
+// match accepts (nil: all) and their dependencies - so PopWhere holding
+// most work back never has Resolver create dependency tasks for work it
+// isn't about to consider.
+func (q *Queue) computeStateFor(create bool, match func(Task) bool) map[string]*taskState {
 	states := make(map[string]*taskState, len(q.queued))
 	lq := &LockedQueue{q: q, readOnly: !create}
 
 	var worklist []Task
 	for _, e := range q.queued {
-		worklist = append(worklist, e.task)
+		if match == nil || match(e.task) {
+			worklist = append(worklist, e.task)
+		}
 	}
 	for len(worklist) > 0 {
 		t := worklist[len(worklist)-1]
@@ -817,13 +827,26 @@ func better(a, b *candidate) bool {
 // this task's pool already is). The returned task is moved from queued to
 // in-flight; call Finish(task.Key()) once it's actually done.
 func (q *Queue) Pop() (Task, bool) {
+	return q.PopWhere(nil)
+}
+
+// PopWhere is Pop limited to queued tasks match accepts (nil accepts
+// every task): the same tiers, dependencies, capacities and one-pool-at-
+// a-time rules, over only that subset - everything else stays queued, as
+// if it weren't there. A caller holding most work back (a paused queue
+// still running explicit previews) uses it to dispatch just the part it
+// allows.
+func (q *Queue) PopWhere(match func(Task) bool) (Task, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	states := q.computeState(true)
+	states := q.computeStateFor(true, match)
 
 	bestByPool := make(map[PoolKey]*candidate)
 	for key, e := range q.queued {
+		if match != nil && !match(e.task) {
+			continue
+		}
 		st := states[key]
 		if st == nil || len(st.deps) > 0 {
 			continue // blocked on an unresolved dependency

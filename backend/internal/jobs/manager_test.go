@@ -2434,3 +2434,52 @@ func TestVariantClipDependencyRendersThenFallsBack(t *testing.T) {
 		t.Fatalf("expected a narration line to dispatch with no variant dependency, got %v ok=%v", got, ok)
 	}
 }
+
+// TestPausedDrainedQueueRunsOnlyPreviews: after Pause and WaitDrained, an
+// explicit preview still runs - alone - while ordinary queued work keeps
+// waiting until Resume.
+func TestPausedDrainedQueueRunsOnlyPreviews(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	s := openTestStore(t)
+	mgr := NewManager(s, fake.Manager(), t.TempDir())
+	book, chapterID := createBookAndChapter(t, s, "", 0, "First paragraph.", "Second paragraph.")
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	mgr.Start(ctx)
+
+	if err := mgr.WaitDrained(ctx); err == nil {
+		t.Fatal("WaitDrained on a running queue should fail")
+	}
+	mgr.Pause()
+	waitCtx, waitCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer waitCancel()
+	if err := mgr.WaitDrained(waitCtx); err != nil || !mgr.Drained() {
+		t.Fatalf("WaitDrained: %v (drained %v)", err, mgr.Drained())
+	}
+
+	mgr.EnqueueChapter(book.ID, chapterID, 0)
+	previewCtx, previewCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer previewCancel()
+	got, err := mgr.RunLLMPreviewAt(previewCtx, TierNormal, "eval", "", func(context.Context) (string, error) {
+		inFlight, _ := mgr.Snapshot()
+		for _, qt := range inFlight {
+			if qt.Kind != KindLLMPreview && qt.Kind != "pipeline_generate_chapter" {
+				return "", fmt.Errorf("%s ran alongside the preview", qt.Kind)
+			}
+		}
+		return "ok", nil
+	})
+	if err != nil || got != "ok" {
+		t.Fatalf("preview on a drained queue = %q, %v", got, err)
+	}
+	if _, queued := mgr.Snapshot(); len(queued) == 0 {
+		t.Fatal("the chapter's paragraphs should still be waiting")
+	}
+
+	mgr.Resume()
+	bookVoice, err := mgr.narration.BookVoice(book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, func() bool { return allParagraphsReady(t, s, chapterID, bookVoice.VoiceID()) })
+}

@@ -674,3 +674,22 @@ func TestTieKeepsActivePoolEvenWhenOlderElsewhere(t *testing.T) {
 		t.Fatalf("after the tie bound, the older pool-b task should take over, got %q", got.Key())
 	}
 }
+
+func TestPopWhere(t *testing.T) {
+	q := NewQueue(nil)
+	q.RegisterPool("tts", PoolConfig{Capacity: 1})
+	q.RegisterPool("llm", PoolConfig{Capacity: 1})
+	q.Push(newTask("gen", "tts", -1))
+	q.Push(newTask("preview", "llm", 1))
+	onlyPreview := func(t Task) bool { return t.Key() == "preview" }
+	if got, ok := q.PopWhere(onlyPreview); !ok || got.Key() != "preview" {
+		t.Fatalf("PopWhere = %v, %v; want preview despite gen's higher tier", got, ok)
+	}
+	if got, ok := q.PopWhere(onlyPreview); ok {
+		t.Fatalf("PopWhere with nothing matching = %q", got.Key())
+	}
+	q.Finish("preview")
+	if got := mustPop(t, q); got.Key() != "gen" {
+		t.Fatalf("Pop = %q, want the held-back gen", got.Key())
+	}
+}

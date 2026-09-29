@@ -80,6 +80,10 @@ type jobsSnapshotDTO struct {
 	// Paused mirrors jobs.Manager.Paused() - see handlePauseJobs/
 	// handleResumeJobs, the Jobs dashboard's own pause/resume button.
 	Paused bool `json:"paused"`
+	// Drained is jobs.Manager.Drained(): paused, everything that was in
+	// flight finished and resident models unloaded - from then until
+	// resume, only explicit previews run (see POST /api/jobs/pause?drain=1).
+	Drained bool `json:"drained"`
 	// NarrationCharsPerSecond is jobs.Manager.Throughput: how fast
 	// narration has been rendering lately, in characters of paragraph text
 	// per second across every generation slot together, rounded to 0.1.
@@ -158,7 +162,7 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 		}
 	}
 
-	out := jobsSnapshotDTO{InFlight: []queueTaskDTO{}, Queued: []queueTaskDTO{}, Paused: s.Jobs.Paused()}
+	out := jobsSnapshotDTO{InFlight: []queueTaskDTO{}, Queued: []queueTaskDTO{}, Paused: s.Jobs.Paused(), Drained: s.Jobs.Drained()}
 	if rate, ok := s.Jobs.Throughput(); ok {
 		out.NarrationCharsPerSecond = math.Round(rate*10) / 10
 	}
@@ -276,8 +280,19 @@ func (s *Server) handleCancelAllJobs(w http.ResponseWriter, r *http.Request) {
 // Jobs dashboard's "Pause" button. Whatever's already in flight keeps
 // running to completion (see jobs.Manager.Pause's own doc comment) -
 // this is not a cancel, and reverses cleanly via handleResumeJobs.
+// ?drain=1 also waits for that in-flight work to finish and resident
+// models to unload (jobs.Manager.WaitDrained) before answering; from then
+// until resume, only explicit previews run, one pool at a time with
+// nothing else - what an eval run (backend/attreval) wants, so its many
+// previews don't swap models back and forth against generation.
 func (s *Server) handlePauseJobs(w http.ResponseWriter, r *http.Request) {
 	s.Jobs.Pause()
+	if r.URL.Query().Get("drain") != "" {
+		if err := s.Jobs.WaitDrained(r.Context()); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+	}
 	writeNoContent(w)
 }
 

@@ -1097,7 +1097,18 @@ building/running `ttsworker` does, since both now link into that binary.
   `Kind` (`KindVoiceClone`, `KindVoiceDesign`, `KindSpeakerAttribution`,
   `KindSpeakerCharacterization`, `KindSpeechDirection`, `KindPronunciation`,
   among others) rather than
-  one mechanism per feature. Files: `manager.go` (the `Manager`, pools
+  one mechanism per feature. **Pause** (`POST /api/jobs/pause`) stops new
+  dispatch; in-flight work finishes, then resident models unload
+  (`unloadAllOnceIdle`) and the queue is *drained* (`Manager.Drained`,
+  `drained` in `GET /api/jobs`). A paused, drained queue still dispatches
+  explicit previews (`isExplicitPreview`: LLM, voice-design and SFX
+  previews, including the attribution/scare-quote previews) via
+  `taskqueue.Queue.PopWhere`, which only resolves dependencies for the
+  tasks it's allowed to pick - held-back work never spawns anything.
+  `?drain=1` makes the pause call wait for the drain (`WaitDrained`);
+  `backend/attreval` does that around every run so a batch of previews
+  runs alone rather than swapping models against generation, and resumes
+  after unless the queue was already paused. Files: `manager.go` (the `Manager`, pools
   and in-flight limits, pause/resume, model unloading, the worker loop),
   `task.go` (`Kind`, tiers, `task`, dedup keys and ordering), `hooks.go`
   (the httpapi-supplied hook types and their setters), `enqueue.go`
