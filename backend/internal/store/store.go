@@ -16,7 +16,8 @@ import (
 )
 
 type DuckStore struct {
-	db *notifyDB
+	db   *notifyDB
+	path string
 }
 
 func Open(path string) (*DuckStore, error) {
@@ -33,23 +34,11 @@ func Open(path string) (*DuckStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
-	if err := migrateCharactersPronouns(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := migrateLexiconPrefix(db); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if err := migrateMusicRegionsLighting(db); err != nil {
-		db.Close()
-		return nil, err
-	}
 	if _, err := db.Exec(`INSERT INTO default_voice (id) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM default_voice)`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("seed default_voice: %w", err)
 	}
-	return &DuckStore{db: &notifyDB{DB: db}}, nil
+	return &DuckStore{db: &notifyDB{DB: db}, path: path}, nil
 }
 
 func (s *DuckStore) Close() error { return s.db.Close() }

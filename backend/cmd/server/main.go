@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rhino1998/lectable/backend/internal/audiomaint"
 	"github.com/rhino1998/lectable/backend/internal/bookexport"
+	"github.com/rhino1998/lectable/backend/internal/dbbackup"
 	"github.com/rhino1998/lectable/backend/internal/httpapi"
 	"github.com/rhino1998/lectable/backend/internal/instanceid"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
@@ -109,6 +110,26 @@ func main() {
 	}
 
 	go cached.LogStatsEvery(time.Minute, ctx.Done())
+
+	// Rolling copies of library.duckdb under LECTABLE_DATA_DIR/backups -
+	// see internal/dbbackup.
+	backupInterval := 24 * time.Hour
+	if v := os.Getenv("LECTABLE_BACKUP_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			backupInterval = d
+		} else {
+			log.Printf("LECTABLE_BACKUP_INTERVAL %q is not a duration, using %s", v, backupInterval)
+		}
+	}
+	backupKeep := 7
+	if v := os.Getenv("LECTABLE_BACKUP_KEEP"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			backupKeep = n
+		} else {
+			log.Printf("LECTABLE_BACKUP_KEEP %q is not numeric, using %d", v, backupKeep)
+		}
+	}
+	go dbbackup.Run(ctx, duck, dbbackup.Config{Dir: filepath.Join(dataDir, "backups"), Interval: backupInterval, Keep: backupKeep})
 
 	jobManager := jobs.NewManager(st, ttsMgr, dataDir)
 	if err := jobManager.RegisterMetrics(prometheus.DefaultRegisterer); err != nil {

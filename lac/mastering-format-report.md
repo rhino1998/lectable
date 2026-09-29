@@ -1,6 +1,6 @@
 # Report: a custom lossless mastering format for lectable audio
 
-Answers `../mastering-format-experiment.md`. Everything below was measured on
+Answers `mastering-format-experiment.md`. Everything below was measured on
 this box (2026-09-26) over a fixed stratified sample; harness, sample lists,
 raw results and the audio.cpp probe patch are in
 `experiments/`.

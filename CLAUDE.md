@@ -50,8 +50,8 @@ Qwen3-TTS/Higgs Audio models. Independent components, each with its own
   the same directory, is unaffected and still current.)
 - `frontend/` (React + TypeScript + TanStack) — the web UI. See
   `frontend/CLAUDE.md`.
-- `android/` (Kotlin + Jetpack Compose) — the Android client. Builds and
-  unit-tests clean; running on-device/emulator not yet verified. See
+- `android/` (Kotlin + Jetpack Compose) — the Android client, in daily
+  use on a physical device (installed over wireless ADB). See
   `android/CLAUDE.md`.
 
 ## How the pieces fit together
@@ -142,9 +142,9 @@ attribution reads the cast and ambience/lighting the scenes. See
 3. `android`: optional - `./gradlew assembleDebug` (from `android/`), needs
    `ANDROID_SDK_ROOT` set to a Linux-native Android SDK (see
    `android/CLAUDE.md` for the one installed at
-   `/home/rhino/android-sdk-toolchains/` in this dev environment - building
-   works here, but running needs an emulator/device elsewhere, since this
-   box can't accelerate one). Point the app at the backend's address from
+   `/home/rhino/android-sdk-toolchains/` in this dev environment - this
+   box can't accelerate an emulator, so it runs on a physical device over
+   wireless ADB; `make install-android` builds and installs it). Point the app at the backend's address from
    its Settings screen; an emulator can reach a host-machine backend at the
    default `http://10.0.2.2:8080/`, a physical device needs the host's LAN IP.
 
@@ -197,6 +197,8 @@ client, not a browser.)
   `backend/CLAUDE.md`'s "Latents in the backend") and music seeds as
   `music/<regionID>.seed.lat` (Stable Audio latents; legacy `.seed.wav` is
   migrated in the background),
+  `backups/library-<timestamp>.duckdb` (rolling daily copies of the
+  database, see `backend/CLAUDE.md`'s `internal/dbbackup`),
   `covers/<bookID>.<ext>`, `epubs/<bookID>.epub` (the source epub, kept for
   single-chapter re-import), `exports/<bookID>/<exportID>.epub` + `.json`
   (built book exports - EPUB 3 with read-aloud; a whole-book one also

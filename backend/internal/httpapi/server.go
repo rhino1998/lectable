@@ -271,11 +271,27 @@ func NewRouter(s *Server) http.Handler {
 	// an API route, so a plain Handle, which cmd/apigen doesn't read.
 	mux.Handle("GET /metrics", promhttp.Handler())
 
-	return withCORS(s.AllowOrigin, withMetrics(mux))
+	return withCORS(s.AllowOrigin, withMetrics(withBodyLimit(mux)))
 }
 
 func logRequest(r *http.Request) {
 	log.Printf("%s %s", r.Method, r.URL.Path)
+}
+
+// maxRequestBody caps every non-multipart request body - in practice the
+// JSON ones, which are all small edits. Multipart uploads (epubs, and
+// whole-book exports being restored, which can run to gigabytes) are left
+// alone: ParseMultipartForm already spills them to disk past its memory
+// limit.
+const maxRequestBody = 8 << 20
+
+func withBodyLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func withCORS(allowOrigin string, next http.Handler) http.Handler {

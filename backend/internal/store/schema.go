@@ -1,10 +1,5 @@
 package store
 
-import (
-	"database/sql"
-	"fmt"
-)
-
 const schema = `
 CREATE TABLE IF NOT EXISTS books (
 	id TEXT PRIMARY KEY,
@@ -367,7 +362,7 @@ CREATE TABLE IF NOT EXISTS music_regions (
 	-- 'cut' or 'continuation' - see store.MusicTransition's own doc comment.
 	transition TEXT NOT NULL DEFAULT 'cut',
 	-- store.Lighting, NULL until the ambience pass's lighting sub-pass
-	-- reaches this region (see migrateMusicRegionsLighting).
+	-- reaches this region.
 	lighting JSON,
 	-- One of AudioPending/AudioGenerating/AudioReady/AudioError - the same
 	-- vocabulary paragraph_audio/sfx already use.
@@ -440,31 +435,3 @@ CREATE INDEX IF NOT EXISTS idx_characters_scope ON characters(scope);
 CREATE INDEX IF NOT EXISTS idx_character_voices_character ON character_voices(character_id);
 CREATE INDEX IF NOT EXISTS idx_paragraphs_speaker ON paragraphs(speaker);
 `
-
-// migrateCharactersPronouns adds characters.pronouns to a library created
-// before it existed. DuckDB's ADD COLUMN rejects NOT NULL, so the column
-// is nullable there - but the DEFAULT fills every existing row, and every
-// insert after goes through the default too, so it's never actually NULL.
-func migrateLexiconPrefix(db *sql.DB) error {
-	if _, err := db.Exec(`ALTER TABLE pronunciation_lexicon ADD COLUMN IF NOT EXISTS prefix BOOLEAN DEFAULT false`); err != nil {
-		return fmt.Errorf("migrate pronunciation_lexicon.prefix: %w", err)
-	}
-	return nil
-}
-
-func migrateCharactersPronouns(db *sql.DB) error {
-	if _, err := db.Exec(`ALTER TABLE characters ADD COLUMN IF NOT EXISTS pronouns TEXT DEFAULT ''`); err != nil {
-		return fmt.Errorf("migrate characters.pronouns: %w", err)
-	}
-	return nil
-}
-
-// migrateMusicRegionsLighting adds music_regions.lighting to a library
-// created before the ambience pass's lighting sub-pass existed. NULL (no
-// cue yet) is the column's real resting value, so no default is needed.
-func migrateMusicRegionsLighting(db *sql.DB) error {
-	if _, err := db.Exec(`ALTER TABLE music_regions ADD COLUMN IF NOT EXISTS lighting JSON`); err != nil {
-		return fmt.Errorf("migrate music_regions.lighting: %w", err)
-	}
-	return nil
-}
