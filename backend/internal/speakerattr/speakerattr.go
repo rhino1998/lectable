@@ -517,7 +517,13 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 			}
 		}
 		pronouns = votes.winners()
-		canon, _ = RefineWithSpeechTags(paragraphs, canon, NewSpeakerNameResolver(known, roster.Aliases).WithFirstPerson(roster.FirstPerson))
+		tagResolver := NewSpeakerNameResolver(known, roster.Aliases).WithFirstPerson(roster.FirstPerson)
+		canon, _ = RefineWithSpeechTags(paragraphs, canon, tagResolver)
+		// Established pronouns win over this call's votes, as they do
+		// when the caller stores them.
+		allPronouns := maps.Clone(pronouns)
+		maps.Copy(allPronouns, roster.Pronouns)
+		canon, _ = RefinePronounTags(paragraphs, canon, tagResolver, allPronouns)
 		roleNames = make(map[string]bool, len(isRoleByIdx))
 		for idx, isRole := range isRoleByIdx {
 			if !isRole {

@@ -744,7 +744,19 @@ building/running `ttsworker` does, since both now link into that binary.
        changes were overwhelmingly still-wrong lines) and spot-checked on
        uncorrected ones (~29/32 continuation changes right; misses were
        verbs missing from `speechVerbs`). Only ever changes lines the call
-       itself attributed. Group names are also refused outright by the
+       itself attributed. **`RefinePronounTags`** (`pronountags.go`) runs
+       right after it: a line whose own trailing tag is "he said"/"she
+       asked" but whose answer's known pronouns (roster, then this call's
+       votes) are the other ones goes to the most recent matching
+       character before it - named in narration or speaking, never a
+       first-person narrator - else Unknown, with untagged quotes after it
+       in the paragraph. Replayed over ten saved eval runs
+       (`cmd/attrreplay`, which re-scores `data/attreval-runs/*.json`
+       offline in seconds, no GPU): 45 lines changed, none for the worse.
+       A turn-taking rule (a third character answered inside an A, B, A
+       exchange goes to B) was tried the same way and dropped: 39 fixed,
+       179 broken - three-person scenes, and exchanges whose earlier turns
+       were already wrong. Group names are also refused outright by the
        manual speaker PUT and merge, and forced to `"Unknown"` before any
        attribution result is persisted.
     2. **Describe** (`Client.DescribeChapter`) - a separate, single-purpose
