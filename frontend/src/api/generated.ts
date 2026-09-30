@@ -45,7 +45,7 @@ export type CharacterVoiceMode = (typeof CHARACTER_VOICE_MODES)[number]
  * errorCode is a machine-readable error reason a client can branch on
  * (errorResponse.Code).
  */
-export const ERROR_CODES = ['no_source_epub', 'title_mismatch', 'book_exists'] as const
+export const ERROR_CODES = ['no_source_epub', 'title_mismatch', 'book_exists', 'no_edits'] as const
 export type ErrorCode = (typeof ERROR_CODES)[number]
 
 /**
@@ -68,6 +68,14 @@ export type JobTier = (typeof JOB_TIERS)[number]
  */
 export const LIGHT_EFFECTS = ['steady', 'flicker', 'pulse', 'lightning', 'shimmer'] as const
 export type LightEffect = (typeof LIGHT_EFFECTS)[number]
+
+/**
+ * paragraphEditField is a paragraph field a reader's manual edit is
+ * recorded for (store.EditSpeaker/EditEmotion/EditScareQuote; a scare-quote
+ * edit's values are "true"/"false").
+ */
+export const PARAGRAPH_EDIT_FIELDS = ['speaker', 'emotion', 'scare_quote'] as const
+export type ParagraphEditField = (typeof PARAGRAPH_EDIT_FIELDS)[number]
 
 /**
  * resetPass is a pass the Speakers page can reset across a whole book
@@ -171,6 +179,36 @@ export const DEFAULT_CHARACTER_VOICE_MODE: CharacterVoiceMode = 'narrator'
 
 export interface AliasesResponse {
   aliases: string[]
+}
+
+/**
+ * attributionPreviewLineDTO is one dialogue line of an attribution
+ * preview: its speaker now, what a fresh attribution run proposes, and -
+ * when the reader corrected it by hand - the machine's original answer
+ * before that edit (Current is then the reader's value).
+ */
+export interface AttributionPreviewLine {
+  paragraphIdx: number
+  text: string
+  current: string
+  proposed: string
+  edited: boolean
+  original?: string
+  /**
+   * Given is a corrected line the run was shown with its speaker
+   * (?given=), so Proposed is just the reader's value back - leave it
+   * out of any score.
+   */
+  given?: boolean
+}
+
+export interface AttributionPreviewResponse {
+  lines: AttributionPreviewLine[]
+  /**
+   * Error is a batch failure partway through; Lines still holds what
+   * finished.
+   */
+  error?: string
 }
 
 export interface BookDetail extends BookSummary {
@@ -403,6 +441,12 @@ export interface ChapterNotes {
   summary: string
   scenes: SummaryScene[]
   cast: CastMember[]
+  /**
+   * Edited notes were saved by the reader (PUT .../notes); the summary
+   * pass keeps them unless a summarize request passes overwriteEdits.
+   * Ignored on PUT.
+   */
+  edited: boolean
 }
 
 /**
@@ -768,6 +812,12 @@ export interface JobsSnapshot {
    */
   paused: boolean
   /**
+   * Drained is jobs.Manager.Drained(): paused, everything that was in
+   * flight finished and resident models unloaded - from then until
+   * resume, only explicit previews run (see POST /api/jobs/pause?drain=1).
+   */
+  drained: boolean
+  /**
    * NarrationCharsPerSecond is jobs.Manager.Throughput: how fast
    * narration has been rendering lately, in characters of paragraph text
    * per second across every generation slot together, rounded to 0.1.
@@ -1080,6 +1130,25 @@ export interface Paragraph {
 }
 
 /**
+ * paragraphEditDTO is one recorded manual correction (store.ParagraphEdit):
+ * the machine's value before the first edit, and the reader's latest.
+ * Speakers read "Narrator" where the store holds "".
+ */
+export interface ParagraphEdit {
+  chapterIdx: number
+  paragraphIdx: number
+  field: ParagraphEditField
+  original: string
+  value: string
+  editedAt: number
+  text: string
+}
+
+export interface ParagraphEditsResponse {
+  edits: ParagraphEdit[]
+}
+
+/**
  * Passes is a chapter's own book-preprocess pipeline progress
  * (chapters.passes, stored as a JSON object - the same "flexible,
  * independent facts" shape tts_tags/describes_characters/pronunciation
@@ -1344,6 +1413,32 @@ export interface RegenerateVariantRequest {
 export interface ReimportChapterResponse {
   title: string
   paragraphs: number
+}
+
+/**
+ * renameCharacterRequest is PUT .../characters/{characterId}/name's body.
+ */
+export interface RenameCharacterRequest {
+  name: string
+}
+
+/**
+ * scareQuotePreviewLineDTO is one quoted line a scare-quote preview asked
+ * about or flagged: whether it is flagged now, whether a fresh pass flags
+ * it, and whether the reader set it by hand.
+ */
+export interface ScareQuotePreviewLine {
+  paragraphIdx: number
+  text: string
+  current: boolean
+  proposed: boolean
+  candidate: boolean
+  edited: boolean
+}
+
+export interface ScareQuotePreviewResponse {
+  lines: ScareQuotePreviewLine[]
+  error?: string
 }
 
 export interface SearchResult {
@@ -1973,12 +2068,39 @@ export interface Routes {
    * jobs.Manager.EnqueueAttribution's own doc comment for the full story.
    * Progress is observable via GET /api/jobs and by refetching this book's
    * speaker table once a chapter's task clears.
+   *
+   * ?scope=edits re-asks only the dialogue around the chapter's corrected
+   * lines (attributeAroundEdits), with the corrections shown - "I fixed a
+   * few, sort out the rest". 409 no_edits when the chapter has none.
    */
   'POST /api/books/{id}/chapters/{idx}/attribute-speakers': {
     path: { id: string; idx: number }
-    query: Record<never, never>
+    query: { scope?: string | number | boolean }
     body: never
     response: QueuedResponse
+    errorCode: 'no_edits'
+  }
+  /**
+   * handlePreviewAttribution serves POST
+   * /api/books/{id}/chapters/{idx}/attribute-speakers/preview: runs speaker
+   * attribution over the chapter exactly as attributeChapter would and
+   * returns every dialogue line's proposed speaker beside its current one,
+   * storing nothing - for checking an attribution change against a chapter
+   * (and against the reader's recorded corrections) without overwriting
+   * it. Synchronous, run as one KindLLMPreview task at TierNormal: a
+   * diagnostic, not something a client should call routinely.
+   *
+   * Unlike attributeChapter, the chapter's own corrected lines are asked
+   * about, not shown, unless ?given=half (lines at even paragraph idx shown
+   * with the reader's speaker, the odd ones held out to score) or
+   * ?given=all. ?corrections=0 leaves out earlier chapters' corrections, for
+   * an A/B against them in one build.
+   */
+  'POST /api/books/{id}/chapters/{idx}/attribute-speakers/preview': {
+    path: { id: string; idx: number }
+    query: { given?: string | number | boolean; corrections?: string | number | boolean }
+    body: never
+    response: AttributionPreviewResponse
     errorCode: never
   }
   /**
@@ -2045,6 +2167,24 @@ export interface Routes {
     query: Record<never, never>
     body: never
     response: ChapterNotesResponse
+    errorCode: never
+  }
+  /**
+   * handlePutChapterNotes serves PUT /api/books/{id}/chapters/{idx}/notes:
+   * the reader's own version of the chapter's notes - most often a fixed
+   * cast (someone missing, someone placed in a scene they aren't in, a
+   * reference tied to the wrong person), which attribution reads on its next
+   * run. Stored marked edited, so the summary pass keeps it. Trims and
+   * dedupes; 400 for a nameless or group cast member, a duplicate name, a
+   * scene starting outside the chapter or twice at one paragraph, or a
+   * scene's present list naming someone not in the cast. Scenes are sorted
+   * by start. Passes that already read the old notes aren't re-run.
+   */
+  'PUT /api/books/{id}/chapters/{idx}/notes': {
+    path: { id: string; idx: number }
+    query: Record<never, never>
+    body: ChapterNotes
+    response: void
     errorCode: never
   }
   /**
@@ -2282,6 +2422,21 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handlePreviewScareQuotes serves POST
+   * /api/books/{id}/chapters/{idx}/retag-scare-quotes/preview: runs the
+   * scare-quote pass over the chapter and returns every candidate or
+   * currently flagged quoted line with the flag a fresh pass would give it,
+   * storing nothing - handlePreviewAttribution's sibling for scoring the
+   * pass against the reader's corrections. Same queue slot and tier.
+   */
+  'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes/preview': {
+    path: { id: string; idx: number }
+    query: Record<never, never>
+    body: never
+    response: ScareQuotePreviewResponse
+    errorCode: never
+  }
+  /**
    * handleRunChapterAmbience is POST .../chapters/{idx}/run-ambience - runs the
    * ambience pass (ambienceChapter: music scoring via
    * internal/speakerattr.Client.ScoreMusic, then the lighting sub-pass) for
@@ -2310,11 +2465,12 @@ export interface Routes {
   }
   /**
    * handleSummarizeChapter serves POST /api/books/{id}/chapters/{idx}/summarize:
-   * queues the chapter's summary pass, re-running it if it already has one.
+   * queues the chapter's summary pass, re-running it if it already has one -
+   * except over notes the reader edited, unless ?overwriteEdits=true.
    */
   'POST /api/books/{id}/chapters/{idx}/summarize': {
     path: { id: string; idx: number }
-    query: Record<never, never>
+    query: { overwriteEdits?: string | number | boolean }
     body: never
     response: QueuedResponse
     errorCode: never
@@ -2446,7 +2602,8 @@ export interface Routes {
    * (Narrator) - see Store.ReassignCharacterSpeaker's own doc comment for
    * why: these paragraphs are still real quoted dialogue, just no longer
    * attributed to this character, and "Narrator" is reserved exclusively
-   * for actual narration. Scoped to this book only; their identity/Summary,
+   * for actual narration. Paragraphs tagged as describing them lose that
+   * tag. Scoped to this book only; their identity/Summary,
    * every clone model's voice assignment, and every voice preset
    * auto-created for them (+ cached reference clip) are deleted for their
    * whole series scope, same split as handleDeleteBookSpeakerData.
@@ -2611,6 +2768,24 @@ export interface Routes {
     path: { id: string; characterId: string }
     query: Record<never, never>
     body: MergeCharacterRequest
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleRenameCharacter renames one character series-wide
+   * (renameCharacter: their lines, description tags, speaker corrections,
+   * summary notes, the setting's narrator, auto-named voice presets), keeping
+   * their voice, casting and audio. The old name becomes an alias, so
+   * attribution folds it back in if the text or the model still uses it -
+   * unless it names no single person ("Protagonist", "the other noble,
+   * Charles"). 400 for a name that isn't one person's (a group, a
+   * non-answer, Narrator/Unknown); 409 when another character in the series
+   * already has it as a name or alias (merge them instead).
+   */
+  'PUT /api/books/{id}/characters/{characterId}/name': {
+    path: { id: string; characterId: string }
+    query: Record<never, never>
+    body: RenameCharacterRequest
     response: void
     errorCode: never
   }
@@ -2843,6 +3018,21 @@ export interface Routes {
     query: { chapters?: string | number | boolean }
     body: never
     response: BookManifest
+    errorCode: never
+  }
+  /**
+   * handleListParagraphEdits serves GET /api/books/{id}/paragraph-edits
+   * (?field=speaker|emotion|scare_quote, default all): every manual
+   * correction the reader made to the book's machine-labeled speakers,
+   * emotions and scare-quote flags, in
+   * reading order - the reference a change to attribution or the emotion
+   * pass is scored against.
+   */
+  'GET /api/books/{id}/paragraph-edits': {
+    path: { id: string }
+    query: { field?: ParagraphEditField }
+    body: never
+    response: ParagraphEditsResponse
     errorCode: never
   }
   'GET /api/books/{id}/position': {
@@ -3126,10 +3316,15 @@ export interface Routes {
    * Jobs dashboard's "Pause" button. Whatever's already in flight keeps
    * running to completion (see jobs.Manager.Pause's own doc comment) -
    * this is not a cancel, and reverses cleanly via handleResumeJobs.
+   * ?drain=1 also waits for that in-flight work to finish and resident
+   * models to unload (jobs.Manager.WaitDrained) before answering; from then
+   * until resume, only explicit previews run, one pool at a time with
+   * nothing else - what an eval run (backend/attreval) wants, so its many
+   * previews don't swap models back and forth against generation.
    */
   'POST /api/jobs/pause': {
     path: Record<never, never>
-    query: Record<never, never>
+    query: { drain?: string | number | boolean }
     body: never
     response: void
     errorCode: never
@@ -3560,11 +3755,13 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/bulk/{action}': 'json',
   'GET /api/books/{id}/chapters/{idx}': 'json',
   'POST /api/books/{id}/chapters/{idx}/attribute-speakers': 'json',
+  'POST /api/books/{id}/chapters/{idx}/attribute-speakers/preview': 'json',
   'DELETE /api/books/{id}/chapters/{idx}/audio': 'none',
   'POST /api/books/{id}/chapters/{idx}/generate': 'json',
   'POST /api/books/{id}/chapters/{idx}/generate-music': 'json',
   'GET /api/books/{id}/chapters/{idx}/music': 'json',
   'GET /api/books/{id}/chapters/{idx}/notes': 'json',
+  'PUT /api/books/{id}/chapters/{idx}/notes': 'none',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description': 'none',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion': 'none',
   'POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/generate-sfx': 'json',
@@ -3576,6 +3773,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/resolve-pronunciation': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-descriptions': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes': 'json',
+  'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes/preview': 'json',
   'POST /api/books/{id}/chapters/{idx}/run-ambience': 'json',
   'POST /api/books/{id}/chapters/{idx}/summarize': 'json',
   'POST /api/books/{id}/chapters/{idx}/tag-directions': 'json',
@@ -3592,6 +3790,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/characters/{characterId}/generate-voice': 'json',
   'PUT /api/books/{id}/characters/{characterId}/invalid': 'none',
   'POST /api/books/{id}/characters/{characterId}/merge': 'none',
+  'PUT /api/books/{id}/characters/{characterId}/name': 'none',
   'PUT /api/books/{id}/characters/{characterId}/pronouns': 'json',
   'PUT /api/books/{id}/characters/{characterId}/role': 'none',
   'PUT /api/books/{id}/characters/{characterId}/voice': 'none',
@@ -3610,6 +3809,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'DELETE /api/books/{id}/lexicon/{entryId}': 'none',
   'POST /api/books/{id}/lookahead': 'json',
   'GET /api/books/{id}/manifest': 'json',
+  'GET /api/books/{id}/paragraph-edits': 'json',
   'GET /api/books/{id}/position': 'json',
   'PUT /api/books/{id}/position': 'none',
   'POST /api/books/{id}/preprocess': 'json',

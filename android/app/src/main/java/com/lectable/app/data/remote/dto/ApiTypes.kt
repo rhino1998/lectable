@@ -129,7 +129,8 @@ object ErrorCodes {
     const val NO_SOURCE_EPUB: ErrorCode = "no_source_epub"
     const val TITLE_MISMATCH: ErrorCode = "title_mismatch"
     const val BOOK_EXISTS: ErrorCode = "book_exists"
-    val VALUES: List<ErrorCode> = listOf(NO_SOURCE_EPUB, TITLE_MISMATCH, BOOK_EXISTS)
+    const val NO_EDITS: ErrorCode = "no_edits"
+    val VALUES: List<ErrorCode> = listOf(NO_SOURCE_EPUB, TITLE_MISMATCH, BOOK_EXISTS, NO_EDITS)
 }
 
 /**
@@ -188,6 +189,26 @@ object LightEffects {
     const val LIGHTNING: LightEffect = "lightning"
     const val SHIMMER: LightEffect = "shimmer"
     val VALUES: List<LightEffect> = listOf(STEADY, FLICKER, PULSE, LIGHTNING, SHIMMER)
+}
+
+/**
+ * paragraphEditField is a paragraph field a reader's manual edit is
+ * recorded for (store.EditSpeaker/EditEmotion/EditScareQuote; a scare-quote
+ * edit's values are "true"/"false").
+ *
+ *
+ * Values: see [ParagraphEditFields].
+ */
+typealias ParagraphEditField = String
+
+/**
+ * [ParagraphEditField]'s wire values, in declaration order.
+ */
+object ParagraphEditFields {
+    const val SPEAKER: ParagraphEditField = "speaker"
+    const val EMOTION: ParagraphEditField = "emotion"
+    const val SCARE_QUOTE: ParagraphEditField = "scare_quote"
+    val VALUES: List<ParagraphEditField> = listOf(SPEAKER, EMOTION, SCARE_QUOTE)
 }
 
 /**
@@ -321,6 +342,38 @@ object ApiCatalog {
 @Serializable
 data class AliasesResponseDto(
     val aliases: List<String> = emptyList(),
+)
+
+/**
+ * attributionPreviewLineDTO is one dialogue line of an attribution
+ * preview: its speaker now, what a fresh attribution run proposes, and -
+ * when the reader corrected it by hand - the machine's original answer
+ * before that edit (Current is then the reader's value).
+ */
+@Serializable
+data class AttributionPreviewLineDto(
+    val paragraphIdx: Int = 0,
+    val text: String = "",
+    val current: String = "",
+    val proposed: String = "",
+    val edited: Boolean = false,
+    val original: String? = null,
+    /**
+     * Given is a corrected line the run was shown with its speaker
+     * (?given=), so Proposed is just the reader's value back - leave it
+     * out of any score.
+     */
+    val given: Boolean = false,
+)
+
+@Serializable
+data class AttributionPreviewResponseDto(
+    val lines: List<AttributionPreviewLineDto> = emptyList(),
+    /**
+     * Error is a batch failure partway through; Lines still holds what
+     * finished.
+     */
+    val error: String? = null,
 )
 
 @Serializable
@@ -604,6 +657,12 @@ data class ChapterNotesDto(
     val summary: String = "",
     val scenes: List<SummarySceneDto> = emptyList(),
     val cast: List<CastMemberDto> = emptyList(),
+    /**
+     * Edited notes were saved by the reader (PUT .../notes); the summary
+     * pass keeps them unless a summarize request passes overwriteEdits.
+     * Ignored on PUT.
+     */
+    val edited: Boolean = false,
 )
 
 /**
@@ -1025,6 +1084,12 @@ data class JobsSnapshotDto(
      */
     val paused: Boolean = false,
     /**
+     * Drained is jobs.Manager.Drained(): paused, everything that was in
+     * flight finished and resident models unloaded - from then until
+     * resume, only explicit previews run (see POST /api/jobs/pause?drain=1).
+     */
+    val drained: Boolean = false,
+    /**
      * NarrationCharsPerSecond is jobs.Manager.Throughput: how fast
      * narration has been rendering lately, in characters of paragraph text
      * per second across every generation slot together, rounded to 0.1.
@@ -1347,6 +1412,27 @@ data class ParagraphDto(
 )
 
 /**
+ * paragraphEditDTO is one recorded manual correction (store.ParagraphEdit):
+ * the machine's value before the first edit, and the reader's latest.
+ * Speakers read "Narrator" where the store holds "".
+ */
+@Serializable
+data class ParagraphEditDto(
+    val chapterIdx: Int = 0,
+    val paragraphIdx: Int = 0,
+    val field: ParagraphEditField = "",
+    val original: String = "",
+    val value: String = "",
+    val editedAt: Long = 0L,
+    val text: String = "",
+)
+
+@Serializable
+data class ParagraphEditsResponseDto(
+    val edits: List<ParagraphEditDto> = emptyList(),
+)
+
+/**
  * Passes is a chapter's own book-preprocess pipeline progress
  * (chapters.passes, stored as a JSON object - the same "flexible,
  * independent facts" shape tts_tags/describes_characters/pronunciation
@@ -1621,6 +1707,35 @@ data class RegenerateVariantRequestDto(
 data class ReimportChapterResponseDto(
     val title: String = "",
     val paragraphs: Int = 0,
+)
+
+/**
+ * renameCharacterRequest is PUT .../characters/{characterId}/name's body.
+ */
+@Serializable
+data class RenameCharacterRequestDto(
+    val name: String = "",
+)
+
+/**
+ * scareQuotePreviewLineDTO is one quoted line a scare-quote preview asked
+ * about or flagged: whether it is flagged now, whether a fresh pass flags
+ * it, and whether the reader set it by hand.
+ */
+@Serializable
+data class ScareQuotePreviewLineDto(
+    val paragraphIdx: Int = 0,
+    val text: String = "",
+    val current: Boolean = false,
+    val proposed: Boolean = false,
+    val candidate: Boolean = false,
+    val edited: Boolean = false,
+)
+
+@Serializable
+data class ScareQuotePreviewResponseDto(
+    val lines: List<ScareQuotePreviewLineDto> = emptyList(),
+    val error: String? = null,
 )
 
 @Serializable

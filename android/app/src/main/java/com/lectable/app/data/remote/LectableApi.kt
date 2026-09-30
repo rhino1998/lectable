@@ -147,12 +147,41 @@ interface LectableApi {
      * jobs.Manager.EnqueueAttribution's own doc comment for the full story.
      * Progress is observable via GET /api/jobs and by refetching this book's
      * speaker table once a chapter's task clears.
+     *
+     * ?scope=edits re-asks only the dialogue around the chapter's corrected
+     * lines (attributeAroundEdits), with the corrections shown - "I fixed a
+     * few, sort out the rest". 409 no_edits when the chapter has none.
      */
     @POST("api/books/{id}/chapters/{idx}/attribute-speakers")
     suspend fun attributeSpeakers(
         @Path("id") id: String,
         @Path("idx") idx: Int,
+        @Query("scope") scope: String? = null,
     ): QueuedResponseDto
+
+    /**
+     * handlePreviewAttribution serves POST
+     * /api/books/{id}/chapters/{idx}/attribute-speakers/preview: runs speaker
+     * attribution over the chapter exactly as attributeChapter would and
+     * returns every dialogue line's proposed speaker beside its current one,
+     * storing nothing - for checking an attribution change against a chapter
+     * (and against the reader's recorded corrections) without overwriting
+     * it. Synchronous, run as one KindLLMPreview task at TierNormal: a
+     * diagnostic, not something a client should call routinely.
+     *
+     * Unlike attributeChapter, the chapter's own corrected lines are asked
+     * about, not shown, unless ?given=half (lines at even paragraph idx shown
+     * with the reader's speaker, the odd ones held out to score) or
+     * ?given=all. ?corrections=0 leaves out earlier chapters' corrections, for
+     * an A/B against them in one build.
+     */
+    @POST("api/books/{id}/chapters/{idx}/attribute-speakers/preview")
+    suspend fun previewAttribution(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+        @Query("given") given: String? = null,
+        @Query("corrections") corrections: String? = null,
+    ): AttributionPreviewResponseDto
 
     /**
      * handleDeleteChapterAudio is handleDeleteBookAudio's single-chapter
@@ -214,6 +243,24 @@ interface LectableApi {
         @Path("id") id: String,
         @Path("idx") idx: Int,
     ): ChapterNotesResponseDto
+
+    /**
+     * handlePutChapterNotes serves PUT /api/books/{id}/chapters/{idx}/notes:
+     * the reader's own version of the chapter's notes - most often a fixed
+     * cast (someone missing, someone placed in a scene they aren't in, a
+     * reference tied to the wrong person), which attribution reads on its next
+     * run. Stored marked edited, so the summary pass keeps it. Trims and
+     * dedupes; 400 for a nameless or group cast member, a duplicate name, a
+     * scene starting outside the chapter or twice at one paragraph, or a
+     * scene's present list naming someone not in the cast. Scenes are sorted
+     * by start. Passes that already read the old notes aren't re-run.
+     */
+    @PUT("api/books/{id}/chapters/{idx}/notes")
+    suspend fun putChapterNotes(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+        @Body body: ChapterNotesDto,
+    ): Unit
 
     /**
      * handleSetParagraphDescription reassigns one paragraph's description
@@ -455,6 +502,20 @@ interface LectableApi {
     ): QueuedResponseDto
 
     /**
+     * handlePreviewScareQuotes serves POST
+     * /api/books/{id}/chapters/{idx}/retag-scare-quotes/preview: runs the
+     * scare-quote pass over the chapter and returns every candidate or
+     * currently flagged quoted line with the flag a fresh pass would give it,
+     * storing nothing - handlePreviewAttribution's sibling for scoring the
+     * pass against the reader's corrections. Same queue slot and tier.
+     */
+    @POST("api/books/{id}/chapters/{idx}/retag-scare-quotes/preview")
+    suspend fun previewScareQuotes(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+    ): ScareQuotePreviewResponseDto
+
+    /**
      * handleRunChapterAmbience is POST .../chapters/{idx}/run-ambience - runs the
      * ambience pass (ambienceChapter: music scoring via
      * internal/speakerattr.Client.ScoreMusic, then the lighting sub-pass) for
@@ -482,12 +543,14 @@ interface LectableApi {
 
     /**
      * handleSummarizeChapter serves POST /api/books/{id}/chapters/{idx}/summarize:
-     * queues the chapter's summary pass, re-running it if it already has one.
+     * queues the chapter's summary pass, re-running it if it already has one -
+     * except over notes the reader edited, unless ?overwriteEdits=true.
      */
     @POST("api/books/{id}/chapters/{idx}/summarize")
     suspend fun summarizeChapter(
         @Path("id") id: String,
         @Path("idx") idx: Int,
+        @Query("overwriteEdits") overwriteEdits: String? = null,
     ): QueuedResponseDto
 
     /**
@@ -609,7 +672,8 @@ interface LectableApi {
      * (Narrator) - see Store.ReassignCharacterSpeaker's own doc comment for
      * why: these paragraphs are still real quoted dialogue, just no longer
      * attributed to this character, and "Narrator" is reserved exclusively
-     * for actual narration. Scoped to this book only; their identity/Summary,
+     * for actual narration. Paragraphs tagged as describing them lose that
+     * tag. Scoped to this book only; their identity/Summary,
      * every clone model's voice assignment, and every voice preset
      * auto-created for them (+ cached reference clip) are deleted for their
      * whole series scope, same split as handleDeleteBookSpeakerData.
@@ -770,6 +834,24 @@ interface LectableApi {
         @Path("id") id: String,
         @Path("characterId") characterId: String,
         @Body body: MergeCharacterRequestDto,
+    ): Unit
+
+    /**
+     * handleRenameCharacter renames one character series-wide
+     * (renameCharacter: their lines, description tags, speaker corrections,
+     * summary notes, the setting's narrator, auto-named voice presets), keeping
+     * their voice, casting and audio. The old name becomes an alias, so
+     * attribution folds it back in if the text or the model still uses it -
+     * unless it names no single person ("Protagonist", "the other noble,
+     * Charles"). 400 for a name that isn't one person's (a group, a
+     * non-answer, Narrator/Unknown); 409 when another character in the series
+     * already has it as a name or alias (merge them instead).
+     */
+    @PUT("api/books/{id}/characters/{characterId}/name")
+    suspend fun renameCharacter(
+        @Path("id") id: String,
+        @Path("characterId") characterId: String,
+        @Body body: RenameCharacterRequestDto,
     ): Unit
 
     /**
@@ -984,6 +1066,20 @@ interface LectableApi {
         @Path("id") id: String,
         @Query("chapters") chapters: String? = null,
     ): BookManifestDto
+
+    /**
+     * handleListParagraphEdits serves GET /api/books/{id}/paragraph-edits
+     * (?field=speaker|emotion|scare_quote, default all): every manual
+     * correction the reader made to the book's machine-labeled speakers,
+     * emotions and scare-quote flags, in
+     * reading order - the reference a change to attribution or the emotion
+     * pass is scored against.
+     */
+    @GET("api/books/{id}/paragraph-edits")
+    suspend fun listParagraphEdits(
+        @Path("id") id: String,
+        @Query("field") field: ParagraphEditField? = null,
+    ): ParagraphEditsResponseDto
 
     @GET("api/books/{id}/position")
     suspend fun getPosition(
@@ -1233,9 +1329,16 @@ interface LectableApi {
      * Jobs dashboard's "Pause" button. Whatever's already in flight keeps
      * running to completion (see jobs.Manager.Pause's own doc comment) -
      * this is not a cancel, and reverses cleanly via handleResumeJobs.
+     * ?drain=1 also waits for that in-flight work to finish and resident
+     * models to unload (jobs.Manager.WaitDrained) before answering; from then
+     * until resume, only explicit previews run, one pool at a time with
+     * nothing else - what an eval run (backend/attreval) wants, so its many
+     * previews don't swap models back and forth against generation.
      */
     @POST("api/jobs/pause")
-    suspend fun pauseJobs(): Unit
+    suspend fun pauseJobs(
+        @Query("drain") drain: String? = null,
+    ): Unit
 
     /**
      * handleRestartWorker forces an immediate ttsworker restart - the Jobs
