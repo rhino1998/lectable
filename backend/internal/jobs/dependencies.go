@@ -464,38 +464,12 @@ func (m *Manager) referenceClipDependency(lq *taskqueue.LockedQueue, t *task) ta
 	if found, ok := lq.Get("voice_provision:generate:" + t.presetID); ok {
 		return found
 	}
-	// Nobody's rendering it yet - create the task now, carrying everything
-	// it needs straight from t's own already-resolved fields (see
-	// pushResolvedTask), no httpapi/character context required.
+	// Nobody's rendering it yet - create the task now.
 	label := t.paragraph.Speaker
 	if label == "" {
 		label = "Narrator"
 	}
-	nt := &task{
-		kind:   KindVoiceProvision,
-		tier:   t.tier,
-		bookID: t.bookID,
-		llmKey: "generate:" + t.presetID,
-		label:  label,
-		runProvision: func(ctx context.Context, attempt int) (string, error) {
-			// VoiceDesign is fully deterministic on (instruct, seed,
-			// refText, language) - see EnqueueVoiceProvision's own doc
-			// comment on why a retry (attempt > 0) needs a perturbed seed
-			// rather than reproducing a numerically-unstable crash
-			// identically every time. Persisted back onto the preset row
-			// on success so a later regenerate/edit-save-unchanged picks
-			// up the seed that's actually on disk instead of reverting to
-			// the original, crash-triggering one.
-			seed := t.seed + attempt
-			path, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, t.presetID, t.instruct, seed, t.refText, t.speedMultiplier, t.designModel)
-			if err == nil && attempt > 0 {
-				if uerr := m.store.UpdateVoicePresetSeed(t.presetID, seed); uerr != nil {
-					log.Printf("jobs: persist bumped seed for preset %s: %v", t.presetID, uerr)
-				}
-			}
-			return path, err
-		},
-	}
+	nt := m.newReferenceClipTask(t.tier, t.bookID, label, taskBaseClip(t))
 	return m.pushDependency(lq, nt)
 }
 
@@ -522,6 +496,18 @@ func (m *Manager) variantClipDependency(lq *taskqueue.LockedQueue, t *task) task
 	if emotion == emotions.Neutral {
 		return nil
 	}
+	// The variant is cloned from the base clip, and EnsureVariantFile would
+	// otherwise render a missing base inline, from whatever casting t
+	// captured when it was queued - after a recast, the old one, with the
+	// recast's own re-render then replacing that base and wiping the variant
+	// made from it. referenceClipDependency already holds t on the base;
+	// the variant's task is created on a later pass, once the base exists.
+	if !lq.Memo("refclip:"+t.presetID, func() any {
+		_, err := os.Stat(audiopath.VoicePresetRefFile(m.dataDir, t.presetID))
+		return err == nil
+	}).(bool) {
+		return nil
+	}
 	settled := lq.Memo("variantclip:"+t.presetID+":"+emotion, func() any {
 		return voicerefs.VariantExists(m.dataDir, t.presetID, emotion) || voicerefs.VariantFailed(m.dataDir, t.presetID, emotion)
 	}).(bool)
@@ -535,7 +521,16 @@ func (m *Manager) variantClipDependency(lq *taskqueue.LockedQueue, t *task) task
 	if label == "" {
 		label = "Narrator"
 	}
-	base := voicerefs.BaseClip{
+	return m.pushDependency(lq, m.newVariantTask(t.tier, t.bookID, label, taskBaseClip(t), emotion))
+}
+
+// variantKey is an emotion variant render's llmKey - one per (preset,
+// emotion), so the lazy dependency path and an explicit regenerate
+// (EnqueueEmotionVariant) join rather than rendering twice.
+// taskBaseClip is the base-clip recipe t captured when it was queued -
+// only a fallback: see Manager.freshBaseClip.
+func taskBaseClip(t *task) voicerefs.BaseClip {
+	return voicerefs.BaseClip{
 		PresetID:        t.presetID,
 		Instruct:        t.instruct,
 		Seed:            t.seed,
@@ -543,12 +538,60 @@ func (m *Manager) variantClipDependency(lq *taskqueue.LockedQueue, t *task) task
 		SpeedMultiplier: t.speedMultiplier,
 		DesignModel:     t.designModel,
 	}
-	return m.pushDependency(lq, m.newVariantTask(t.tier, t.bookID, label, base, emotion))
 }
 
-// variantKey is an emotion variant render's llmKey - one per (preset,
-// emotion), so the lazy dependency path and an explicit regenerate
-// (EnqueueEmotionVariant) join rather than rendering twice.
+// freshBaseClip re-reads base's preset when a render actually runs, since
+// the casting may have changed since the task that asked for it was queued
+// (a recast rewrites the preset's instruct and reference text, and deletes
+// its clip, under hundreds of already-queued lines). A built-in preset,
+// which isn't in the store, keeps base as is.
+func (m *Manager) freshBaseClip(base voicerefs.BaseClip) voicerefs.BaseClip {
+	p, err := m.store.GetVoicePreset(base.PresetID)
+	if err != nil || p == nil {
+		return base
+	}
+	return voicerefs.BaseClip{PresetID: p.ID, Instruct: p.Instruct, Seed: p.Seed, RefText: p.RefText, SpeedMultiplier: p.SpeedMultiplier, DesignModel: p.DesignModel}
+}
+
+// newReferenceClipTask renders a preset's base reference clip if it isn't
+// on disk, keyed "generate:<presetID>" - the task referenceClipDependency
+// finds and every line cloned from the preset waits on.
+func (m *Manager) newReferenceClipTask(tier int, bookID, label string, base voicerefs.BaseClip) *task {
+	return &task{
+		kind:   KindVoiceProvision,
+		tier:   tier,
+		bookID: bookID,
+		llmKey: "generate:" + base.PresetID,
+		label:  label,
+		runProvision: func(ctx context.Context, attempt int) (string, error) {
+			b := m.freshBaseClip(base)
+			// VoiceDesign is fully deterministic on (instruct, seed,
+			// refText, language) - see EnqueueVoiceProvision's own doc
+			// comment on why a retry (attempt > 0) needs a perturbed seed
+			// rather than reproducing a numerically-unstable crash
+			// identically every time. Persisted back onto the preset row
+			// on success so a later regenerate/edit-save-unchanged picks
+			// up the seed that's actually on disk.
+			seed := b.Seed + attempt
+			path, err := voicerefs.EnsureFile(ctx, m.tts, m.dataDir, b.PresetID, b.Instruct, seed, b.RefText, b.SpeedMultiplier, b.DesignModel)
+			if err == nil && attempt > 0 {
+				if uerr := m.store.UpdateVoicePresetSeed(b.PresetID, seed); uerr != nil {
+					log.Printf("jobs: persist bumped seed for preset %s: %v", b.PresetID, uerr)
+				}
+			}
+			return path, err
+		},
+	}
+}
+
+// EnqueueReferenceClip queues newReferenceClipTask for presetID in the
+// background - a recast pre-rendering the voice it just invalidated, under
+// the same key the lines waiting on that clip look for, so they wait on
+// this render instead of starting their own.
+func (m *Manager) EnqueueReferenceClip(bookID, presetID, label string) {
+	m.pushTask(m.newReferenceClipTask(TierBackground, bookID, label, voicerefs.BaseClip{PresetID: presetID}))
+}
+
 func variantKey(presetID, emotion string) string {
 	return "variant:" + presetID + ":" + emotion
 }
@@ -565,7 +608,7 @@ func (m *Manager) newVariantTask(tier int, bookID, speaker string, base voiceref
 		llmKey: variantKey(base.PresetID, emotion),
 		label:  speaker + " (" + emotion + ")",
 		runProvision: func(ctx context.Context, attempt int) (string, error) {
-			path, err := voicerefs.EnsureVariantFile(ctx, m.tts, m.dataDir, base, emotion)
+			path, err := voicerefs.EnsureVariantFile(ctx, m.tts, m.dataDir, m.freshBaseClip(base), emotion)
 			if err != nil && !errors.Is(err, context.Canceled) && attempt+1 >= maxTaskAttempts {
 				log.Printf("jobs: %s variant for preset %s failed for good, falling back to the base clip: %v", emotion, base.PresetID, err)
 				if merr := voicerefs.MarkVariantFailed(m.dataDir, base.PresetID, emotion); merr != nil {

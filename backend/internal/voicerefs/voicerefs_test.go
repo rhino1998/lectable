@@ -481,18 +481,25 @@ func TestBoundLoudness(t *testing.T) {
 	}
 	for _, tc := range []struct {
 		name      string
+		emotion   string
 		amplitude float32
 		want      float64
 	}{
-		// Band is -10 LU..+5.85 LU around 0.2: amplitudes ~0.0632..~0.3927.
-		{"within band louder", 0.35, 0.35},
-		{"within band quieter", 0.08, 0.08},
-		{"too loud", 0.8, 0.2 * math.Pow(10, maxVariantLU/20)},
-		{"too quiet", 0.03, 0.2 * math.Pow(10, minVariantLU/20)},
+		// Default band is -10 LU..+5.85 LU around 0.2: amplitudes ~0.0632..~0.3927.
+		{"within band louder", "sad", 0.35, 0.35},
+		{"within band quieter", "sad", 0.08, 0.08},
+		{"too loud", "sad", 0.8, 0.2 * math.Pow(10, maxVariantLU/20)},
+		{"too quiet", "sad", 0.03, 0.2 * math.Pow(10, minVariantLU/20)},
+		// Shout's floor is above the base: a shout as loud as the base is raised.
+		{"shout raised", "shout", 0.2, 0.2 * math.Pow(10, 10*math.Log2(1.3)/20)},
+		{"shout too loud", "shout", 0.8, 0.2 * math.Pow(10, 10*math.Log2(1.75)/20)},
+		// Whisper's floor is just under the base: a -10 LU whisper is raised.
+		{"whisper raised", "whisper", 0.0632, 0.2 * math.Pow(10, 10*math.Log2(0.8)/20)},
+		{"whisper too loud", "whisper", 0.3, 0.2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			variant := constantAmplitudeClip(t, tc.amplitude, 1000, 16000)
-			out, err := boundLoudness(variant, base)
+			out, err := boundLoudness(variant, base, tc.emotion)
 			if err != nil {
 				t.Fatalf("boundLoudness: %v", err)
 			}
@@ -500,5 +507,27 @@ func TestBoundLoudness(t *testing.T) {
 				t.Fatalf("peak = %.4f, want %.4f", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBoundLoudnessPeakCeiling(t *testing.T) {
+	// A shout matching a loud base would need ~0.95 peak to reach its
+	// floor; the raise stops at variantPeakCeiling instead of clipping.
+	base := constantAmplitudeClip(t, 0.7, 1000, 16000)
+	variant := constantAmplitudeClip(t, 0.7, 1000, 16000)
+	out, err := boundLoudness(variant, base, "shout")
+	if err != nil {
+		t.Fatalf("boundLoudness: %v", err)
+	}
+	clip, err := wav.Decode(out)
+	if err != nil {
+		t.Fatalf("wav.Decode: %v", err)
+	}
+	var p float64
+	for _, s := range clip.Samples {
+		p = max(p, math.Abs(float64(s)))
+	}
+	if math.Abs(p-variantPeakCeiling) > 0.005 {
+		t.Fatalf("peak = %.4f, want %.4f", p, variantPeakCeiling)
 	}
 }

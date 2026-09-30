@@ -816,7 +816,43 @@ building/running `ttsworker` does, since both now link into that binary.
        `store.Character.Summary`, shared across every clone model's own
        voice preset for this character (see "Per-clone-model voice
        assignment" below). Can characterize from descriptions alone, with
-       no dialogue yet.
+       no dialogue yet. The prompt (rewritten 2026-09-30) casts the
+       character's *resting* voice in audible terms only (gender + age
+       group, pitch/pace/timbre, one accent, one or two usual traits) -
+       never their emotional range, since every line clones from the one
+       reference clip and emotion variants are rendered from it - and has
+       the model write an `evidence` field (ignored by the parser) before
+       casting. Accent order: an explicit textual signal, then the setting
+       accent, then the dialogue's idiom; slang/roughness is a register,
+       not an accent. The refLine is a calm, in-character line with no
+       story names, exclamations or apostrophe respellings (the design
+       model misreads "'ere"/"yer"). `Store.QuotesForBooks` spreads its 20
+       lines across the character's whole run, preferring lines of 4+
+       words (it took the first 20: Spire's Spite's Fritz, 8000 lines,
+       was cast from his introduction scene). Measured on 20 characters
+       across three books against the old prompt (a harness calling the
+       worker's `/llm/generate` directly with the queue drained): 0 vs 3
+       unparseable replies; no leaked archetype rules (the old one gave
+       "the Guard" a pirate's "seafaring drawl" and an orc's Cockney); no
+       visual detail or emotional range in the instruct. A character's own
+       recurring national idiom (British "mate"/"bloody"/"arse", American
+       "dude"/"gotten", Southern "y'all") outranks the setting accent - Arise's
+       cast is mixed, and Steve is British whatever the setting says.
+       **Co-stars**: the user turn lists "Already cast" - up to 5 characters
+       sharing the most chapters with this one (`Store.CoSpeakersForBooks`,
+       one SQL query) who already have a `Summary`, roles and invalid ones
+       left out (`httpapi.characterizedCostars`) - and the prompt asks for a
+       voice listeners can tell apart from each by pitch, pace or texture.
+       Measured: Spire's Spite's Fritz and Bert, both "gruff, gravelly,
+       middle-aged working-class British" when cast alone, came apart
+       (Bert "lighter, higher, brisk, bright"). Shown whole instructs, the
+       model once returned Mizhu's casting word for word for Sessi (a god,
+       cast as "a young male swampkin"), so a reply sharing more than 0.6
+       of its words with a co-star's (`wordOverlap`, Jaccard;
+       `maxCostarOverlap`) is retried - honest castings topped out at 0.44
+       over 276 pairs. Still weak for leads whose sampled lines don't show
+       who they are (a per-character dossier, e.g. per-cast-member notes
+       from the summary pass merged once per character, is the next step).
 
   **Characterization and voice provisioning happen lazily, not during
   attribution.** An earlier version ran both eagerly, inline, as part of
@@ -928,10 +964,14 @@ building/running `ttsworker` does, since both now link into that binary.
   `voice-refs/variants/<presetID>/<emotion>.wav`): BreezeTTS instructed
   cloning (`voices.InstructedCloneModel`) of the preset's own base clip,
   speaking that emotion's `RefLine` under its `Instruction`, capped at
-  `maxRefClipSeconds` and loudness-bounded to sound at most half or
-  1.5x as loud as the base clip (-10..+5.85 LU, taking +10 LU as twice
-  as loud; only base clips are fully normalized, so a shout or whisper
-  keeps some of its own loudness). An emotional
+  `maxRefClipSeconds` and loudness-bounded against the base clip
+  (`voicerefs.variantBand`, taking +10 LU as twice as loud): most emotions
+  may sound half to 1.5x as loud (-10..+5.85 LU), a shout 1.3-1.75x
+  (forced louder - Breeze's shouts often landed no louder than the base),
+  a whisper 0.8-1x (Breeze's whispers landed up to -10 LU, inaudible once
+  cloned, since paragraph audio isn't normalized and inherits its
+  reference's level); a raise never pushes the peak past ~-1 dBFS. Only
+  base clips are fully normalized. An emotional
   line then clones from the variant (with its `RefLine` as the reference
   transcript) instead of the base clip - `jobs.Manager.generate`, via
   `emotionVariant`, which re-reads the paragraph's emotion from the store
@@ -1756,11 +1796,12 @@ build does, since both now link into that one binary.
 - `GET /api/books/{id}/speakers` — per-book speaker table: Narrator + every attributed character (shared across the whole series), each with its `summary` characterization, paragraph/ready-audio counts, a sample clip URL, and `emotions` (each emotion their lines use, with count and variant status/audio URL)
 - `DELETE /api/books/{id}/speakers` — clear this book's own paragraph attribution and delete the whole series scope's character roster (identity, voice assignments, auto-created voice presets + cached clips) - the Speakers page's own "Delete speaker data" button, for starting over from scratch
 - `DELETE /api/books/{id}/characters/{characterId}` — remove one character: this book's own paragraphs attributed to them revert to Unknown (still real dialogue, just unattributed - "Narrator" is reserved for actual narration, never dialogue), their identity/voice assignments/auto-created voice presets are deleted for their whole series scope - a scalpel next to the above, for cleaning up a single bad attribution without resetting the whole roster
-- `POST /api/books/{id}/characters/{characterId}/merge` — `{"targetName": "..."}`; folds one character into another (or into `"Narrator"`, same effect as the DELETE above): this book's own paragraphs attributed to them are reattributed to targetName instead of blanked, and their own identity/voice/presets are deleted for their whole series scope
+- `POST /api/books/{id}/characters/{characterId}/merge` — `{"targetName": "..."}`; folds one character into another (or into `"Narrator"`, same effect as the DELETE above): this book's own paragraphs attributed to them are reattributed to targetName instead of blanked, paragraphs tagged as describing them move to targetName too (`Store.ReassignCharacterDescriptions`; dropped for Narrator/Unknown, and on DELETE; dedupe and rename move them the same way - `Store.RepairDescribedNames` re-points tags orphaned by older merges via aliases at startup), and their own identity/voice/presets are deleted for their whole series scope
 - `POST /api/books/{id}/characters/{characterId}/generate-voice` — force-provisions a voice for one character right now instead of waiting for the lazy path; 409 if there still isn't enough attributed dialogue to characterize them from
 - `PUT /api/books/{id}/characters/{characterId}/invalid` — `{"invalid": bool}`; marks a character as not a real speaker (`store.Character.Invalid`). The row is kept as a tombstone so the name stays known: attribution/reattribution withhold it from "Known characters" and remap any result naming it (case-insensitively, unless a valid character has that exact name) to `"Unknown"`, description tagging drops it, and characterization/voice provisioning (preprocess phases, bulk endpoints, lazy provisioning) skip it. Auto Split (`httpapi.reattributeChapterSpeaker`) touches only the speaker's own lines: non-dialogue ones become Narrator, a line with an explicit speech tag naming someone else takes that name with no model call (`speakerattr.RefineWithSpeechTags`), and only the rest go to the model - in a window of surrounding paragraphs centred on them with only those lines asked about, widening each round (20, then 40, then 80 either side, capped at ~20k chars - `speakerattr.Client.AttributeWithWideningContext`) until the answer isn't the split name or another invalid/group name; still rejected at the widest window, a line falls back to `"Unknown"`. (It used to re-attribute every batch of the whole chapter first and discard everything but the target lines.) Non-destructive - existing lines stay attributed to it until Auto Split (`POST .../speakers/reattribute`, which also sets this flag for any real character, i.e. not `"Unknown"`) redistributes them
-- `PUT /api/books/{id}/characters/{characterId}/role` — `{"role": bool}`; marks a character as a generic role label (`store.Character.IsRole` - several unnamed people of one kind, listed as "[role]" to attribution, cast as a type by characterization). Shown as a "role" chip on the Speakers page (web and Android), toggled there too
+- `PUT /api/books/{id}/characters/{characterId}/role` — `{"role": bool}`; marks a character as a generic role label (`store.Character.IsRole` - several unnamed people of one kind, listed as "[role]" to attribution, cast as a type by characterization). Shown as a "role" chip on the Speakers page (web and Android), toggled there too. Attribution sets it for a new name the model answered as `[role]` only when that name's head noun is a word the book uses in lower case (`speakerattr.LowercaseWords.NamesAKind`, via `httpapi.realRoles`, cached per book): "Guard", "Refugee Woman", "Greek police officer" are kinds, while "Henry", "Count Wavereach", "The Nightshark" never appear lower case and stay named people (an acronym head like "Medical AI" counts as a kind). The model had flagged 22 named Spire's Spite characters as roles this way, the Nightshark (195 lines) and Jerry (45) among them; all were unflagged by hand on 2026-09-30, and every role flag left in the library passes the check
 - `POST /api/books/{id}/characters/dedupe` — merges the series roster's duplicate names (`httpapi/dedupe.go`, `dedupeCharacters`), replying `{"merges": [{from, to, reason}]}`: first-person placeholders ("Protagonist", "Main character" - `speakerattr.IsFirstPersonLabel`) into the book setting's `narrator`; case variants into one row (valid, capitalized, oldest first); a description without an article ("bearded man", "Older man", "doctor" - `speakerattr.DescriptorWithoutArticle`) into its role label, or renamed to it; a first name into the one multi-word name containing it ("Lars" into "Lars Machmüller", kept as an alias; skipped when two full names share it or it's a title word). Numbered labels ("Neighbor 1") stay - separate people in one scene. Merges are series-wide (`mergeCharacterInto`). Attribution avoids making these in the first place: `GetCharacterByName` (so `UpsertCharacter`) ignores case, with callers storing the row's own spelling; `resolveIdentities` turns articleless descriptions into roles; a first-person book's narrator (`BookSetting.Narrator`, from the setting pass or edited on the Speakers page) is `Roster.FirstPerson` - every batch is told who "I" is, `RefineWithSpeechTags` credits "I said"/"I asked, “…”" tags to them (`SpeakerNameResolver.WithFirstPerson`), and placeholder answers map to them (Qwen3.6 had labeled 1,437 of Arise: Alpha's lines "Protagonist"); and a newly created full name absorbs a first-name-only character (`absorbShortNames`, after the chapter's lines are stored). One narrator per book for now - task-backlog.md #28 is per-scene POV
+- `PUT /api/books/{id}/characters/{characterId}/name` — `{"name": "..."}`; renames one character series-wide (`handleRenameCharacter` -> `renameCharacter`), keeping their casting, voice and audio: paragraph speakers and description tags, speaker corrections (`paragraph_edits`, both value and original - attribution reads earlier chapters' as lessons), the summary notes' cast and scene lists (a stale cast name would be listed to attribution and recreated as its own character), and the setting's first-person narrator all follow (`Store.RenameSpeakerRecords`), as do auto-named voice presets. The old name becomes an alias unless it names no single person ("Protagonist"); renaming to one of the character's own aliases swaps the two. 400 for a group, non-name, or Narrator/Unknown; 409 when another character in the series has the name or alias (merge instead) or an invalid tombstone has the name (`UNIQUE(scope, name)`). Merge and dedupe renames share the record rewriting (`renameSpeakerEverywhere`). Web: "Rename" beside the name on the Speakers page; Android: the row menu's "Rename…"
 - `PUT /api/books/{id}/characters/{characterId}/aliases` — `{"aliases": [...]}`; replaces a character's other names (`store.Character.Aliases`), which attribution lists in its prompt, folds back into the character's name, and reads in speech tags. 400 for a group ("Bert and Sid") or non-name, 409 for another valid character's name/alias in the series (merge instead). Merging a character into another (`.../merge`) adds the merged-away name and its aliases to the target's automatically; a manual speaker PUT naming an alias resolves to its character
 - `PUT /api/books/{id}/characters/{characterId}/voice` — assign (or clear, with `""`) a character's own narration voice, overriding the auto-assigned one
 - `GET /api/books/{id}/characters/{characterId}/appearances` — every paragraph that character speaks, across every book in their series - a "where does this character show up" list; each one's `audioUrl` is set once its audio is ready under whatever voice it currently resolves to

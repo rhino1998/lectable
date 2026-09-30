@@ -2435,6 +2435,40 @@ func TestVariantClipDependencyRendersThenFallsBack(t *testing.T) {
 	}
 }
 
+// TestVariantWaitsForBaseClip: with the base clip missing (a recast just
+// deleted it), an emotional line waits on the base render alone, and its
+// variant render is only created once the base exists - it used to start
+// alongside, rendering the base inline from the line's stale casting.
+func TestVariantWaitsForBaseClip(t *testing.T) {
+	mgr := newTestManager()
+	mgr.dataDir = t.TempDir()
+	if err := audiopath.EnsureVoiceRefDir(mgr.dataDir); err != nil {
+		t.Fatalf("EnsureVoiceRefDir: %v", err)
+	}
+	clone := &task{
+		kind: KindVoiceClone, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", presetID: "preset-a",
+		paragraph: store.Paragraph{ID: "p-1", Speaker: "Alice", IsQuote: true, Emotion: "angry"},
+	}
+	mgr.pushTask(clone)
+
+	got, ok := mgr.queue.Pop()
+	if !ok || got.(*task).dedupKey() != "voice_provision:generate:preset-a" {
+		t.Fatalf("expected the base render first, got %v ok=%v", got, ok)
+	}
+	if next, ok := mgr.queue.Pop(); ok {
+		t.Fatalf("expected nothing else to dispatch before the base exists, got %q", next.(*task).dedupKey())
+	}
+
+	if err := os.WriteFile(audiopath.VoicePresetRefFile(mgr.dataDir, "preset-a"), []byte("wav"), 0o644); err != nil {
+		t.Fatalf("write base clip: %v", err)
+	}
+	mgr.queue.Finish(got.(*task).dedupKey())
+	got, ok = mgr.queue.Pop()
+	if !ok || got.(*task).dedupKey() != "voice_provision:variant:preset-a:angry" {
+		t.Fatalf("expected the variant render once the base exists, got %v ok=%v", got, ok)
+	}
+}
+
 // TestPausedDrainedQueueRunsOnlyPreviews: after Pause and WaitDrained, an
 // explicit preview still runs - alone - while ordinary queued work keeps
 // waiting until Resume.

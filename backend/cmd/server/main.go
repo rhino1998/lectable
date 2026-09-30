@@ -85,6 +85,11 @@ func main() {
 		log.Fatalf("open database: %v", err)
 	}
 	defer duck.Close()
+	if n, err := duck.RepairDescribedNames(); err != nil {
+		log.Printf("repair description tags: %v", err)
+	} else if n > 0 {
+		log.Printf("repair description tags: re-pointed %d paragraphs from merged-away names", n)
+	}
 	// Everything reads through the cache (invalidated by duck's own write
 	// notifications) - the single DuckDB connection is the bottleneck.
 	cached := store.NewCached(duck)

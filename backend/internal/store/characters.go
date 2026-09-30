@@ -2,7 +2,10 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -371,4 +374,255 @@ func (s *DuckStore) ReassignCharacterSpeaker(bookID, fromName, toName string) er
 		toName, fromName, bookID,
 	)
 	return err
+}
+
+// ReassignCharacterDescriptions is ReassignCharacterSpeaker's counterpart
+// for description tags (paragraphs.describes_characters): every paragraph
+// in bookID tagged as describing fromName describes toName instead, or no
+// longer describes anyone by that name when toName is "" (a merge into
+// Narrator/Unknown, or a deleted character). Other names in the same
+// list are kept, and toName isn't added twice when it was already there.
+// Same one-book scope as ReassignCharacterSpeaker.
+func (s *DuckStore) ReassignCharacterDescriptions(bookID, fromName, toName string) error {
+	if fromName == toName {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.Query(`
+		SELECT p.id, p.describes_characters
+		FROM paragraphs p
+		JOIN chapters c ON c.id = p.chapter_id
+		WHERE c.book_id = ? AND p.describes_characters LIKE ? ESCAPE '\'`,
+		bookID, `%"`+likeEscape(fromName)+`"%`)
+	if err != nil {
+		return err
+	}
+	updates := map[string]DescribesCharacterList{}
+	for rows.Next() {
+		var id string
+		var names DescribesCharacterList
+		if err := rows.Scan(&id, &names); err != nil {
+			rows.Close()
+			return err
+		}
+		if !slices.Contains(names, fromName) {
+			continue // the LIKE matched inside some other JSON string
+		}
+		updates[id] = replaceDescribedName(names, fromName, toName)
+	}
+	closeErr := rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	for id, names := range updates {
+		encoded, err := names.Value() // see SetParagraphDescriptions on why .Value()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`UPDATE paragraphs SET describes_characters = ? WHERE id = ?`, encoded, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// replaceDescribedName swaps from for to in names, dropping from when to
+// is "" and never listing to twice.
+func replaceDescribedName(names []string, from, to string) DescribesCharacterList {
+	out := make(DescribesCharacterList, 0, len(names))
+	for _, n := range names {
+		if n == from {
+			n = to
+		}
+		if n == "" || slices.Contains(out, n) {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// RepairDescribedNames re-points description tags left behind by merges
+// and renames made before those moved them (ReassignCharacterDescriptions):
+// a tagged name that's no longer any character's name in its book's scope,
+// but is the alias of exactly one, is replaced by that character's name.
+// Names that match nothing are left alone. Idempotent; returns how many
+// paragraphs changed.
+func (s *DuckStore) RepairDescribedNames() (int, error) {
+	books, err := s.ListBooks()
+	if err != nil {
+		return 0, err
+	}
+	fixed := 0
+	for i := range books {
+		book := &books[i]
+		chars, err := s.ListCharacters(SeriesScope(book))
+		if err != nil {
+			return fixed, err
+		}
+		names := map[string]bool{}
+		for _, c := range chars {
+			names[strings.ToLower(c.Name)] = true
+		}
+		byAlias := map[string]string{}
+		for _, c := range chars {
+			for _, a := range c.Aliases {
+				key := strings.ToLower(a)
+				if names[key] {
+					continue
+				}
+				if prev, ok := byAlias[key]; ok && prev != c.Name {
+					byAlias[key] = "" // ambiguous
+					continue
+				}
+				byAlias[key] = c.Name
+			}
+		}
+		if len(byAlias) == 0 {
+			continue
+		}
+		rows, err := s.db.Query(`
+			SELECT p.id, p.describes_characters
+			FROM paragraphs p
+			JOIN chapters c ON c.id = p.chapter_id
+			WHERE c.book_id = ? AND p.describes_characters::VARCHAR NOT IN ('[]', 'null')`, book.ID)
+		if err != nil {
+			return fixed, err
+		}
+		updates := map[string]DescribesCharacterList{}
+		for rows.Next() {
+			var id string
+			var tagged DescribesCharacterList
+			if err := rows.Scan(&id, &tagged); err != nil {
+				rows.Close()
+				return fixed, err
+			}
+			out := DescribesCharacterList(tagged)
+			for _, n := range tagged {
+				if to := byAlias[strings.ToLower(n)]; to != "" && !names[strings.ToLower(n)] {
+					out = replaceDescribedName(out, n, to)
+				}
+			}
+			if !slices.Equal(out, tagged) {
+				updates[id] = out
+			}
+		}
+		closeErr := rows.Close()
+		if err := rows.Err(); err != nil {
+			return fixed, err
+		}
+		if closeErr != nil {
+			return fixed, closeErr
+		}
+		for id, tagged := range updates {
+			encoded, err := tagged.Value()
+			if err != nil {
+				return fixed, err
+			}
+			if _, err := s.db.Exec(`UPDATE paragraphs SET describes_characters = ? WHERE id = ?`, encoded, id); err != nil {
+				return fixed, err
+			}
+			fixed++
+		}
+	}
+	return fixed, nil
+}
+
+// RenameSpeakerRecords re-points bookID's other records of a speaker name
+// at toName, the counterpart of ReassignCharacterSpeaker for everything
+// that holds a name rather than a paragraph: speaker corrections
+// (paragraph_edits - attribution reads earlier chapters' as lessons), the
+// summary-pass notes' cast and scene lists (attribution lists the cast to
+// every batch, and a stale name there would be offered, and recreated, as
+// a separate character), and the book setting's first-person narrator.
+// Notes match ignoring case, as the summary pass resolves names; notes
+// stay marked as edited or not as they were.
+func (s *DuckStore) RenameSpeakerRecords(bookID, fromName, toName string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+
+	for _, col := range []string{"value", "original"} {
+		if _, err := tx.Exec(`UPDATE paragraph_edits SET `+col+` = ? WHERE field = ? AND `+col+` = ?
+			AND paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`,
+			toName, EditSpeaker, fromName, bookID); err != nil {
+			return fmt.Errorf("rename in paragraph edits: %w", err)
+		}
+	}
+
+	rows, err := tx.Query(`SELECT cs.chapter_id, CAST(cs.summary AS VARCHAR) FROM chapter_summaries cs JOIN chapters c ON c.id = cs.chapter_id WHERE c.book_id = ?`, bookID)
+	if err != nil {
+		return err
+	}
+	updated := map[string]string{}
+	for rows.Next() {
+		var chapterID, raw string
+		if err := rows.Scan(&chapterID, &raw); err != nil {
+			rows.Close()
+			return err
+		}
+		var notes ChapterNotes
+		if err := json.Unmarshal([]byte(raw), &notes); err != nil {
+			continue // unreadable notes are the summary pass's to redo
+		}
+		changed := false
+		for i := range notes.Cast {
+			if strings.EqualFold(notes.Cast[i].Name, fromName) {
+				notes.Cast[i].Name, changed = toName, true
+			}
+		}
+		for i := range notes.Scenes {
+			for j, name := range notes.Scenes[i].Present {
+				if strings.EqualFold(name, fromName) {
+					notes.Scenes[i].Present[j], changed = toName, true
+				}
+			}
+		}
+		if changed {
+			encoded, err := json.Marshal(notes)
+			if err != nil {
+				rows.Close()
+				return err
+			}
+			updated[chapterID] = string(encoded)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for chapterID, raw := range updated {
+		if _, err := tx.Exec(`UPDATE chapter_summaries SET summary = ? WHERE chapter_id = ?`, raw, chapterID); err != nil {
+			return fmt.Errorf("rename in chapter notes: %w", err)
+		}
+	}
+
+	var rawSetting string
+	switch err := tx.QueryRow(`SELECT CAST(setting AS VARCHAR) FROM book_settings WHERE book_id = ?`, bookID).Scan(&rawSetting); {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return err
+	default:
+		var setting BookSetting
+		if json.Unmarshal([]byte(rawSetting), &setting) == nil && strings.EqualFold(setting.Narrator, fromName) {
+			setting.Narrator = toName
+			encoded, err := json.Marshal(setting)
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`UPDATE book_settings SET setting = ? WHERE book_id = ?`, string(encoded), bookID); err != nil {
+				return fmt.Errorf("rename book setting narrator: %w", err)
+			}
+		}
+	}
+	return tx.Commit()
 }

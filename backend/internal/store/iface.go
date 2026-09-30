@@ -27,6 +27,7 @@ type Store interface {
 	ClearLegacyTags(chapterID string) ([]int, error)
 	ClearMusicRegions(chapterID string) ([]MusicRegion, error)
 	Close() error
+	CoSpeakersForBooks(bookIDs []string, characterName string, limit int) ([]string, error)
 	CountChapters(bookID string) (int, error)
 	CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int, error)
 	CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error)
@@ -85,6 +86,7 @@ type Store interface {
 	QuotesForBooks(bookIDs []string, characterName string, limit int) ([]QuoteContext, error)
 	ReadyAudioCountsBySpeaker(bookID string) (map[string]map[string]int, error)
 	ReassignCharacterSpeaker(bookID, fromName, toName string) error
+	ReassignCharacterDescriptions(bookID, fromName, toName string) error
 	RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]string, error)
 	ReplaceChapterContent(chapterID, title string, blocks []BlockInput) (oldImages, newImages []CreatedImage, err error)
 	ResetAllChapterMusicAudioForBook(bookID string) error
@@ -103,6 +105,7 @@ type Store interface {
 	SetCharacterAliases(characterID string, aliases []string) error
 	SetCharacterInvalid(id string, invalid bool) error
 	RenameCharacter(id, name string) error
+	RenameSpeakerRecords(bookID, fromName, toName string) error
 	SetCharacterRole(id string, isRole bool) error
 	SetCharacterPronouns(id, pronouns string) error
 	SetCharacterSummary(id, summary, refLine string) error

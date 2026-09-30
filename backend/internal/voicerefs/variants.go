@@ -67,11 +67,9 @@ func MarkVariantFailed(dataDir, presetID, emotion string) error {
 // (voices.InstructedCloneModel) of base's own reference clip, speaking
 // the emotion's RefLine under its Instruction, then capped at
 // maxRefClipSeconds and loudness-bounded against the base clip: a variant
-// keeps its own level (a shout can land louder, a whisper quieter) as long
-// as it sounds at most 50% quieter or louder than the base's
-// ([minVariantLU, maxVariantLU] away from it), and
-// is pulled back to the nearest bound otherwise. Only base clips are fully
-// normalized (NormalizeVolume).
+// keeps its own level as long as it lands inside its emotion's band
+// (variantBand) relative to the base's, and is pulled to the nearest
+// bound otherwise. Only base clips are fully normalized (NormalizeVolume).
 // Renders base itself first if needed (EnsureFile).
 func EnsureVariantFile(ctx context.Context, tts *ttsworker.Manager, dataDir string, base BaseClip, emotion string) (string, error) {
 	e, ok := emotions.Get(emotion)
@@ -104,7 +102,7 @@ func EnsureVariantFile(ctx context.Context, tts *ttsworker.Manager, dataDir stri
 	if err != nil {
 		return "", err
 	}
-	data, err = boundLoudness(data, baseAudio)
+	data, err = boundLoudness(data, baseAudio, emotion)
 	if err != nil {
 		return "", err
 	}
@@ -120,17 +118,41 @@ func EnsureVariantFile(ctx context.Context, tts *ttsworker.Manager, dataDir stri
 // minVariantLU/maxVariantLU bound an emotion variant's integrated
 // loudness relative to its base clip's, in LU: up to half or 1.5x as loud
 // *perceptually*, using the usual rule that +10 LU sounds twice as loud
-// (so 10*log2(ratio): -10 LU to about +5.85 LU).
+// (so 10*log2(ratio): -10 LU to about +5.85 LU). Shout and whisper get
+// their own bands (variantBand).
 var (
 	minVariantLU = 10 * math.Log2(0.5)
 	maxVariantLU = 10 * math.Log2(1.5)
 )
 
+// variantBand is emotion's [lo, hi] loudness band relative to the base
+// clip, in LU. Shout's floor sits above the base (Breeze's shouts often
+// came out no louder than the base, so the band alone never lifted
+// them): about 1.3x to 1.75x as loud. Whisper's floor sits just below it
+// (renders landed up to -10 LU, too quiet to hear once cloned - paragraph
+// audio isn't normalized, so a clone inherits its reference's level):
+// about 0.8x to 1x as loud, the hushed delivery doing the rest.
+func variantBand(emotion string) (lo, hi float64) {
+	switch emotion {
+	case "shout":
+		return 10 * math.Log2(1.3), 10 * math.Log2(1.75)
+	case "whisper":
+		return 10 * math.Log2(0.8), 0
+	}
+	return minVariantLU, maxVariantLU
+}
+
+// variantPeakCeiling caps a gain boostLoudness applies so a raised
+// variant's sample peak stays below full scale (about -1 dBFS) rather
+// than hard-clipping in wav.Encode.
+const variantPeakCeiling = 0.89
+
 // boundLoudness rescales data so its integrated loudness lands within
-// [minVariantLU, maxVariantLU] of reference's, leaving it untouched if
-// it's already inside that band. Returns data unchanged if either clip has
-// nothing that survives loudness gating.
-func boundLoudness(data, reference []byte) ([]byte, error) {
+// emotion's variantBand of reference's, leaving it untouched if it's
+// already inside that band. A raise stops short of pushing the peak past
+// variantPeakCeiling. Returns data unchanged if either clip has nothing
+// that survives loudness gating.
+func boundLoudness(data, reference []byte, emotion string) ([]byte, error) {
 	refClip, err := wav.Decode(reference)
 	if err != nil {
 		return nil, fmt.Errorf("decode base clip: %w", err)
@@ -144,12 +166,23 @@ func boundLoudness(data, reference []byte) ([]byte, error) {
 	if math.IsInf(target, -1) || math.IsInf(current, -1) {
 		return data, nil
 	}
+	lo, hi := variantBand(emotion)
 	diff := current - target // variant's loudness relative to the base, in LU
-	bounded := min(max(diff, minVariantLU), maxVariantLU)
+	bounded := min(max(diff, lo), hi)
 	if bounded == diff {
 		return data, nil
 	}
-	applyGain(clip.Samples, clampGain(loudness.GainFor(current, target+bounded)))
+	gain := clampGain(loudness.GainFor(current, target+bounded))
+	if gain > 1 {
+		var peak float64
+		for _, s := range clip.Samples {
+			peak = max(peak, math.Abs(float64(s)))
+		}
+		if peak > 0 {
+			gain = max(1, min(gain, variantPeakCeiling/peak))
+		}
+	}
+	applyGain(clip.Samples, gain)
 	return wav.Encode(clip.Samples, clip.SampleRate, clip.Channels)
 }
 

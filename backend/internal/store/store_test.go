@@ -1,7 +1,9 @@
 package store
 
 import (
+	"fmt"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
@@ -1463,5 +1465,84 @@ func TestMusicRegionLighting(t *testing.T) {
 	}
 	if !ch.Passes.Ambience || ch.Passes.Lighting {
 		t.Fatalf("after ClearBookLighting: passes = %+v, want ambience only", ch.Passes)
+	}
+}
+
+// TestQuotesForBooksSpreadsSample covers QuotesForBooks' sample: spread
+// across all of a character's lines rather than their first few, and
+// skipping one-word lines when there are enough longer ones.
+func TestQuotesForBooksSpreadsSample(t *testing.T) {
+	s := openTestStore(t)
+	var paras []string
+	speakers := map[int]string{}
+	for i := range 40 {
+		if i%2 == 0 {
+			paras = append(paras, `"Yes."`)
+		} else {
+			paras = append(paras, fmt.Sprintf(`"Line number %d, said at length."`, i))
+		}
+		speakers[i] = "Alice"
+	}
+	bookID, chapterID := oneChapterBook(t, s, "", 0, paras...)
+	if err := s.SetParagraphSpeakers(chapterID, speakers); err != nil {
+		t.Fatalf("SetParagraphSpeakers: %v", err)
+	}
+
+	quotes, err := s.QuotesForBooks([]string{bookID}, "Alice", 5)
+	if err != nil {
+		t.Fatalf("QuotesForBooks: %v", err)
+	}
+	var got []string
+	for _, q := range quotes {
+		got = append(got, q.Text)
+	}
+	want := []string{
+		`"Line number 1, said at length."`,
+		`"Line number 9, said at length."`,
+		`"Line number 17, said at length."`,
+		`"Line number 25, said at length."`,
+		`"Line number 33, said at length."`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestCoSpeakersForBooks covers CoSpeakersForBooks' ranking: by chapters
+// shared with the character, never Narrator/Unknown or the character.
+func TestCoSpeakersForBooks(t *testing.T) {
+	s := openTestStore(t)
+	chapter := func(title string) ChapterInput {
+		blocks := make([]BlockInput, 4)
+		for i := range blocks {
+			blocks[i] = BlockInput{Kind: BlockText, Text: `"Words."`, IsQuote: true}
+		}
+		return ChapterInput{Title: title, Blocks: blocks}
+	}
+	bookID, _, err := s.CreateBook("Test Book", "Test Author", "en", ".jpg", "", 0, []ChapterInput{chapter("One"), chapter("Two"), chapter("Three")})
+	if err != nil {
+		t.Fatalf("CreateBook: %v", err)
+	}
+	chapters, err := s.ListChapterSummaries(bookID, "voice-x", nil)
+	if err != nil {
+		t.Fatalf("ListChapterSummaries: %v", err)
+	}
+	for i, speakers := range []map[int]string{
+		{0: "Alice", 1: "Bob", 2: "Carol", 3: "Carol"},
+		{0: "Alice", 1: "Bob", 2: "Unknown", 3: "Narrator"},
+		{0: "Dave", 1: "Dave", 2: "Dave", 3: "Carol"},
+	} {
+		if err := s.SetParagraphSpeakers(chapters[i].ID, speakers); err != nil {
+			t.Fatalf("SetParagraphSpeakers: %v", err)
+		}
+	}
+	got, err := s.CoSpeakersForBooks([]string{bookID}, "Alice", 5)
+	if err != nil {
+		t.Fatalf("CoSpeakersForBooks: %v", err)
+	}
+	// Bob shares two chapters, Carol one (more lines, but chapters rank
+	// first); Dave never shares one.
+	if want := []string{"Bob", "Carol"}; !slices.Equal(got, want) {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }

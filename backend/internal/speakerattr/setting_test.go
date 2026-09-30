@@ -57,3 +57,19 @@ func TestTechCounts(t *testing.T) {
 		}
 	}
 }
+
+func TestIdiomCounts(t *testing.T) {
+	c := IdiomCounts{}
+	c.Add("“Bloody hell, mate, get your arse over here.”")
+	c.Add("“Oi! Y’all hear that, dude?”")
+	c.Add("“Classmate, she said, a bloodying mess.”")
+	if c["bloody"] != 1 || c["mate"] != 1 || c["arse"] != 1 || c["oi"] != 1 || c["y'all"] != 1 || c["dude"] != 1 {
+		t.Fatalf("counts = %v", c)
+	}
+	got := c.String()
+	for _, want := range []string{"- British, 4 in all: ", "- American, 2 in all: "} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("String() missing %q:\n%s", want, got)
+		}
+	}
+}

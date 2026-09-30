@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -44,14 +45,14 @@ const settingMaxTokens = 768
 //
 // Deliberately not in SystemPrompts: one call per book isn't worth a
 // permanently resident primed sequence.
-const settingSystemPrompt = `You are preparing notes on a novel's setting for the sound, lighting and casting designers of its audiobook. You will be given counts of technology words across the whole book, then excerpts from across it. Describe the world the story takes place in.
+const settingSystemPrompt = `You are preparing notes on a novel's setting for the sound, lighting and casting designers of its audiobook. You will be given counts of technology words across the whole book, counts of British and American idiom in its dialogue, then excerpts from across it. Describe the world the story takes place in.
 
 First collect evidence, then decide from it:
 - "evidence": up to 5 short exact quotes (at most 10 words each) from the excerpts showing what light sources, transport, weapons or devices characters actually use - or can no longer use - in the story's present. Never a comparison ("like a machine gun") or a memory of another life or world.
 - "technology": what actually works in the story's present, for everyday light, transport and communication, e.g. "pre-industrial: lanterns, candles, carriages" or "modern: electric light, cars, phones". The counts show which technologies the book talks about at all: a few modern words against many pre-industrial ones are usually comparisons or memories. A modern world whose technology has stopped working (after a collapse, say) is described by what still works.
 - "era": when the story takes place, consistent with "technology", e.g. "medieval-style secondary world", "late Victorian", "present day", "far future". Call it present day or modern only if the excerpts show the modern world - its cities, devices or people - not from a few stray modern words. Magic, monsters, dungeons, ruins and game-like systems say nothing about the era either way.
 - "place": the region or world, e.g. "a fictional desert empire", "Crete and the Mediterranean", "London", "a generation starship".
-- "accent": the accent most of the main characters speak with - only when the excerpts make it clear (a stated nationality or hometown, dialect spelling, a real-world place they're from). "" for an invented world.
+- "accent": the accent an audiobook should give most of the main characters - always name one. A stated nationality or hometown, or the real-world place the story is set, decides it ("a London accent", "Scottish", "General American"). Otherwise, invented worlds included, follow the dialogue idiom counts: clearly more British idiom is "standard British", clearly more American is "General American"; with neither clearly ahead, "General American" - unless the excerpts show a mixed cast (characters from both, a story that moves between countries), then name both, the protagonist's first ("mixed: British, General American").
 - "genre": 1-3 words, e.g. "epic fantasy", "cozy mystery", "LitRPG".
 - "narrator": if the book is told in the first person ("I"), that narrator's name as other characters call them in the excerpts; "" for a third-person book, or when the narrator is never named.
 - Only state what the text supports; use "" for anything it doesn't show. Each field at most 12 words. Never mention plot events or character names.
@@ -256,6 +257,68 @@ func (c TechCounts) String() string {
 	return sb.String()
 }
 
+// idiomWords are the words IdiomCounts counts in dialogue, by the English
+// they mark - specific ones only: "yeah", "gonna", "guys", "reckon",
+// "proper" and "brilliant" are everywhere in both.
+var idiomWords = []struct {
+	dialect string
+	words   []string
+}{
+	{"British", []string{"mate", "bloody", "arse", "bloke", "mum", "innit", "cheers", "sodding", "bugger", "quid", "knackered", "rubbish", "whilst", "fortnight", "telly", "wanker", "oi", "cuppa", "bollocks", "lad", "lads"}},
+	{"American", []string{"y'all", "mom", "dude", "buddy", "gotten", "awesome", "ass", "asshole", "folks", "candy", "apartment", "sidewalk", "vacation"}},
+}
+
+// IdiomCounts is how often each idiomWords word appears in a book's
+// dialogue - DescribeSetting's signal for the cast's default accent when
+// the text never states where they're from (every book in this library:
+// Spire's Spite's dialogue has "bloody" 89 times, "arse", "oi"; Jake's
+// Magical Market's "dude", "buddy"). Spelling was tried and dropped: Arise
+// is set in London with British characters but American spelling.
+type IdiomCounts map[string]int
+
+var idiomWordRes = func() map[string]*regexp.Regexp {
+	out := map[string]*regexp.Regexp{}
+	for _, g := range idiomWords {
+		for _, w := range g.words {
+			out[w] = regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(w) + `\b`)
+		}
+	}
+	return out
+}()
+
+// Add counts one dialogue line's idiom words into c.
+func (c IdiomCounts) Add(text string) {
+	text = strings.ReplaceAll(text, "\u2019", "'")
+	for w, re := range idiomWordRes {
+		if n := len(re.FindAllStringIndex(text, -1)); n > 0 {
+			c[w] += n
+		}
+	}
+}
+
+// String renders c for the setting prompt: one line per dialect with its
+// total and words by count.
+func (c IdiomCounts) String() string {
+	var sb strings.Builder
+	for _, g := range idiomWords {
+		total := 0
+		var parts []string
+		words := slices.Clone(g.words)
+		sort.SliceStable(words, func(i, j int) bool { return c[words[i]] > c[words[j]] })
+		for _, w := range words {
+			if c[w] > 0 {
+				total += c[w]
+				parts = append(parts, fmt.Sprintf("%s %d", w, c[w]))
+			}
+		}
+		if len(parts) == 0 {
+			parts = []string{"none"}
+		}
+		fmt.Fprintf(&sb, "- %s, %d in all: %s\n", g.dialect, total, strings.Join(parts, ", "))
+	}
+	return sb.String()
+}
+
 type settingRaw struct {
 	Era        string `json:"era"`
 	Technology string `json:"technology"`
@@ -266,13 +329,13 @@ type settingRaw struct {
 }
 
 // DescribeSetting writes a book's setting profile from counts (the whole
-// book's TechCounts) and samples (see SettingSample) - one call per book,
-// the whole setting pass.
-func (c *Client) DescribeSetting(ctx context.Context, bookTitle, author string, counts TechCounts, samples []string) (BookSetting, error) {
-	return generateAndParse(ctx, c, settingSystemPrompt, c.settingUserPrompt(bookTitle, author, counts, samples), 0, settingMaxTokens, parseSetting)
+// book's TechCounts), idioms (its dialogue's IdiomCounts) and samples (see
+// SettingSample) - one call per book, the whole setting pass.
+func (c *Client) DescribeSetting(ctx context.Context, bookTitle, author string, counts TechCounts, idioms IdiomCounts, samples []string) (BookSetting, error) {
+	return generateAndParse(ctx, c, settingSystemPrompt, c.settingUserPrompt(bookTitle, author, counts, idioms, samples), 0, settingMaxTokens, parseSetting)
 }
 
-func (c *Client) settingUserPrompt(bookTitle, author string, counts TechCounts, samples []string) string {
+func (c *Client) settingUserPrompt(bookTitle, author string, counts TechCounts, idioms IdiomCounts, samples []string) string {
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\n", bookTitle)
 	if author != "" {
@@ -280,6 +343,8 @@ func (c *Client) settingUserPrompt(bookTitle, author string, counts TechCounts, 
 	}
 	user.WriteString("\nTechnology words across the whole book (every use, including comparisons and memories):\n")
 	user.WriteString(counts.String())
+	user.WriteString("\nBritish and American idiom in the dialogue (quoted speech only):\n")
+	user.WriteString(idioms.String())
 	user.WriteString("\nExcerpts, in book order:\n")
 	for i, s := range samples {
 		fmt.Fprintf(&user, "\n[%d] %s\n", i+1, s)

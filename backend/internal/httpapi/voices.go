@@ -1044,7 +1044,7 @@ func (s *Server) handleGetPresetAudio(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
 	}
-	http.ServeFile(w, r, path)
+	serveVoiceClip(w, r, path)
 }
 
 // handleGetCustomVoiceAudio serves a custom preset's reference clip -
@@ -1067,5 +1067,14 @@ func (s *Server) handleGetCustomVoiceAudio(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
 	}
+	serveVoiceClip(w, r, path)
+}
+
+// serveVoiceClip serves a reference clip or emotion variant. Revalidated
+// every time (a cheap 304 when unchanged), like handleGetAudio: a
+// regenerated clip is written under the same path and URL, which a
+// heuristically cached response would keep replaying.
+func serveVoiceClip(w http.ResponseWriter, r *http.Request, path string) {
+	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, path)
 }

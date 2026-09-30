@@ -26,7 +26,8 @@ type dedupeResponse struct {
 }
 
 // mergeCharacterInto folds from into to across book's whole series scope:
-// every book's lines attributed to from become to's, from's other names
+// every book's lines attributed to from become to's (and so do the
+// narration paragraphs tagged as describing from), from's other names
 // become to's aliases when alias (a real alternative name - "Lars" for
 // "Lars Machmüller" - not a mislabel like "Protagonist"), to inherits
 // from's pronouns if it has none, and from's identity (voice presets
@@ -40,10 +41,8 @@ func (s *Server) mergeCharacterInto(book *store.Book, from, to store.Character, 
 	if err != nil {
 		return err
 	}
-	for _, b := range books {
-		if err := s.Store.ReassignCharacterSpeaker(b.ID, from.Name, to.Name); err != nil {
-			return err
-		}
+	if err := s.renameSpeakerEverywhere(books, from.Name, to.Name); err != nil {
+		return err
 	}
 	if alias {
 		if clean, _ := speakerattr.SanitizeSpeaker(from.Name); clean == from.Name {
@@ -72,8 +71,8 @@ func (s *Server) mergeCharacterInto(book *store.Book, from, to store.Character, 
 	return s.Store.DeleteCharacter(from.ID)
 }
 
-// renameCharacter renames c to name across book's series scope - its row
-// and every line attributed to it.
+// renameCharacter renames c to name across book's series scope - its row,
+// every line attributed to it and every description tagged with it.
 func (s *Server) renameCharacter(book *store.Book, c store.Character, name string) error {
 	books, err := s.booksInScope(book)
 	if err != nil {
@@ -82,8 +81,42 @@ func (s *Server) renameCharacter(book *store.Book, c store.Character, name strin
 	if err := s.Store.RenameCharacter(c.ID, name); err != nil {
 		return err
 	}
+	if err := s.renameSpeakerEverywhere(books, c.Name, name); err != nil {
+		return err
+	}
+	// Auto-created voice presets carry the character's name
+	// (provisionCharacterVoice); a reader-named one keeps its own.
+	presetIDs, err := s.Store.VoicePresetIDsForCharacter(c.ID)
+	if err != nil {
+		return err
+	}
+	for _, id := range presetIDs {
+		p, err := s.Store.GetVoicePreset(id)
+		if err != nil {
+			return err
+		}
+		if p != nil && p.Name == c.Name {
+			if err := s.Store.UpdateVoicePreset(p.ID, name, p.Instruct, p.RefText, p.Seed, p.SpeedMultiplier, p.DesignModel); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// renameSpeakerEverywhere re-points every record of the speaker name from
+// at to, across books: paragraph speakers, description tags, speaker
+// corrections, the summary notes' cast and scenes, and the book setting's
+// narrator (store.RenameSpeakerRecords) - shared by rename and merge.
+func (s *Server) renameSpeakerEverywhere(books []store.Book, from, to string) error {
 	for _, b := range books {
-		if err := s.Store.ReassignCharacterSpeaker(b.ID, c.Name, name); err != nil {
+		if err := s.Store.ReassignCharacterSpeaker(b.ID, from, to); err != nil {
+			return err
+		}
+		if err := s.Store.ReassignCharacterDescriptions(b.ID, from, to); err != nil {
+			return err
+		}
+		if err := s.Store.RenameSpeakerRecords(b.ID, from, to); err != nil {
 			return err
 		}
 	}

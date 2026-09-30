@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
@@ -84,7 +85,16 @@ func (s *Server) characterizeVoice(ctx context.Context, book *store.Book, char s
 		speakerDescriptions[i] = speakerattr.DescriptionContext{Text: d.Text}
 	}
 
-	instruct, refLine, err := s.Speaker.CharacterizeVoice(ctx, char.Name, char.IsRole, char.Pronouns, s.bookSetting(ctx, book), speakerQuotes, speakerDescriptions)
+	costars, err := s.characterizedCostars(bookIDs, char)
+	if err != nil {
+		return "", fmt.Errorf("gather co-stars: %w", err)
+	}
+	origins, err := s.originClues(books, char)
+	if err != nil {
+		return "", fmt.Errorf("gather origin clues: %w", err)
+	}
+
+	instruct, refLine, err := s.Speaker.CharacterizeVoice(ctx, char.Name, char.IsRole, char.Pronouns, s.bookSetting(ctx, book), speakerQuotes, speakerDescriptions, origins, costars)
 	if err != nil {
 		return "", fmt.Errorf("characterize: %w", err)
 	}
@@ -92,6 +102,86 @@ func (s *Server) characterizeVoice(ctx context.Context, book *store.Book, char s
 		return "", fmt.Errorf("save characterization: %w", err)
 	}
 	return instruct, nil
+}
+
+// maxOriginClues is how many origin clues characterization is shown.
+const maxOriginClues = 6
+
+// originClues returns char's speakerattr.OriginClues across books (their
+// series, in order), from each book's cached origin paragraphs.
+func (s *Server) originClues(books []store.Book, char store.Character) ([]string, error) {
+	var paras []string
+	for i := range books {
+		p, err := s.bookOriginParagraphs(&books[i])
+		if err != nil {
+			return nil, err
+		}
+		paras = append(paras, p...)
+	}
+	return speakerattr.OriginClues(paras, append([]string{char.Name}, char.Aliases...), maxOriginClues), nil
+}
+
+type cachedOriginParagraphs struct {
+	paragraphs []string
+	built      time.Time
+}
+
+// bookOriginParagraphs returns book's speakerattr.OriginParagraphs, cached
+// for identityIndexTTL (Server.originParagraphs) - a bulk recast reads
+// every book of the series once per character.
+func (s *Server) bookOriginParagraphs(book *store.Book) ([]string, error) {
+	if v, ok := s.originParagraphs.Load(book.ID); ok {
+		if c := v.(cachedOriginParagraphs); time.Since(c.built) < identityIndexTTL {
+			return c.paragraphs, nil
+		}
+	}
+	all, err := s.Store.ListParagraphsRawForBook(book.ID)
+	if err != nil {
+		return nil, err
+	}
+	texts := make([]string, len(all))
+	for i, p := range all {
+		texts[i] = p.Text
+	}
+	paras := speakerattr.OriginParagraphs(texts)
+	s.originParagraphs.Store(book.ID, cachedOriginParagraphs{paragraphs: paras, built: time.Now()})
+	return paras, nil
+}
+
+// maxCharacterizeCostars is how many already-cast co-stars characterization
+// is shown, and costarCandidates how many co-speakers are looked at to find
+// them (some have no summary yet, or are roles or invalid).
+const (
+	maxCharacterizeCostars = 5
+	costarCandidates       = 15
+)
+
+// characterizedCostars returns the casting of the characters who share the
+// most chapters with char (Store.CoSpeakersForBooks) and already have one -
+// named, valid characters only, since a role's pooled voice isn't one
+// person a listener has to tell apart. Characters are usually
+// characterized in order of appearance, so leads see each other; a
+// Regenerate sees the whole cast.
+func (s *Server) characterizedCostars(bookIDs []string, char store.Character) ([]speakerattr.CastVoice, error) {
+	names, err := s.Store.CoSpeakersForBooks(bookIDs, char.Name, costarCandidates)
+	if err != nil {
+		return nil, err
+	}
+	var out []speakerattr.CastVoice
+	for _, name := range names {
+		other, err := s.Store.GetCharacterByName(char.Scope, name)
+		if err != nil {
+			return nil, err
+		}
+		if other == nil || other.ID == char.ID || other.Summary == "" || other.Invalid || other.IsRole {
+			continue
+		}
+		out = append(out, speakerattr.CastVoice{Name: other.Name, Instruct: other.Summary})
+		if len(out) == maxCharacterizeCostars {
+			break
+		}
+	}
+	return out, nil
 }
 
 // lockCharacterProvision serializes provisionCharacterVoice per
@@ -486,7 +576,7 @@ func (s *Server) handleGenerateCharacterVoice(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusConflict, "not enough dialogue attributed to this character yet to characterize a voice")
 		return
 	}
-	writeJSON(w, http.StatusOK, generateVoiceResponse{VoicePresetID: presetID, AudioURL: presetAudioURL(presetID)})
+	writeJSON(w, http.StatusOK, generateVoiceResponse{VoicePresetID: presetID, AudioURL: s.versionedPresetAudioURL(presetID)})
 }
 
 // handleGenerateCharacterVoices batch-provisions a voice for every given
@@ -825,14 +915,31 @@ func (s *Server) recharacterizeAndInvalidate(ctx context.Context, book *store.Bo
 	// page's own explicit "Generate/Regenerate voice" buttons - a
 	// character voiced under another clone model too stays on its own
 	// lazy self-heal path.
+	//
+	// When the character already has a custom preset for this clone model -
+	// just invalidated above - the re-render is queued as that preset's
+	// own base-clip task (jobs.Manager.EnqueueReferenceClip) rather than a
+	// "regenerate" keyed by character: lines already queued in their voice
+	// look for exactly that task, so they (and their emotion variants) wait
+	// for the new clip. Under the character key they couldn't see it, and
+	// raced it - rendering the base inline from the old casting, cloning
+	// from that, and building variants the new clip then wiped.
 	if bookVoice, verr := s.Narration.BookVoice(book); verr != nil {
 		log.Printf("httpapi: could not resolve book voice to provision %q: %v", fresh.Name, verr)
 	} else {
 		cloneModel := narration.EffectiveCloneModel(bookVoice)
 		char := *fresh
-		s.Jobs.EnqueueVoiceProvision(book.ID, char.ID, "regenerate", char.Name, func(ctx context.Context, attempt int) (string, error) {
-			return s.regenerateCharacterVoice(ctx, book.ID, char, cloneModel, attempt)
-		})
+		presetID, perr := s.Store.CharacterVoiceForModel(char.ID, cloneModel)
+		if perr != nil {
+			log.Printf("httpapi: look up %q's voice for %s: %v", char.Name, cloneModel, perr)
+		}
+		if custom, _ := s.Store.GetVoicePreset(presetID); presetID != "" && custom != nil {
+			s.Jobs.EnqueueReferenceClip(book.ID, presetID, char.Name)
+		} else {
+			s.Jobs.EnqueueVoiceProvision(book.ID, char.ID, "regenerate", char.Name, func(ctx context.Context, attempt int) (string, error) {
+				return s.regenerateCharacterVoice(ctx, book.ID, char, cloneModel, attempt)
+			})
+		}
 	}
 
 	return fresh.Summary, invalidated, nil
@@ -915,7 +1022,7 @@ func (s *Server) handleVariantAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
-	http.ServeFile(w, r, path)
+	serveVoiceClip(w, r, path)
 }
 
 type regenerateVariantRequest struct {

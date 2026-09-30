@@ -33,26 +33,14 @@ type QuoteContext struct {
 
 // QuotesForBooks returns up to limit of characterName's own attributed
 // paragraphs (plus surrounding narration context - see QuoteContext)
-// across bookIDs, in the given book order (then chapter/paragraph order
-// within each) - gathered for speakerattr.Client.CharacterizeVoice.
-// bookIDs is typically ListSeriesBooks' output in series order, so if
-// limit truncates, earlier-book (more established) dialogue is kept over
-// later-book dialogue - preserved here via an explicit ORDER BY CASE
-// ranking each book_id by its position in bookIDs, rather than however
-// DuckDB would otherwise order an IN (...) match, since this is one single
-// query across every book now (see this function's own doc history: it
-// used to loop issuing one query per book, an O(len(bookIDs)) count that
-// grows as a series gains more books - constant now, matching
-// DescriptionsForBooks' own single-query shape) rather than a query per
-// book. Still just one query per *character* - see this function's own
-// callers (characterizeVoice) for why that per-character granularity
-// itself stays as is: a character's own quotes/descriptions can still be
-// discovered/attributed after this character's own job was queued, so a
-// fetch shared across several characters up front (decided once, before
-// any of their jobs actually run) risks working from stale data by the
-// time a given character's own job executes - fetching fresh, per
-// character, at that point is what stays correct, just no longer paying
-// an extra query per book to do it.
+// across bookIDs, evenly spread over all of them in the given book order
+// (then chapter/paragraph order within each; see spreadSample) and
+// preferring lines of at least minSampleQuoteWords words - gathered for
+// speakerattr.Client.CharacterizeVoice. bookIDs is typically
+// ListSeriesBooks' output in series order; the explicit ORDER BY CASE
+// keeps that order rather than however DuckDB would order an IN (...)
+// match. One query per character, fetched fresh when their own job runs,
+// since their lines can still be attributed after the job was queued.
 func (s *DuckStore) QuotesForBooks(bookIDs []string, characterName string, limit int) ([]QuoteContext, error) {
 	if len(bookIDs) == 0 {
 		return nil, nil
@@ -68,7 +56,6 @@ func (s *DuckStore) QuotesForBooks(bookIDs []string, characterName string, limit
 		fmt.Fprintf(&orderCases, "WHEN ? THEN %d ", i)
 		args = append(args, id)
 	}
-	args = append(args, limit)
 
 	rows, err := s.db.Query(`
 		SELECT p.content, COALESCE(next.content, '')
@@ -79,22 +66,91 @@ func (s *DuckStore) QuotesForBooks(bookIDs []string, characterName string, limit
 			AND next.inline
 			AND (next.speaker = '' OR next.speaker = 'Narrator')
 		WHERE c.book_id IN (`+bookPlaceholders+`) AND p.speaker = ?
-		ORDER BY CASE c.book_id `+orderCases.String()+`END, c.idx ASC, p.idx ASC
-		LIMIT ?`, args...)
+		ORDER BY CASE c.book_id `+orderCases.String()+`END, c.idx ASC, p.idx ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var out []QuoteContext
+	var all, long []QuoteContext
 	for rows.Next() {
 		var qc QuoteContext
 		if err := rows.Scan(&qc.Text, &qc.Context); err != nil {
 			return nil, err
 		}
-		out = append(out, qc)
+		all = append(all, qc)
+		if len(strings.Fields(qc.Text)) >= minSampleQuoteWords {
+			long = append(long, qc)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(long) >= limit {
+		all = long
+	}
+	return spreadSample(all, limit), nil
+}
+
+// CoSpeakersForBooks returns up to limit other speakers who speak in the
+// most of the chapters characterName speaks in, across bookIDs, most shared
+// chapters first - the cast characterization keeps a voice distinguishable
+// from. Narrator and Unknown are left out.
+func (s *DuckStore) CoSpeakersForBooks(bookIDs []string, characterName string, limit int) ([]string, error) {
+	if len(bookIDs) == 0 {
+		return nil, nil
+	}
+	bookPlaceholders := strings.TrimSuffix(strings.Repeat("?,", len(bookIDs)), ",")
+	args := make([]any, 0, len(bookIDs)+3)
+	for _, id := range bookIDs {
+		args = append(args, id)
+	}
+	args = append(args, characterName, characterName, limit)
+	rows, err := s.db.Query(`
+		WITH shared AS (
+			SELECT DISTINCT p.chapter_id
+			FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id
+			WHERE c.book_id IN (`+bookPlaceholders+`) AND p.speaker = ?
+		)
+		SELECT p.speaker
+		FROM paragraphs p JOIN shared ON shared.chapter_id = p.chapter_id
+		WHERE p.speaker NOT IN ('', 'Narrator', 'Unknown', ?)
+		GROUP BY p.speaker
+		ORDER BY count(DISTINCT p.chapter_id) DESC, count(*) DESC, p.speaker
+		LIMIT ?`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
 	}
 	return out, rows.Err()
+}
+
+// minSampleQuoteWords is the shortest line QuotesForBooks prefers: "Yes."
+// or "What?" says nothing about how someone talks, so shorter lines are
+// only used when a character has too few longer ones to fill the sample.
+const minSampleQuoteWords = 4
+
+// spreadSample returns up to n of items evenly spread across all of them,
+// in order, always keeping the first. A character's first n lines are
+// usually one scene - Spire's Spite's lead (8000 lines) was characterized
+// from his first 20, all from his introduction as a captured gang thug.
+func spreadSample[T any](items []T, n int) []T {
+	if len(items) <= n {
+		return items
+	}
+	out := make([]T, n)
+	for i := range out {
+		out[i] = items[i*len(items)/n]
+	}
+	return out
 }
 
 // DescriptionContext is one paragraph of narration describing

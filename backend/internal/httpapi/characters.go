@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/narration"
@@ -111,7 +115,7 @@ func (s *Server) speakerEmotions(presetID string, counts map[string]int) []speak
 		switch {
 		case voicerefs.VariantExists(s.DataDir, presetID, e.ID):
 			dto.Status = "ready"
-			dto.AudioURL = "/api/voices/variants/" + presetID + "/" + e.ID + "/audio"
+			dto.AudioURL = withClipVersion("/api/voices/variants/"+presetID+"/"+e.ID+"/audio", audiopath.VoicePresetVariantFile(s.DataDir, presetID, e.ID))
 		case voicerefs.VariantFailed(s.DataDir, presetID, e.ID):
 			dto.Status = "failed"
 		}
@@ -120,10 +124,32 @@ func (s *Server) speakerEmotions(presetID string, counts map[string]int) []speak
 	return out
 }
 
+// withClipVersion tags a voice-clip URL with path's modification time, so a
+// clip re-rendered in place (voicerefs.Regenerate keeps the preset id, and
+// so the URL) gets a new URL and a player already holding the old one
+// reloads - the speakers topic rebuilds when the render's job finishes.
+// url unchanged when path doesn't exist yet.
+func withClipVersion(url, path string) string {
+	if url == "" {
+		return url
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return url
+	}
+	return url + "?v=" + strconv.FormatInt(info.ModTime().UnixNano(), 36)
+}
+
 // presetAudioURL returns presetID's own reference-clip endpoint - the
 // built-in path (internal/voices) or the custom one (store.VoicePreset),
 // whichever namespace presetID actually belongs to. "" for "" (no preset
 // resolved at all).
+// versionedPresetAudioURL is presetAudioURL tagged with the clip's current
+// version - see withClipVersion.
+func (s *Server) versionedPresetAudioURL(presetID string) string {
+	return withClipVersion(presetAudioURL(presetID), audiopath.VoicePresetRefFile(s.DataDir, presetID))
+}
+
 func presetAudioURL(presetID string) string {
 	if presetID == "" {
 		return ""
@@ -276,9 +302,9 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		// otherwise show the exact same clip as the narrator and each
 		// other.
 		if name == "Narrator" {
-			row.RefAudioURL = presetAudioURL(bookVoice.PresetID)
+			row.RefAudioURL = s.versionedPresetAudioURL(bookVoice.PresetID)
 		} else if row.VoicePresetID != "" {
-			row.RefAudioURL = presetAudioURL(row.VoicePresetID)
+			row.RefAudioURL = s.versionedPresetAudioURL(row.VoicePresetID)
 		}
 		// Unlike RefAudioURL, emotion variants follow `resolved`: they're
 		// cloned from whichever preset these lines actually generate under.
@@ -358,7 +384,8 @@ func (s *Server) handleDeleteBookSpeakerData(w http.ResponseWriter, r *http.Requ
 // (Narrator) - see Store.ReassignCharacterSpeaker's own doc comment for
 // why: these paragraphs are still real quoted dialogue, just no longer
 // attributed to this character, and "Narrator" is reserved exclusively
-// for actual narration. Scoped to this book only; their identity/Summary,
+// for actual narration. Paragraphs tagged as describing them lose that
+// tag. Scoped to this book only; their identity/Summary,
 // every clone model's voice assignment, and every voice preset
 // auto-created for them (+ cached reference clip) are deleted for their
 // whole series scope, same split as handleDeleteBookSpeakerData.
@@ -386,6 +413,10 @@ func (s *Server) handleDeleteCharacter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Store.ReassignCharacterSpeaker(bookID, char.Name, "Unknown"); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.Store.ReassignCharacterDescriptions(bookID, char.Name, ""); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -533,6 +564,16 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.Store.ReassignCharacterSpeaker(bookID, char.Name, storeTargetName); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Descriptions follow to a real character; Narrator/Unknown describe
+	// no one, so the tag is just dropped.
+	describedName := storeTargetName
+	if describedName == "Unknown" {
+		describedName = ""
+	}
+	if err := s.Store.ReassignCharacterDescriptions(bookID, char.Name, describedName); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -714,6 +755,97 @@ func (s *Server) handleReattributeSpeaker(w http.ResponseWriter, r *http.Request
 
 type setCharacterAliasesRequest struct {
 	Aliases []string `json:"aliases"`
+}
+
+// renameCharacterRequest is PUT .../characters/{characterId}/name's body.
+type renameCharacterRequest struct {
+	Name string `json:"name"`
+}
+
+// handleRenameCharacter renames one character series-wide
+// (renameCharacter: their lines, description tags, speaker corrections,
+// summary notes, the setting's narrator, auto-named voice presets), keeping
+// their voice, casting and audio. The old name becomes an alias, so
+// attribution folds it back in if the text or the model still uses it -
+// unless it names no single person ("Protagonist", "the other noble,
+// Charles"). 400 for a name that isn't one person's (a group, a
+// non-answer, Narrator/Unknown); 409 when another character in the series
+// already has it as a name or alias (merge them instead).
+func (s *Server) handleRenameCharacter(w http.ResponseWriter, r *http.Request) {
+	var req renameCharacterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	name := strings.Join(strings.Fields(req.Name), " ")
+	book, err := s.Store.GetBook(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if book == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	char, err := s.Store.GetCharacter(r.PathValue("characterId"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if char == nil || char.Scope != store.SeriesScope(book) {
+		writeError(w, http.StatusNotFound, "character not found")
+		return
+	}
+	switch clean, _ := speakerattr.SanitizeSpeaker(name); {
+	case name == "" || len(name) > 100:
+		writeError(w, http.StatusBadRequest, "a name is 1-100 characters")
+		return
+	case strings.EqualFold(name, "Narrator") || strings.EqualFold(name, "Unknown"):
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is reserved", name))
+		return
+	case clean != name || speakerattr.IsGroupSpeaker(name):
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q isn't one person's name", name))
+		return
+	case name == char.Name:
+		writeNoContent(w)
+		return
+	}
+	roster, err := s.Store.ListCharacters(char.Scope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	for _, c := range roster {
+		if c.ID == char.ID {
+			continue
+		}
+		if strings.EqualFold(c.Name, name) {
+			if c.Invalid {
+				writeError(w, http.StatusConflict, fmt.Sprintf("%q is a character marked as not a speaker - delete it first", c.Name))
+			} else {
+				writeError(w, http.StatusConflict, fmt.Sprintf("%q is already a character - merge the two instead", c.Name))
+			}
+			return
+		}
+		if !c.Invalid && slices.ContainsFunc(c.Aliases, func(a string) bool { return strings.EqualFold(a, name) }) {
+			writeError(w, http.StatusConflict, fmt.Sprintf("%q is another name for %s - merge the two instead", name, c.Name))
+			return
+		}
+	}
+	if err := s.renameCharacter(book, *char, name); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if clean, _ := speakerattr.SanitizeSpeaker(char.Name); clean == char.Name && !speakerattr.IsFirstPersonLabel(char.Name) {
+		if err := s.Store.AddCharacterAliases(char.ID, char.Name); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	} else if err := s.Store.AddCharacterAliases(char.ID); err != nil { // drops the new name if it was an alias
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeNoContent(w)
 }
 
 // handleSetCharacterAliases replaces one character's aliases (store.

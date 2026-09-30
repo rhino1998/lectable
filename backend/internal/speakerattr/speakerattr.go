@@ -1479,6 +1479,16 @@ type DescriptionContext struct {
 	Text string
 }
 
+// CastVoice is another character's existing casting (store.Character's
+// Name and Summary), shown to CharacterizeVoice so the new voice stays
+// distinguishable from the people it shares scenes with - Spire's Spite's
+// two leads, Fritz and Bert, were both cast "gruff, gravelly, middle-aged
+// working-class British" when each was characterized alone.
+type CastVoice struct {
+	Name     string
+	Instruct string
+}
+
 // maxCharacterizeQuotes bounds how many of a character's quotes (across
 // however many books in their series) get pulled for characterization -
 // matched by httpapi's own maxCharacterizeQuotes, which bounds the store
@@ -1506,8 +1516,8 @@ const maxCharacterizeQuotes = 20
 const maxCharacterizeDescriptions = 10
 
 // characterizeMaxTokens bounds a characterization's generated JSON
-// response - now two fields ("instruct", roughly 40-90 words, and
-// "refLine", roughly 30-50 words; see characterizeSystemPrompt), not just
+// response - three fields ("evidence", then "instruct", roughly 35-60
+// words, and "refLine", roughly 28-40; see characterizeSystemPrompt), not just
 // one short paragraph, so this needs real headroom beyond either field's
 // own size alone. A "hybrid thinking" model (Qwen3's own chat template
 // defaults to this, with no flag here to ask it not to - see
@@ -1521,29 +1531,42 @@ const maxCharacterizeDescriptions = 10
 // parseCharacterization's own doc comment for what happens when it does).
 const characterizeMaxTokens = 5120
 
-const characterizeSystemPrompt = `You are a casting director for an audiobook. Given a character's name and, depending on what's available, a sample of their own spoken dialogue and/or narration that describes them, produce two things: a casting instruction for how a narrator should voice them, and a short reference passage that lets a voice-design tool actually render that voice well.
-Reply with ONLY a JSON object, no other text: {"instruct": "...", "refLine": "..."}.
+const characterizeSystemPrompt = `You are the casting director for an audiobook. From a character's dialogue and the narration describing them, cast the voice they speak with. Your casting is rendered by a voice-design model into one short reference clip, and every line the character ever says is cloned from that clip. Separate emotion variants (angry, afraid, whispering...) are made from it later, so the clip must be their ordinary resting voice, not their emotional range.
 
-For "instruct", write ONE short paragraph (roughly 40-90 words) instructing a narrator how to voice them: apparent gender, approximate age range (a bucket like child, teenager, young adult, middle-aged, or elderly, not a literal number), accent/register, the personality or tone that should come through in delivery, and a strong physical/vibe impression - build, posture, energy, the kind of presence they'd have in a room - so the instruction paints a fuller picture of who's speaking, not just how their voice sounds.
-Whenever the source material signals the speaker isn't an ordinary human - a named fantasy or sci-fi race or species (elf, dwarf, orc, alien), a non-corporeal or non-biological entity (ghost, spirit, demon, robot, AI, construct), or a non-human animal given speech - name that kind of creature/entity explicitly, early in the instruction (e.g. "Speak as a gravelly-voiced dwarf...", "Speak as a flat, synthetic-sounding AI...", "Speak as a shrieking, otherworldly ghost..."), and let it inform pitch/timbre/pace choices a step beyond ordinary human vocal ranges where the material supports it (e.g. a booming subterranean weight for a stone giant, a thin metallic buzz for a robot, an airy reverberation for a ghost). Whenever the material also gives (or strongly implies) a size for that creature/entity - tiny, human-scale, or towering/massive, e.g. a pixie, a giant, a dragon, a house-sized construct - state that size too and let it shape the voice the same way (a thin, high, quick voice for something tiny; a huge, resonant, slow-rolling one for something towering), rather than voicing every non-human character at an ordinary human scale by default. Treat all of this as fantasy/sci-fi worldbuilding, not real-world plausibility - never hedge or rationalize a fantastical trait away. Default to human, unhedged, at ordinary human scale, when nothing suggests otherwise; do not invent a race/species/size where the text is silent.
-Write "instruct" as a direct instruction to a narrator, in the form "Speak as a ...", the same way an audiobook voice-casting note would read - not a description of the character as a story figure.
-Describe the voice across specific, concrete dimensions rather than one or two vague adjectives - a vague, single-word impression ("a nice voice", "distinctive") produces a generic-sounding result, while naming pitch (e.g. "low-pitched", "a bright upper register"), pace (e.g. "an unhurried, measured pace", "a quick, clipped cadence"), and timbre/texture (e.g. "warm and smooth", "raspy", "breathy", "magnetic", "mellow", "a gravelly weight underneath") together gives a narrator something they can actually perform consistently. Cover at least pitch, pace, and timbre/texture explicitly, alongside personality/tone, rather than leaning on personality words alone. Never stack repeated or piled-up intensifiers ("very, very energetic", "extremely extremely deep") to signal strength - repetition doesn't add precision; reach for one stronger, more specific word or phrase instead (e.g. "booming and intense" rather than "very very loud").
-Never describe the voice by comparing it to a real, identifiable person - a celebrity, actor, public figure, or narrator, by name (e.g. "sounds like Morgan Freeman", "a David Attenborough quality") - even if the dialogue or description evokes one. A small, locally-run voice-design model has no reliable knowledge of what any specific real person actually sounds like, so a name like that is dead weight at best and a distracting mismatch at worst; translate whatever impression that comparison is standing in for directly into the same pitch/pace/timbre/personality vocabulary above instead (e.g. a "deep, commanding, gravelly bass-baritone with unhurried gravitas" rather than "a James Earl Jones voice").
-Whenever there is any gender signal at all, state it explicitly and unambiguously as one word in that opening "Speak as a [word] ..." clause - "male"/"female", or "man"/"woman"/"boy"/"girl" if age makes that the more natural fit - before any age/accent/tone words, the same way the built-in presets read (e.g. "Speak as a calm, warm middle-aged male narrator..."). Do not rely on pronouns, a gendered name, or descriptive words like "gruff" or "delicate" to imply gender on their own - one of those explicit words must actually appear, every time there is a signal to base it on, so this is consistent from one character to the next rather than only sometimes stated outright.
-Every character gets a specific nationality- or region-based accent named explicitly somewhere in "instruct" - never the generic word "accent" alone, and never left out entirely, even for an ordinary human with nothing distinctive about them otherwise. Whenever the source material gives an accent, regional, or national signal - a stated nationality/hometown/origin, a description of how they sound ("spoke with a thick Scottish burr", "his clipped British vowels"), dialect/phonetic spelling written into their own dialogue ("y'all", "dinnae", "innit"), regional slang ("bloody", "mate", "arse" read British; "y'all", "fixin' to" read Southern American), or a name/setting that strongly suggests a place or culture of origin - name that specific accent or regional voice explicitly (e.g. "with a Scottish accent", "a Yorkshire accent", "a clipped Received Pronunciation accent", "a lilting Irish accent", "a Brooklyn accent", "a General American accent") rather than the generic word "accent" alone.
-You may also be given notes on the book's setting. When a character's own material gives no accent signal, use the setting's accent for the main characters' own people rather than a default General American one; a character the text marks as from elsewhere, or a race/species with its own convention below, still follows that instead.
-Casual or informal speech is NOT a regional signal on its own - dropped g's ("goin'"), "ain't", "gonna", contractions, slang, swearing, and a rough, folksy, or working-class manner appear in every English dialect, so never pick an accent just from those. In particular, never reach for a Southern American drawl to convey warmth, gruffness, toughness, weariness, or a rural/working-class character: cast it only when the text itself places the character in or from the American South, or writes distinctly Southern dialect ("y'all", "fixin' to", "might could") into their speech. "South"/"southern" in the text means the American South only when it says so - "the south of England" is Southern English, and a compass direction is no accent at all. This is for audiobook narration, so a reasonable, tasteful inference from a name or setting is fine when nothing more explicit is available. When the material gives no signal at all - no name, setting, or dialogue cue to infer from - still name a specific accent rather than omitting one: reach for whatever's most plausible given the story's own general setting (e.g. a General American accent for an otherwise-unmarked contemporary American setting, a standard/neutral British accent for an unmarked British one), falling back to a plain, unremarkable General American accent as the last resort default when the setting itself gives nothing to go on either.
-When a character is a named fantasy/sci-fi race or species, or a non-corporeal/non-biological entity (per the paragraph above) and the text itself gives no accent/regional signal of its own, fall back on the accent (or, for a couple of kinds, deliberate lack of one) audiobook narration conventionally gives that kind, rather than defaulting to an unaccented voice by default: dwarves - a thick Scottish accent; elves - a refined, mid-Atlantic or English RP accent; orcs and goblins - a rough, guttural, working-class or Cockney-inflected accent; giants and trolls - a broad, rustic, rural accent; halflings/hobbits - a warm West Country (English countryside) accent; dragons - a plummy, aristocratic English RP accent; vampires - a refined Eastern European (Transylvanian) or aristocratic RP accent; fairies/pixies - a light, airy Irish lilt; robots/AI/constructs - a flat, neutral, unaccented, precisely-enunciated register with no regional coloring at all, the deliberate absence of an accent being the convention itself; ghosts/spirits - a faint, old-fashioned English accent evoking a bygone era, airy and half-whispered; demons - a refined, urbane, aristocratic English RP accent for anything articulate and menacing-but-composed, or a guttural, growling, non-regional voice for anything more beastly/feral. These are the expected, standard defaults for each kind, not a hesitant last resort - apply them confidently whenever the race/species/entity itself is established and the text is silent on accent specifically, the same way a real casting director would reach for the genre-standard choice rather than leave it vague. An explicit signal actually in the text (a stated nationality, dialect spelling, or described accent) still wins when one is present; absent both that and a race/species match here, fall back to the general rule above (infer from name/setting, or default to a plain General American accent) rather than ever leaving accent out - every character, human or not, ends up with one specific accent named in "instruct".
-When the material signals a more specific non-human texture beyond the broad creature/entity categories above, layer in the matching delivery quality alongside whatever accent/pitch/size choices already apply, applying it with the same confidence as the accent defaults above: a snake-like or reptilian creature - a light sibilant hiss threaded through the delivery; an insectoid or hive-mind entity - a faint buzzing, subtly doubled-voice quality; an angelic or divine being - an airy, reverberant, breathy quality. Apply one of these whenever the material signals that specific kind (a named reptilian/snake race, a swarm/hive framing, an angel/seraph/divine messenger called out as such) - still never invent the underlying kind itself where the text is silent, the same restraint the broader creature/entity rule above already asks for, but don't hedge on the texture once that kind is established.
-Independent of race/species, when the material casts a character in a clearly-stated narrative archetype or role, confidently layer in the delivery convention audiobook narration typically gives that role, on top of (not instead of) whatever gender/age/accent/creature choices already apply: a wizard, sage, or elder mentor figure - slow, breathy, weathered gravitas; a monarch or noble - crisp, poised, unhurried diction, regardless of race; a pirate or sailor - a gruff, weathered, seafaring drawl; a story's clearly-established villain or antagonist - a lower-pitched, unhurried, deliberate menace. Apply the villain convention only when the material explicitly frames the character as the story's antagonist or an established evildoer (a stated role like "the villain" or "the Dark Lord", or a clear pattern of intentional wrongdoing directed at the protagonist(s)) - never for a character who is merely morally gray, rude, or on the opposite side of an ordinary disagreement; skip the convention entirely rather than guess when it's unclear. As with every other convention above, an explicit voice/accent/personality signal actually in the text still wins over the archetype default when present - but once the role itself is clearly established, apply its convention rather than leaving the delivery generic.
-You may be given source material under two separate headings: "Their dialogue" (lines they actually say) and "Description of them" (narration about their appearance/personality, not spoken by them - not their own words). When "Description of them" is present, it's usually the most reliable source for apparent gender/age, physical/vibe impression, and creature/species/entity type - lean on it directly for those rather than guessing from dialogue alone. Base personality and tone primarily on how they actually talk (dialogue) and on any personality/temperament the description narration itself states, not on assumptions from their name in either section.
-Some dialogue lines end with a bracketed [narrator: ...] note - that's the surrounding narration right after that line, the same kind of physical/gender/age/accent signal as a "Description of them" entry, and can be mined the same way (a crossed-arm stance, a tired slump, a booming gesture, a described accent). Never use narration, bracketed or in its own section, to infer personality or tone beyond what it or the dialogue actually shows.
-The user turn may include a "Pronouns:" line - the pronouns the book itself uses for this character. Treat it as the authoritative gender signal, over anything the sample seems to imply: "he/him" means male ("male"/"man"/"boy"), "she/her" means female ("female"/"woman"/"girl"), and state it in the opening clause as above. "they/them" means do NOT commit to a gender word unless the description explicitly gives one; "it/its" usually marks a creature, construct, or other entity rather than a person - cast it per the creature/entity rules above, again without a gender word unless the material explicitly gives one.
-If, and only if, no pronouns, dialogue, or description give any gender signal at all, omit that word and describe the voice without committing to a gender rather than guessing one.
-The user turn may open with a note that this name is a generic ROLE/TYPE label (e.g. "Guard", "Thug", "Merchant"), not one consistent individual - when present, the dialogue/description sample below may be pooled from several different unnamed people who happened to share that label at different points in the story, not one person's own consistent voice. In that case, cast the general TYPE the label names rather than any one line's specific personality quirks: base gender/age/accent/archetype conventions on whatever the label and the pooled sample suggest about that kind of person in general (a "Guard" reads as a stern, dutiful, working-class voice; a "Merchant" reads as an affable, transactional patter), and favor whichever traits recur across multiple sample lines over a single outlier line's own idiosyncrasy. Still follow every rule above exactly the same way - a role gets a full, specific casting instruction and reference passage, just one aimed at the type rather than a unique individual.
-For "refLine", write a separate short passage (roughly 30-50 words, two or three sentences - short, deliberately: this becomes a rendered audio reference clip, and a longer passage risks pushing that render past what generation can handle) of plain, generic narration - NOT the character's own dialogue and NOT specific to their story - written purely to give a voice-design tool something to perform "instruct"'s voice with. Match its sentence rhythm and punctuation to the voice "instruct" describes: short, direct sentences or exclamations/questions for an energetic, intense, or commanding voice; longer, smooth, descriptive sentences for a calm or measured one - whatever best fits the pace and energy "instruct" itself calls for, within that same 30-50 word budget. A flat, neutral sentence undersells an energetic voice description just as much as a breathless one undersells a calm narrator, so the passage's own rhythm needs to actually invite the delivery "instruct" asks for. Still use a real variety of words and sounds across the passage, not one repeated phrase or sound, so it works well as a general-purpose voice reference rather than just for one moment - think of it as a short scene-setting passage a narrator would read as a warm-up in that voice, not a line of the character's own dialogue.
-Actively write toward whatever specific accent "instruct" names, not just toward its pace/energy: spell words the way that accent is conventionally rendered in prose (eye dialect/phonetic respelling - e.g. "dinnae"/"cannae"/"wee" for Scottish, "y'all"/"fixin' to" for a Southern American drawl, "gonna"/"innit"/dropped h's for a Cockney accent, "da"/"dis"/"dat" for a heavy Eastern European accent), and reach for that accent's own typical sentence structure and phrasing habits (word order, contractions, characteristic filler words/interjections), not just its vocabulary in isolation. Layer the same treatment on top for any other speech-pattern trait "instruct" calls out beyond accent - a stammer, a verbal tic ("y'know", "if you catch my meaning"), unusually formal/archaic phrasing for nobility or an old-fashioned character, clipped fragment-heavy speech for a curt/military voice, and so on - so the passage reads as that specific character's own speech pattern, not neutral prose with an accent label attached. Keep it legible and performable rather than a parody-thick wall of apostrophes: respell/restructure enough that the accent and speech pattern are unmistakable on the page, without tipping into being hard to actually read aloud.
-Neither field should repeat the character's name or include a heading.`
+Reply with ONLY a JSON object, no other text:
+{"evidence": "...", "instruct": "...", "refLine": "..."}
+
+"evidence": one or two sentences, written first, quoting or citing what the material actually says about gender, age, origin/accent, species and size. Write "none" for anything the material doesn't show. Base the other two fields on this, not on guesses.
+
+"instruct": 35-60 words, starting "Speak as a ...", a direct casting note to a narrator. Cover, in this order:
+1. Gender word and age group in the opening clause: "Speak as a teenage boy", "a young woman", "a middle-aged man", "an elderly woman". Age comes from evidence - a stated age, how others address them (boy, lad, old man, miss), their peers' ages, their station (apprentice, grandmother, veteran). Rank or authority is not age. With no evidence, choose young adult.
+2. Pitch, pace, and timbre/texture, each named concretely. Choose them from the character, not by default: young and small voices sit higher and lighter, old ones thinner or rougher, big ones lower and fuller; quick talkers are quick.
+3. One specific accent (see below).
+4. Their resting attitude as it colors ordinary speech: one or two traits that most of their lines share, in your own words from the material - not their most extreme moment, and not a stock adjective the material doesn't support. A joker should sound amused, a nervous character hesitant, a protagonist whose lines are mostly questions and quips should not come out as cold or haughty.
+Describe only what can be heard. Leave out looks, clothes, eyes, scars, posture, and backstory unless they change the sound (a huge chest booms, a tiny creature squeaks, a broken jaw slurs). Cast their own everyday voice, not a temporary form: armor, a helmet or mask, a transformation or battle form, a disguise, possession, or magic that changes them for a fight or a scene says nothing about how they normally sound - leave its size, species, and texture (metallic, echoing, towering, winged) out unless the material shows they are always that way. Never describe how the voice changes when angry, afraid, or excited; never name the character or a real person.
+
+Gender: "Pronouns:" is authoritative - he/him is male, she/her is female, they/them and it/its take no gender word unless the description states one. With no pronouns, use explicit narration (he said, the woman); otherwise omit gender.
+
+Accent: every character gets exactly one named accent (Scottish, Received Pronunciation, Cockney, Yorkshire, General American, Irish, German...). Decide it in this order, stopping at the first that applies:
+- An explicit signal in the material wins over everything below, including the setting notes: a stated origin, a described accent, dialect written into their speech (dinnae, y'all, ja), foreign words they use.
+- "Origin clues" are narration sentences naming them near a nationality, language, or accent word. A nationality they are given ("a Danish archeologist") or a language they speak among their own people or under stress (swearing, praying, whispering in Danish) is an explicit origin signal: cast that country's accent speaking English. A language they merely learned, study, or talk about isn't, and a clue about someone else in the same sentence isn't theirs.
+- In a real-world setting, a name clearly from another country than the story's place (a German name in London) is a signal too, a weaker one.
+- Idiom of one national English recurring in their own lines is a signal too, even against the setting notes: British (mate, bloody, arse, bloke, oi, sodding) or American (dude, gotten, mom, y'all - which is Southern American).
+- Otherwise use the setting notes' accent for the main characters' people; when it names several (a mixed cast), use the first. With no setting accent, pick the standard accent the dialogue's idiom points to ("mate", "bloody", "arse", "reckon" read standard British). Most of a cast shares one accent - choose a different one only on a signal.
+- Slang, swearing, dropped g's, bad grammar, and being poor or rough are not regional signals: a working-class character keeps the cast's accent with a rougher, more casual register, not a new accent. Never use a Southern American accent unless the text places them in the American South. Name the accent only; don't list spelling or grammar features in "instruct".
+- Non-human kinds with no signal of their own take the genre-standard voice: dwarf - Scottish; elf - refined RP; orc/goblin - guttural Cockney; giant/troll - broad rural; dragon or demon - plummy aristocratic RP (a beastly demon growls instead); fairy - light Irish; robot/AI/construct - flat, precisely enunciated, no accent; ghost - faint, old-fashioned English. Only for that kind, and only when the material establishes it - never invent a species.
+- Non-human kinds, when established, also shape pitch and texture by size and nature: a hiss for a snake-folk, a resonant rumble for something huge, a thin quick voice for something tiny, an airy reverb for a spirit or angel.
+
+A "Note:" that the name is a ROLE label means several unnamed people shared it: cast the typical member of that type from traits that recur across lines, not one line's quirk.
+
+"Already cast" lists the voices of other characters who share the most scenes with this one. Listeners must tell them apart by ear, so make this voice clearly different from each - in pitch, pace, or texture, not only in attitude - wherever the material leaves room. Never change gender, age group, or accent against the evidence to do it. They are other people: never reuse their wording, species, size, or traits - everything about this voice comes from this character's own material. Never mention them in "instruct" ("distinct from the British Steve"): the voice-design model reads only this one voice's description, so the difference must be in the pitch, pace, and texture you choose, not stated.
+
+"refLine": 28-40 words, three sentences, that this character might say aloud on an ordinary calm day - in their own voice, vocabulary, and rhythm, but about nothing specific to the plot. It is read aloud by the voice-design model, so:
+- Plain statements, at most one question, no exclamation marks, no shouting, no ellipses or dashes.
+- No names, places, or invented words from the story.
+- Show the accent through word choice and phrasing (aye, wee, reckon, mate, ja), never through apostrophe respellings ('ere, nothin', yer, fassster) - the reader model mispronounces those.
+- Match their resting pace: short plain sentences for a curt voice, longer flowing ones for a measured one.
+- Make it sound like this person and nobody else: their kind of humor, bluntness, formality, or warmth. Open with something only they would say, not a filler phrase.`
 
 // CharacterizeVoice asks the LLM to describe how name should sound, from a
 // sample of their own attributed dialogue (quotes - narration *about* them
@@ -1587,7 +1610,13 @@ Neither field should repeat the character's name or include a heading.`
 // pronouns (see store.Character.Pronouns; "" when unknown) goes on the
 // user turn the same way - characterizeSystemPrompt treats it as the
 // authoritative gender signal.
-func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool, pronouns string, setting *BookSetting, quotes []QuoteContext, descriptions []DescriptionContext) (instruct string, refLine string, err error) {
+//
+// origins (see OriginClues) go on the user turn as "Origin clues".
+//
+// costars (see httpapi.characterizeVoice: the characters sharing the most
+// chapters with this one who are already characterized) go on the user
+// turn as "Already cast".
+func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool, pronouns string, setting *BookSetting, quotes []QuoteContext, descriptions []DescriptionContext, origins []string, costars []CastVoice) (instruct string, refLine string, err error) {
 	if len(quotes) > maxCharacterizeQuotes {
 		quotes = quotes[:maxCharacterizeQuotes]
 	}
@@ -1622,13 +1651,39 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 			fmt.Fprintf(&user, "- %s\n", oneLine(d.Text))
 		}
 	}
+	if len(origins) > 0 {
+		user.WriteString("\nOrigin clues:\n")
+		for _, o := range origins {
+			fmt.Fprintf(&user, "- %s\n", oneLine(o))
+		}
+	}
+	if len(costars) > 0 {
+		user.WriteString("\nAlready cast:\n")
+		for _, cv := range costars {
+			fmt.Fprintf(&user, "- %s: %s\n", cv.Name, oneLine(cv.Instruct))
+		}
+	}
 
 	// generateAndParse's retry covers this validation step too, not just
 	// JSON parsing elsewhere in this package - a too-short instruct or
 	// refLine is the same kind of one-off model hiccup (see
 	// parseCharacterization's own comment), and a fresh generation attempt
 	// often just doesn't hit it a second time.
-	result, err := generateAndParse(ctx, c, characterizeSystemPrompt, user.String(), 0.3, characterizeMaxTokens, parseCharacterization)
+	result, err := generateAndParse(ctx, c, characterizeSystemPrompt, user.String(), 0.3, characterizeMaxTokens, func(content string) (characterization, error) {
+		result, err := parseCharacterization(content)
+		if err != nil {
+			return result, err
+		}
+		for _, cv := range costars {
+			if wordOverlap(result.Instruct, cv.Instruct) > maxCostarOverlap {
+				return characterization{}, fmt.Errorf("llm copied %s's casting: %q", cv.Name, result.Instruct)
+			}
+			if mentionsName(result.Instruct, cv.Name) {
+				return characterization{}, fmt.Errorf("llm named co-star %s in the casting: %q", cv.Name, result.Instruct)
+			}
+		}
+		return result, nil
+	})
 	if err != nil {
 		return "", "", err
 	}
@@ -1681,16 +1736,66 @@ func parseCharacterization(content string) (characterization, error) {
 	return result, nil
 }
 
+// maxCostarOverlap is the most of its words a characterization may share
+// with a co-star's (wordOverlap) before it counts as a copy and is retried:
+// shown "Already cast" voices, the model once returned Mizhu's casting word
+// for word for Sessi, a god ("a young male swampkin... prominent ears").
+// Honest castings in one prompt style share less than half their words
+// (at most 0.44 over the 276 pairs of 24 leads across three books).
+const maxCostarOverlap = 0.6
+
+// mentionsName reports whether text names name - in full, or by a word of
+// it of 3+ letters that starts with a capital ("Steve" of "Steve Atherton")
+// - as a whole word. Shown "Already cast" voices, the model took to writing
+// "distinct from the British Steve and American Jonas" into the casting,
+// which the voice-design model reads as part of the voice.
+func mentionsName(text, name string) bool {
+	words := append([]string{name}, strings.Fields(name)...)
+	for _, w := range words {
+		w = strings.Trim(w, `.,;:!?"'()`)
+		if len([]rune(w)) < 3 || !startsUpper(w) {
+			continue
+		}
+		if regexp.MustCompile(`\b` + regexp.QuoteMeta(w) + `\b`).MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+// wordOverlap is the Jaccard similarity of a's and b's lowercase word sets.
+func wordOverlap(a, b string) float64 {
+	set := func(s string) map[string]bool {
+		out := map[string]bool{}
+		for _, w := range strings.Fields(strings.ToLower(s)) {
+			out[strings.Trim(w, ".,;:!?\"'()")] = true
+		}
+		return out
+	}
+	sa, sb := set(a), set(b)
+	inter := 0
+	for w := range sa {
+		if sb[w] {
+			inter++
+		}
+	}
+	union := len(sa) + len(sb) - inter
+	if union == 0 {
+		return 0
+	}
+	return float64(inter) / float64(union)
+}
+
 // minCharacterizeWords/minRefLineWords - see parseCharacterization's own
-// comment. minRefLineWords is lower than refLine's own ~30-50 word target
-// for the same "catch truncation, not stylistic brevity" reason
-// minCharacterizeWords sits under instruct's ~40-90 word target.
+// comment. Both sit well under the prompt's targets (instruct 35-60 words,
+// refLine 28-40) to catch truncation, not stylistic brevity: a curt
+// character's three short sentences legitimately come in under 20 words.
 const minCharacterizeWords = 8
-const minRefLineWords = 20
+const minRefLineWords = 12
 
 // maxRefLineWords is a Go-side backstop capping how long a characterized
 // RefLine is ever actually saved at, independent of asking nicely in
-// characterizeSystemPrompt's own ~30-50 word target - real, observed
+// characterizeSystemPrompt's own ~28-40 word target - real, observed
 // case: a model that ignored that target and produced a much longer
 // refLine, which (combined with a slow/deliberate instructed pace) went on
 // to render a reference clip that reproducibly OOM'd the ttsworker process
@@ -1699,7 +1804,7 @@ const minRefLineWords = 20
 // defense - that one catches every cause including a slow Instruct
 // inflating duration independent of word count, this one catches the
 // LLM-output cause specifically, before it ever reaches a render at all).
-// Set a bit above the prompt's own upper target (50) to only trim a
+// Set well above the prompt's own upper target (40) to only trim a
 // genuine overshoot, not ordinary stylistic length.
 const maxRefLineWords = 65
 

@@ -74,6 +74,9 @@ type Server struct {
 	// lowercaseWords caches each book's speakerattr.LowercaseWords (bookID
 	// -> cachedLowercaseWords) - see realRoles.
 	lowercaseWords sync.Map
+	// originParagraphs caches each book's speakerattr.OriginParagraphs
+	// (bookID -> cachedOriginParagraphs) - see originClues.
+	originParagraphs sync.Map
 
 	// settingLocks is a keyed mutex (bookID -> *sync.Mutex) serializing
 	// deriveBookSetting per book.
@@ -229,6 +232,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/voice", s.handleSetCharacterVoice)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/invalid", s.handleSetCharacterInvalid)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/role", s.handleSetCharacterRole)
+	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/name", s.handleRenameCharacter)
 	mux.HandleFunc("POST /api/books/{id}/characters/dedupe", s.handleDedupeCharacters)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/aliases", s.handleSetCharacterAliases)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/pronouns", s.handleSetCharacterPronouns)

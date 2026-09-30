@@ -99,16 +99,21 @@ func (s *Server) deriveBookSetting(ctx context.Context, book *store.Book, force 
 			return st, err
 		}
 	}
-	// One whole-book read: TechCounts covers every paragraph, and the
-	// samples come from the same rows grouped by chapter.
+	// One whole-book read: TechCounts covers every paragraph, IdiomCounts
+	// every dialogue line, and the samples come from the same rows grouped
+	// by chapter.
 	all, err := s.Store.ListParagraphsRawForBook(book.ID)
 	if err != nil {
 		return nil, err
 	}
 	counts := speakerattr.TechCounts{}
+	idioms := speakerattr.IdiomCounts{}
 	var chapters [][]speakerattr.ParagraphInput
 	for i, p := range all {
 		counts.Add(p.Text)
+		if p.IsQuote {
+			idioms.Add(p.Text)
+		}
 		if i == 0 || p.ChapterID != all[i-1].ChapterID {
 			chapters = append(chapters, nil)
 		}
@@ -126,7 +131,7 @@ func (s *Server) deriveBookSetting(ctx context.Context, book *store.Book, force 
 	if len(samples) == 0 {
 		return nil, nil
 	}
-	setting, err := s.Speaker.DescribeSetting(ctx, book.Title, book.Author, counts, samples)
+	setting, err := s.Speaker.DescribeSetting(ctx, book.Title, book.Author, counts, idioms, samples)
 	if err != nil {
 		return nil, fmt.Errorf("describe setting: %w", err)
 	}
