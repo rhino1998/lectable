@@ -14,6 +14,7 @@ import {
 } from 'react-icons/ri'
 import {
   useRegenerateVariant,
+  useRenameCharacter,
   useSetCharacterAliases,
   useSetCharacterPronouns,
 } from '../../api/queries'
@@ -122,7 +123,11 @@ export function SpeakerRow({
     <li className="speaker-row">
       <div className="speaker-row-main">
         <span>
-          {speaker.name}
+          {isNarrator ? (
+            speaker.name
+          ) : (
+            <SpeakerName bookId={bookId} characterId={speaker.id} name={speaker.name} />
+          )}
           {speaker.role && (
             <span
               className="speaker-role-badge"
@@ -355,6 +360,77 @@ export function SpeakerRow({
         </div>
       )}
     </li>
+  )
+}
+
+// A character's name with an inline rename (api.renameCharacter): their
+// lines, corrections and voice follow, and the old name becomes an alias.
+// The speakers list is live, so a save shows up on its own.
+function SpeakerName({
+  bookId,
+  characterId,
+  name,
+}: {
+  bookId: string
+  characterId: string
+  name: string
+}) {
+  const rename = useRenameCharacter(bookId)
+  const [draft, setDraft] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const save = () => {
+    if (draft === null) return
+    const next = draft.trim()
+    if (next === '' || next === name) {
+      setDraft(null)
+      return
+    }
+    setError(null)
+    rename.mutate(
+      { characterId, name: next },
+      {
+        onSuccess: () => setDraft(null),
+        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not rename'),
+      },
+    )
+  }
+
+  if (draft !== null) {
+    return (
+      <span className="speaker-rename">
+        <input
+          className="speaker-rename-input"
+          value={draft}
+          autoFocus
+          aria-label="New name"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') save()
+            if (e.key === 'Escape') setDraft(null)
+          }}
+        />
+        <button onClick={save} disabled={rename.isPending}>
+          Save
+        </button>
+        <button onClick={() => setDraft(null)} disabled={rename.isPending}>
+          Cancel
+        </button>
+        {error && <span className="error-text">{error}</span>}
+      </span>
+    )
+  }
+  return (
+    <>
+      {name}
+      <button
+        className="link-button speaker-rename-button"
+        onClick={() => setDraft(name)}
+        title="Rename this character everywhere in the series - the old name stays on as another name for them"
+      >
+        Rename
+      </button>
+    </>
   )
 }
 

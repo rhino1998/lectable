@@ -25,12 +25,14 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Merge
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -84,6 +86,7 @@ fun SpeakersScreen(
     var pendingDeleteCharacter by remember { mutableStateOf<SpeakerDto?>(null) }
     var pendingMergeTarget by remember { mutableStateOf<Pair<SpeakerDto, String>?>(null) }
     var mergeSheetFor by remember { mutableStateOf<SpeakerDto?>(null) }
+    var renameFor by remember { mutableStateOf<SpeakerDto?>(null) }
     var voicePickerFor by remember { mutableStateOf<SpeakerDto?>(null) }
     var pendingDeleteSpeakerData by remember { mutableStateOf(false) }
 
@@ -235,6 +238,7 @@ fun SpeakersScreen(
                         onGenerateVoice = { viewModel.generateVoice(speaker.id) },
                         onAssignVoice = { voicePickerFor = speaker },
                         onMerge = { mergeSheetFor = speaker },
+                        onRename = { renameFor = speaker },
                         onDeleteRequested = { pendingDeleteCharacter = speaker },
                         onToggleAppearances = { viewModel.toggleAppearances(speaker.id) },
                         onPlayAppearance = viewModel::playUrl,
@@ -268,6 +272,14 @@ fun SpeakersScreen(
             confirmLabel = "Merge",
             onConfirm = { viewModel.mergeCharacter(speaker.id, targetName) },
             onDismiss = { pendingMergeTarget = null },
+        )
+    }
+
+    renameFor?.let { speaker ->
+        RenameCharacterDialog(
+            currentName = speaker.name,
+            onRename = { name, onResult -> viewModel.renameCharacter(speaker.id, name, onResult) },
+            onDismiss = { renameFor = null },
         )
     }
 
@@ -335,6 +347,7 @@ private fun SpeakerRow(
     onGenerateVoice: () -> Unit,
     onAssignVoice: () -> Unit,
     onMerge: () -> Unit,
+    onRename: () -> Unit,
     onDeleteRequested: () -> Unit,
     onToggleAppearances: () -> Unit,
     onPlayAppearance: (String) -> Unit,
@@ -470,6 +483,11 @@ private fun SpeakerRow(
                             leadingIcon = { Icon(Icons.Filled.Groups, contentDescription = null) },
                             enabled = !togglingRole,
                             onClick = { onToggleRole(); showMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Rename…") },
+                            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                            onClick = { onRename(); showMenu = false },
                         )
                         DropdownMenuItem(
                             text = { Text("Merge into…") },
@@ -746,4 +764,53 @@ private fun VoicePickerRow(name: String, subtitle: String, selected: Boolean, on
             )
         }
     }
+}
+
+/** Renames a character across its series (see SpeakerViewModel.renameCharacter). Stays open on
+ *  a refusal - a name another character already has, a group - showing the server's reason. */
+@Composable
+private fun RenameCharacterDialog(
+    currentName: String,
+    onRename: (String, (String?) -> Unit) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by rememberSaveable { mutableStateOf(currentName) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    val trimmed = name.trim()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename \"$currentName\"") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it; error = null },
+                    singleLine = true,
+                    isError = error != null,
+                    label = { Text("Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    error ?: "Their lines, corrections and voice follow the new name; \"$currentName\" stays on as another name for them.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (error != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving && trimmed.isNotEmpty() && trimmed != currentName,
+                onClick = {
+                    saving = true
+                    onRename(trimmed) { failure ->
+                        saving = false
+                        if (failure == null) onDismiss() else error = failure
+                    }
+                },
+            ) { Text(if (saving) "Renaming…" else "Rename") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }

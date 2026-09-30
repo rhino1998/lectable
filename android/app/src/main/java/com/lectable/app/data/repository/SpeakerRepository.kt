@@ -4,12 +4,17 @@ import com.lectable.app.data.remote.LectableApi
 import com.lectable.app.data.remote.dto.CharacterizeResponseDto
 import com.lectable.app.data.remote.dto.GenerateVoiceResponseDto
 import com.lectable.app.data.remote.dto.MergeCharacterRequestDto
+import com.lectable.app.data.remote.dto.RenameCharacterRequestDto
 import com.lectable.app.data.remote.dto.SetCharacterInvalidRequestDto
 import com.lectable.app.data.remote.dto.SetCharacterRoleRequestDto
 import com.lectable.app.data.remote.dto.SetCharacterVoiceRequestDto
 import com.lectable.app.data.remote.dto.SpeakerAppearanceDto
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import retrofit2.HttpException
 
 /** Thin wrapper over [LectableApi]'s per-character endpoints - the Android analogue of
  *  frontend/src/pages/SpeakersPage.tsx's own character-management calls. Kept separate from
@@ -37,6 +42,21 @@ class SpeakerRepository @Inject constructor(
 
     suspend fun deleteCharacter(bookId: String, characterId: String) {
         api.deleteCharacter(bookId, characterId)
+    }
+
+    /** Renames a character across its whole series; the old name stays on as an alias. A
+     *  refusal (a clash with another character's name, a group name) throws with the server's
+     *  own explanation, which the rename dialog shows as-is. */
+    suspend fun renameCharacter(bookId: String, characterId: String, name: String) {
+        try {
+            api.renameCharacter(bookId, characterId, RenameCharacterRequestDto(name = name))
+        } catch (e: HttpException) {
+            val message = runCatching {
+                Json.parseToJsonElement(e.response()?.errorBody()?.string().orEmpty())
+                    .jsonObject["error"]?.jsonPrimitive?.content
+            }.getOrNull()
+            throw IllegalStateException(message ?: "Could not rename (HTTP ${e.code()})", e)
+        }
     }
 
     suspend fun mergeCharacter(bookId: String, characterId: String, targetName: String) {

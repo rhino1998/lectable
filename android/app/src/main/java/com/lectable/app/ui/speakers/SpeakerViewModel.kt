@@ -254,6 +254,16 @@ class SpeakerViewModel @Inject constructor(
         }
     }
 
+    /** Renames a character; [onResult] gets null on success or the reason it was refused, so
+     *  the rename dialog can stay open to correct it. The row updates via the live topic. */
+    fun renameCharacter(characterId: String, name: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            runCatching { speakerRepository.renameCharacter(bookId, characterId, name) }
+                .onSuccess { onResult(null) }
+                .onFailure { e -> onResult(e.message ?: "Could not rename") }
+        }
+    }
+
     fun mergeCharacter(characterId: String, targetName: String) {
         viewModelScope.launch {
             runCatching { speakerRepository.mergeCharacter(bookId, characterId, targetName) }

@@ -477,6 +477,16 @@ export const api = {
       body: { invalid },
     }),
 
+  // Renames one character across their whole series - their lines,
+  // corrections, chapter notes and voice follow; the old name stays on as
+  // an alias. 409 if another character already has the name (merge
+  // instead).
+  renameCharacter: (bookId: string, characterId: string, name: string) =>
+    call('PUT /api/books/{id}/characters/{characterId}/name', {
+      path: { id: bookId, characterId },
+      body: { name },
+    }),
+
   // Replaces one character's aliases - see Speaker.aliases. 400 for a
   // group ("Bert and Sid") or non-name, 409 for another character's name
   // or alias (merge them instead).
