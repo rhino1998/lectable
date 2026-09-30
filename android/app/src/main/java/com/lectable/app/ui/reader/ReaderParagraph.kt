@@ -85,6 +85,7 @@ internal fun ParagraphRow(
     onRegenerate: () -> Unit,
     onToggleBookmark: () -> Unit,
     onOpenSpeakerPicker: () -> Unit,
+    // fromName "" = tag plain narration as describing someone ("Mark as description").
     onOpenDescriptionPicker: (fromName: String, paragraphIndices: List<Int>) -> Unit,
     onToggleScareQuote: (paragraphIndices: List<Int>, scareQuote: Boolean) -> Unit,
     onSetEmotion: (paragraphIndices: List<Int>, emotion: String) -> Unit,
@@ -136,6 +137,9 @@ internal fun ParagraphRow(
     // same way, so a pure-narration block just doesn't offer either, same as how
     // [speakers]/[describesByName]/[directionTags] above only show when they apply.
     val quoteSegments = remember(segments) { segments.filter { it.isQuote } }
+    // Annotations mode's "Mark as description" targets: this block's plain narration segments
+    // not yet describing anyone (a quoted line can't describe - the backend rejects it).
+    val undescribedNarration = remember(segments) { segments.filter { !it.isQuote && it.describesCharacters.isEmpty() }.map { it.idx } }
     val hasQuoteSegment = quoteSegments.isNotEmpty()
     // Toggle target for "Mark/unmark as scare quote" - true only when every one of this block's
     // own quote segments is already marked, mirroring how [speakers]' own "current" value is
@@ -235,6 +239,13 @@ internal fun ParagraphRow(
                     leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
                     onClick = { onRegenerate(); showMenu = false },
                 )
+                if (annotationsMode && undescribedNarration.isNotEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("Mark as description") },
+                        leadingIcon = { AnnotationSwatch(descriptionMarkColor) },
+                        onClick = { onOpenDescriptionPicker("", undescribedNarration); showMenu = false },
+                    )
+                }
                 if (hasQuoteSegment) {
                     DropdownMenuItem(
                         text = { Text("Set speaker") },

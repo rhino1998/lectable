@@ -26,7 +26,8 @@ export interface ParagraphContextMenuHandle {
 
 // The reader's right-click menu (annotations view only): reassign a
 // dialogue line's speaker, mark/unmark it as a scare quote, override its
-// emotion, or reassign a description paragraph. Split out of ReaderPage
+// emotion, reassign a description paragraph, or mark plain narration as
+// describing someone. Split out of ReaderPage
 // with an imperative open() (the same shape as AnnotationTooltip) so
 // opening and positioning the menu re-renders only this component, not the
 // reader's whole loaded paragraph list. `speakers` backs the "reassign
@@ -297,13 +298,15 @@ export const ParagraphContextMenu = forwardRef<
         </>
       ) : (
         <>
-          <div className="speaker-context-menu-title">Reassign speaker</div>
-          <div className="speaker-context-menu-current">
-            Currently: <strong>Narrator</strong>
-          </div>
-          <div className="speaker-context-menu-empty">
-            Only dialogue can be reassigned to a character
-          </div>
+          {/* Plain narration: tag it as describing someone (from '' just
+              adds the name - see handleSetParagraphDescription). */}
+          <div className="speaker-context-menu-title">Mark as description of</div>
+          <TargetSections
+            sections={speakerTargets}
+            keyPrefix="describe-new"
+            isCurrent={() => false}
+            onPick={(name) => reassignDescription('', name)}
+          />
         </>
       )}
     </div>

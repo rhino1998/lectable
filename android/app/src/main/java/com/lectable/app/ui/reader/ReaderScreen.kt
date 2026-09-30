@@ -637,7 +637,8 @@ internal data class SpeakerPickerTarget(
  *  [paragraphIndices] is this block's own segments whose own describesCharacters already lists
  *  [fromName] (a block can have more than one, and a single description can span more than one
  *  inline segment) - mirrors [SpeakerPickerTarget]'s own paragraphIndices/currentSpeaker shape,
- *  just keyed by describes-name instead of speaker. */
+ *  just keyed by describes-name instead of speaker. An empty [fromName] targets plain narration
+ *  segments describing no one yet ("Mark as description"). */
 private data class DescriptionPickerTarget(
     val chapterIdx: Int,
     val paragraphIndices: List<Int>,

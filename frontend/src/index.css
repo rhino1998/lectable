@@ -2379,12 +2379,6 @@ label {
 .speaker-emotion-button:disabled {
   opacity: 0.5;
 }
-.speaker-context-menu-empty {
-  padding: 0.4rem 0.6rem;
-  font-size: 0.8rem;
-  color: color-mix(in srgb, var(--text) 55%, transparent);
-  max-width: 220px;
-}
 /* One character's own reassign-target list within the description-reassign
    menu (ReaderPage's contextMenu.describesCharacters can have more than one
    name - a paragraph describing two people gets one of these per name) -

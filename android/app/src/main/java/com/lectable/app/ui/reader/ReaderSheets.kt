@@ -328,7 +328,9 @@ private fun SpeakerRow(name: String, currentSpeaker: String, onSelect: (String) 
  *  annotations-view "Reassign description" context menu (see ReaderViewModel
  *  .reassignDescription). "Remove" always leads the list (clears the description entirely,
  *  describing no one - same as [SpeakerPickerSheet]'s "Narrator" entry clearing attribution),
- *  followed by every other known character except [fromName] itself. Reuses the same roster
+ *  followed by every other known character except [fromName] itself. An empty [fromName] is
+ *  annotations mode's "Mark as description" instead: plain narration gets tagged, no "Remove".
+ *  Reuses the same roster
  *  fetch [SpeakerPickerSheet] does - descriptions and dialogue share one character roster. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -348,7 +350,7 @@ internal fun DescriptionPickerSheet(
         LazyColumn(modifier = Modifier.padding(bottom = 24.dp)) {
             item {
                 Text(
-                    "Reassign description of \"$fromName\"",
+                    if (fromName.isEmpty()) "Mark as description of" else "Reassign description of \"$fromName\"",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
@@ -356,7 +358,7 @@ internal fun DescriptionPickerSheet(
             if (!loaded) {
                 item { CircularProgressIndicator(modifier = Modifier.padding(24.dp)) }
             } else {
-                item { DescriptionTargetRow("Remove", onSelect = { onSelect("") }) }
+                if (fromName.isNotEmpty()) item { DescriptionTargetRow("Remove", onSelect = { onSelect("") }) }
                 if (local.isNotEmpty()) {
                     item { VoiceSectionHeader("This chapter") }
                     items(local, key = { "local-$it" }) { name -> DescriptionTargetRow(name, onSelect = { onSelect(name) }) }
