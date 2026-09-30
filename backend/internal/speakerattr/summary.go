@@ -596,6 +596,7 @@ func (r Roster) WithCast(cast []CastMember) Roster {
 	out.Pronouns = cloneMap(r.Pronouns)
 	out.Roles = cloneMap(r.Roles)
 	out.Cast = cast
+	resolver := NewSpeakerNameResolver(r.Names, r.Aliases)
 	for _, m := range cast {
 		m.Refs = mergeRefs(nil, m.Refs) // notes stored before a filter was added
 		out.Names = addKnown(out.Names, m.Name)
@@ -603,7 +604,19 @@ func (r Roster) WithCast(cast []CastMember) Roster {
 		if m.Role {
 			out.Roles[m.Name] = true
 		}
-		if m.Pronouns != "" && out.Pronouns[m.Name] == "" {
+		switch {
+		case m.Pronouns == "":
+		case !m.Role:
+			// The chapter's own pronouns win for a named character, under
+			// the roster's spelling ("Amanda" is Francine Amanda Deena's
+			// alias): the roster keeps one value per character, but a book
+			// can change one mid-way - Spire's Spite calls Sid "he" until a
+			// reveal, then "she" - and a roster "she/her" had
+			// RefinePronounTags move three of five of Sid's early "he said"
+			// lines to someone else (and the prompt list her as she/her).
+			// Notes and roster agree on 500 of 504 named characters.
+			out.Pronouns[resolver.Canonical(m.Name)] = m.Pronouns
+		case out.Pronouns[m.Name] == "":
 			out.Pronouns[m.Name] = m.Pronouns
 		}
 		if len(m.Refs) > 0 {

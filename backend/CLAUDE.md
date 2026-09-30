@@ -756,7 +756,25 @@ building/running `ttsworker` does, since both now link into that binary.
        A turn-taking rule (a third character answered inside an A, B, A
        exchange goes to B) was tried the same way and dropped: 39 fixed,
        179 broken - three-person scenes, and exchanges whose earlier turns
-       were already wrong. Group names are also refused outright by the
+       were already wrong. Its pronouns come from the roster, overridden per chapter by the
+       summary notes' pronouns for named (non-role) cast members, keyed by
+       the roster's spelling (`Roster.WithCast`): the roster keeps one
+       value per character, and Spire's Spite's Sid ("he" until a reveal,
+       then "she", roster `she/her`) had three of five early "he said" lines
+       moved to someone else (`attrreplay -stored spire:1-39`, read against
+       the text). Notes and roster agree on 500 of 504 named characters;
+       the override is neutral on the ten eval runs (`attrreplay
+       -castpronouns`). Roles only fill gaps (a role label can be several
+       people), and filling gaps adds nothing measurable - no tagged
+       contradiction in the eval set involves a role. The chapters Sid's
+       case came from predate the summary pass (no notes), so it applies
+       once they're re-attributed. **Rejected: a scene-presence check**
+       (drop a scene's present member never named, aliased or referenced in
+       its paragraphs - `cmd/notescheck` audits notes this way): on the 19
+       eval chapters 12 of its 19 would-be drops speak in that very scene
+       (pronoun-only narration, "I" narrators), and the case that motivated
+       it (Kev given Dave's lines in Arise ch. 11) is a scene that is too
+       coarse, not a wrong one - Kev is on the phone for its first half. Group names are also refused outright by the
        manual speaker PUT and merge, and forced to `"Unknown"` before any
        attribution result is persisted.
     2. **Describe** (`Client.DescribeChapter`) - a separate, single-purpose

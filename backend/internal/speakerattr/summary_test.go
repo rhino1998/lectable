@@ -284,3 +284,27 @@ func TestResolveCastRefsIgnoresRoleNameRefs(t *testing.T) {
 		t.Fatalf("ResolveCastRefs = %v", got)
 	}
 }
+
+// A chapter's notes pronouns win over the roster's for a named character
+// (a book can change one mid-way), under the roster's own spelling; a role's
+// only fill a gap.
+func TestWithCastChapterPronouns(t *testing.T) {
+	r := Roster{
+		Names:    []string{"Sid", "Francine Amanda Deena", "Guard"},
+		Aliases:  map[string][]string{"Francine Amanda Deena": {"Amanda"}},
+		Pronouns: map[string]string{"Sid": PronounsShe, "Francine Amanda Deena": PronounsShe, "Guard": PronounsHe},
+	}
+	got := r.WithCast([]CastMember{
+		{Name: "Sid", Pronouns: PronounsHe},
+		{Name: "Amanda", Pronouns: PronounsShe},
+		{Name: "Guard", Role: true, Pronouns: PronounsShe},
+		{Name: "Bosun", Role: true, Pronouns: PronounsHe},
+	}).Pronouns
+	want := map[string]string{"Sid": PronounsHe, "Francine Amanda Deena": PronounsShe, "Guard": PronounsHe, "Bosun": PronounsHe}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pronouns = %v, want %v", got, want)
+	}
+	if r.Pronouns["Sid"] != PronounsShe {
+		t.Fatal("WithCast changed the roster it was called on")
+	}
+}
