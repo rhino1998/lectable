@@ -152,3 +152,82 @@ func TestAttributeChapterTurnsDescriptionsIntoRoles(t *testing.T) {
 		t.Fatalf("roles = %v, want Man", roles)
 	}
 }
+
+// The chapter-level roster fields reach every batch prompt: who "I" is, and
+// the scene markers with who is present. Both were once dropped when
+// AttributeChapter built each batch's roster.
+func TestAttributeChapterPromptCarriesNarratorAndScenes(t *testing.T) {
+	paras := []ParagraphInput{
+		{Idx: 0, Text: "“Go,”", IsQuote: true},
+		{Idx: 1, Text: "I said.", Inline: true},
+		{Idx: 2, Text: "“Now,”", IsQuote: true},
+		{Idx: 3, Text: "he said.", Inline: true},
+	}
+	roster := Roster{
+		Names: []string{"Steve", "Dave", "Kev"}, Prominent: []string{"Steve", "Dave", "Kev"}, FirstPerson: "Steve",
+		Scenes: []Scene{{StartIdx: 0, Location: "the flat", Present: []string{"Steve", "Kev"}}, {StartIdx: 2, Present: []string{"Steve", "Dave"}}},
+	}
+	llm := &recordingLLM{}
+	if _, _, _, _, err := NewClient(Config{}, llm).AttributeChapter(context.Background(), "Book", "Ch", roster, paras, nil); err != nil {
+		t.Fatal(err)
+	}
+	prompt := llm.prompts[0]
+	for _, want := range []string{"narrated in the first person by Steve", "[Scene: the flat; present: Steve, Kev]\n0 (who?)", "[Scene: present: Steve, Dave]\n2 (who?)"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt is missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestAttributeChapterUsesReaderCorrections(t *testing.T) {
+	paras := []ParagraphInput{
+		{Idx: 0, Text: "“Get off it,”", IsQuote: true, Known: "Dave"},
+		{Idx: 1, Text: "he said.", Inline: true},
+		{Idx: 2, Text: "“Make me.”", IsQuote: true},
+	}
+	roster := Roster{
+		Names: []string{"Bert", "Dave", "Kev", "Zed"},
+		Corrections: []Correction{
+			{ChapterIdx: 1, Text: "“Oi, you!”", Wrong: "Kev", Right: "Dave"},
+			{ChapterIdx: 2, Text: "“Elsewhere.”", Wrong: "Zed", Right: "Mira"},
+			{ChapterIdx: 3, Text: "“Not speech.”", Wrong: "Narrator", Right: "Dave"},
+		},
+	}
+	llm := &recordingLLM{}
+	got, _, _, _, err := NewClient(Config{}, llm).AttributeChapter(context.Background(), "Book", "Ch", roster, paras, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0] != "Dave" || got[2] != "Bert" {
+		t.Fatalf("speakers = %v, want the reader's Dave on 0 and the model's Bert on 2", got)
+	}
+	prompt := llm.prompts[0]
+	for _, want := range []string{"0 (Dave): “Get off it,”", "2 (who?)", "- “Oi, you!” - Dave, not Kev\n"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt is missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, unwanted := range []string{"0 (who?)", "Elsewhere", "Not speech"} {
+		if strings.Contains(prompt, unwanted) {
+			t.Errorf("prompt has %q:\n%s", unwanted, prompt)
+		}
+	}
+}
+
+func TestRelevantCorrectionsNearestFirstAndCapped(t *testing.T) {
+	var corrections []Correction
+	for ch := 0; ch < 5; ch++ {
+		corrections = append(corrections, Correction{ChapterIdx: ch, Text: fmt.Sprint(ch), Wrong: "Kev", Right: "Dave"})
+	}
+	corrections = append(corrections, Correction{ChapterIdx: 5, Text: "5", Wrong: "Unknown", Right: "steve"})
+	got := relevantCorrections(corrections, []string{"Dave"}, "Steve")
+	var texts []string
+	for _, c := range got {
+		texts = append(texts, c.Text)
+	}
+	// The narrator counts as relevant (case-insensitively); one wrong->right
+	// pair fills at most maxCorrectionsPerPair slots, nearest chapter first.
+	if want := []string{"5", "4", "3"}; !reflect.DeepEqual(texts, want) {
+		t.Fatalf("relevantCorrections = %v, want %v", texts, want)
+	}
+}

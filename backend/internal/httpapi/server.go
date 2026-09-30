@@ -71,6 +71,9 @@ type Server struct {
 	// identityIndexes caches each book's speakerattr.IdentityIndex (bookID
 	// -> cachedIdentityIndex) - see Server.identityIndex.
 	identityIndexes sync.Map
+	// lowercaseWords caches each book's speakerattr.LowercaseWords (bookID
+	// -> cachedLowercaseWords) - see realRoles.
+	lowercaseWords sync.Map
 
 	// settingLocks is a keyed mutex (bookID -> *sync.Mutex) serializing
 	// deriveBookSetting per book.
@@ -196,10 +199,14 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/sfx-prompt", s.handleSetParagraphSFXPrompt)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/generate-sfx", s.handleGenerateParagraphSFX)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/attribute-speakers", s.handleAttributeSpeakers)
+	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/attribute-speakers/preview", s.handlePreviewAttribution)
+	mux.HandleFunc("GET /api/books/{id}/paragraph-edits", s.handleListParagraphEdits)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-descriptions", s.handleRetagDescriptions)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-scare-quotes", s.handleRetagScareQuotes)
+	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-scare-quotes/preview", s.handlePreviewScareQuotes)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/summarize", s.handleSummarizeChapter)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/notes", s.handleGetChapterNotes)
+	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/notes", s.handlePutChapterNotes)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/tag-directions", s.handleTagDirections)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/resolve-pronunciation", s.handleResolvePronunciation)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/music", s.handleGetChapterMusic)

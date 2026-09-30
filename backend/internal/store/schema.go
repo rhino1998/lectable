@@ -81,6 +81,20 @@ CREATE TABLE IF NOT EXISTS book_settings (
 	updated_at BIGINT NOT NULL
 );
 
+-- A reader's manual corrections of machine-labeled paragraph fields
+-- (store.ParagraphEdit): field is 'speaker', 'emotion' or 'scare_quote'
+-- ('true'/'false'), original what the
+-- pass had written before the first edit, value the reader's latest. One
+-- row per (paragraph_id, field), kept by RecordParagraphEdit's
+-- select-then-write, no PRIMARY KEY - like chapter_summaries.
+CREATE TABLE IF NOT EXISTS paragraph_edits (
+	paragraph_id TEXT NOT NULL,
+	field TEXT NOT NULL,
+	original TEXT NOT NULL,
+	value TEXT NOT NULL,
+	edited_at BIGINT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS chapters (
 	id TEXT PRIMARY KEY,
 	book_id TEXT NOT NULL,
@@ -431,6 +445,7 @@ CREATE INDEX IF NOT EXISTS idx_paragraphs_chapter ON paragraphs(chapter_id);
 CREATE INDEX IF NOT EXISTS idx_images_chapter ON images(chapter_id);
 CREATE INDEX IF NOT EXISTS idx_paragraph_audio_paragraph ON paragraph_audio(paragraph_id);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_paragraph ON bookmarks(paragraph_id);
+CREATE INDEX IF NOT EXISTS idx_paragraph_edits_paragraph ON paragraph_edits(paragraph_id);
 CREATE INDEX IF NOT EXISTS idx_characters_scope ON characters(scope);
 CREATE INDEX IF NOT EXISTS idx_character_voices_character ON character_voices(character_id);
 CREATE INDEX IF NOT EXISTS idx_paragraphs_speaker ON paragraphs(speaker);

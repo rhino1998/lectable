@@ -180,13 +180,24 @@ func singular(w string) string {
 // added nothing on top - Qwen3-4B's cast lists invented references,
 // leaked prompt examples and wrong pronouns, and cost a call per chapter.
 func resolveIdentities(speakers map[int]string, resolver *SpeakerNameResolver, roles map[string]bool) map[int]string {
+	// A word of a longer name may fold an answer into that character
+	// ("Tomas" -> "Tomas Reyes"), but never into a different role label: a
+	// role is a type, so "Woman" is not "Refugee Woman" (Arise's one
+	// "Refugee Woman" was collecting every unnamed woman in the series).
+	resolve := func(name string) (string, bool) {
+		n, ok := resolver.Resolve(name)
+		if ok && roles[n] && !strings.EqualFold(n, name) {
+			return "", false
+		}
+		return n, ok
+	}
 	out := make(map[int]string, len(speakers))
 	for idx, sp := range speakers {
 		out[idx] = sp
 		if isSentinel(sp) || roles[sp] {
 			continue
 		}
-		if n, ok := resolver.Resolve(sp); ok {
+		if n, ok := resolve(sp); ok {
 			out[idx] = n // the known character's own spelling
 			continue
 		}
@@ -197,7 +208,7 @@ func resolveIdentities(speakers map[int]string, resolver *SpeakerNameResolver, r
 			}
 			continue
 		}
-		if name, ok := resolver.Resolve(label); ok {
+		if name, ok := resolve(label); ok {
 			out[idx] = name
 			continue
 		}
@@ -207,4 +218,47 @@ func resolveIdentities(speakers map[int]string, resolver *SpeakerNameResolver, r
 		}
 	}
 	return out
+}
+
+// LowercaseWords is every word a book's text uses in lower case - what
+// NamesAKind checks a role label against.
+type LowercaseWords map[string]bool
+
+var lowercaseWord = regexp.MustCompile(`\b[a-z][a-z'-]*\b`)
+
+// NewLowercaseWords collects the lower-case words of paragraphs (a whole
+// book).
+func NewLowercaseWords(paragraphs []string) LowercaseWords {
+	out := LowercaseWords{}
+	for _, p := range paragraphs {
+		for _, w := range lowercaseWord.FindAllString(p, -1) {
+			out[strings.TrimSuffix(w, "'s")] = true
+		}
+	}
+	return out
+}
+
+// NamesAKind reports whether a role label's head noun - its last word
+// that isn't a number, possessive stripped - is a word the book itself
+// uses in lower case: "Guard", "Refugee Woman", "Greek police officer",
+// "Thug 1" all are ("the guard", "a woman"), while a name the model
+// marked [role] isn't - "Henry", "Constable Hodges", "Count Wavereach",
+// "The Nightshark" never appear lower case. Measured on this library's
+// 118 role-flagged characters: every one it rejects is a named individual
+// (Spire's Spite's Jerry, Lieutenant Mercer, the Duchess Blackbrine...),
+// and every one it keeps is a kind of person. A label with no usable head
+// noun counts as a kind, leaving the model's answer alone.
+func (w LowercaseWords) NamesAKind(label string) bool {
+	words := strings.Fields(label)
+	for i := len(words) - 1; i >= 0; i-- {
+		word := strings.TrimSuffix(strings.TrimSuffix(strings.Trim(words[i], `.,;:!?"'()`), "'s"), "’s")
+		if word == "" || strings.IndexFunc(word, unicode.IsLetter) < 0 {
+			continue
+		}
+		if len(word) > 1 && strings.ToUpper(word) == word {
+			return true // an acronym ("Medical AI") is never lower case
+		}
+		return w[strings.ToLower(word)]
+	}
+	return true
 }

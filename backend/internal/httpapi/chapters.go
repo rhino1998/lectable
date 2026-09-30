@@ -872,6 +872,12 @@ func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Kept with the machine's original, so a later attribution run can be
+	// scored against it and leaves the line alone (store.ParagraphEdit).
+	if err := s.Store.RecordParagraphEdit(paragraphID, store.EditSpeaker, p.Speaker, speaker); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	writeNoContent(w)
 }
 
@@ -1076,6 +1082,12 @@ func (s *Server) handleSetParagraphEmotion(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Kept with the emotion pass's original (store.ParagraphEdit); the
+	// pass leaves the line alone from now on.
+	if err := s.Store.RecordParagraphEdit(paragraphID, store.EditEmotion, p.Emotion, req.Emotion); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	before := p.EffectiveEmotion()
 	p.Emotion = req.Emotion
 	if p.EffectiveEmotion() != before {
@@ -1184,6 +1196,12 @@ func (s *Server) handleSetParagraphScareQuote(w http.ResponseWriter, r *http.Req
 	}
 
 	if err := s.Store.SetParagraphScareQuotes(ch.ID, map[int]bool{paragraphIdx: req.ScareQuote}); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// Kept with the pass's original (store.ParagraphEdit); the scare-quote
+	// pass leaves the line alone from now on.
+	if err := s.Store.RecordParagraphEdit(paragraphID, store.EditScareQuote, strconv.FormatBool(p.ScareQuote), strconv.FormatBool(req.ScareQuote)); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

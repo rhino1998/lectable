@@ -1,0 +1,21 @@
+{
+ "_doc": "Labels that name the same person in the scored chapters, per book (case-insensitive): arbitrary role wording, and characters renamed on the roster after gold.json was frozen. Each group was checked against the chapter text. A different individual (the male vampire vs 'Vampire Woman' in Arise ch. 25) or a group ('Vampire Lords') never goes here.",
+ "arise": [
+  [
+   "Waiter",
+   "Server"
+  ],
+  [
+   "Girl",
+   "Bottle Blonde"
+  ],
+  [
+   "Vampire Woman",
+   "warrior woman"
+  ],
+  [
+   "Amanda",
+   "Francine Amanda Deena"
+  ]
+ ]
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -31,7 +32,7 @@ Reply with a compact JSON object only, no other text, no markdown code fence:
 {"summary": "...", "scenes": [{"start": <paragraph number>, "location": "...", "time": "...", "present": ["Name", ...]}], "cast": [{"name": "...", "role": false, "pronoun": "he", "refs": ["..."]}]}
 
 - "summary": 2-4 sentences on what happens, naming the characters involved.
-- "scenes": in order. A new scene starts where the story moves to a different place, jumps in time, or switches to other characters. "start" is the number printed before the scene's first paragraph; the first scene starts at the first number shown. "location": where it happens, at most 8 words (e.g. "a cramped cellar beneath the inn", "the docks at low tide"), "" if the text doesn't say. "time": the time of day if the text shows it ("dawn", "midday", "night"), otherwise "". "present": the cast members physically there, by their cast "name".
+- "scenes": in order. A new scene starts where the story moves to a different place, jumps in time, or switches to other characters. "start" is the number printed before the scene's first paragraph; the first scene starts at the first number shown. "location": where it happens, at most 8 words (e.g. "a cramped cellar beneath the inn", "the docks at low tide"), "" if the text doesn't say. "time": the time of day if the text shows it ("dawn", "midday", "night"), otherwise "". "present": the cast members physically there, by their cast "name" - including anyone the text only calls "she", "he" or by a description once it has shown who that is, and never someone who has left or died.
 - "cast": every character who speaks or acts in this chapter - including in a dream, vision, memory being relived, or a mental or magical space, which counts as being there - never someone only mentioned, remembered or talked about. Anyone the text credits with a line of dialogue belongs here. "name": a known character's exact main name when it is them (never one of their "also called" names); a new character's proper name as the text gives it; one specific person known only by a title, the bare title with no article ("King", "Count"); unnamed minor people, just their kind ("Guard", "Woman", "Thug") with "role": true - several of one kind share one entry. "pronoun": "he", "she", "they", "it", or "" if the text doesn't show it. "refs": short phrases copied exactly from the text that it uses for that one person instead of their name - a title, epithet or description like "the ferrywoman" - only when they clearly mean that person; [] otherwise. Never a bare pronoun, never their own name.
 - Only state what the text supports.`
 
@@ -108,8 +109,10 @@ func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle s
 	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases).WithFirstPerson(roster.FirstPerson)
 	var out ChapterSummary
 	castIndex := map[string]int{}
+	var prev []ParagraphInput
 	for _, window := range summaryWindows(paragraphs) {
-		raw, err := c.summarizeWindow(ctx, bookTitle, chapterTitle, setting, roster, window)
+		raw, err := c.summarizeWindow(ctx, bookTitle, chapterTitle, setting, roster, window, carryOver(out)+leadIn(prev))
+		prev = window
 		if err != nil {
 			return out, err
 		}
@@ -168,7 +171,33 @@ func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle s
 		castIndex[strings.ToLower(name)] = len(out.Cast)
 		out.Cast = append(out.Cast, CastMember{Name: name, Pronouns: roster.Pronouns[name], Role: roster.Roles[name]})
 	}
+	addTaggedToScenes(&out, paragraphs, resolver)
 	return out, nil
+}
+
+// addTaggedToScenes adds to each scene's Present whoever an explicit speech
+// tag credits with a line inside it ("…,” Ingrid asked) - attribution
+// narrows each batch to its scenes' Present, so a speaker the summary
+// model forgot there would be left out of the prompt for their own lines.
+func addTaggedToScenes(sum *ChapterSummary, paragraphs []ParagraphInput, resolver *SpeakerNameResolver) {
+	for i := range sum.Scenes {
+		lo := sum.Scenes[i].StartIdx
+		hi := -1
+		if i+1 < len(sum.Scenes) {
+			hi = sum.Scenes[i+1].StartIdx
+		}
+		var in []ParagraphInput
+		for _, p := range paragraphs {
+			if (i == 0 || p.Idx >= lo) && (hi < 0 || p.Idx < hi) {
+				in = append(in, p)
+			}
+		}
+		for _, name := range TaggedSpeakers(in, resolver) {
+			if !slices.ContainsFunc(sum.Scenes[i].Present, func(n string) bool { return strings.EqualFold(n, name) }) {
+				sum.Scenes[i].Present = append(sum.Scenes[i].Present, name)
+			}
+		}
+	}
 }
 
 func summaryWindows(paragraphs []ParagraphInput) [][]ParagraphInput {
@@ -187,7 +216,68 @@ func summaryWindows(paragraphs []ParagraphInput) [][]ParagraphInput {
 	return out
 }
 
-func (c *Client) summarizeWindow(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, roster Roster, window []ParagraphInput) (summaryRaw, error) {
+// carryOver tells a later summary window what the earlier ones found: the
+// summary so far and who was present as the last one ended. Without it a
+// window starting mid-scene met its characters as strangers - Arise ch. 31's
+// second window began mid-conversation and listed the "she" there (Ingrid,
+// named a few paragraphs before the cut) as an unnamed "Woman". "" for the
+// first window.
+func carryOver(sofar ChapterSummary) string {
+	if sofar.Summary == "" && len(sofar.Scenes) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\nThe paragraphs below continue this chapter partway through - notes on the part before them:\n")
+	if sofar.Summary != "" {
+		fmt.Fprintf(&sb, "- so far: %s\n", sofar.Summary)
+	}
+	if n := len(sofar.Scenes); n > 0 {
+		last := sofar.Scenes[n-1]
+		if last.Location != "" {
+			fmt.Fprintf(&sb, "- the scene in progress: %s\n", last.Location)
+		}
+		if len(last.Present) > 0 {
+			fmt.Fprintf(&sb, "- present when it broke off: %s - someone the paragraphs below only call \"she\" or \"he\" is most likely one of them\n", strings.Join(last.Present, ", "))
+		}
+	}
+	return sb.String()
+}
+
+// summaryLeadParagraphs is how many of the previous window's last
+// paragraphs a later summary window is shown as context.
+const summaryLeadParagraphs = 8
+
+// leadIn shows a later summary window the end of the one before it,
+// unnumbered: the carry-over's list of who was present didn't let the
+// model tell which of them an unnamed "she" was (Arise ch. 31's second
+// window still cast her as the barmaid killed a page earlier), while the
+// paragraphs themselves name her ("seeing the way Ingrid was watching
+// me"). "" for the first window.
+func leadIn(prev []ParagraphInput) string {
+	if len(prev) == 0 {
+		return ""
+	}
+	start := max(0, len(prev)-summaryLeadParagraphs)
+	for start > 0 && prev[start].Inline {
+		start-- // don't cut a paragraph in half
+	}
+	var sb strings.Builder
+	sb.WriteString("\nThe paragraphs right before these, for context only (already covered - never start a scene or take a \"start\" from them):\n")
+	for i, p := range prev[start:] {
+		if p.Inline && i > 0 {
+			fmt.Fprintf(&sb, " %s", oneLine(p.Text))
+			continue
+		}
+		if i > 0 {
+			sb.WriteString("\n")
+		}
+		fmt.Fprintf(&sb, "> %s", oneLine(p.Text))
+	}
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func (c *Client) summarizeWindow(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, roster Roster, window []ParagraphInput, carry string) (summaryRaw, error) {
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
 	if lines := setting.promptLines(); lines != "" {
@@ -216,6 +306,7 @@ func (c *Client) summarizeWindow(ctx context.Context, bookTitle, chapterTitle st
 	if roster.FirstPerson != "" {
 		fmt.Fprintf(&user, "\nThis book is narrated in the first person by %s - the \"I\" is %s, a cast member like anyone else.\n", roster.FirstPerson, roster.FirstPerson)
 	}
+	user.WriteString(carry)
 	user.WriteString("\nParagraphs:\n")
 	for i, p := range window {
 		// An Inline paragraph continues the one before it - folded onto
@@ -363,6 +454,13 @@ func mergeRefs(have, refs []string) []string {
 		if first, _, _ := strings.Cut(k, " "); possessiveWords[first] {
 			continue
 		}
+		// "dude", "man", "mate", "hero": one lowercase word is a term of
+		// address or a generic noun anyone gets called, not a reference to
+		// one person ("the ferrywoman", "Sinclair the enforcer") - and as a
+		// reference it would turn a "Man" role answer into them.
+		if !strings.Contains(r, " ") && r == k {
+			continue
+		}
 		// "Rosie said": a speech tag, not something the text calls them.
 		if slices.ContainsFunc(strings.Fields(k), func(w string) bool { return slices.Contains(speechVerbs, strings.Trim(w, ".,")) }) {
 			continue
@@ -373,21 +471,133 @@ func mergeRefs(have, refs []string) []string {
 	return have
 }
 
+// firstPersonWordRe matches a first-person "I" as a word ("I", "I'm",
+// "I’d") - case-sensitive, so the Roman numeral in "Henry I" would count
+// but "i" in running text never does.
+var firstPersonWordRe = regexp.MustCompile(`(?:^|[^\p{L}])I(?:['’](?:m|d|ll|ve))?(?:[^\p{L}'’]|$)`)
+
+// FirstPersonNarration reports whether paragraphs' narration (its non-quote
+// paragraphs) is told in the first person: at least 3 of them, and a fifth
+// of all, use "I". A first-person book's prologue or interlude told in the
+// third person ("Prologue - 1614 AD") reads false.
+func FirstPersonNarration(paragraphs []ParagraphInput) bool {
+	narration, first := 0, 0
+	for _, p := range paragraphs {
+		if p.IsQuote {
+			continue
+		}
+		narration++
+		if firstPersonWordRe.MatchString(p.Text) {
+			first++
+		}
+	}
+	return first >= 3 && first*5 >= narration
+}
+
+// FoldFirstPersonCast renames the cast member that is really a
+// first-person book's narrator (roster.FirstPerson) to the narrator's own
+// name, returning the name it replaced ("" when it changed nothing). The
+// summary model knows the narrator only as "I", so when the text calls
+// them something the roster doesn't know - Arise's Steve, addressed as
+// "Jamey Sultan" - it lists a new character instead, whom attribution
+// then treats as someone else in the room. Applies only when paragraphs
+// are first-person narration, the cast has no entry for the narrator, and
+// exactly one unknown, non-role cast member with compatible pronouns is in
+// the most scenes (at least half of them) - the narrator is in nearly
+// every scene of their own chapter.
+func FoldFirstPersonCast(sum ChapterSummary, roster Roster, paragraphs []ParagraphInput) (ChapterSummary, string) {
+	narrator := roster.FirstPerson
+	if narrator == "" || len(sum.Cast) == 0 || !FirstPersonNarration(paragraphs) {
+		return sum, ""
+	}
+	// "Protagonist", "Narrator", "I": a placeholder for the narrator, never
+	// anyone else (Arise ch. 7's cast listed "Protagonist" beside Steve).
+	if slices.ContainsFunc(sum.Cast, func(m CastMember) bool { return IsFirstPersonLabel(m.Name) }) {
+		folded := sum
+		folded.Cast = nil
+		for _, m := range sum.Cast {
+			if IsFirstPersonLabel(m.Name) {
+				renameInScenes(&folded, m.Name, narrator)
+				m.Name, m.Role = narrator, false
+			}
+			folded.Cast = mergeCastMember(folded.Cast, m)
+		}
+		sum = folded
+	}
+	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases)
+	known := func(name string) bool {
+		c := resolver.Canonical(name)
+		return c != name || slices.ContainsFunc(roster.Names, func(n string) bool { return strings.EqualFold(n, name) })
+	}
+	for _, m := range sum.Cast {
+		if strings.EqualFold(resolver.Canonical(m.Name), narrator) {
+			return sum, ""
+		}
+	}
+	scenesWith := func(name string) int {
+		n := 0
+		for _, sc := range sum.Scenes {
+			if slices.ContainsFunc(sc.Present, func(p string) bool { return strings.EqualFold(p, name) }) {
+				n++
+			}
+		}
+		return n
+	}
+	pronouns := roster.Pronouns[narrator]
+	best, bestScenes, tied := "", -1, false
+	for _, m := range sum.Cast {
+		if m.Role || isSentinel(m.Name) || known(m.Name) {
+			continue
+		}
+		if pronouns != "" && m.Pronouns != "" && m.Pronouns != pronouns {
+			continue
+		}
+		switch n := scenesWith(m.Name); {
+		case n > bestScenes:
+			best, bestScenes, tied = m.Name, n, false
+		case n == bestScenes:
+			tied = true
+		}
+	}
+	if best == "" || tied || len(sum.Scenes) > 0 && bestScenes*2 < len(sum.Scenes) {
+		return sum, ""
+	}
+	out := sum
+	out.Cast = nil
+	for _, m := range sum.Cast {
+		if m.Name == best {
+			m.Name = narrator
+			if pronouns != "" {
+				m.Pronouns = pronouns
+			}
+		}
+		out.Cast = mergeCastMember(out.Cast, m)
+	}
+	renameInScenes(&out, best, narrator)
+	return out, best
+}
+
 // WithCast returns roster extended with a chapter's cast (a
 // ChapterSummary's): every cast member is listed in every attribution
-// batch (added to Prominent, and to Names when new), with their pronouns
-// when the roster has none and the chapter's references to them in their
-// description - so a batch whose lines only say "the smith" or "he" still
-// sees who is in the scene.
+// batch (added to Names when new), with their pronouns when the roster has
+// none and the chapter's references to them in their description - so a
+// batch whose lines only say "the smith" or "he" still sees who is in the
+// scene. The cast replaces Prominent rather than adding to it: a book's
+// frequent speakers from other chapters would otherwise be offered for
+// lines in a chapter they're not in (Arise's prologue-only Petros got a
+// first-person narrator's unnamed lines three chapters later). Anyone the
+// cast missed is still listed wherever a batch's own text names them
+// (relevantNames).
 func (r Roster) WithCast(cast []CastMember) Roster {
 	out := r
 	out.Names = append([]string(nil), r.Names...)
-	out.Prominent = append([]string(nil), r.Prominent...)
+	out.Prominent = nil
 	out.Descriptions = cloneMap(r.Descriptions)
 	out.Pronouns = cloneMap(r.Pronouns)
 	out.Roles = cloneMap(r.Roles)
 	out.Cast = cast
 	for _, m := range cast {
+		m.Refs = mergeRefs(nil, m.Refs) // notes stored before a filter was added
 		out.Names = addKnown(out.Names, m.Name)
 		out.Prominent = addKnown(out.Prominent, m.Name)
 		if m.Role {
@@ -413,8 +623,14 @@ func (r Roster) WithCast(cast []CastMember) Roster {
 func ResolveCastRefs(speakers map[int]string, cast []CastMember) map[int]string {
 	byRef := map[string]string{}
 	ambiguous := map[string]bool{}
+	// A reference that is another cast entry's own name ("the werewolf"
+	// when Werewolf is in the cast too) can't single anyone out - it once
+	// sent a whole pack's lines to one named werewolf.
 	for _, m := range cast {
-		for _, r := range m.Refs {
+		ambiguous[refKey(m.Name)] = true
+	}
+	for _, m := range cast {
+		for _, r := range mergeRefs(nil, m.Refs) {
 			k := refKey(r)
 			if k == "" {
 				continue
@@ -427,6 +643,9 @@ func ResolveCastRefs(speakers map[int]string, cast []CastMember) map[int]string 
 	}
 	for k := range ambiguous {
 		delete(byRef, k)
+	}
+	for _, m := range cast { // a member's own name still maps to them
+		delete(byRef, refKey(m.Name))
 	}
 	if len(byRef) == 0 {
 		return speakers

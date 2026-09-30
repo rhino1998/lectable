@@ -15,7 +15,7 @@ import (
 var ExportTables = []string{
 	"voice_presets", "characters", "character_voices",
 	"books", "book_settings", "chapters", "chapter_summaries", "paragraphs", "paragraph_audio",
-	"images", "breaks", "bookmarks", "sfx", "music_regions",
+	"images", "breaks", "bookmarks", "sfx", "music_regions", "paragraph_edits",
 }
 
 // sharedExportTables are rows an importing library may already hold - a
@@ -43,6 +43,7 @@ var exportRowQueries = map[string]struct {
 	"breaks":            {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
 	"music_regions":     {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
 	"bookmarks":         {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
+	"paragraph_edits":   {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
 	"sfx":               {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
 	"characters":        {`scope = ?`, scopeArg},
 	"character_voices":  {`character_id IN (SELECT id FROM characters WHERE scope = ?)`, scopeArg},

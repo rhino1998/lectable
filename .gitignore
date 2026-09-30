@@ -7,6 +7,7 @@ backend/*.prev
 backend/*.new
 backend/server.failed
 backend/*.duckdb
+backend/attreval/__pycache__/
 
 # frontend
 frontend/node_modules/

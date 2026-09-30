@@ -130,6 +130,9 @@ type Store interface {
 	SetParagraphSFXTriggerWord(id string, wordIdx int) error
 	SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) error
 	SetParagraphSpeaker(paragraphID, speaker string) error
+	RecordParagraphEdit(paragraphID, field, before, after string) error
+	ParagraphEdits(bookID, field string) ([]ParagraphEdit, error)
+	EditedParagraphIdx(chapterID, field string) (map[int]bool, error)
 	SetParagraphSpeakers(chapterID string, bySpeakerIdx map[int]string) error
 	SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error
 	SpeakerLineCounts(bookID string) (map[string]int, error)

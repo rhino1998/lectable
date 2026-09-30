@@ -34,7 +34,7 @@ func TestCanonMapFromPoolComposesCaseFoldWithWholeNameMerge(t *testing.T) {
 		"the attendant":        true,
 		"The attendant":        true,
 	}
-	got := canonMapFromPool(pool)
+	got := canonMapFromPool(pool, nil)
 	if got["vesna"] != "Captain Vesna Thorne" || got["Captain Vesna Thorne"] != "Captain Vesna Thorne" {
 		t.Fatalf("canonMapFromPool() = %v, want vesna/Captain Vesna Thorne merged", got)
 	}
@@ -51,7 +51,7 @@ func TestCanonicalizeSpeakerNamesIsCaseInsensitive(t *testing.T) {
 		0: "The attendant",
 		1: "the attendant",
 	}
-	got := canonicalizeSpeakerNames(nil, raw)
+	got := canonicalizeSpeakerNames(nil, raw, nil)
 	if got[0] != got[1] {
 		t.Fatalf("canonicalizeSpeakerNames() = %v, want both lines attributed to the same speaker", got)
 	}

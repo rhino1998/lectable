@@ -362,6 +362,17 @@ type ParagraphInput struct {
 	// EmotionChapter only ever labels a line with this set - narration is
 	// shown to the model as context but always stays neutral.
 	IsQuote bool
+	// Known is the speaker a reader set on this dialogue line by hand
+	// (store.ParagraphEdit), "" when it has none. AttributeChapter never
+	// asks about it: the line is shown with its speaker as settled context
+	// (who the conversation is between, whose turn came before), and Known
+	// is its answer.
+	Known string
+	// ContextOnly shows a dialogue line to the model without asking about
+	// it or returning an answer for it - surrounding context for a run
+	// that only re-asks some of a chapter's lines (httpapi's
+	// attributeAroundEdits).
+	ContextOnly bool
 }
 
 // maxBatchParagraphs caps how many paragraphs go into one completion
@@ -495,7 +506,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 	}
 
 	finish := func(out map[int]string) (map[int]string, map[string]bool, map[string]string, []ParagraphInput, error) {
-		canon := canonicalizeSpeakerNames(knownCharacters, out)
+		canon := canonicalizeSpeakerNames(knownCharacters, out, knownIsRole)
 		// Votes go to the name the model itself answered (canonicalized),
 		// before speech-tag refinement can move a line to someone else -
 		// the pronouns were its judgment about that speaker, not theirs.
@@ -570,6 +581,12 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 			Aliases:      roster.Aliases,
 			Pronouns:     roster.Pronouns,
 			Prominent:    append(append([]string(nil), roster.Prominent...), discovered...),
+			// Once missing here, so no batch prompt ever said who "I" was
+			// or showed scenes - the chapter-level fields reach each batch.
+			Cast:        roster.Cast,
+			Scenes:      roster.Scenes,
+			FirstPerson: roster.FirstPerson,
+			Corrections: roster.Corrections,
 		}
 		mu.Unlock()
 		if failed {
@@ -579,7 +596,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		end := min(start+maxBatchParagraphs, len(paragraphs))
 		answer := map[int]bool{}
 		for _, p := range paragraphs[start:end] {
-			if p.IsQuote {
+			if p.IsQuote && p.Known == "" && !p.ContextOnly {
 				answer[p.Idx] = true
 			}
 		}
@@ -620,7 +637,21 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		remaining = paragraphs[starts[stopAt]:]
 	}
 	err = firstErr
-	return finish(out)
+	// Reader-set lines join the result before finishing, so name
+	// canonicalization and speech-tag refinement see them next to the
+	// model's answers, and are put back after in case refinement moved one.
+	for _, p := range paragraphs {
+		if p.Known != "" {
+			out[p.Idx] = p.Known
+		}
+	}
+	canon, roleNames, pronouns, remaining, err := finish(out)
+	for _, p := range paragraphs {
+		if p.Known != "" {
+			canon[p.Idx] = p.Known
+		}
+	}
+	return canon, roleNames, pronouns, remaining, err
 }
 
 // cleanDescribes trims and dedupes a raw "describes" list from one line's
@@ -736,7 +767,7 @@ func disallowNarratorForDialogue(isQuote bool, speaker string) string {
 // there's no reliable way to tell them apart from names alone, and this
 // errs toward fewer duplicate character rows over occasional over-merging,
 // which a reader can still correct manually afterward.
-func canonicalizeSpeakerNames(knownCharacters []string, raw map[int]string) map[int]string {
+func canonicalizeSpeakerNames(knownCharacters []string, raw map[int]string, roles map[string]bool) map[int]string {
 	pool := map[string]bool{}
 	for _, k := range knownCharacters {
 		pool[k] = true
@@ -746,7 +777,7 @@ func canonicalizeSpeakerNames(knownCharacters []string, raw map[int]string) map[
 			pool[v] = true
 		}
 	}
-	canon := canonMapFromPool(pool)
+	canon := canonMapFromPool(pool, roles)
 
 	out := make(map[int]string, len(raw))
 	for idx, name := range raw {
@@ -768,7 +799,10 @@ func canonicalizeSpeakerNames(knownCharacters []string, raw map[int]string) map[
 // canonicalizeSpeakerNames' own doc comment for that second heuristic and
 // its trade-offs) - the shared core behind canonicalizeSpeakerNames and
 // DescribeChapter's own canonicalizeDescribes.
-func canonMapFromPool(pool map[string]bool) map[string]string {
+// roles are the known role labels: a name is never folded into one of
+// them ("Woman" is not "Refugee Woman" - a role is a type, not a person
+// whose short name that would be).
+func canonMapFromPool(pool map[string]bool, roles map[string]bool) map[string]string {
 	names := make([]string, 0, len(pool))
 	for n := range pool {
 		names = append(names, n)
@@ -792,7 +826,7 @@ func canonMapFromPool(pool map[string]bool) map[string]string {
 	for _, short := range foldedNames {
 		foldedCanon[short] = short
 		for _, long := range foldedNames {
-			if long == short {
+			if long == short || roles[long] {
 				continue
 			}
 			if len(long) > len(short) && containsWholeName(long, short) {
@@ -926,10 +960,13 @@ Rules:
 - If a dialogue line's speaker is genuinely unclear from context, use exactly "Unknown" rather than guessing.
 - Pronouns: after a named speaker, add " | " and ONE word - he, she, they, or it - for the pronoun the text uses for that character (e.g. "she said", "his voice", "the old man", "the queen"), or the pronouns listed for them in "Known characters". Omit the " | ..." part entirely when nothing establishes it - never guess from the name alone. Never add pronouns after "Unknown" or a " [role]" label. Pronouns can also help identify the speaker: a tag like "she said" can't belong to a character listed as "he/him".
 - A blank line in "Lines:" marks a real paragraph break. Lines with NO blank line between them come from one continuous original paragraph - often a quote, then a short "X said" narration tag, then more dialogue right after it, but just as often a quote followed by a longer run of action/description/thought (several sentences, not just a short tag) before the next quote. In either case, the quote before that in-between narration and the quote after it are almost always the SAME speaker - the narration is a beat inside one character's continuous turn, not a hand-off to someone else, no matter how long that beat runs. This holds even when the in-between narration mentions another character by name or describes something that other character does - a passing mention or reaction shot does NOT make that other character the speaker of the quote that follows. Only attribute the quote after the gap to a different speaker when the in-between narration itself explicitly says someone else is now speaking (e.g. a tag like "Jake cut in" or "she interrupted" naming a different character than whoever spoke the line before it).
-- Conversely, when a dialogue line is separated from the dialogue line before it by a blank line (a real paragraph break) with no narration tag anywhere between them naming who's speaking, default to treating that break itself as a signal the speaker changed, not a continuation of the same speaker - back-and-forth dialogue conventionally starts a new paragraph for each new speaker's turn. Only keep the same speaker across a paragraph break like that when something in the surrounding context clearly supports it (e.g. a tag elsewhere in the passage naming them again, or the dialogue is obviously one uninterrupted speech continuing across a paragraph break rather than an exchange).
+- Conversely, when a dialogue line is separated from the dialogue line before it by a blank line (a real paragraph break) with no narration tag anywhere between them naming who's speaking, default to treating that break itself as a signal the speaker changed, not a continuation of the same speaker - back-and-forth dialogue conventionally starts a new paragraph for each new speaker's turn. The new speaker is whoever the exchange is with: in a back-and-forth between two people, an untagged new paragraph is the other one of those two - never a third character who hasn't spoken or been named in the last several lines, just because they're present or known. Only keep the same speaker across a paragraph break like that when something in the surrounding context clearly supports it (e.g. a tag elsewhere in the passage naming them again, or the dialogue is obviously one uninterrupted speech continuing across a paragraph break rather than an exchange).
 - Some entries in "Known characters" carry a short parenthetical description after their name (e.g. "Captain Mocar (a weathered, broad-shouldered sea captain...)"). That's there to help you recognize them when a narration tag names them by role or epithet instead of their proper name ("the captain said," "the old orc grunted") - if a tag's role/epithet clearly matches one character's own parenthetical description and no other known character fits better, attribute the line to that character's exact proper name, never the role/epithet itself (no " [role]" - this is a real individual, not a generic type). Still use "Unknown" if the match is genuinely ambiguous (e.g. the role could plausibly fit more than one known character, or nothing in "Known characters" matches it at all).
 - Some entries in "Known characters" list other names that character goes by ("Bert (also called Albert, Al)"). A line whose speaker the text calls by any of those names belongs to that entry - answer with the entry's own main name ("Bert"), never the other name.
 - speaker never names a group ("Toby and Jane", "the two clerks", "both of them") - pick the one person the narration credits, or use "Unknown".
+- "Lines:" may contain "[Scene: ...]" markers where a scene starts, from notes on the chapter, naming where it is and who is present. Treat them as a hint: prefer someone present in the line's scene over someone the notes place only in another scene (they may have left, or be dead). The notes can be incomplete or wrong, though - when the lines themselves name someone as being there ("seeing the way Mira was watching me", "Tomas said"), the text wins over the notes, and a generic label in them ("woman", "Man") may stand for a known character the notes failed to name.
+- A dialogue line printed with a name in place of "(who?)" (e.g. "12 (Mira): …") has a speaker the reader already confirmed. It is context, like narration: use it to follow the turn-taking and who is in the conversation, and never answer it.
+- A "Reader corrections" list shows lines from earlier chapters that were attributed wrongly, each with the right speaker and the wrong answer. They are not among these lines - use them to learn how this book marks its speakers (a character's way of talking, who an epithet or title refers to, a mix-up to avoid), never copy an answer from them.
 - Some entries in "Known characters" are marked "[role]" instead of (or alongside) a description - that means the name is itself a generic type label already established earlier (e.g. "Guard [role]"), not one consistent individual. Reuse it exactly, with " [role]", whenever a new line's speaker fits that same generic type, exactly as if it were a brand-new role label - never treat two different appearances of a "[role]" name as necessarily the same specific person.`
 
 // Roster is what attribution knows about a book's characters going in:
@@ -956,12 +993,86 @@ type Roster struct {
 	// has none: an answer that is one of a member's references ("the old
 	// sailor") becomes their name.
 	Cast []CastMember
+	// Scenes are the chapter's scenes from its summary (httpapi's
+	// withChapterCast), nil when it has none: a batch lists as Prominent
+	// only who is present in the scenes its lines fall in (scenePresent).
+	Scenes []Scene
 	// FirstPerson is a first-person book's narrator (BookSetting.Narrator,
 	// resolved onto the roster), "" for a third-person book. Every batch is
 	// told who "I" is, an "I said" tag credits them, and an answer that
 	// names the "I" without a name ("Protagonist", "Narrator" on a line of
 	// dialogue) becomes them - see firstPersonAnswer.
 	FirstPerson string
+	// Corrections are the reader's fixes to dialogue speakers in earlier
+	// chapters of the book, in reading order. Each batch lists the few that
+	// involve the characters its own lines are about (relevantCorrections).
+	Corrections []Correction
+}
+
+// Correction is one dialogue line whose speaker a reader corrected by
+// hand (store.ParagraphEdit): the line, the speaker attribution had given
+// it, and the reader's.
+type Correction struct {
+	ChapterIdx int
+	Text       string
+	Wrong      string
+	Right      string
+}
+
+// maxBatchCorrections caps how many corrections one batch prompt lists,
+// and maxCorrectionsPerPair how many of those may repeat one wrong->right
+// mix-up, so a single often-fixed confusion doesn't fill the list.
+const (
+	maxBatchCorrections    = 6
+	maxCorrectionsPerPair  = 2
+	maxCorrectionTextChars = 200
+)
+
+// relevantCorrections picks the corrections worth showing a batch whose
+// relevant names are names (plus the first-person narrator): those whose
+// right or wrong speaker is one of them, nearest chapter first, capped at
+// maxBatchCorrections. A correction to or from Narrator teaches nothing
+// about who speaks and is skipped.
+func relevantCorrections(corrections []Correction, names []string, firstPerson string) []Correction {
+	if len(corrections) == 0 {
+		return nil
+	}
+	relevant := make(map[string]bool, len(names)+1)
+	for _, n := range names {
+		relevant[strings.ToLower(n)] = true
+	}
+	if firstPerson != "" {
+		relevant[strings.ToLower(firstPerson)] = true
+	}
+	perPair := map[[2]string]int{}
+	var out []Correction
+	for i := len(corrections) - 1; i >= 0 && len(out) < maxBatchCorrections; i-- {
+		c := corrections[i]
+		if c.Wrong == "" || c.Right == "" || c.Wrong == "Narrator" || c.Right == "Narrator" {
+			continue
+		}
+		if !relevant[strings.ToLower(c.Right)] && !relevant[strings.ToLower(c.Wrong)] {
+			continue
+		}
+		pair := [2]string{c.Wrong, c.Right}
+		if perPair[pair] >= maxCorrectionsPerPair {
+			continue
+		}
+		perPair[pair]++
+		out = append(out, c)
+	}
+	return out
+}
+
+// clipText cuts s to at most n bytes on a rune boundary, marking the cut.
+func clipText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "…"
 }
 
 // firstPersonLabels are answers a model gives for a first-person
@@ -991,8 +1102,89 @@ func firstPersonAnswer(raw, firstPerson string) string {
 	return raw
 }
 
+// scenePresent narrows roster.Prominent (the chapter's cast, with a
+// summary) to the scenes lines fall in: who is present in any of them,
+// plus the first-person narrator and any cast member the summary placed in
+// no scene at all (a voice on a phone, a presence it didn't pin down).
+// Names outside those scenes are only listed when the batch's own text
+// mentions them (relevantNames) - Arise ch. 8 gave the protagonist's
+// friend's lines to a thug who'd been killed two scenes earlier. Prominent
+// unchanged without scenes, or when the scenes found list nobody.
+func (r Roster) scenePresent(lines []ParagraphInput) []string {
+	if len(r.Scenes) == 0 || len(lines) == 0 {
+		return r.Prominent
+	}
+	lo, hi := lines[0].Idx, lines[0].Idx
+	for _, p := range lines {
+		lo, hi = min(lo, p.Idx), max(hi, p.Idx)
+	}
+	here, placed := map[string]bool{}, map[string]bool{}
+	found := false
+	for i, sc := range r.Scenes {
+		for _, n := range sc.Present {
+			placed[strings.ToLower(n)] = true
+		}
+		end := hi + 1
+		if i+1 < len(r.Scenes) {
+			end = r.Scenes[i+1].StartIdx
+		}
+		// The first scene also covers anything before its start.
+		if (i == 0 || sc.StartIdx <= hi) && end > lo {
+			for _, n := range sc.Present {
+				here[strings.ToLower(n)] = true
+				found = true
+			}
+		}
+	}
+	if !found {
+		return r.Prominent
+	}
+	var out []string
+	for _, n := range r.Prominent {
+		k := strings.ToLower(n)
+		if here[k] || !placed[k] || n == r.FirstPerson {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// sceneStarting returns the scene a batch's line at idx opens - one
+// starting after prevIdx (the line before it in the batch, -1 for the
+// batch's first line, which gets the scene it falls in) and at or before
+// idx - or nil.
+func (r Roster) sceneStarting(prevIdx, idx int) *Scene {
+	var at *Scene
+	for i := range r.Scenes {
+		sc := &r.Scenes[i]
+		switch {
+		case prevIdx < 0 && (sc.StartIdx <= idx || i == 0):
+			at = sc
+		case prevIdx >= 0 && sc.StartIdx > prevIdx && sc.StartIdx <= idx:
+			at = sc
+		}
+	}
+	if at == nil || len(at.Present) == 0 && at.Location == "" {
+		return nil
+	}
+	return at
+}
+
+// sceneMarker renders sc for a "[Scene: ...]" marker in the Lines list.
+func sceneMarker(sc *Scene) string {
+	var parts []string
+	if sc.Location != "" {
+		parts = append(parts, sc.Location)
+	}
+	if len(sc.Present) > 0 {
+		parts = append(parts, "present: "+strings.Join(sc.Present, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
 // relevantNames picks which of roster.Names to list in a prompt for
-// lines: every Prominent name, plus any name, alias, or distinctive word
+// lines: every Prominent name (narrowed to the lines' scenes -
+// scenePresent), plus any name, alias, or distinctive word
 // of either (see SpeakerNameResolver's own token rules) that appears as a
 // whole word in the lines' text. Keeps roster order.
 func relevantNames(roster Roster, lines []ParagraphInput) []string {
@@ -1032,8 +1224,13 @@ func relevantNames(roster Roster, lines []ParagraphInput) []string {
 		return false
 	}
 	prominent := map[string]bool{}
-	for _, n := range roster.Prominent {
+	for _, n := range roster.scenePresent(lines) {
 		prominent[n] = true
+	}
+	for _, p := range lines {
+		if p.Known != "" {
+			prominent[p.Known] = true
+		}
 	}
 	var out []string
 	for _, name := range roster.Names {
@@ -1122,8 +1319,15 @@ func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle
 		fmt.Fprintf(&user, "Known characters: %s\n", strings.Join(entries, ", "))
 	}
 
+	if corrections := relevantCorrections(roster.Corrections, knownCharacters, roster.FirstPerson); len(corrections) > 0 {
+		user.WriteString("Reader corrections from earlier chapters (lines attribution got wrong, with the right speaker):\n")
+		for _, c := range corrections {
+			fmt.Fprintf(&user, "- %s - %s, not %s\n", clipText(oneLine(c.Text), maxCorrectionTextChars), c.Right, c.Wrong)
+		}
+	}
+
 	if roster.FirstPerson != "" {
-		fmt.Fprintf(&user, "This book is narrated in the first person by %s: \"I\" and \"me\" in the narration are %s, so a line the narration tags \"I said\" is %s's.\n", roster.FirstPerson, roster.FirstPerson, roster.FirstPerson)
+		fmt.Fprintf(&user, "This book is narrated in the first person by %s: \"I\" and \"me\" in the narration are %s, so a line the narration tags \"I said\" is %s's, and a line tagged \"he said\" or \"she asked\" is someone else's.\n", roster.FirstPerson, roster.FirstPerson, roster.FirstPerson)
 	}
 	user.WriteString("\nLines:\n")
 	for i, p := range lines {
@@ -1134,9 +1338,19 @@ func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle
 		if i > 0 && !p.Inline {
 			user.WriteString("\n")
 		}
-		if answer[p.Idx] {
+		prevIdx := -1
+		if i > 0 {
+			prevIdx = lines[i-1].Idx
+		}
+		if sc := roster.sceneStarting(prevIdx, p.Idx); sc != nil {
+			fmt.Fprintf(&user, "[Scene: %s]\n", sceneMarker(sc))
+		}
+		switch {
+		case answer[p.Idx]:
 			fmt.Fprintf(&user, "%d (who?): %s\n", p.Idx, oneLine(p.Text))
-		} else {
+		case p.Known != "" && p.IsQuote:
+			fmt.Fprintf(&user, "%d (%s): %s\n", p.Idx, p.Known, oneLine(p.Text))
+		default:
 			fmt.Fprintf(&user, "%d: %s\n", p.Idx, oneLine(p.Text))
 		}
 	}

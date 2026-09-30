@@ -15,6 +15,9 @@ type ChapterNotes struct {
 	Summary string         `json:"summary"`
 	Scenes  []SummaryScene `json:"scenes"`
 	Cast    []CastMember   `json:"cast"`
+	// Edited notes were written or corrected by the reader (PUT .../notes);
+	// the summary pass leaves them alone unless told to overwrite them.
+	Edited bool `json:"edited,omitempty"`
 }
 
 // SummaryScene is one scene of a chapter, running from StartIdx to the next

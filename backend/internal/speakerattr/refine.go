@@ -83,6 +83,9 @@ var (
 	// “…,” I muttered - a first-person narrator's own tag (see
 	// SpeakerNameResolver.WithFirstPerson). Case-sensitive: "I" only.
 	trailingFirstPerson = regexp.MustCompile(`^(?:[a-z]+ly |then )?I(?: [a-z]+ly| then)? (?:` + verbAlt + `)\b`)
+	// “…,” he said - in first-person narration, never the narrator's own
+	// line (theirs is "I said").
+	trailingThirdPerson = regexp.MustCompile(`^(?:[a-z]+ly |then )?(?i:he|she)(?: [a-z]+ly| then)? (?:` + verbAlt + `)\b`)
 	trailingPronoun     = regexp.MustCompile(`^(?:[a-z]+ly |then )?(?i:he|she|they|I|we)(?: [a-z]+ly| then)? (?:` + verbAlt + `)\b`)
 
 	// Lead-in tags, matched at the end of the narration right before a
@@ -453,6 +456,10 @@ type TagChange struct {
 //     I…”" stays Sid) - the convention systemPrompt already states. A
 //     pronoun tag ("she replied") blocks this, since it can mark a new
 //     speaker in a paragraph that merged several turns.
+//  3. In a first-person book (resolver.WithFirstPerson), a line the
+//     narrator got whose trailing tag is "he said"/"she asked" isn't
+//     theirs - they'd be "I" - and becomes Unknown. Qwen3.6 gave Arise's
+//     narrator whole runs of his friend's "he said" lines.
 //
 // Anything else keeps the model's answer.
 func RefineWithSpeechTags(paras []ParagraphInput, speakers map[int]string, resolver *SpeakerNameResolver) (map[int]string, []TagChange) {
@@ -496,6 +503,9 @@ func RefineWithSpeechTags(paras []ParagraphInput, speakers map[int]string, resol
 				set(p.Idx, name, "tag")
 			case !pronoun && prevSpeaker != "" && !otherActorBetween(group[lastQuote+1:i], prevSpeaker, resolver):
 				set(p.Idx, prevSpeaker, "continuation")
+			case pronoun && next != nil && resolver.narrator() != "" && out[p.Idx] == resolver.narrator() &&
+				trailingThirdPerson.MatchString(strings.TrimLeft(next.Text, " ,.;:-—–")):
+				set(p.Idx, "Unknown", "third-person tag")
 			}
 			lastQuote = i
 			if s := out[p.Idx]; !isSentinel(s) {

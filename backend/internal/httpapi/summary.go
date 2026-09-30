@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
@@ -19,6 +21,10 @@ type chapterNotesDTO struct {
 	Summary string            `json:"summary"`
 	Scenes  []summarySceneDTO `json:"scenes"`
 	Cast    []castMemberDTO   `json:"cast"`
+	// Edited notes were saved by the reader (PUT .../notes); the summary
+	// pass keeps them unless a summarize request passes overwriteEdits.
+	// Ignored on PUT.
+	Edited bool `json:"edited"`
 }
 
 type summarySceneDTO struct {
@@ -43,7 +49,7 @@ type chapterNotesResponse struct {
 }
 
 func chapterNotesDTOFrom(n store.ChapterNotes) *chapterNotesDTO {
-	out := &chapterNotesDTO{Summary: n.Summary, Scenes: []summarySceneDTO{}, Cast: []castMemberDTO{}}
+	out := &chapterNotesDTO{Summary: n.Summary, Scenes: []summarySceneDTO{}, Cast: []castMemberDTO{}, Edited: n.Edited}
 	for _, sc := range n.Scenes {
 		out.Scenes = append(out.Scenes, summarySceneDTO{StartIdx: sc.StartIdx, Location: sc.Location, Time: sc.Time, Present: nonNil(sc.Present)})
 	}
@@ -98,19 +104,39 @@ func (s *Server) chapterNotes(ch *store.Chapter) *speakerattr.ChapterSummary {
 
 // withChapterCast extends an attribution roster with ch's cast from its
 // summary (speakerattr.Roster.WithCast), leaving out invalid names; r
-// unchanged when the chapter has no summary.
-func (s *Server) withChapterCast(r speakerattr.Roster, ch *store.Chapter, invalid invalidSpeakers) speakerattr.Roster {
+// unchanged when the chapter has no summary. all is the whole chapter
+// (not just the paragraphs being attributed), for telling whether its
+// narration is in the first person: a first-person book's narrator is
+// folded onto a cast entry the summary gave another name
+// (speakerattr.FoldFirstPersonCast) and listed in every batch, while a
+// chapter told in the third person (a prologue elsewhere in time) drops
+// them - they aren't there, and no "I said" is theirs.
+func (s *Server) withChapterCast(r speakerattr.Roster, ch *store.Chapter, invalid invalidSpeakers, all []store.Paragraph) speakerattr.Roster {
 	notes := s.chapterNotes(ch)
 	if notes == nil || len(notes.Cast) == 0 {
 		return r
 	}
+	inputs := make([]speakerattr.ParagraphInput, len(all))
+	for i, p := range all {
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, IsQuote: p.IsQuote && !p.ScareQuote}
+	}
+	firstPerson := r.FirstPerson != "" && speakerattr.FirstPersonNarration(inputs)
+	folded, _ := speakerattr.FoldFirstPersonCast(*notes, r, inputs)
 	var cast []speakerattr.CastMember
-	for _, m := range notes.Cast {
+	for _, m := range folded.Cast {
 		if !invalid.has(m.Name) {
 			cast = append(cast, m)
 		}
 	}
-	return r.WithCast(cast)
+	out := r.WithCast(cast)
+	out.Scenes = folded.Scenes
+	switch {
+	case !firstPerson:
+		out.FirstPerson = ""
+	case !slices.Contains(out.Prominent, r.FirstPerson):
+		out.Prominent = append(out.Prominent, r.FirstPerson)
+	}
+	return out
 }
 
 // summaryRoster is the known-characters roster the summary pass is shown -
@@ -163,8 +189,26 @@ func (s *Server) withFirstPerson(r speakerattr.Roster, book *store.Book) speaker
 // summarizeChapter is a jobs.KindSummary task's work: one chapter's summary
 // pass (speakerattr.Client.SummarizeChapter), stored with its passes.summary
 // flag (Store.SetChapterNotes). Changes no paragraph, so no audio goes stale;
-// a pass that reads the notes picks them up the next time it runs.
+// a pass that reads the notes picks them up the next time it runs. Notes
+// the reader edited are kept - see summarizeChapterOverwriting.
 func (s *Server) summarizeChapter(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
+	return s.summarizeChapterOverwriting(ctx, book, ch, false)
+}
+
+// summarizeChapterOverwriting is summarizeChapter, replacing notes the
+// reader edited only when overwriteEdits is set (an explicit summarize
+// request asking for it - never a bulk run, the pipeline, or a pass
+// waiting on the notes).
+func (s *Server) summarizeChapterOverwriting(ctx context.Context, book *store.Book, ch *store.Chapter, overwriteEdits bool) (int, func(), error) {
+	if !overwriteEdits {
+		existing, err := s.Store.GetChapterNotes(ch.ID)
+		if err != nil {
+			return 0, nil, err
+		}
+		if existing != nil && existing.Edited {
+			return 0, nil, nil
+		}
+	}
 	all, err := s.Store.ListParagraphsRaw(ch.ID)
 	if err != nil {
 		return 0, nil, err
@@ -183,6 +227,13 @@ func (s *Server) summarizeChapter(ctx context.Context, book *store.Book, ch *sto
 	sum, err := s.Speaker.SummarizeChapter(ctx, book.Title, ch.Title, s.bookSetting(ctx, book), roster, inputs)
 	if err != nil {
 		return 0, nil, fmt.Errorf("summarize: %w", err)
+	}
+	// A first-person narrator the summary listed under another name
+	// ("Jamey" for Arise's Steve) is them - identity retrieval below can't
+	// tell, since the text only ever calls them "I".
+	sum, narratorAlias := speakerattr.FoldFirstPersonCast(sum, roster, inputs)
+	if narratorAlias != "" {
+		s.recordCastAliases(book, []speakerattr.CastAlias{{Character: roster.FirstPerson, Alias: narratorAlias}})
 	}
 	// Check the cast against the rest of the book: a new name or a role's
 	// reference ("the storm guard sergeant") the book ties to a known
@@ -205,14 +256,16 @@ func (s *Server) summarizeChapter(ctx context.Context, book *store.Book, ch *sto
 }
 
 // handleSummarizeChapter serves POST /api/books/{id}/chapters/{idx}/summarize:
-// queues the chapter's summary pass, re-running it if it already has one.
+// queues the chapter's summary pass, re-running it if it already has one -
+// except over notes the reader edited, unless ?overwriteEdits=true.
 func (s *Server) handleSummarizeChapter(w http.ResponseWriter, r *http.Request) {
+	overwriteEdits := r.URL.Query().Get("overwriteEdits") == "true"
 	book, ch, ok := s.chapterLLMTarget(w, r)
 	if !ok {
 		return
 	}
 	s.Jobs.EnqueueSummary(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
-		return s.summarizeChapter(ctx, book, ch)
+		return s.summarizeChapterOverwriting(ctx, book, ch, overwriteEdits)
 	})
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
@@ -235,6 +288,100 @@ func (s *Server) buildChapterNotes(bookID string, chapterIdx int) (chapterNotesR
 		return chapterNotesResponse{}, nil
 	}
 	return chapterNotesResponse{Notes: chapterNotesDTOFrom(*n)}, nil
+}
+
+// handlePutChapterNotes serves PUT /api/books/{id}/chapters/{idx}/notes:
+// the reader's own version of the chapter's notes - most often a fixed
+// cast (someone missing, someone placed in a scene they aren't in, a
+// reference tied to the wrong person), which attribution reads on its next
+// run. Stored marked edited, so the summary pass keeps it. Trims and
+// dedupes; 400 for a nameless or group cast member, a duplicate name, a
+// scene starting outside the chapter or twice at one paragraph, or a
+// scene's present list naming someone not in the cast. Scenes are sorted
+// by start. Passes that already read the old notes aren't re-run.
+func (s *Server) handlePutChapterNotes(w http.ResponseWriter, r *http.Request) {
+	var req chapterNotesDTO
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	_, ch, ok := s.chapterTarget(w, r)
+	if !ok {
+		return
+	}
+	paragraphs, err := s.Store.ListParagraphsRaw(ch.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	notes, err := notesFromEdit(req, len(paragraphs))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.Store.SetChapterNotes(ch.ID, notes); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeNoContent(w)
+}
+
+// notesFromEdit validates and normalizes a reader's notes (see
+// handlePutChapterNotes) for a chapter of paragraphCount paragraphs.
+func notesFromEdit(req chapterNotesDTO, paragraphCount int) (store.ChapterNotes, error) {
+	out := store.ChapterNotes{Summary: strings.TrimSpace(req.Summary), Edited: true}
+	castName := map[string]string{} // lower-cased -> as given
+	for _, m := range req.Cast {
+		name := strings.TrimSpace(m.Name)
+		if name == "" {
+			return out, fmt.Errorf("a cast member has no name")
+		}
+		if speakerattr.IsGroupSpeaker(name) {
+			return out, fmt.Errorf("%q names a group; list each person", name)
+		}
+		if _, dup := castName[strings.ToLower(name)]; dup {
+			return out, fmt.Errorf("%q is in the cast twice", name)
+		}
+		castName[strings.ToLower(name)] = name
+		out.Cast = append(out.Cast, store.CastMember{Name: name, Role: m.Role, Pronouns: speakerattr.NormalizePronouns(m.Pronouns), Refs: cleanList(m.Refs)})
+	}
+	starts := map[int]bool{}
+	for _, sc := range req.Scenes {
+		if sc.StartIdx < 0 || sc.StartIdx >= max(paragraphCount, 1) {
+			return out, fmt.Errorf("scene start %d is outside the chapter's %d paragraphs", sc.StartIdx, paragraphCount)
+		}
+		if starts[sc.StartIdx] {
+			return out, fmt.Errorf("two scenes start at paragraph %d", sc.StartIdx)
+		}
+		starts[sc.StartIdx] = true
+		scene := store.SummaryScene{StartIdx: sc.StartIdx, Location: strings.TrimSpace(sc.Location), Time: strings.TrimSpace(sc.Time)}
+		for _, p := range cleanList(sc.Present) {
+			name, ok := castName[strings.ToLower(p)]
+			if !ok {
+				return out, fmt.Errorf("scene at paragraph %d lists %q, who isn't in the cast", sc.StartIdx, p)
+			}
+			scene.Present = append(scene.Present, name)
+		}
+		out.Scenes = append(out.Scenes, scene)
+	}
+	slices.SortFunc(out.Scenes, func(a, b store.SummaryScene) int { return a.StartIdx - b.StartIdx })
+	return out, nil
+}
+
+// cleanList trims each entry and drops blanks and case-insensitive
+// duplicates, keeping the first spelling.
+func cleanList(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[strings.ToLower(v)] {
+			continue
+		}
+		seen[strings.ToLower(v)] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 // handleGetChapterNotes serves GET /api/books/{id}/chapters/{idx}/notes.
@@ -285,6 +432,57 @@ func (s *Server) identityIndex(book *store.Book, roster speakerattr.Roster) (*sp
 	ix := speakerattr.NewIdentityIndex(texts, names)
 	s.identityIndexes.Store(book.ID, cachedIdentityIndex{ix: ix, built: time.Now()})
 	return ix, nil
+}
+
+type cachedLowercaseWords struct {
+	words speakerattr.LowercaseWords
+	built time.Time
+}
+
+// bookLowercaseWords returns book's speakerattr.LowercaseWords, cached for
+// identityIndexTTL (Server.lowercaseWords) - attribution checks every new
+// [role] answer against it.
+func (s *Server) bookLowercaseWords(book *store.Book) (speakerattr.LowercaseWords, error) {
+	if v, ok := s.lowercaseWords.Load(book.ID); ok {
+		if c := v.(cachedLowercaseWords); time.Since(c.built) < identityIndexTTL {
+			return c.words, nil
+		}
+	}
+	all, err := s.Store.ListParagraphsRawForBook(book.ID)
+	if err != nil {
+		return nil, err
+	}
+	texts := make([]string, len(all))
+	for i, p := range all {
+		texts[i] = p.Text
+	}
+	words := speakerattr.NewLowercaseWords(texts)
+	s.lowercaseWords.Store(book.ID, cachedLowercaseWords{words: words, built: time.Now()})
+	return words, nil
+}
+
+// realRoles returns the names in roleNames (attribution's [role] answers)
+// whose head noun the book uses in lower case - dropping named people the
+// model marked as roles ("Henry", "Count Wavereach"), who'd otherwise be
+// listed to attribution as a kind and cast as a generic type.
+func (s *Server) realRoles(book *store.Book, roleNames map[string]bool) map[string]bool {
+	if len(roleNames) == 0 {
+		return roleNames
+	}
+	words, err := s.bookLowercaseWords(book)
+	if err != nil {
+		log.Printf("role check: %v", err)
+		return roleNames
+	}
+	out := make(map[string]bool, len(roleNames))
+	for name, role := range roleNames {
+		if role && !words.NamesAKind(name) {
+			log.Printf("attribution: %q answered as a role, but the book never uses %q in lower case - kept as a named character", name, name)
+			continue
+		}
+		out[name] = role
+	}
+	return out
 }
 
 // recordCastAliases saves each name ResolveCastIdentities found to be

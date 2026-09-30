@@ -295,7 +295,7 @@ func (s *Server) preprocessAttributionPhase(book *store.Book, chapters []store.C
 			go func() {
 				defer wg.Done()
 				if _, err := s.Jobs.RunAttribution(ctx, book.ID, ch.ID, ch.Idx, tier(), func(ctx context.Context) (int, func(), error) {
-					return s.attributeChapter(ctx, book, &ch, false)
+					return s.attributeChapter(ctx, book, &ch, attributeFull)
 				}); err != nil {
 					log.Printf("httpapi: preprocess book %s: attribute chapter %d: %v", book.ID, ch.Idx, err)
 				}

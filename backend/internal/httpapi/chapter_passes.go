@@ -113,62 +113,49 @@ func (inv invalidSpeakers) has(name string) bool {
 	return !inv.valid[name] && inv.folded[strings.ToLower(name)]
 }
 
-// attributeChapter runs speaker attribution (internal/speakerattr) over
-// ch's paragraphs and persists the results: every newly-seen character
-// name is registered (store.Store.UpsertCharacter, scoped to book's whole
-// series - see store.SeriesScope - starting with no voice assigned) and
-// every paragraph's Speaker is set. known is re-fetched from the store on
-// every call (not cached across chapters or books) so a character
-// discovered anywhere earlier in the series - not just earlier in this
-// book - is always offered to the model as a name to reuse, keeping
-// naming consistent across the whole series (see
-// speakerattr.Client.AttributeChapter). Unlike an earlier version, this no
-// longer characterizes or assigns a voice to newly-discovered characters
-// itself - that now happens lazily, the first time a character's voice is
-// actually needed for generation (see jobs.Manager.
-// provisionMissingCharacterVoices/CharacterVoiceProvisioner,
-// provisionCharacterVoice below), so a chapter with many brand-new
-// characters attributes just as fast as one with none.
-//
-// onlyUnattributed restricts the paragraphs actually sent to the model to
-// ones with no Speaker yet, instead of every paragraph in the chapter -
-// false for every reader-triggered call (handleAttributeSpeakers: an
-// explicit "Attribute speakers"/"Attribute all" click always means
-// "redo the whole chapter," the same idempotent refresh it's always been,
-// even for paragraphs already attributed - see SpeakersPage's own comment
-// on that button), true only when this call is itself the automatic
-// continuation of an earlier one that paused partway through (see
-// speakerattr.Client.AttributeChapter's shouldPause and the requeue
-// closure built below) - by the time that continuation runs, everything
-// the first attempt actually finished is already persisted, so redoing it
-// would just waste LLM calls repeating identical work.
-//
-// This satisfies AttributionFunc's shape directly (see jobs.Manager.
-// EnqueueAttribution): requeue is non-nil exactly when speakerattr paused
-// before reaching every paragraph, and calling it enqueues exactly this
-// same continuation.
-func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *store.Chapter, onlyUnattributed bool) (attributed int, requeue func(), err error) {
-	all, err := s.Store.ListParagraphsRaw(ch.ID)
-	if err != nil {
-		return 0, nil, err
-	}
-	paragraphs := all
-	if onlyUnattributed {
-		paragraphs = make([]store.Paragraph, 0, len(all))
-		for _, p := range all {
-			if p.Speaker == "" {
-				paragraphs = append(paragraphs, p)
-			}
-		}
-	}
-	if len(paragraphs) == 0 {
-		return 0, nil, nil
-	}
+// attributionRun is one speaker-attribution pass's unpersisted result -
+// see runAttribution.
+type attributionRun struct {
+	speakers  map[int]string
+	roleNames map[string]bool
+	pronouns  map[string]string
+	remaining []speakerattr.ParagraphInput
+	err       error // a batch failure; speakers still holds what finished
+	scope     string
+	invalid   invalidSpeakers
+}
 
+// attributionOptions says how much of the reader's own speaker corrections
+// (store.ParagraphEdit) a run is shown. attributeChapter shows all of them;
+// the preview can hold some back so a score against those same corrections
+// stays meaningful.
+type attributionOptions struct {
+	// given reports whether a corrected line in this chapter is shown with
+	// its speaker (speakerattr.ParagraphInput.Known) rather than asked.
+	given func(paragraphIdx int) bool
+	// noCorrections leaves out earlier chapters' corrections
+	// (speakerattr.Roster.Corrections).
+	noCorrections bool
+	// contextOnly (nil for none) marks paragraphs shown to the model but
+	// not asked about (speakerattr.ParagraphInput.ContextOnly) -
+	// attributeAroundEdits' surrounding context.
+	contextOnly func(paragraphIdx int) bool
+}
+
+// allCorrections is attributeChapter's attributionOptions: every correction
+// the reader made is shown.
+var allCorrections = attributionOptions{given: func(int) bool { return true }}
+
+// runAttribution runs speaker attribution over paragraphs (all is the whole
+// chapter) with the series roster, the book's first-person narrator, the
+// chapter's summary notes and the reader's corrections (opts), persisting
+// nothing - attributeChapter stores the result, previewAttribution only
+// reports it.
+func (s *Server) runAttribution(ctx context.Context, book *store.Book, ch *store.Chapter, all, paragraphs []store.Paragraph, opts attributionOptions) (attributionRun, error) {
 	scope := store.SeriesScope(book)
 	roster, err := s.Store.ListCharacters(scope)
 	if err != nil {
-		return 0, nil, err
+		return attributionRun{}, err
 	}
 	existing, invalid := splitInvalidCharacters(roster)
 	known := make([]string, len(existing))
@@ -189,7 +176,25 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	}
 	knownDescriptions, err := s.knownCharacterDescriptions(book, existing)
 	if err != nil {
-		return 0, nil, err
+		return attributionRun{}, err
+	}
+	// The reader's speaker corrections: this chapter's are shown as settled
+	// lines (opts.given), earlier chapters' as examples of past mistakes.
+	// Later chapters' are left out - a first pass runs in reading order and
+	// wouldn't have them, and the preview's scores stay honest.
+	edits, err := s.Store.ParagraphEdits(book.ID, store.EditSpeaker)
+	if err != nil {
+		return attributionRun{}, err
+	}
+	given := map[int]string{}
+	var corrections []speakerattr.Correction
+	for _, e := range edits {
+		switch {
+		case e.ChapterIdx == ch.Idx && opts.given != nil && opts.given(e.ParagraphIdx):
+			given[e.ParagraphIdx] = speakerLabel(e.Value)
+		case e.ChapterIdx < ch.Idx && !opts.noCorrections:
+			corrections = append(corrections, speakerattr.Correction{ChapterIdx: e.ChapterIdx, Text: e.Text, Wrong: speakerLabel(e.Original), Right: speakerLabel(e.Value)})
+		}
 	}
 
 	inputs := make([]speakerattr.ParagraphInput, len(paragraphs))
@@ -214,6 +219,10 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 			inline = false
 		}
 		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: inline, IsQuote: p.IsQuote && !p.ScareQuote}
+		if inputs[i].IsQuote {
+			inputs[i].Known = given[p.Idx]
+			inputs[i].ContextOnly = opts.contextOnly != nil && opts.contextOnly(p.Idx)
+		}
 	}
 
 	// nil, not s.Jobs.HasHigherPriorityWork: every LLM pass (attribution,
@@ -231,8 +240,92 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	// The chapter's cast from its summary, when it has one: listed in every
 	// batch with what the chapter calls them, so a batch that only says
 	// "the smith" or "he" still sees who's in the scene.
-	attrRoster = s.withChapterCast(attrRoster, ch, invalid)
+	attrRoster = s.withChapterCast(attrRoster, ch, invalid, all)
+	attrRoster.Corrections = corrections
 	speakers, roleNames, pronouns, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, attrRoster, inputs, nil)
+	return attributionRun{speakers: speakers, roleNames: roleNames, pronouns: pronouns, remaining: remaining, err: attrErr, scope: scope, invalid: invalid}, nil
+}
+
+// attributeChapter runs speaker attribution (internal/speakerattr) over
+// ch's paragraphs and persists the results: every newly-seen character
+// name is registered (store.Store.UpsertCharacter, scoped to book's whole
+// series - see store.SeriesScope - starting with no voice assigned) and
+// every paragraph's Speaker is set. known is re-fetched from the store on
+// every call (not cached across chapters or books) so a character
+// discovered anywhere earlier in the series - not just earlier in this
+// book - is always offered to the model as a name to reuse, keeping
+// naming consistent across the whole series (see
+// speakerattr.Client.AttributeChapter). Unlike an earlier version, this no
+// longer characterizes or assigns a voice to newly-discovered characters
+// itself - that now happens lazily, the first time a character's voice is
+// actually needed for generation (see jobs.Manager.
+// provisionMissingCharacterVoices/CharacterVoiceProvisioner,
+// provisionCharacterVoice below), so a chapter with many brand-new
+// characters attributes just as fast as one with none.
+//
+// mode attributeUnattributed restricts the paragraphs actually sent to the
+// model to ones with no Speaker yet, instead of every paragraph in the
+// chapter (attributeFull) - attributeFull for every reader-triggered call (handleAttributeSpeakers: an
+// explicit "Attribute speakers"/"Attribute all" click always means
+// "redo the whole chapter," the same idempotent refresh it's always been,
+// even for paragraphs already attributed - see SpeakersPage's own comment
+// on that button), attributeUnattributed only when this call is itself the automatic
+// continuation of an earlier one that paused partway through (see
+// speakerattr.Client.AttributeChapter's shouldPause and the requeue
+// closure built below) - by the time that continuation runs, everything
+// the first attempt actually finished is already persisted, so redoing it
+// would just waste LLM calls repeating identical work.
+//
+// This satisfies AttributionFunc's shape directly (see jobs.Manager.
+// EnqueueAttribution): requeue is non-nil exactly when speakerattr paused
+// before reaching every paragraph, and calling it enqueues exactly this
+// same continuation.
+//
+// attributeAroundEdits re-asks only the dialogue near the reader's
+// corrected lines - see aroundEditsScope. It never advances the chapter's
+// pass flag: the chapter was attributed already, and this is a touch-up.
+func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *store.Chapter, mode attributionMode) (attributed int, requeue func(), err error) {
+	all, err := s.Store.ListParagraphsRaw(ch.ID)
+	if err != nil {
+		return 0, nil, err
+	}
+	paragraphs := all
+	opts := allCorrections
+	switch mode {
+	case attributeUnattributed:
+		paragraphs = make([]store.Paragraph, 0, len(all))
+		for _, p := range all {
+			if p.Speaker == "" {
+				paragraphs = append(paragraphs, p)
+			}
+		}
+	case attributeAroundEdits:
+		edited, err := s.Store.EditedParagraphIdx(ch.ID, store.EditSpeaker)
+		if err != nil {
+			return 0, nil, err
+		}
+		paragraphs, opts.contextOnly = aroundEditsScope(all, edited)
+	}
+	if len(paragraphs) == 0 {
+		return 0, nil, nil
+	}
+
+	run, err := s.runAttribution(ctx, book, ch, all, paragraphs, opts)
+	if err != nil {
+		return 0, nil, err
+	}
+	scope, invalid := run.scope, run.invalid
+	speakers, roleNames, pronouns, remaining, attrErr := run.speakers, run.roleNames, run.pronouns, run.remaining, run.err
+	roleNames = s.realRoles(book, roleNames)
+	// A line the reader corrected by hand keeps their speaker (see
+	// store.ParagraphEdit) - a re-run would otherwise undo the fix.
+	edited, err := s.Store.EditedParagraphIdx(ch.ID, store.EditSpeaker)
+	if err != nil {
+		return 0, nil, err
+	}
+	for idx := range edited {
+		delete(speakers, idx)
+	}
 
 	paragraphByIdx := make(map[int]store.Paragraph, len(all))
 	for _, p := range all {
@@ -310,12 +403,19 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		return len(bySpeakerIdx), nil, attrErr
 	}
 	if len(remaining) > 0 {
+		next := attributeUnattributed
+		if mode == attributeAroundEdits {
+			next = attributeAroundEdits
+		}
 		requeue = func() {
 			s.Jobs.EnqueueAttribution(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
-				return s.attributeChapter(ctx, book, ch, true)
+				return s.attributeChapter(ctx, book, ch, next)
 			})
 		}
 		return len(bySpeakerIdx), requeue, nil
+	}
+	if mode == attributeAroundEdits {
+		return len(bySpeakerIdx), nil, nil
 	}
 	// A full, uninterrupted run over the whole chapter just finished -
 	// advance its pipeline progress persistently (see store.Passes' own
@@ -328,6 +428,60 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	}
 
 	return len(bySpeakerIdx), nil, nil
+}
+
+// attributionMode is which of a chapter's lines attributeChapter asks about.
+type attributionMode int
+
+const (
+	// attributeFull asks every dialogue line.
+	attributeFull attributionMode = iota
+	// attributeUnattributed asks only lines with no speaker yet - the
+	// continuation of a run that stopped partway.
+	attributeUnattributed
+	// attributeAroundEdits asks only the lines near the reader's corrected
+	// ones (aroundEditsScope).
+	attributeAroundEdits
+)
+
+// aroundEditsAsk is how many paragraphs either side of a corrected line
+// attributeAroundEdits re-asks, and aroundEditsContext how many either
+// side it shows as context - the exchange a correction sits in is usually
+// a handful of turns, and a line at the edge of the asked stretch still
+// needs the turns before it.
+const (
+	aroundEditsAsk     = 8
+	aroundEditsContext = 20
+)
+
+// aroundEditsScope picks what attributeAroundEdits sends: every paragraph
+// within aroundEditsContext of a corrected line (edited, by idx), in
+// chapter order, with contextOnly true for those farther than
+// aroundEditsAsk. Corrected lines themselves go in too - runAttribution
+// shows them with the reader's speaker. Nothing when nothing is corrected.
+func aroundEditsScope(all []store.Paragraph, edited map[int]bool) ([]store.Paragraph, func(int) bool) {
+	dist := map[int]int{}
+	for i, p := range all {
+		if !edited[p.Idx] {
+			continue
+		}
+		for j := max(0, i-aroundEditsContext); j <= min(len(all)-1, i+aroundEditsContext); j++ {
+			d := j - i
+			if d < 0 {
+				d = -d
+			}
+			if cur, ok := dist[all[j].Idx]; !ok || d < cur {
+				dist[all[j].Idx] = d
+			}
+		}
+	}
+	var out []store.Paragraph
+	for _, p := range all {
+		if _, ok := dist[p.Idx]; ok {
+			out = append(out, p)
+		}
+	}
+	return out, func(idx int) bool { return dist[idx] > aroundEditsAsk }
 }
 
 // reattributeChapterSpeaker re-judges targetIdx - the paragraphs in ch
@@ -360,6 +514,21 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 // jobs.Manager.EnqueueReattribution); it never pauses, so requeue is
 // always nil.
 func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book, ch *store.Chapter, speakerKey, excludeName string, targetIdx map[int]bool) (reattributed int, requeue func(), err error) {
+	// A line the reader corrected by hand isn't the model's to move
+	// (store.ParagraphEdit).
+	edited, err := s.Store.EditedParagraphIdx(ch.ID, store.EditSpeaker)
+	if err != nil {
+		return 0, nil, err
+	}
+	if len(edited) > 0 {
+		kept := make(map[int]bool, len(targetIdx))
+		for idx := range targetIdx {
+			if !edited[idx] {
+				kept[idx] = true
+			}
+		}
+		targetIdx = kept
+	}
 	if len(targetIdx) == 0 {
 		return 0, nil, nil
 	}
@@ -460,7 +629,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 		// The chapter's cast from its summary, when it has one: listed in every
 		// batch with what the chapter calls them, so a batch that only says
 		// "the smith" or "he" still sees who's in the scene.
-		attrRoster = s.withChapterCast(attrRoster, ch, invalid)
+		attrRoster = s.withChapterCast(attrRoster, ch, invalid, all)
 		widened, widenedRoles, werr := s.Speaker.AttributeWithWideningContext(ctx, book.Title, ch.Title, attrRoster, inputs, retry, rejected)
 		if werr != nil {
 			attrErr = fmt.Errorf("auto split %q: chapter %d: %w", excludeName, ch.Idx, werr)
@@ -483,6 +652,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 		}
 	}
 
+	roleNames = s.realRoles(book, roleNames)
 	bySpeakerIdx := make(map[int]string, len(speakers))
 	for idx, name := range speakers {
 		if name != "Narrator" && !isDialogue(idx) {
@@ -622,9 +792,19 @@ func (s *Server) scareQuoteChapter(ctx context.Context, book *store.Book, ch *st
 	// batches actually completed" treatment describeChapter gives its own
 	// partial-failure case.
 
+	// A line the reader marked or unmarked by hand keeps their call
+	// (store.ParagraphEdit) - the pass is additive, so an unmarked line
+	// would otherwise be flagged again on the next run.
+	edited, err := s.Store.EditedParagraphIdx(ch.ID, store.EditScareQuote)
+	if err != nil {
+		return err
+	}
 	byIdx := make(map[int]bool, len(scareQuotes))
 	var changed []store.Paragraph
 	for _, p := range all {
+		if edited[p.Idx] {
+			continue
+		}
 		want := scareQuotes[p.Idx]
 		// Additive: a run only ever adds flags. The pass misses far more
 		// scare quotes than it invents (its precision is high - see
@@ -767,10 +947,15 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 	for _, p := range remaining {
 		notReached[p.Idx] = true
 	}
+	// A line the reader set by hand keeps their emotion (store.ParagraphEdit).
+	edited, err := s.Store.EditedParagraphIdx(ch.ID, store.EditEmotion)
+	if err != nil {
+		return 0, nil, err
+	}
 	updates := make(map[int]string)
 	var changed []store.Paragraph
 	for _, p := range paragraphs {
-		if notReached[p.Idx] {
+		if notReached[p.Idx] || edited[p.Idx] {
 			continue
 		}
 		label := labels[p.Idx]
@@ -972,7 +1157,7 @@ func (s *Server) directChapterForJob(ctx context.Context, book *store.Book, ch *
 // re-invoking EnqueueAttribution directly) works identically regardless of
 // who queued the task it's running as.
 func (s *Server) attributeChapterForJob(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
-	return s.attributeChapter(ctx, book, ch, false)
+	return s.attributeChapter(ctx, book, ch, attributeFull)
 }
 
 // scareQuoteChapterForJob is a jobs.KindScareQuote task's work (matching
@@ -1026,9 +1211,22 @@ func (s *Server) describeChapterForJob(ctx context.Context, book *store.Book, ch
 // jobs.Manager.EnqueueAttribution's own doc comment for the full story.
 // Progress is observable via GET /api/jobs and by refetching this book's
 // speaker table once a chapter's task clears.
+//
+// ?scope=edits re-asks only the dialogue around the chapter's corrected
+// lines (attributeAroundEdits), with the corrections shown - "I fixed a
+// few, sort out the rest". 409 no_edits when the chapter has none.
 func (s *Server) handleAttributeSpeakers(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
 		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
+		return
+	}
+	mode := attributeFull
+	switch scope := r.URL.Query().Get("scope"); scope {
+	case "", "all":
+	case "edits":
+		mode = attributeAroundEdits
+	default:
+		writeError(w, http.StatusBadRequest, "scope must be all or edits, not "+strconv.Quote(scope))
 		return
 	}
 	bookID := r.PathValue("id")
@@ -1056,9 +1254,20 @@ func (s *Server) handleAttributeSpeakers(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "chapter not found")
 		return
 	}
+	if mode == attributeAroundEdits {
+		edited, err := s.Store.EditedParagraphIdx(ch.ID, store.EditSpeaker)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if len(edited) == 0 {
+			writeErrorCode(w, http.StatusConflict, errNoEdits, "this chapter has no corrected speakers to work around")
+			return
+		}
+	}
 
 	s.Jobs.EnqueueAttribution(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
-		return s.attributeChapter(ctx, book, ch, false)
+		return s.attributeChapter(ctx, book, ch, mode)
 	})
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
@@ -1163,6 +1372,12 @@ func (s *Server) chapterLLMTarget(w http.ResponseWriter, r *http.Request) (*stor
 		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return nil, nil, false
 	}
+	return s.chapterTarget(w, r)
+}
+
+// chapterTarget resolves the {id}/{idx} book and chapter a request names,
+// writing the error reply itself when it can't.
+func (s *Server) chapterTarget(w http.ResponseWriter, r *http.Request) (*store.Book, *store.Chapter, bool) {
 	bookID := r.PathValue("id")
 	idx, err := strconv.Atoi(r.PathValue("idx"))
 	if err != nil {

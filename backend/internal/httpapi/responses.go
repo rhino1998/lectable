@@ -41,6 +41,9 @@ const (
 	// errBookExists: an uploaded lectable export is a book this library
 	// already has - delete it first to replace it.
 	errBookExists errorCode = "book_exists"
+	// errNoEdits: re-attributing around corrections (?scope=edits), but
+	// the chapter has no corrected speakers.
+	errNoEdits errorCode = "no_edits"
 )
 
 // queuedResponse is every 202 body: how many background tasks the request

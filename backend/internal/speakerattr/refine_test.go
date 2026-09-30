@@ -153,6 +153,21 @@ func TestFirstPersonTags(t *testing.T) {
 	if got[0] != "Steve" || got[3] != "Steve" {
 		t.Fatalf("I tags = %v, want Steve for both", got)
 	}
+	// Arise ch. 8: the model gave the narrator his friend's "he snapped"
+	// line. A he/she tag is never the "I"; other answers are left alone.
+	he := []ParagraphInput{
+		{Idx: 0, Text: "“Yeah, man, I packed them both up!”", IsQuote: true},
+		{Idx: 1, Text: "he snapped, hurrying up the stairs.", Inline: true},
+		{Idx: 2, Text: "“What?”", IsQuote: true},
+		{Idx: 3, Text: "she asked.", Inline: true},
+	}
+	got, _ = RefineWithSpeechTags(he, map[int]string{0: "Steve", 2: "Marie"}, base.WithFirstPerson("Steve"))
+	if got[0] != "Unknown" || got[2] != "Marie" {
+		t.Fatalf("he-tagged narrator line = %v, want Unknown and Marie kept", got)
+	}
+	if got, _ := RefineWithSpeechTags(he, map[int]string{0: "Steve"}, base); got[0] != "Steve" {
+		t.Fatalf("third-person book: %v, want the answer kept", got)
+	}
 	if firstPersonAnswer("Protagonist", "Steve") != "Steve" || firstPersonAnswer("Protagonist", "") != "Protagonist" || firstPersonAnswer("Dave", "Steve") != "Dave" {
 		t.Fatal("firstPersonAnswer")
 	}

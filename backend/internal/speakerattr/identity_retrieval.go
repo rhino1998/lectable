@@ -413,6 +413,14 @@ func (c *Client) ResolveCastIdentities(ctx context.Context, bookTitle string, su
 			var keep []string
 			for i, ref := range m.Refs {
 				var match string
+				// "the werewolf" under Werewolf, "the man" under Man: the
+				// role's own kind, not a description of one person - it
+				// once moved a pack's "the werewolf" onto one named
+				// werewolf, and every Werewolf line with it.
+				if generic := refKey(ref); generic == refKey(m.Name) || isRoleName(roster.Roles, generic) {
+					keep = append(keep, ref)
+					continue
+				}
 				if i < 2 {
 					var err error
 					if match, err = ask(ref, nil); err != nil {
@@ -463,4 +471,14 @@ func renameInScenes(s *ChapterSummary, from, to string) {
 		scenes[i] = sc
 	}
 	s.Scenes = scenes
+}
+
+// isRoleName reports whether name is one of roles, ignoring case.
+func isRoleName(roles map[string]bool, name string) bool {
+	for r, ok := range roles {
+		if ok && strings.EqualFold(r, name) {
+			return true
+		}
+	}
+	return false
 }

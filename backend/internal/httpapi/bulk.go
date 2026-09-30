@@ -81,7 +81,7 @@ var chapterBulkPasses = map[bulkAction]chapterBulkPass{
 		done: func(p store.Passes) bool { return p.Attribution },
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
 			_, err := s.Jobs.RunAttribution(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
-				return s.attributeChapter(ctx, book, ch, false)
+				return s.attributeChapter(ctx, book, ch, attributeFull)
 			})
 			return err
 		},

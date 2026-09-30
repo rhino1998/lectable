@@ -56,3 +56,34 @@ func TestResolveIdentities(t *testing.T) {
 		t.Errorf("roles = %v", roles)
 	}
 }
+
+func TestResolveIdentitiesKeepsRolesApart(t *testing.T) {
+	r := NewSpeakerNameResolver([]string{"Ingrid", "Refugee Woman", "Tomas Reyes"}, nil)
+	got := resolveIdentities(map[int]string{1: "Woman", 2: "the old woman", 3: "Tomas"}, r, map[string]bool{"Refugee Woman": true})
+	if got[1] != "Woman" || got[2] != "Woman" || got[3] != "Tomas Reyes" {
+		t.Fatalf("resolveIdentities = %v, want Woman, Woman, Tomas Reyes", got)
+	}
+}
+
+func TestCanonicalizeKeepsRolesApart(t *testing.T) {
+	got := canonicalizeSpeakerNames([]string{"Ingrid", "Refugee Woman", "Captain Vesna Thorne"}, map[int]string{1: "Woman", 2: "Vesna"}, map[string]bool{"Refugee Woman": true})
+	if got[1] != "Woman" || got[2] != "Captain Vesna Thorne" {
+		t.Fatalf("canonicalizeSpeakerNames = %v", got)
+	}
+}
+
+func TestNamesAKind(t *testing.T) {
+	words := NewLowercaseWords([]string{
+		"The guard nodded to a woman. A thug and a police officer waited.",
+		"Henry and Constable Hodges met the Count's son; the Nightshark laughed.",
+	})
+	for label, want := range map[string]bool{
+		"Guard": true, "Refugee Woman": true, "Greek police officer": true, "Thug 1": true,
+		"Henry": false, "Constable Hodges": false, "Count Wavereach": false, "The Nightshark": false,
+		"1": true, "Medical AI": true,
+	} {
+		if got := words.NamesAKind(label); got != want {
+			t.Errorf("NamesAKind(%q) = %v, want %v", label, got, want)
+		}
+	}
+}

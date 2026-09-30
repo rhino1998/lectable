@@ -112,7 +112,7 @@ func (c *Client) AttributeWithWideningContext(ctx context.Context, bookTitle, ch
 			if roles == nil {
 				roles = map[string]bool{}
 			}
-			canon := resolveIdentities(canonicalizeSpeakerNames(knownCharacters, raw), resolver, roles)
+			canon := resolveIdentities(canonicalizeSpeakerNames(knownCharacters, raw, roles), resolver, roles)
 			for _, pos := range covered {
 				idx := all[pos].Idx
 				name, ok := canon[idx]

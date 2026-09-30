@@ -2,7 +2,10 @@ package speakerattr
 
 import (
 	"context"
+	"fmt"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -41,6 +44,87 @@ func TestWithCastAndRefs(t *testing.T) {
 	}
 }
 
+func TestWithCastReplacesProminent(t *testing.T) {
+	r := Roster{Names: []string{"Petros", "Steve", "Dave"}, Prominent: []string{"Petros", "Steve"}}.WithCast([]CastMember{{Name: "Steve"}, {Name: "Dave"}})
+	if !reflect.DeepEqual(r.Prominent, []string{"Steve", "Dave"}) {
+		t.Fatalf("Prominent = %v, want only the chapter's cast", r.Prominent)
+	}
+}
+
+func firstPersonChapter() []ParagraphInput {
+	return []ParagraphInput{
+		{Idx: 0, Text: "“Jamey...Sultan?”", IsQuote: true},
+		{Idx: 1, Text: "he asked me, and I hesitated before nodding."},
+		{Idx: 2, Text: "I looked at them, frowning."},
+		{Idx: 3, Text: "Dave opened the door."},
+		{Idx: 4, Text: "I’m not sure why I bothered."},
+	}
+}
+
+func TestFirstPersonNarration(t *testing.T) {
+	if !FirstPersonNarration(firstPersonChapter()) {
+		t.Fatal("first-person chapter read as third person")
+	}
+	third := []ParagraphInput{
+		{Idx: 0, Text: "“I see nothing!”", IsQuote: true},
+		{Idx: 1, Text: "Petros groaned."},
+		{Idx: 2, Text: "Santiago swirled the wine."},
+		{Idx: 3, Text: "The doors opened."},
+	}
+	if FirstPersonNarration(third) {
+		t.Fatal("third-person chapter (with an \"I\" only inside dialogue) read as first person")
+	}
+}
+
+func TestFoldFirstPersonCast(t *testing.T) {
+	roster := Roster{Names: []string{"Steve", "Dave", "Petros"}, Pronouns: map[string]string{"Steve": PronounsHe}, FirstPerson: "Steve"}
+	sum := ChapterSummary{
+		Scenes: []Scene{{StartIdx: 0, Present: []string{"Jamey", "Marie", "Dave"}}, {StartIdx: 3, Present: []string{"Jamey", "Dave"}}},
+		Cast: []CastMember{
+			{Name: "Jamey", Pronouns: PronounsHe, Refs: []string{"Jamey...Sultan"}},
+			{Name: "Marie", Pronouns: PronounsShe},
+			{Name: "Dave", Pronouns: PronounsHe},
+			{Name: "Officer", Role: true},
+		},
+	}
+	got, alias := FoldFirstPersonCast(sum, roster, firstPersonChapter())
+	if alias != "Jamey" || got.Cast[0].Name != "Steve" || got.Cast[0].Refs[0] != "Jamey...Sultan" {
+		t.Fatalf("FoldFirstPersonCast = %+v, %q", got.Cast, alias)
+	}
+	if !reflect.DeepEqual(got.Scenes[1].Present, []string{"Steve", "Dave"}) || sum.Scenes[1].Present[0] != "Jamey" {
+		t.Fatalf("scenes = %+v (input must stay untouched: %+v)", got.Scenes, sum.Scenes)
+	}
+
+	// The narrator already in the cast: nothing to fold.
+	withSteve := sum
+	withSteve.Cast = append([]CastMember{{Name: "Steve"}}, sum.Cast...)
+	if _, alias := FoldFirstPersonCast(withSteve, roster, firstPersonChapter()); alias != "" {
+		t.Fatalf("folded %q with the narrator already cast", alias)
+	}
+	// A third-person chapter of a first-person book: its new names are other people.
+	third := []ParagraphInput{{Idx: 0, Text: "Santiago swirled the wine."}, {Idx: 1, Text: "Petros groaned."}}
+	if _, alias := FoldFirstPersonCast(sum, roster, third); alias != "" {
+		t.Fatalf("folded %q in a third-person chapter", alias)
+	}
+	// Two unknown candidates in the same number of scenes: ambiguous.
+	tie := sum
+	tie.Scenes = []Scene{{StartIdx: 0, Present: []string{"Jamey", "Marie"}}}
+	tie.Cast = []CastMember{{Name: "Jamey"}, {Name: "Marie"}}
+	if _, alias := FoldFirstPersonCast(tie, Roster{Names: []string{"Steve"}, FirstPerson: "Steve"}, firstPersonChapter()); alias != "" {
+		t.Fatalf("folded %q on a tie", alias)
+	}
+	// A placeholder for the "I" is always the narrator, even beside them.
+	placeholder := ChapterSummary{Scenes: []Scene{{Present: []string{"Protagonist", "Dave"}}}, Cast: []CastMember{{Name: "Steve"}, {Name: "Protagonist", Refs: []string{"the new guy"}}, {Name: "Dave"}}}
+	got, _ = FoldFirstPersonCast(placeholder, roster, firstPersonChapter())
+	if len(got.Cast) != 2 || got.Cast[0].Name != "Steve" || len(got.Cast[0].Refs) != 1 || got.Scenes[0].Present[0] != "Steve" {
+		t.Fatalf("placeholder fold = %+v", got)
+	}
+	// Pronouns that contradict the narrator's rule the candidate out.
+	if _, alias := FoldFirstPersonCast(ChapterSummary{Cast: []CastMember{{Name: "Marie", Pronouns: PronounsShe}}}, roster, firstPersonChapter()); alias != "" {
+		t.Fatalf("folded %q despite she/her vs he/him", alias)
+	}
+}
+
 func TestSceneAt(t *testing.T) {
 	s := &ChapterSummary{Scenes: []Scene{{StartIdx: 0, Location: "a"}, {StartIdx: 20, Location: "b"}}}
 	if s.SceneAt(5).Location != "a" || s.SceneAt(20).Location != "b" || s.SceneAt(99).Location != "b" {
@@ -53,7 +137,7 @@ func TestSceneAt(t *testing.T) {
 }
 
 func TestMergeRefsDropsPossessives(t *testing.T) {
-	got := mergeRefs(nil, []string{"his boots", "the old sailor", "Her scarf", "he", "The old sailor", "Rosie said"})
+	got := mergeRefs(nil, []string{"his boots", "the old sailor", "Her scarf", "he", "The old sailor", "Rosie said", "dude", "man"})
 	if !reflect.DeepEqual(got, []string{"the old sailor"}) {
 		t.Fatalf("mergeRefs = %v", got)
 	}
@@ -96,5 +180,107 @@ func TestSummarizeChapterAddsTaggedSpeakers(t *testing.T) {
 	}
 	if !reflect.DeepEqual(names, []string{"Fritz", "Bert"}) || got.Cast[1].Pronouns != PronounsHe {
 		t.Fatalf("cast = %+v, want the tagged Fritz and Bert", got.Cast)
+	}
+}
+
+func TestScenePresent(t *testing.T) {
+	r := Roster{
+		Names:       []string{"Steve", "Dave", "Kev", "Marie", "Boss"},
+		Prominent:   []string{"Kev", "Dave", "Marie", "Boss", "Steve"},
+		FirstPerson: "Steve",
+		Scenes: []Scene{
+			{StartIdx: 5, Present: []string{"Steve", "Kev"}},
+			{StartIdx: 20, Present: []string{"Steve", "Dave", "Marie"}},
+		},
+	}
+	lines := func(idx ...int) []ParagraphInput {
+		var out []ParagraphInput
+		for _, i := range idx {
+			out = append(out, ParagraphInput{Idx: i, Text: "“Go.”", IsQuote: true})
+		}
+		return out
+	}
+	// Boss is in no scene (a phone voice), so always listed; Steve narrates.
+	if got := r.scenePresent(lines(21, 30)); !reflect.DeepEqual(got, []string{"Dave", "Marie", "Boss", "Steve"}) {
+		t.Fatalf("second scene = %v", got)
+	}
+	if got := r.scenePresent(lines(0, 8)); !reflect.DeepEqual(got, []string{"Kev", "Boss", "Steve"}) {
+		t.Fatalf("first scene (and before it) = %v", got)
+	}
+	if got := r.scenePresent(lines(18, 22)); !reflect.DeepEqual(got, r.Prominent) {
+		t.Fatalf("spanning both = %v", got)
+	}
+	// Named in the text: listed even outside their scene.
+	if got := relevantNames(r, []ParagraphInput{{Idx: 25, Text: "Kev groaned on the floor."}}); !slices.Contains(got, "Kev") {
+		t.Fatalf("relevantNames = %v, want Kev (mentioned)", got)
+	}
+	if got := (Roster{Prominent: []string{"A"}}).scenePresent(lines(1)); !reflect.DeepEqual(got, []string{"A"}) {
+		t.Fatalf("no scenes = %v", got)
+	}
+}
+
+func TestSceneStarting(t *testing.T) {
+	r := Roster{Scenes: []Scene{{StartIdx: 0, Location: "the flat", Present: []string{"Steve", "Kev"}}, {StartIdx: 206, Present: []string{"Steve", "Dave"}}}}
+	if sc := r.sceneStarting(-1, 190); sc == nil || sc.StartIdx != 0 {
+		t.Fatalf("batch start = %+v, want the scene it falls in", sc)
+	}
+	if sc := r.sceneStarting(190, 200); sc != nil {
+		t.Fatalf("mid-scene = %+v", sc)
+	}
+	if sc := r.sceneStarting(205, 207); sc == nil || sc.StartIdx != 206 {
+		t.Fatalf("crossing 206 = %+v", sc)
+	}
+	if got := sceneMarker(&r.Scenes[0]); got != "the flat; present: Steve, Kev" {
+		t.Fatalf("sceneMarker = %q", got)
+	}
+	if (Roster{}).sceneStarting(-1, 3) != nil {
+		t.Fatal("no scenes")
+	}
+}
+
+func TestCarryOver(t *testing.T) {
+	if carryOver(ChapterSummary{}) != "" {
+		t.Fatal("first window gets no carry-over")
+	}
+	got := carryOver(ChapterSummary{Summary: "Steve fights wolves.", Scenes: []Scene{{Location: "a taverna", Present: []string{"Steve", "Ingrid"}}}})
+	for _, want := range []string{"so far: Steve fights wolves.", "the scene in progress: a taverna", "present when it broke off: Steve, Ingrid"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("carryOver = %q, missing %q", got, want)
+		}
+	}
+}
+
+func TestLeadIn(t *testing.T) {
+	if leadIn(nil) != "" {
+		t.Fatal("first window gets no lead-in")
+	}
+	var prev []ParagraphInput
+	for i := 0; i < 12; i++ {
+		prev = append(prev, ParagraphInput{Idx: i, Text: fmt.Sprintf("p%d", i)})
+	}
+	prev[4].Inline = true // the cut would land mid-paragraph: back up to 3
+	got := leadIn(prev)
+	if !strings.Contains(got, "> p3 p4") || strings.Contains(got, "p2") || !strings.Contains(got, "> p11") {
+		t.Fatalf("leadIn = %q", got)
+	}
+}
+
+func TestAddTaggedToScenes(t *testing.T) {
+	paras := []ParagraphInput{
+		{Idx: 0, Text: "“Go,”", IsQuote: true}, {Idx: 1, Text: "Dave said.", Inline: true},
+		{Idx: 2, Text: "“Where?”", IsQuote: true}, {Idx: 3, Text: "Ingrid asked.", Inline: true},
+	}
+	sum := ChapterSummary{Scenes: []Scene{{StartIdx: 0, Present: []string{"Steve", "Dave"}}, {StartIdx: 2, Present: []string{"Steve", "Barmaid"}}}}
+	addTaggedToScenes(&sum, paras, NewSpeakerNameResolver([]string{"Steve", "Dave", "Ingrid"}, nil))
+	if !reflect.DeepEqual(sum.Scenes[0].Present, []string{"Steve", "Dave"}) || !reflect.DeepEqual(sum.Scenes[1].Present, []string{"Steve", "Barmaid", "Ingrid"}) {
+		t.Fatalf("scenes = %+v", sum.Scenes)
+	}
+}
+
+func TestResolveCastRefsIgnoresRoleNameRefs(t *testing.T) {
+	cast := []CastMember{{Name: "Werewolf", Role: true}, {Name: "Johnny", Refs: []string{"the werewolf", "the pack leader"}}}
+	got := ResolveCastRefs(map[int]string{1: "Werewolf", 2: "the pack leader"}, cast)
+	if got[1] != "Werewolf" || got[2] != "Johnny" {
+		t.Fatalf("ResolveCastRefs = %v", got)
 	}
 }

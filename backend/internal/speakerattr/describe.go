@@ -121,7 +121,7 @@ func canonicalizeDescribes(knownCharacters []string, raw map[int][]string) map[i
 			pool[n] = true
 		}
 	}
-	canon := canonMapFromPool(pool)
+	canon := canonMapFromPool(pool, nil)
 
 	out := make(map[int][]string, len(raw))
 	for idx, names := range raw {

@@ -226,6 +226,7 @@ func (s *DuckStore) ReplaceChapterContent(chapterID, title string, blocks []Bloc
 
 	for _, stmt := range []struct{ what, sql string }{
 		{"bookmarks", `DELETE FROM bookmarks WHERE paragraph_id IN (SELECT id FROM paragraphs WHERE chapter_id = ?)`},
+		{"paragraph edits", `DELETE FROM paragraph_edits WHERE paragraph_id IN (SELECT id FROM paragraphs WHERE chapter_id = ?)`},
 		{"paragraph audio", `DELETE FROM paragraph_audio WHERE paragraph_id IN (SELECT id FROM paragraphs WHERE chapter_id = ?)`},
 		{"sfx", `DELETE FROM sfx WHERE paragraph_id IN (SELECT id FROM paragraphs WHERE chapter_id = ?)`},
 		{"paragraphs", `DELETE FROM paragraphs WHERE chapter_id = ?`},
@@ -340,6 +341,9 @@ func (s *DuckStore) DeleteBook(id string) error {
 
 	if _, err := tx.Exec(`DELETE FROM bookmarks WHERE paragraph_id IN (SELECT id FROM paragraphs WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?))`, id); err != nil {
 		return fmt.Errorf("delete bookmarks: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM paragraph_edits WHERE paragraph_id IN (SELECT id FROM paragraphs WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?))`, id); err != nil {
+		return fmt.Errorf("delete paragraph edits: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM paragraphs WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, id); err != nil {
 		return fmt.Errorf("delete paragraphs: %w", err)
