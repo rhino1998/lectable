@@ -140,6 +140,9 @@ export function ReaderPage() {
     runClearChapterAudio,
     runReimportChapter,
     runAttributeChapter,
+    runAttributeAroundEdits,
+    saveNotes,
+    runRegenerateNotes,
     runRetagDescriptionsChapter,
     runRetagScareQuotesChapter,
     runTagDirectionsChapter,
@@ -737,6 +740,9 @@ export function ReaderPage() {
                 onClearAudio={runClearChapterAudio}
                 onReimport={runReimportChapter}
                 onAttribute={runAttributeChapter}
+                onAttributeAroundEdits={runAttributeAroundEdits}
+                onSaveNotes={saveNotes}
+                onRegenerateNotes={runRegenerateNotes}
                 onRetagDescriptions={runRetagDescriptionsChapter}
                 onRetagScareQuotes={runRetagScareQuotesChapter}
                 onTagDirections={runTagDirectionsChapter}

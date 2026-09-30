@@ -2897,3 +2897,92 @@ label {
 .lexicon-matched-words {
   font-size: 0.8rem;
 }
+
+/* ChapterNotesBlock's actions and its inline notes editor. */
+.chapter-notes-actions {
+  float: right;
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.chapter-notes-saved {
+  font-size: 0.85rem;
+}
+.chapter-notes-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.chapter-notes-field,
+.chapter-notes-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.chapter-notes-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+}
+.chapter-notes-editor input:not([type='checkbox']) {
+  font: inherit;
+  padding: 0.3rem 0.45rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  min-width: 0;
+}
+.chapter-notes-name {
+  flex: 1 1 9rem;
+}
+.chapter-notes-refs {
+  flex: 3 1 14rem;
+}
+.chapter-notes-start {
+  width: 5rem;
+}
+.chapter-notes-location {
+  flex: 2 1 10rem;
+}
+.chapter-notes-time {
+  flex: 1 1 6rem;
+}
+.chapter-notes-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  font-size: 0.85rem;
+}
+.chapter-notes-scene {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.4rem 0;
+  border-top: 1px dashed var(--border);
+}
+.chapter-notes-present {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.chapter-notes-chip {
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.8rem;
+}
+.chapter-notes-chip-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+.chapter-notes-editor .text-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  align-self: flex-start;
+}

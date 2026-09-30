@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import {
   useAmbienceChapters,
+  useAttributeAroundEdits,
   useAttributeSpeakers,
   useAttributingChapters,
   useDeleteChapterAudio,
@@ -9,15 +10,18 @@ import {
   useGenerateChapter,
   useGeneratingChapters,
   usePronouncingChapters,
+  useRegenerateChapterNotes,
   useRegenerateMusicRegion,
   useResolvePronunciation,
   useRetagDescriptions,
   useRetagScareQuotes,
   useRunChapterAmbience,
+  useSaveChapterNotes,
   useScareQuotingChapters,
   useTagDirections,
 } from '../api/queries'
 import { ApiError } from '../api/client'
+import type { ChapterNotes } from '../api/types'
 import { useReimportChapterAction } from './useReimportChapterAction'
 
 // Chapter-header actions: clear a chapter's own generated audio (a
@@ -34,6 +38,9 @@ import { useReimportChapterAction } from './useReimportChapterAction'
 export function useChapterActions(bookId: string) {
   const deleteChapterAudio = useDeleteChapterAudio(bookId)
   const attributeSpeakers = useAttributeSpeakers(bookId)
+  const attributeAroundEdits = useAttributeAroundEdits(bookId)
+  const saveChapterNotes = useSaveChapterNotes(bookId)
+  const regenerateChapterNotes = useRegenerateChapterNotes(bookId)
   const attributingIdxs = useAttributingChapters(bookId)
   const retagDescriptions = useRetagDescriptions(bookId)
   const retagScareQuotes = useRetagScareQuotes(bookId)
@@ -81,6 +88,46 @@ export function useChapterActions(bookId: string) {
       })
     },
     [attributeSpeakers],
+  )
+
+  // Re-asks only the dialogue near lines the reader corrected, showing the
+  // model those corrections - the follow-up to fixing a few speakers.
+  const runAttributeAroundEdits = useCallback(
+    (idx: number) => {
+      setError(null)
+      attributeAroundEdits.mutate(idx, {
+        onError: (err) =>
+          setError(
+            err instanceof ApiError && err.code === 'no_edits'
+              ? 'No corrected speakers in this chapter yet — fix a line first (right-click it)'
+              : err instanceof ApiError
+                ? err.message
+                : 'Speaker attribution failed',
+          ),
+      })
+    },
+    [attributeAroundEdits],
+  )
+
+  // Saves the reader's notes; resolves once stored, and rejects with the
+  // backend's message (a group name, a scene listing someone not in the
+  // cast) for the editor to show beside its fields.
+  const saveNotes = useCallback(
+    (idx: number, notes: ChapterNotes) =>
+      saveChapterNotes.mutateAsync({ chapterIdx: idx, notes }).then(() => undefined),
+    [saveChapterNotes],
+  )
+
+  const runRegenerateNotes = useCallback(
+    (idx: number) => {
+      if (!confirm("Regenerate this chapter's notes? Your edits to them will be replaced.")) return
+      setError(null)
+      regenerateChapterNotes.mutate(idx, {
+        onError: (err) =>
+          setError(err instanceof ApiError ? err.message : 'Could not regenerate the notes'),
+      })
+    },
+    [regenerateChapterNotes],
   )
 
   const runRetagDescriptionsChapter = useCallback(
@@ -178,6 +225,9 @@ export function useChapterActions(bookId: string) {
     runClearChapterAudio,
     runReimportChapter,
     runAttributeChapter,
+    runAttributeAroundEdits,
+    saveNotes,
+    runRegenerateNotes,
     runRetagDescriptionsChapter,
     runRetagScareQuotesChapter,
     runTagDirectionsChapter,

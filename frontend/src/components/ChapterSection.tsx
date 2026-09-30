@@ -2,6 +2,7 @@ import { Fragment, createElement, memo, useState } from 'react'
 import {
   RiBookmarkFill,
   RiBookmarkLine,
+  RiChatCheckLine,
   RiChatVoiceLine,
   RiCodeSSlashLine,
   RiDeleteBinLine,
@@ -33,6 +34,7 @@ import { emotionIcon, emotionLabel } from '../utils/emotions'
 import { annotationKind, annotationTitle, matchesSelectedSpeaker } from '../utils/annotations'
 import { resolveGenerationText } from '../utils/resolveGenerationText'
 import { ParagraphText } from './ParagraphText'
+import { ChapterNotesBlock } from './ChapterNotesBlock'
 import { LightingSwatch } from './LightingSwatch'
 import { MusicRegionPreviewButton } from './MusicRegionPreviewButton'
 
@@ -483,30 +485,6 @@ function paragraphGroupPropsEqual(prev: ParagraphGroupProps, next: ParagraphGrou
   return true
 }
 
-// ChapterSummaryBlock is annotations view's chapter summary under the
-// heading (backend summary pass - see ChapterPassTable's Summary column):
-// what happens, and who's in the chapter with what the text calls them.
-function ChapterSummaryBlock({ notes }: { notes: ChapterNotes }) {
-  return (
-    <div className="chapter-summary-annotation">
-      {notes.summary && <p>{notes.summary}</p>}
-      {notes.cast.length > 0 && (
-        <p className="chapter-summary-cast">
-          <span className="muted">Cast: </span>
-          {notes.cast.map((m, i) => (
-            <span key={m.name}>
-              {i > 0 && ', '}
-              {m.name}
-              {m.role && <span className="muted"> (role)</span>}
-              {m.refs.length > 0 && <span className="muted"> — {m.refs.join('; ')}</span>}
-            </span>
-          ))}
-        </p>
-      )}
-    </div>
-  )
-}
-
 // SceneBoundary marks where one of the chapter summary's scenes starts
 // (annotations view only): where, when, and who's there - what ambience
 // and lighting are told about the stretch.
@@ -715,6 +693,9 @@ interface ChapterSectionProps {
   onClearAudio: (idx: number, title: string) => void
   onReimport: (idx: number, title: string) => void
   onAttribute: (idx: number) => void
+  onAttributeAroundEdits: (idx: number) => void
+  onSaveNotes: (idx: number, notes: ChapterNotes) => Promise<void>
+  onRegenerateNotes: (idx: number) => void
   onRetagDescriptions: (idx: number) => void
   onRetagScareQuotes: (idx: number) => void
   onTagDirections: (idx: number) => void
@@ -788,6 +769,9 @@ export const ChapterSection = memo(function ChapterSection({
   onClearAudio,
   onReimport,
   onAttribute,
+  onAttributeAroundEdits,
+  onSaveNotes,
+  onRegenerateNotes,
   onRetagDescriptions,
   onRetagScareQuotes,
   onTagDirections,
@@ -877,6 +861,16 @@ export const ChapterSection = memo(function ChapterSection({
           >
             <RiChatVoiceLine className={chapterAttributing ? 'spin' : undefined} />
           </button>
+          {hasAttribution && (
+            <button
+              className="icon-action-button"
+              onClick={() => onAttributeAroundEdits(idx)}
+              disabled={chapterAttributing}
+              title="Re-attribute around my fixes — re-ask only the lines near speakers you corrected in this chapter, with your corrections shown to the model"
+            >
+              <RiChatCheckLine className={chapterAttributing ? 'spin' : undefined} />
+            </button>
+          )}
           <button
             className="icon-action-button"
             onClick={() => onRetagDescriptions(idx)}
@@ -959,7 +953,15 @@ export const ChapterSection = memo(function ChapterSection({
           </button>
         </span>
       </div>
-      {annotationsView && notes && <ChapterSummaryBlock notes={notes} />}
+      {annotationsView && notes && (
+        <ChapterNotesBlock
+          chapterIdx={idx}
+          notes={notes}
+          onSave={onSaveNotes}
+          onRegenerate={onRegenerateNotes}
+          onAttribute={onAttribute}
+        />
+      )}
       {!chapter && <p className="muted">Loading chapter…</p>}
       <div className="paragraph-list">
         {groups.map((group) => {

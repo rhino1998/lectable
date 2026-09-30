@@ -155,6 +155,13 @@ byte-for-byte.
   book's saved position moved by someone else while this reader sat
   paused - own saves are remembered so their echoes don't trigger it;
   mirrored in android's `ui/reader/RemotePosition.kt`), and
+  `components/ChapterNotesBlock` (annotations view's chapter summary under
+  the heading, editable in place: summary, cast with role/pronouns/what the
+  text calls them, scenes with who is present as toggle chips - saved via
+  `PUT .../notes`, marked edited, with "Re-run attribution now" after a
+  save and a regenerate button that replaces the edits),
+  the chapter header's "Re-attribute around my fixes" button
+  (`useAttributeAroundEdits`, `?scope=edits`),
   `components/ParagraphContextMenu` (the annotations-view right-click menu,
   opened imperatively like `AnnotationTooltip`; its reassign lists are
   "This chapter" then "All characters", alphabetical - `utils/speakerOrder`,

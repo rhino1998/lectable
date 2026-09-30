@@ -3,6 +3,7 @@ import {
   type BookSetting,
   type BulkAction,
   type BulkScope,
+  type ChapterNotes,
   type CreateExportRequest,
   type CustomVoicePresetInput,
   type UpsertLexiconRequest,
@@ -343,6 +344,15 @@ export const api = {
       path: { id: bookId, idx: chapterIdx },
     }),
 
+  // attributeSpeakers limited to the dialogue around the chapter's
+  // corrected speakers, with the corrections shown to the model (backend
+  // httpapi.attributeAroundEdits). 409 no_edits when nothing is corrected.
+  attributeSpeakersAroundEdits: (bookId: string, chapterIdx: number) =>
+    call('POST /api/books/{id}/chapters/{idx}/attribute-speakers', {
+      path: { id: bookId, idx: chapterIdx },
+      query: { scope: 'edits' },
+    }),
+
   // Enqueues a description-tagging job for one chapter (503 if the backend
   // has no LECTABLE_SPEAKER_LLM_MODEL_PATH configured) - fire-and-forget like
   // attributeSpeakers; the job waits on the chapter's scare-quote tagging
@@ -370,9 +380,22 @@ export const api = {
   // httpapi.handleResolvePronunciation.
   // Queues a chapter's summary pass (summary, scenes, cast) - see backend
   // httpapi.handleSummarizeChapter. Fire-and-forget like the other passes.
-  summarizeChapter: (bookId: string, chapterIdx: number) =>
+  // overwriteEdits replaces notes the reader edited; otherwise the pass
+  // keeps them.
+  summarizeChapter: (bookId: string, chapterIdx: number, overwriteEdits = false) =>
     call('POST /api/books/{id}/chapters/{idx}/summarize', {
       path: { id: bookId, idx: chapterIdx },
+      query: { overwriteEdits: overwriteEdits ? true : undefined },
+    }),
+
+  // Saves the reader's own version of a chapter's notes (cast, scenes,
+  // summary), marked edited - see backend httpapi.handlePutChapterNotes.
+  // 400 with a readable message for a group name, a duplicate cast member,
+  // or a scene listing someone not in the cast.
+  putChapterNotes: (bookId: string, chapterIdx: number, notes: ChapterNotes) =>
+    call('PUT /api/books/{id}/chapters/{idx}/notes', {
+      path: { id: bookId, idx: chapterIdx },
+      body: notes,
     }),
 
   resolvePronunciation: (bookId: string, chapterIdx: number) =>

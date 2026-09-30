@@ -32,6 +32,7 @@ import type {
   VoiceSettingsUpdate,
   BookSetting,
   BookSettingResponse,
+  ChapterNotes,
   ChapterNotesResponse,
 } from './types'
 
@@ -370,6 +371,15 @@ export function useAttributeSpeakers(bookId: string) {
   })
 }
 
+// useAttributeSpeakers limited to the lines around the chapter's corrected
+// speakers (api.attributeSpeakersAroundEdits) - the same attribution job,
+// so useAttributingChapters tracks it too.
+export function useAttributeAroundEdits(bookId: string) {
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.attributeSpeakersAroundEdits(bookId, chapterIdx),
+  })
+}
+
 // Same fire-and-forget shape as useAttributeSpeakers (see
 // api.tagDirections) - see useDirectingChapters for tracking the run.
 export function useTagDirections(bookId: string) {
@@ -481,6 +491,23 @@ export function useSummarizingChapters(bookId: string): Set<number> {
 export function useSummarizeChapter(bookId: string) {
   return useMutation({
     mutationFn: (chapterIdx: number) => api.summarizeChapter(bookId, chapterIdx),
+  })
+}
+
+// Re-runs a chapter's summary pass over notes the reader edited,
+// replacing them (api.summarizeChapter's overwriteEdits).
+export function useRegenerateChapterNotes(bookId: string) {
+  return useMutation({
+    mutationFn: (chapterIdx: number) => api.summarizeChapter(bookId, chapterIdx, true),
+  })
+}
+
+// Saves the reader's version of a chapter's notes; the chapterNotes live
+// topic carries the result back.
+export function useSaveChapterNotes(bookId: string) {
+  return useMutation({
+    mutationFn: ({ chapterIdx, notes }: { chapterIdx: number; notes: ChapterNotes }) =>
+      api.putChapterNotes(bookId, chapterIdx, notes),
   })
 }
 
