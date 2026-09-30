@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Mood
@@ -29,6 +30,7 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Spellcheck
+import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -398,6 +400,7 @@ internal fun ChapterPickerSheet(
     onLongPressDownload: (idx: Int) -> Unit,
     onGenerateChapter: (idx: Int) -> Unit,
     onChapterPass: (idx: Int, pass: ChapterPass) -> Unit,
+    onEditNotes: (idx: Int) -> Unit,
 ) {
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (currentChapterIdx - 3).coerceAtLeast(0))
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -500,6 +503,11 @@ internal fun ChapterPickerSheet(
                                 onClick = { onChapterPass(chapter.idx, pass); showChapterMenu = false },
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text("Edit chapter notes") },
+                            leadingIcon = { Icon(Icons.Filled.EditNote, contentDescription = null) },
+                            onClick = { onEditNotes(chapter.idx); showChapterMenu = false },
+                        )
                         if (state?.status == DownloadStatus.DOWNLOADING || state?.status == DownloadStatus.COMPLETE) {
                             DropdownMenuItem(
                                 text = { Text("Delete downloaded data") },
@@ -799,6 +807,7 @@ internal val ChapterPass.icon: ImageVector
     get() = when (this) {
         ChapterPass.SCARE_QUOTES -> Icons.Filled.FormatQuote
         ChapterPass.ATTRIBUTION -> Icons.Filled.RecordVoiceOver
+        ChapterPass.AROUND_EDITS -> Icons.Filled.TaskAlt
         ChapterPass.DESCRIPTIONS -> Icons.Filled.Person
         ChapterPass.DIRECTIONS -> Icons.Filled.Mood
         ChapterPass.PRONUNCIATION -> Icons.Filled.Spellcheck

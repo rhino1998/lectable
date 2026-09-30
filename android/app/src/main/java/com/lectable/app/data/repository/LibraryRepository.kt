@@ -9,6 +9,7 @@ import com.lectable.app.data.remote.dto.BookSummaryDto
 import com.lectable.app.data.remote.dto.BookmarkDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterMusicDto
+import com.lectable.app.data.remote.dto.ChapterNotesDto
 import com.lectable.app.data.remote.dto.CreateBookmarkRequestDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.PositionDto
@@ -25,6 +26,10 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import java.io.File
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import retrofit2.HttpException
 
 /** Thin wrapper over [LectableApi]'s book/chapter/position/search endpoints - mirrors client.ts. */
 @Singleton
@@ -85,6 +90,43 @@ class LibraryRepository @Inject constructor(
 
     /** [LectableApi.attributeSpeakers] - see its own doc comment. */
     suspend fun attributeSpeakers(bookId: String, idx: Int): Boolean = api.attributeSpeakers(bookId, idx).queued > 0
+
+    /** [attributeSpeakers] limited to the dialogue around the chapter's corrected speakers, with
+     *  the corrections shown to the model (`?scope=edits`). A chapter with no corrections throws
+     *  with a hint instead of the bare 409. */
+    suspend fun attributeAroundEdits(bookId: String, idx: Int): Boolean = withServerMessage("Re-attribution failed") {
+        try {
+            api.attributeSpeakers(bookId, idx, scope = "edits").queued > 0
+        } catch (e: HttpException) {
+            if (e.code() == 409) {
+                throw IllegalStateException("No corrected speakers in this chapter yet - fix a line first (long-press it)", e)
+            }
+            throw e
+        }
+    }
+
+    /** Saves the reader's own version of a chapter's notes (backend handlePutChapterNotes),
+     *  marked edited so the summary pass keeps it. A refusal (a group name, a scene listing
+     *  someone not in the cast) throws with the server's explanation, which the editor shows. */
+    suspend fun saveChapterNotes(bookId: String, idx: Int, notes: ChapterNotesDto) =
+        withServerMessage("Could not save the notes") { api.putChapterNotes(bookId, idx, notes) }
+
+    /** Re-runs a chapter's summary pass over notes the reader edited, replacing them. */
+    suspend fun regenerateChapterNotes(bookId: String, idx: Int): Boolean =
+        api.summarizeChapter(bookId, idx, overwriteEdits = "true").queued > 0
+
+    /** Runs [block], turning an HTTP error into an exception carrying the server's own `error`
+     *  text (or [fallback] with the status code). */
+    private suspend fun <T> withServerMessage(fallback: String, block: suspend () -> T): T =
+        try {
+            block()
+        } catch (e: HttpException) {
+            val message = runCatching {
+                Json.parseToJsonElement(e.response()?.errorBody()?.string().orEmpty())
+                    .jsonObject["error"]?.jsonPrimitive?.content
+            }.getOrNull()
+            throw IllegalStateException(message ?: "$fallback (HTTP ${e.code()})", e)
+        }
 
     /** [LectableApi.retagDescriptions] - see its own doc comment. */
     suspend fun retagDescriptions(bookId: String, idx: Int): Boolean = api.retagDescriptions(bookId, idx).queued > 0

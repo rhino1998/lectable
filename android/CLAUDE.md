@@ -320,10 +320,15 @@ compiled-in default in place if nothing answers in time.
   `LazyListState.layoutInfo` instead of `IntersectionObserver`), plus a
   "jump to chapter" sheet (each row itself long-press-able for a
   chapter-scoped menu: "Generate chapter audio", then one item per LLM pass
-  - "Tag scare quotes", "Attribute speakers", "Tag descriptions", "Label
-  emotions", "Run ambience (music + lighting)" -
-  `ReaderViewModel.generateChapter`/`runChapterPass(idx, ChapterPass)` - and, once
-  something's downloaded, "Delete downloaded data"), bookmarks/search
+  - "Tag scare quotes", "Attribute speakers", "Re-attribute around my
+  fixes" (`?scope=edits`: only the dialogue near corrected lines), "Tag
+  descriptions", "Label emotions", "Run ambience (music + lighting)" -
+  `ReaderViewModel.generateChapter`/`runChapterPass(idx, ChapterPass)` -
+  "Edit chapter notes" (`ChapterNotesSheet`, the twin of the web's
+  `ChapterNotesBlock`: the summary pass's notes, editable - cast with
+  role/pronouns/what the text calls them, scenes with who is present as
+  chips - saved via `PUT .../notes`, then offering to re-run attribution),
+  and, once something's downloaded, "Delete downloaded data"), bookmarks/search
   sheets, and a long-press paragraph menu (regenerate/bookmark/copy/set
   speaker). Book-level
   settings (Narrator voice, a Background music switch - the same toggle

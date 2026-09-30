@@ -101,6 +101,8 @@ fun ReaderScreen(
     // entry - null when the picker sheet is closed. See DescriptionPickerSheet below.
     var descriptionPickerTarget by remember { mutableStateOf<DescriptionPickerTarget?>(null) }
     var showChapterPicker by remember { mutableStateOf(false) }
+    // The chapter whose notes sheet is open (chapter picker long-press "Edit chapter notes").
+    var notesChapterIdx by remember { mutableStateOf<Int?>(null) }
     var showSpeedPicker by remember { mutableStateOf(false) }
     var showBookmarksSheet by remember { mutableStateOf(false) }
     var showSearchSheet by remember { mutableStateOf(false) }
@@ -564,6 +566,21 @@ fun ReaderScreen(
             onLongPressDownload = viewModel::cancelOrDeleteDownload,
             onGenerateChapter = viewModel::generateChapter,
             onChapterPass = viewModel::runChapterPass,
+            onEditNotes = { idx ->
+                notesChapterIdx = idx
+                showChapterPicker = false
+            },
+        )
+    }
+
+    notesChapterIdx?.let { idx ->
+        ChapterNotesSheet(
+            chapterTitle = uiState.book?.chapters?.firstOrNull { it.idx == idx }?.title ?: "Chapter ${idx + 1}",
+            notesFlow = remember(idx) { viewModel.chapterNotes(idx) },
+            onDismiss = { notesChapterIdx = null },
+            onSave = { notes, onResult -> viewModel.saveChapterNotes(idx, notes, onResult) },
+            onRegenerate = { viewModel.regenerateChapterNotes(idx) },
+            onReattribute = { viewModel.runChapterPass(idx, ChapterPass.ATTRIBUTION) },
         )
     }
 

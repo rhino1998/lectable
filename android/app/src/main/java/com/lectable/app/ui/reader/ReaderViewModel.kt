@@ -9,9 +9,12 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.lectable.app.data.live.LiveStore
+import com.lectable.app.data.remote.LiveResult
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.BookDetailDto
+import com.lectable.app.data.remote.dto.ChapterNotesDto
+import com.lectable.app.data.remote.dto.ChapterNotesResponseDto
 import com.lectable.app.data.remote.dto.CharacterNameDto
 import com.lectable.app.data.remote.dto.BookmarkDto
 import com.lectable.app.data.remote.dto.CharacterVoiceModes
@@ -985,12 +988,35 @@ class ReaderViewModel @Inject constructor(
                 when (pass) {
                     ChapterPass.SCARE_QUOTES -> libraryRepository.retagScareQuotes(bookId, chapterIdx)
                     ChapterPass.ATTRIBUTION -> libraryRepository.attributeSpeakers(bookId, chapterIdx)
+                    ChapterPass.AROUND_EDITS -> libraryRepository.attributeAroundEdits(bookId, chapterIdx)
                     ChapterPass.DESCRIPTIONS -> libraryRepository.retagDescriptions(bookId, chapterIdx)
                     ChapterPass.DIRECTIONS -> libraryRepository.tagDirections(bookId, chapterIdx)
                     ChapterPass.PRONUNCIATION -> libraryRepository.resolvePronunciation(bookId, chapterIdx)
                     ChapterPass.AMBIENCE -> libraryRepository.runChapterAmbience(bookId, chapterIdx)
                 }
             }.onFailure { e -> _uiState.update { it.copy(error = e.message ?: "${pass.label} failed") } }
+        }
+    }
+
+    /** One chapter's summary notes (live topic) for [ChapterNotesSheet] - live only while the
+     *  sheet collects it. */
+    fun chapterNotes(chapterIdx: Int): StateFlow<LiveResult<ChapterNotesResponseDto>> =
+        liveStore.chapterNotes(bookId, chapterIdx)
+
+    /** Saves the reader's version of a chapter's notes; [onResult] gets null on success or the
+     *  server's reason for refusing them, for the editor to show beside its fields. */
+    fun saveChapterNotes(chapterIdx: Int, notes: ChapterNotesDto, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            val result = runCatching { libraryRepository.saveChapterNotes(bookId, chapterIdx, notes) }
+            onResult(result.exceptionOrNull()?.let { it.message ?: "Could not save the notes" })
+        }
+    }
+
+    /** Replaces edited notes with a fresh summary pass (the sheet confirms first). */
+    fun regenerateChapterNotes(chapterIdx: Int) {
+        viewModelScope.launch {
+            runCatching { libraryRepository.regenerateChapterNotes(bookId, chapterIdx) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Could not regenerate the notes") } }
         }
     }
 
@@ -1131,6 +1157,7 @@ private fun List<BookmarkDto>.toBookmarksByKey(): Map<Pair<Int, Int>, String> =
 enum class ChapterPass(val label: String) {
     SCARE_QUOTES("Tag scare quotes"),
     ATTRIBUTION("Attribute speakers"),
+    AROUND_EDITS("Re-attribute around my fixes"),
     DESCRIPTIONS("Tag descriptions"),
     DIRECTIONS("Label emotions"),
     PRONUNCIATION("Resolve pronunciation"),
