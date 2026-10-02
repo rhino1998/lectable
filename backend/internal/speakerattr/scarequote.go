@@ -234,8 +234,14 @@ func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle st
 		user.WriteString("\n/no_think")
 	}
 
+	var asked []int
+	for _, p := range batch {
+		if candidate[p.Idx] {
+			asked = append(asked, p.Idx)
+		}
+	}
 	return generateAndParse(ctx, c, scareQuoteSystemPrompt, user.String(), 0, jsonPassMaxTokens, func(content string) (map[int]bool, error) {
-		return parseScareQuoteVerdicts(content, candidate)
+		return parseScareQuoteVerdicts(content, asked)
 	})
 }
 
@@ -244,24 +250,55 @@ func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle st
 var scareQuoteVerdictRe = regexp.MustCompile(`(?i)^\s*(\d+)\s*(?:\(\?\))?\s*[:\-–]\s*(not\s+spoken|spoken)\b`)
 
 // parseScareQuoteVerdicts reads scareQuoteBatch's reply: the asked lines
-// answered "not spoken". A reply with no verdict line at all is an error
-// (so generateAndParse retries it); a model falling back to the old JSON
-// array of flagged lines still parses.
-func parseScareQuoteVerdicts(content string, asked map[int]bool) (map[int]bool, error) {
-	out := map[int]bool{}
-	answered := 0
+// (the batch's "(?)" lines, in order) answered "not spoken". A reply with no
+// verdict for any of them is an error (so generateAndParse retries it); a
+// model falling back to the old JSON array of flagged lines still parses.
+//
+// A verdict whose number isn't an asked line still counts when the reply
+// has exactly one verdict per asked line, in order: it's taken as the line
+// in its position. Qwen3.6 miscopies a number now and then - a batch whose
+// only "(?)" line was 214 answered "14: not spoken" on every retry, at
+// every retry temperature, so the chapter's pass could never finish.
+func parseScareQuoteVerdicts(content string, asked []int) (map[int]bool, error) {
+	isAsked := make(map[int]bool, len(asked))
+	for _, idx := range asked {
+		isAsked[idx] = true
+	}
+	type verdict struct {
+		idx       int
+		notSpoken bool
+	}
+	var verdicts []verdict
 	for _, line := range strings.Split(content, "\n") {
 		m := scareQuoteVerdictRe.FindStringSubmatch(line)
 		if m == nil {
 			continue
 		}
 		idx, _ := strconv.Atoi(m[1])
-		if !asked[idx] {
+		verdicts = append(verdicts, verdict{idx, strings.HasPrefix(strings.ToLower(m[2]), "not")})
+	}
+	if len(verdicts) == len(asked) {
+		inOrder := true
+		for i, v := range verdicts {
+			if v.idx != asked[i] && isAsked[v.idx] {
+				inOrder = false // a real asked number out of place - trust the numbers
+			}
+		}
+		if inOrder {
+			for i := range verdicts {
+				verdicts[i].idx = asked[i]
+			}
+		}
+	}
+	out := map[int]bool{}
+	answered := 0
+	for _, v := range verdicts {
+		if !isAsked[v.idx] {
 			continue
 		}
 		answered++
-		if strings.HasPrefix(strings.ToLower(m[2]), "not") {
-			out[idx] = true
+		if v.notSpoken {
+			out[v.idx] = true
 		}
 	}
 	if answered == 0 {

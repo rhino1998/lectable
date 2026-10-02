@@ -28,7 +28,7 @@ func TestScareQuoteCandidates(t *testing.T) {
 }
 
 func TestParseScareQuoteVerdicts(t *testing.T) {
-	asked := map[int]bool{3: true, 5: true, 9: true}
+	asked := []int{3, 5, 9}
 	got, err := parseScareQuoteVerdicts("3: not spoken\n5 (?): Spoken\n9 - Not Spoken\n12: not spoken\n", asked)
 	if err != nil || !got[3] || got[5] || !got[9] || got[12] {
 		t.Fatalf("verdicts = %v, %v (want 3 and 9 only; 12 wasn't asked)", got, err)
@@ -38,5 +38,20 @@ func TestParseScareQuoteVerdicts(t *testing.T) {
 	}
 	if _, err := parseScareQuoteVerdicts("I can't tell.", asked); err == nil {
 		t.Fatal("a reply with no verdicts should fail (and so retry)")
+	}
+	// A miscopied number (214 answered as "14") is taken by position when
+	// the reply has one verdict per asked line.
+	if got, err := parseScareQuoteVerdicts("14: not spoken", []int{214}); err != nil || !got[214] || len(got) != 1 {
+		t.Fatalf("miscopied single number = %v, %v (want 214)", got, err)
+	}
+	if got, err := parseScareQuoteVerdicts("3: spoken\n15: not spoken\n9: spoken", asked); err != nil || !got[5] || len(got) != 1 {
+		t.Fatalf("miscopied middle number = %v, %v (want 5)", got, err)
+	}
+	// Asked numbers out of place, or a count that doesn't match: by number only.
+	if got, err := parseScareQuoteVerdicts("5: not spoken\n3: spoken\n12: not spoken", asked); err != nil || !got[5] || len(got) != 1 {
+		t.Fatalf("out-of-order reply = %v, %v (want 5 only)", got, err)
+	}
+	if _, err := parseScareQuoteVerdicts("14: not spoken\n15: spoken", []int{214}); err == nil {
+		t.Fatal("two unasked verdicts for one asked line should fail")
 	}
 }

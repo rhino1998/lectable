@@ -811,7 +811,11 @@ building/running `ttsworker` does, since both now link into that binary.
 
   **Scare-quote tagging** (`Client.ScareQuoteChapter`) marks each candidate
   "(?)" in the batch and asks for a "spoken"/"not spoken" verdict on every
-  one (`parseScareQuoteVerdicts`) - the earlier prompt asked the model to
+  one (`parseScareQuoteVerdicts`; a verdict with a miscopied line number is
+  taken by position when the reply has one verdict per asked line, in order -
+  Qwen3.6 answered a batch's only candidate, 214, as "14" at every
+  temperature up to 1.0, so retries couldn't fix it and the chapter's pass
+  failed forever) - the earlier prompt asked the model to
   list the "very rare" scare quotes in an unmarked batch, written for
   Qwen3-4B's over-tagging, and with the candidate filter already ruling out
   dialogue that caution only cost recall. The prompt defines "not spoken" by
