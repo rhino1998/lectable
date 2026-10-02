@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -142,8 +143,8 @@ func bisectSentencesFrac(sentences []string) (left, right string, leftFrac float
 // On isMaxTokensExceeded (the worker's own flat max_tokens default -
 // deliberately never overridden per call, see internal/audioworker's own
 // higgsMaxTokens doc comment for why that was tried and reverted - wasn't
-// enough to finish this text), bisects text at a sentence boundary
-// (textsplit.SplitSentences/bisectSentencesFrac) and recurses on each
+// enough to finish this text), bisects text at a sentence boundary, or
+// failing that a clause boundary (bisectForGeneration), and recurses on each
 // half independently, concatenating the two resulting clips (wav.Concat)
 // - the same reactive text-splitting alignWithSplit already does for the
 // forced aligner's own fixed length ceiling, applied here to generation's
@@ -326,7 +327,7 @@ func (m *Manager) generateCloneSplit(ctx context.Context, cloneModel string, ref
 			if isMaxTokensExceeded(err) && splitBudget > 0 {
 				if leftText, rightText, ok := bisectForGeneration(text); ok {
 					log.Printf(
-						"jobs: generation ran out of tokens for a %d-word text; splitting at a sentence boundary into %d + %d words",
+						"jobs: generation ran out of tokens for a %d-word text; splitting into %d + %d words",
 						len(strings.Fields(text)), len(strings.Fields(leftText)), len(strings.Fields(rightText)),
 					)
 					leftAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, leftText, cloneInstruct, textChunkSize, splitBudget-1)
@@ -365,20 +366,63 @@ func isMaxTokensExceeded(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "before EOC for this text chunk")
 }
 
-// bisectForGeneration splits text into two sentence-boundary halves for
-// generateCloneSplit's own retry - textsplit.SplitSentences/
+// bisectForGeneration splits text into two halves for generateCloneSplit's
+// own retry: at a sentence boundary (textsplit.SplitSentences/
 // bisectSentencesFrac's shared implementation with alignWithSplit below,
-// minus the audio-slicing half that only applies there. ok is false (text
-// returned unsplit) for a single-sentence text, which can't be split any
-// further - generateCloneSplit's own signal to give up rather than loop
-// forever splitting nothing.
+// minus the audio-slicing half that only applies there), or - when there
+// is no sentence boundary, or the only ones leave one half more than twice
+// the other - at the clause boundary nearest the middle (bisectClauses).
+// The clause fallback is what recovers a long single "sentence" like a
+// book index entry read aloud ("...popularity, 194-199, 216 n.; childhood
+// in...", every page number spelled out). ok is false (text returned
+// unsplit) for a text with neither kind of boundary - generateCloneSplit's
+// own signal to give up rather than loop forever splitting nothing.
 func bisectForGeneration(text string) (left, right string, ok bool) {
-	sentences := textsplit.SplitSentences(text)
-	if len(sentences) < 2 {
+	var frac float64
+	if sentences := textsplit.SplitSentences(text); len(sentences) >= 2 {
+		left, right, frac = bisectSentencesFrac(sentences)
+		if frac >= 1.0/3 && frac <= 2.0/3 {
+			return left, right, true
+		}
+		ok = true
+	}
+	if cl, cr, cok := bisectClauses(text); cok {
+		return cl, cr, true
+	}
+	return left, right, ok
+}
+
+// clauseBoundaryRe matches the punctuation-plus-space between clauses,
+// strong (semicolon, colon, dash) or weak (comma).
+var clauseBoundaryRe = regexp.MustCompile(`[;:,—–]['"”’»)]*\s+`)
+
+// bisectClauses splits text at the clause boundary nearest its middle,
+// preferring a strong one (anything but a comma) when there is one in the
+// middle half of the text. ok is false when text has no clause boundary.
+func bisectClauses(text string) (left, right string, ok bool) {
+	text = strings.TrimSpace(text)
+	mid := len(text) / 2
+	best, bestStrong := -1, -1
+	closer := func(at, cur int) bool { return cur < 0 || max(at-mid, mid-at) < max(cur-mid, mid-cur) }
+	for _, loc := range clauseBoundaryRe.FindAllStringIndex(text, -1) {
+		at := loc[1]
+		if at >= len(text) {
+			continue
+		}
+		if closer(at, best) {
+			best = at
+		}
+		if text[loc[0]] != ',' && at >= len(text)/4 && at <= 3*len(text)/4 && closer(at, bestStrong) {
+			bestStrong = at
+		}
+	}
+	if bestStrong >= 0 {
+		best = bestStrong
+	}
+	if best < 0 {
 		return "", "", false
 	}
-	left, right, _ = bisectSentencesFrac(sentences)
-	return left, right, true
+	return strings.TrimSpace(text[:best]), strings.TrimSpace(text[best:]), true
 }
 
 // concatCloneAudio joins two independently-generated clone clips into one

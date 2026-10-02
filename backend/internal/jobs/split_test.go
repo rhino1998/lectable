@@ -173,6 +173,26 @@ func TestGenerateCloneNeverSplitsAnUnsplittableSingleSentence(t *testing.T) {
 	}
 }
 
+// TestBisectForGeneration: a balanced sentence split is used as is; a
+// lopsided or missing one falls back to the clause boundary nearest the
+// middle, preferring a semicolon over a comma.
+func TestBisectForGeneration(t *testing.T) {
+	cases := []struct{ text, left, right string }{
+		{"One two three four. Five six seven eight.", "One two three four.", "Five six seven eight."},
+		{"Hi. adopted by Monzano, 194, 216; childhood in compound, 63; death of father, 89", "Hi. adopted by Monzano, 194, 216;", "childhood in compound, 63; death of father, 89"},
+		{"poems about, two, twenty six, one hundred and fourteen, three hundred", "poems about, two, twenty six,", "one hundred and fourteen, three hundred"},
+	}
+	for _, tc := range cases {
+		left, right, ok := bisectForGeneration(tc.text)
+		if !ok || left != tc.left || right != tc.right {
+			t.Errorf("bisectForGeneration(%q) = %q | %q (%v), want %q | %q", tc.text, left, right, ok, tc.left, tc.right)
+		}
+	}
+	if _, _, ok := bisectForGeneration("no boundary of any kind here"); ok {
+		t.Errorf("expected no split for a text with no boundary")
+	}
+}
+
 // fixedPaceAlign makes the fake aligner place every word at a fixed
 // 0.2s/word pace regardless of the clip - the real aligner's own behavior
 // when words are missing from the audio: they land past the clip's end.
