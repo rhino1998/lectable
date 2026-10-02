@@ -92,6 +92,8 @@ func TestMentionsName(t *testing.T) {
 		{"a voice unlike Steve Atherton's", "Steve Atherton", true},
 		{"a steady, even pace", "Steve", false},
 		{"low and grave", "Master Grave", false}, // lower-case "grave" never matches "Grave"
+		{"a young man with a General American accent", "Major General Franklin Hoenikker", false},
+		{"deeper than General Hoenikker", "Major General Franklin Hoenikker", true},
 	} {
 		if got := mentionsName(c.text, c.name); got != c.want {
 			t.Errorf("mentionsName(%q, %q) = %v, want %v", c.text, c.name, got, c.want)

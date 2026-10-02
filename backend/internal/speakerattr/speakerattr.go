@@ -1754,12 +1754,14 @@ const maxCostarOverlap = 0.6
 // it of 3+ letters that starts with a capital ("Steve" of "Steve Atherton")
 // - as a whole word. Shown "Already cast" voices, the model took to writing
 // "distinct from the British Steve and American Jonas" into the casting,
-// which the voice-design model reads as part of the voice.
+// which the voice-design model reads as part of the voice. A title word of
+// the name doesn't count on its own: "Major General Franklin Hoenikker" as
+// a co-star rejected every "General American accent".
 func mentionsName(text, name string) bool {
 	words := append([]string{name}, strings.Fields(name)...)
 	for _, w := range words {
 		w = strings.Trim(w, `.,;:!?"'()`)
-		if len([]rune(w)) < 3 || !startsUpper(w) {
+		if len([]rune(w)) < 3 || !startsUpper(w) || IsTitleWord(w) {
 			continue
 		}
 		if regexp.MustCompile(`\b` + regexp.QuoteMeta(w) + `\b`).MatchString(text) {
