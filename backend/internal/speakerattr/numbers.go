@@ -59,37 +59,121 @@ func dottedLabelNeighbour(text string, start, end int) bool {
 	return false
 }
 
-// yearCues are words that, directly before a four-digit number followed by
-// punctuation rather than another word, mark it as a year ("In 2001, the
-// project..."). A following word ("since 1500 gold coins") keeps it a
-// quantity - see yearReading.
+// yearCues are words that, directly before a four-digit number, mark it as
+// a year ("In 2001, the project...", "hanged here in 1782 who...") - as
+// long as what follows doesn't make it a quantity (see yearFollowOK).
 var yearCues = map[string]bool{
 	"in": true, "since": true, "until": true, "till": true, "circa": true, "year": true,
+	"before": true, "after": true, "during": true, "from": true, "ad": true, "anno": true,
+	"early": true, "late": true, "mid": true,
 	"spring": true, "summer": true, "autumn": true, "fall": true, "winter": true,
 }
 
-var monthDayCommaRE = regexp.MustCompile(`(?:January|February|March|April|May|June|July|August|September|October|November|December) [0-9]{1,2}, *$`)
+// yearOfHeads are the words whose "... of 1812" names a year ("the War of
+// 1812", "the summer of 1922") - a bare "of" is far more often a quantity
+// ("a total of 1500").
+var yearOfHeads = map[string]bool{
+	"spring": true, "summer": true, "autumn": true, "fall": true, "winter": true,
+	"year": true, "war": true, "class": true,
+}
 
-// yearReading spells text[start:end] the way a year is said ("nineteen
-// ninety eight", "two thousand and one", "twenty twenty five") when it's a
-// plain four-digit number from 1100 to 2099 in a year context - right after
-// "Month D," or after a yearCues word with no word following it - and
-// returns "" otherwise, leaving it to be read as a cardinal.
-func yearReading(text string, start, end int) string {
-	tok := text[start:end]
+// yearFollowWords are the closed-class words that can follow a cued year
+// without turning it into a quantity ("in 1782 who had...", "in 1922 and
+// announced...") - unlike a noun it would be counting ("since 1500 gold
+// coins").
+var yearFollowWords = map[string]bool{
+	"who": true, "which": true, "that": true, "when": true, "where": true, "while": true,
+	"and": true, "or": true, "but": true, "to": true, "by": true, "as": true, "if": true,
+	"is": true, "was": true, "were": true, "had": true, "has": true, "would": true, "did": true,
+	"the": true, "a": true, "an": true, "this": true, "these": true, "those": true, "there": true,
+	"he": true, "she": true, "it": true, "they": true, "we": true, "i": true, "you": true,
+	"his": true, "her": true, "its": true, "their": true, "our": true, "my": true,
+	"at": true, "on": true, "in": true, "for": true, "with": true, "after": true, "before": true,
+	"not": true, "alone": true,
+}
+
+const monthNamePattern = `(?:January|February|March|April|May|June|July|August|September|October|November|December)`
+
+var (
+	// yearAfterMonthRE: "November 1, 1998" or "November 1998".
+	yearAfterMonthRE = regexp.MustCompile(monthNamePattern + `(?: [0-9]{1,2},)? *$`)
+	// yearAfterCopyrightRE: "Copyright © 2022", "Copyright Macmillan, 1914".
+	yearAfterCopyrightRE = regexp.MustCompile(`(?i)(?:©|\(c\)|copyright)[^.!?0-9]{0,40}$`)
+	// yearEraRE: an era marker right after the number ("1614 AD").
+	yearEraRE = regexp.MustCompile(`^ ?(?:A\.D\.|B\.C\.E\.|B\.C\.|C\.E\.|(?:AD|BCE|BC|CE)\b)`)
+	// yearListRE: an earlier four-digit number this one continues a list or
+	// range from ("1914, 1915", "1922 and 1923", "1914-1918").
+	yearListRE = regexp.MustCompile(`([0-9]{4})(?:,? (?:and|or|to) |, | ?[-–—] ?)$`)
+	// yearOfRE: the "<head> of" before a year - see yearOfHeads.
+	yearOfRE = regexp.MustCompile(`(?i)([a-z]+) of $`)
+	// yearOfLordRE: "in the year of our Lord, 1719".
+	yearOfLordRE = regexp.MustCompile(`(?i)year of (?:the|our) lord,? $`)
+)
+
+// yearFollowOK reports whether what comes after a cued year leaves it a
+// year: nothing or punctuation, a capitalized word ("in 1922 McCabe..."),
+// or one of yearFollowWords. Any other word is taken as the thing being
+// counted.
+func yearFollowOK(after string) bool {
+	after = strings.TrimLeft(after, " ")
+	r, _ := utf8.DecodeRuneInString(after)
+	if after == "" || !unicode.IsLetter(r) {
+		return true
+	}
+	if unicode.IsUpper(r) {
+		return true
+	}
+	word := after
+	if i := strings.IndexFunc(after, func(r rune) bool { return !unicode.IsLetter(r) }); i >= 0 {
+		word = after[:i]
+	}
+	return yearFollowWords[word]
+}
+
+// yearContext reports whether the four-digit number at text[start:end]
+// sits where a year would: before an era marker, after a month ("Month D,"
+// or just "Month") or "the <season> of", or after a weaker cue - a yearCues
+// word, a copyright mark, or another year it continues a list or range
+// from - with nothing after it that makes it a quantity.
+func yearContext(text string, start, end int) bool {
+	before := text[:start]
+	if yearEraRE.MatchString(text[end:]) || yearAfterMonthRE.MatchString(before) || yearOfLordRE.MatchString(before) {
+		return true
+	}
+	if m := yearOfRE.FindStringSubmatch(before); m != nil && (yearOfHeads[strings.ToLower(m[1])] || yearAfterMonthRE.MatchString(m[1])) {
+		return true
+	}
+	if !yearFollowOK(text[end:]) {
+		return false
+	}
+	last := lastWordBefore(text, start)
+	if yearCues[last] || yearAfterCopyrightRE.MatchString(before) {
+		return true
+	}
+	// "By 1922, he had..." - only sentence-initial, since a lowercase "by"
+	// is as often a quantity ("increased by 1200").
+	if last == "by" && strings.HasSuffix(strings.TrimRight(before, " "), "By") {
+		return true
+	}
+	if m := yearListRE.FindStringSubmatchIndex(before); m != nil {
+		return yearReading(text, m[2], m[3]) != ""
+	}
+	return false
+}
+
+// yearToken parses tok as a plain four-digit number in the range a year
+// reading is offered for (1100 to 2099).
+func yearToken(tok string) (int, bool) {
 	if len(tok) != 4 || !plainIntRE.MatchString(tok) {
-		return ""
+		return 0, false
 	}
 	n, _ := strconv.Atoi(tok)
-	if n < 1100 || n > 2099 {
-		return ""
-	}
-	after := strings.TrimLeft(text[end:], " ")
-	r, _ := utf8.DecodeRuneInString(after)
-	followedByWord := after != "" && unicode.IsLetter(r)
-	if !monthDayCommaRE.MatchString(text[:start]) && (followedByWord || !yearCues[lastWordBefore(text, start)]) {
-		return ""
-	}
+	return n, n >= 1100 && n <= 2099
+}
+
+// yearWords spells n (1100..2099) the way a year is said: "seventeen
+// eighty two", "two thousand and one", "twenty twenty five".
+func yearWords(n int) string {
 	hi, lo := int64(n/100), int64(n%100)
 	switch {
 	case n >= 2000 && n < 2010:
@@ -100,6 +184,38 @@ func yearReading(text string, start, end int) string {
 		return numberWords(hi) + " oh " + numberWords(lo) // nineteen oh five
 	}
 	return numberWords(hi) + " " + numberWords(lo)
+}
+
+// yearReading spells text[start:end] as a year (yearWords) when it's a
+// plain four-digit number from 1100 to 2099 in a year context (see
+// yearContext), and returns "" otherwise, leaving it to be read as a
+// cardinal - or, for possibleYearReading's shape, asked about.
+func yearReading(text string, start, end int) string {
+	n, ok := yearToken(text[start:end])
+	if !ok || !yearContext(text, start, end) {
+		return ""
+	}
+	return yearWords(n)
+}
+
+// possibleYearReading is the year reading of a four-digit number with no
+// year context that is directly followed by a capitalized word - "a 1939
+// Chrysler" and "1500 Mana" look alike to a regex, so findNumberTerms
+// offers this as a second, LLM-chosen candidate behind the cardinal.
+// Returns "" for any other shape, or when both readings are the same words
+// ("2000").
+func possibleYearReading(text string, start, end int) string {
+	n, ok := yearToken(text[start:end])
+	if !ok || !strings.HasPrefix(text[end:], " ") {
+		return ""
+	}
+	if r, _ := utf8.DecodeRuneInString(text[end+1:]); !unicode.IsUpper(r) {
+		return ""
+	}
+	if y := yearWords(n); y != numberWords(int64(n)) {
+		return y
+	}
+	return ""
 }
 
 // counterLabelMaxWords bounds how short a paragraph must be for a trailing
@@ -140,7 +256,8 @@ const maxSpelledNumber = 999_999_999_999
 // reading, so ResolvePronunciation resolves it directly without ever
 // reaching the model - except a bare "M/D" pair that could also be a
 // calendar date, which carries the date as a second candidate (see
-// dateReading). Offsets are byte offsets into text, like every other
+// dateReading), and an uncued four-digit number that could be a year (see
+// possibleYearReading). Offsets are byte offsets into text, like every other
 // pronunciationTerm. A token glued to a letter ("A4", "3D", "5km") or to a
 // currency sign is skipped rather than guessed at - "$5" read as "dollar
 // five" would be worse than leaving it to the TTS front-end.
@@ -178,7 +295,7 @@ func findNumberTerms(text string) []pronunciationTerm {
 			}
 		}
 
-		var readings []string
+		var readings, senses []string
 		if suffixLen > 0 {
 			if !plainIntRE.MatchString(tok) {
 				continue
@@ -204,24 +321,28 @@ func findNumberTerms(text string) []pronunciationTerm {
 			// asked about every one.
 			if d := dateReading(tok); d != "" && datePrepositions[lastWordBefore(text, start)] {
 				readings = append(readings, d)
+				senses = []string{
+					"a count, ratio, score, or fraction (2/3 of the votes, Capacity: 3/6)",
+					"a calendar date (born on 3/4)",
+				}
+			} else if y := possibleYearReading(text, start, end); y != "" {
+				readings = append(readings, y)
+				senses = []string{
+					"a quantity - how many or how much of the thing named after it (1500 Gold, 1200 Mana)",
+					"a calendar year - when the thing named after it was made or happened (a 1939 Chrysler, the 1918 Armistice)",
+				}
 			}
 		}
 		if len(readings) == 0 {
 			continue
 		}
-		term := pronunciationTerm{
+		out = append(out, pronunciationTerm{
 			Offset:     start,
 			Length:     end - start,
 			Text:       text[start:end],
 			Candidates: readings,
-		}
-		if len(readings) > 1 {
-			term.Senses = []string{
-				"a count, ratio, score, or fraction (2/3 of the votes, Capacity: 3/6)",
-				"a calendar date (born on 3/4)",
-			}
-		}
-		out = append(out, term)
+			Senses:     senses,
+		})
 	}
 	return out
 }

@@ -206,6 +206,28 @@ func TestNumberTerms(t *testing.T) {
 		{"Built in 1900.", "1900", []string{"nineteen hundred"}},
 		{"He owed 1500 gold.", "1500", []string{"one thousand five hundred"}},
 		{"Since 1500 gold coins were lost.", "1500", []string{"one thousand five hundred"}},
+		{"There was one man they hanged here in 1782 who had murdered.", "1782", []string{"seventeen eighty two"}},
+		{"When McCabe arrived in 1922 and announced it.", "1922", []string{"nineteen twenty two"}},
+		{"In 1922 McCabe arrived.", "1922", []string{"nineteen twenty two"}},
+		{"“I gave up on you after 1527!”", "1527", []string{"fifteen twenty seven"}},
+		{"Prologue – 1614 AD", "1614", []string{"sixteen fourteen"}},
+		{"Copyright © 2022 by R J Cajiao", "2022", []string{"twenty twenty two"}},
+		{"Copyright Macmillan, 1914, 1915, 1942.", "1942", []string{"nineteen forty two"}},
+		{"It ran from 1914 to 1918.", "1918", []string{"nineteen eighteen"}},
+		{"In June 1922 it rained.", "1922", []string{"nineteen twenty two"}},
+		{"The War of 1812 ended.", "1812", []string{"eighteen twelve"}},
+		{"By 1922, he owned it all.", "1922", []string{"nineteen twenty two"}},
+		{"Awakened in the year of the Lord, 1719.", "1719", []string{"seventeen nineteen"}},
+		// An uncued number before a capitalized word is the LLM's call.
+		{"A hearselike 1939 Chrysler limousine.", "1939", []string{"one thousand nine hundred and thirty nine", "nineteen thirty nine"}},
+		{"He had 1500 Mana left.", "1500", []string{"one thousand five hundred", "fifteen hundred"}},
+		{"He had 2000 Mana left.", "2000", []string{"two thousand"}},
+		{"He had 1500 mana left.", "1500", []string{"one thousand five hundred"}},
+		{"My mana increased by 1250.", "1250", []string{"one thousand two hundred and fifty"}},
+		{"A total of 1782.", "1782", []string{"one thousand seven hundred and eighty two"}},
+		{"1300", "1300", []string{"one thousand three hundred"}},
+		{"Bullets travel at around 2000 mph.", "2000", []string{"two thousand"}},
+		{"In 1500 years it would be dust.", "1500", []string{"one thousand five hundred"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.text, func(t *testing.T) {

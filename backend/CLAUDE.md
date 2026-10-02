@@ -1127,8 +1127,19 @@ building/running `ttsworker` does, since both now link into that binary.
       ("six of six", "one of three") when the top is >= the bottom, after
       a "Label:", or ending a short label line ("Technique 1/3"), decimals
       ("three point five"), ordinals ("21st" → "twenty first"), and years
-      ("nineteen ninety eight") only in a clear year context (after "Month
-      D," or a cue like "in"/"since" with punctuation following). Skipped:
+      ("1782" → "seventeen eighty two") - a plain four-digit 1100-2099 in a
+      year context (`yearContext`): before an era marker ("1614 AD"), after
+      a month ("June 1922", "Month D,") or "the summer/War of", or after a
+      weaker cue - "in"/"since"/"after"/"from"/sentence-initial "By", a
+      copyright mark, or an earlier year it lists or ranges from ("1914,
+      1915", "1914 to 1918") - provided what follows isn't a word it would
+      be counting ("in 1782 who..." is a year, "since 1500 gold coins"
+      isn't). Anything else stays a cardinal, deliberately: an uncued
+      four-digit number in this library is usually a LitRPG stat ("1300",
+      "increased by 1250") - except one directly before a capitalized
+      word, where "a 1939 Chrysler" and "1500 Mana" look alike, so the
+      year is a second, LLM-chosen candidate behind the cardinal
+      (`possibleYearReading`; unbenchmarked). Skipped:
       a token glued to a letter ("A4", "3D") or currency sign, a leading
       zero ("007"), times ("3:45"), full dates ("3/4/2024"), and dotted
       labels ("1.2.3", "1.E.8"). A bare `M/D` that parses as a calendar
