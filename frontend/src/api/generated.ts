@@ -832,6 +832,13 @@ export interface JobsSnapshot {
    * queued. Omitted (0) until anything has been measured since startup.
    */
   lastNarrationCharsPerSecond?: number
+  /**
+   * NarrationRealtimeFactor is jobs.Manager.RealtimeFactor: the same run
+   * NarrationCharsPerSecond measures, as seconds of audio rendered per
+   * wall-clock second (12 = an hour of narration every five minutes),
+   * rounded to 0.1. Omitted (0) whenever that is.
+   */
+  narrationRealtimeFactor?: number
 }
 
 export interface LanguagesResponse {

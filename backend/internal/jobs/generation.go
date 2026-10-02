@@ -294,7 +294,9 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 	m.finishTask(t)
 	logTaskTiming(t, result.err)
 	if result.err == nil {
-		m.throughput.record(time.Now(), taskChars(t))
+		// An unparseable clip just counts for no audio (wav.Duration's 0).
+		audio, _ := wav.Duration(result.audio)
+		m.throughput.record(time.Now(), taskChars(t), audio)
 	}
 	m.maybeRecoverWorker(result.err)
 	if t.kind == KindLengthEstimate {

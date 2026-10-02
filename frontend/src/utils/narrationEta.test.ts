@@ -33,6 +33,7 @@ describe('narrationEta', () => {
     const eta = narrationEta(
       snap({
         narrationCharsPerSecond: 20,
+        narrationRealtimeFactor: 1.5,
         inFlight: [task({ chars: 200 })],
         queued: [
           task({ chars: 400 }),
@@ -43,6 +44,7 @@ describe('narrationEta', () => {
     )
     expect(eta).toEqual({
       charsPerSecond: 20,
+      realtimeFactor: 1.5,
       totalSeconds: 90,
       books: [
         { bookId: 'b', bookTitle: 'B', chars: 1200, seconds: 60 },

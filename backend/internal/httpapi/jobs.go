@@ -95,6 +95,11 @@ type jobsSnapshotDTO struct {
 	// library's "time to finish narrating" estimate for books with nothing
 	// queued. Omitted (0) until anything has been measured since startup.
 	LastNarrationCharsPerSecond float64 `json:"lastNarrationCharsPerSecond,omitempty"`
+	// NarrationRealtimeFactor is jobs.Manager.RealtimeFactor: the same run
+	// NarrationCharsPerSecond measures, as seconds of audio rendered per
+	// wall-clock second (12 = an hour of narration every five minutes),
+	// rounded to 0.1. Omitted (0) whenever that is.
+	NarrationRealtimeFactor float64 `json:"narrationRealtimeFactor,omitempty"`
 }
 
 // buildJobsSnapshot reports the job queue's live state - what's dispatched
@@ -165,6 +170,9 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 	out := jobsSnapshotDTO{InFlight: []queueTaskDTO{}, Queued: []queueTaskDTO{}, Paused: s.Jobs.Paused(), Drained: s.Jobs.Drained()}
 	if rate, ok := s.Jobs.Throughput(); ok {
 		out.NarrationCharsPerSecond = math.Round(rate*10) / 10
+	}
+	if factor, ok := s.Jobs.RealtimeFactor(); ok {
+		out.NarrationRealtimeFactor = math.Round(factor*10) / 10
 	}
 	if rate, ok := s.Jobs.LastThroughput(); ok {
 		out.LastNarrationCharsPerSecond = math.Round(rate*10) / 10

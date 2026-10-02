@@ -134,9 +134,14 @@ fun JobsScreen(
                             } else {
                                 ""
                             }
+                            val realtime = if (eta.realtimeFactor > 0) {
+                                " (${"%.1f".format(eta.realtimeFactor)}× realtime)"
+                            } else {
+                                ""
+                            }
                             Text(
                                 "Narration left: ~${formatEta(eta.totalSeconds)} at " +
-                                    "${"%.1f".format(eta.charsPerSecond)} chars/s$perBook",
+                                    "${"%.1f".format(eta.charsPerSecond)} chars/s$realtime$perBook",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),

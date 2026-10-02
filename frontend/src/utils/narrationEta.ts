@@ -9,6 +9,9 @@ export interface BookEta {
 
 export interface NarrationEta {
   charsPerSecond: number
+  // Seconds of audio rendered per wall-clock second
+  // (JobsSnapshot.narrationRealtimeFactor), 0 if unknown.
+  realtimeFactor: number
   totalSeconds: number
   books: BookEta[] // most remaining first
 }
@@ -39,7 +42,12 @@ export function narrationEta(snapshot: JobsSnapshot | undefined): NarrationEta |
   for (const b of books) b.seconds = b.chars / rate
   books.sort((a, b) => b.chars - a.chars)
   const totalChars = books.reduce((n, b) => n + b.chars, 0)
-  return { charsPerSecond: rate, totalSeconds: totalChars / rate, books }
+  return {
+    charsPerSecond: rate,
+    realtimeFactor: snapshot.narrationRealtimeFactor ?? 0,
+    totalSeconds: totalChars / rate,
+    books,
+  }
 }
 
 // narrationRate is the speed to estimate not-yet-queued work at: the live

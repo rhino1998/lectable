@@ -11,9 +11,15 @@ data class BookEta(val bookId: String, val bookTitle: String, val chars: Int, va
  * utils/narrationEta.ts: every voice_clone/voice_design task's paragraph text
  * ([com.lectable.app.data.remote.dto.QueueTaskDto.chars]) at the backend's recently
  * measured rate ([JobsSnapshotDto.narrationCharsPerSecond], all generation slots
- * together). Only covers what's enqueued.
+ * together). Only covers what's enqueued. [realtimeFactor] is that same rate in seconds of audio
+ * per wall-clock second ([JobsSnapshotDto.narrationRealtimeFactor]), 0 if unknown.
  */
-data class NarrationEta(val charsPerSecond: Double, val totalSeconds: Double, val books: List<BookEta>)
+data class NarrationEta(
+    val charsPerSecond: Double,
+    val realtimeFactor: Double,
+    val totalSeconds: Double,
+    val books: List<BookEta>,
+)
 
 /** Null while the backend has no rate to offer or nothing narration-shaped is queued. */
 fun narrationEta(snapshot: JobsSnapshotDto?): NarrationEta? {
@@ -29,7 +35,7 @@ fun narrationEta(snapshot: JobsSnapshotDto?): NarrationEta? {
     if (byBook.isEmpty()) return null
     val books = byBook.map { (id, v) -> BookEta(id, v.first, v.second, v.second / rate) }
         .sortedByDescending { it.chars }
-    return NarrationEta(rate, books.sumOf { it.chars } / rate, books)
+    return NarrationEta(rate, snapshot.narrationRealtimeFactor ?: 0.0, books.sumOf { it.chars } / rate, books)
 }
 
 /** The speed to estimate not-yet-queued work at: the live rate while narration runs, else the

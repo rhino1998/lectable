@@ -26,11 +26,13 @@ class NarrationEtaTest {
         val eta = narrationEta(
             JobsSnapshotDto(
                 narrationCharsPerSecond = 20.0,
+                narrationRealtimeFactor = 1.5,
                 inFlight = listOf(task(chars = 200)),
                 queued = listOf(task(chars = 400), task(book = "b", chars = 1200)),
             ),
         )!!
         assertEquals(90.0, eta.totalSeconds, 1e-9)
+        assertEquals(1.5, eta.realtimeFactor, 1e-9)
         assertEquals(listOf("b", "a"), eta.books.map { it.bookId })
         assertEquals(60.0, eta.books[0].seconds, 1e-9)
         assertEquals(600, eta.books[1].chars)

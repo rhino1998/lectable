@@ -183,7 +183,9 @@ byte-for-byte.
   pronunciation lexicon - `lexicon` live topic; see backend
   `internal/pronounce/lexicon.go`). The Jobs page's "Narration left" line
   is `utils/narrationEta` (queued narration chars / the backend's measured
-  `narrationCharsPerSecond`; android `ui/jobs/NarrationEta.kt`).
+  `narrationCharsPerSecond`; android `ui/jobs/NarrationEta.kt`), which
+  also shows that speed as a multiple of realtime
+  (`narrationRealtimeFactor`).
 
 ## Dev server
 

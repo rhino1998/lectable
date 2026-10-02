@@ -1261,7 +1261,9 @@ building/running `ttsworker` does, since both now link into that binary.
   completions feed a characters-per-second rate over the latest continuous
   run, `Manager.Throughput`, which the jobs snapshot exposes as
   `narrationCharsPerSecond` beside each narration task's `chars`, for the
-  Jobs views' time-left estimate.) Every kind sorts through the same
+  Jobs views' time-left estimate; the same run's clip lengths give
+  `Manager.RealtimeFactor`, audio seconds per wall-clock second, exposed as
+  `narrationRealtimeFactor`.) Every kind sorts through the same
   tier-ordered heap (`TierUrgent`/`TierLookahead`/`TierNormal`/`TierBackground` - `TierNormal` is never a default, only reached by manually promoting a task from the Jobs page), but
   dispatches into one of *two separate* worker slot pools by resource, not
   one shared pool: `poolGeneration` (`maxInFlight` slots, GPU-bound TTS

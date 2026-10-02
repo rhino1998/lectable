@@ -515,6 +515,7 @@ export function JobsPage() {
         >
           Narration left: ~{formatEta(eta.totalSeconds)} at {eta.charsPerSecond.toFixed(1)} chars/s
           {eta.books.length > 1 &&
+          {eta.realtimeFactor > 0 && ` (${eta.realtimeFactor.toFixed(1)}× realtime)`}
             ` (${eta.books.map((b) => `${b.bookTitle} ~${formatEta(b.seconds)}`).join(', ')})`}
         </p>
       )}

@@ -1105,6 +1105,13 @@ data class JobsSnapshotDto(
      */
     val lastNarrationCharsPerSecond: Double? = null,
 )
+    /**
+     * NarrationRealtimeFactor is jobs.Manager.RealtimeFactor: the same run
+     * NarrationCharsPerSecond measures, as seconds of audio rendered per
+     * wall-clock second (12 = an hour of narration every five minutes),
+     * rounded to 0.1. Omitted (0) whenever that is.
+     */
+    val narrationRealtimeFactor: Double? = null,
 
 @Serializable
 data class LanguagesResponseDto(
