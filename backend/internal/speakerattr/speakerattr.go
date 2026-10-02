@@ -1532,7 +1532,9 @@ var attributionLineRe = regexp.MustCompile(`^\s*(\d+)\s*(?:\(who\?\))?\s*[:\-–
 // that answers in the old JSON-array shape anyway still parses, via
 // parseAttributions. Only a reply with no usable line at all is an error
 // (so generateAndParse retries it) - a line the model skipped just stays
-// unattributed, the same as a dropped JSON entry always did.
+// unattributed, the same as a dropped JSON entry always did. A reply
+// whose numbers are all wrong but which has exactly one line per asked
+// line is read by position.
 func parseAttributionLines(content string, answer map[int]bool) (map[int]Attributed, error) {
 	out := make(map[int]Attributed, len(answer))
 	trimmed := strings.TrimSpace(content)
@@ -1546,13 +1548,14 @@ func parseAttributionLines(content string, answer map[int]bool) (map[int]Attribu
 		}
 	}
 	if len(out) == 0 {
+		var unasked []Attributed // reply lines whose number wasn't asked about, in order
 		for _, line := range strings.Split(content, "\n") {
 			m := attributionLineRe.FindStringSubmatch(line)
 			if m == nil {
 				continue
 			}
 			idx, err := strconv.Atoi(m[1])
-			if err != nil || !answer[idx] {
+			if err != nil {
 				continue
 			}
 			speaker, pronouns := splitPronouns(m[2])
@@ -1560,7 +1563,22 @@ func parseAttributionLines(content string, answer map[int]bool) (map[int]Attribu
 			if speaker == "" {
 				continue
 			}
-			out[idx] = Attributed{Speaker: speaker, Role: strings.Contains(strings.ToLower(speaker), "[role]"), Pronouns: pronouns}
+			a := Attributed{Speaker: speaker, Role: strings.Contains(strings.ToLower(speaker), "[role]"), Pronouns: pronouns}
+			if !answer[idx] {
+				unasked = append(unasked, a)
+				continue
+			}
+			out[idx] = a
+		}
+		// Miscopied numbers: a reply with one line per asked line, none
+		// under an asked number, is taken by position. A synopsis chapter's
+		// only asked line, 50, came back as "49: …" on every retry and the
+		// chapter's attribution failed for good (Arise: Explorer ch. 4).
+		if len(out) == 0 && len(unasked) == len(answer) {
+			asked := slices.Sorted(maps.Keys(answer))
+			for i, a := range unasked {
+				out[asked[i]] = a
+			}
 		}
 	}
 	if len(out) == 0 && len(answer) > 0 {

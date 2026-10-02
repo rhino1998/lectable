@@ -27,6 +27,14 @@ func TestParseAttributionLines(t *testing.T) {
 		t.Fatalf("JSON fallback: %+v, %v", got, err)
 	}
 
+	// Miscopied numbers, one reply line per asked line: read by position.
+	got, err = parseAttributionLines("49: Mira [role]\n", map[int]bool{50: true})
+	if err != nil || got[50].Speaker != "Mira [role]" || !got[50].Role {
+		t.Fatalf("miscopied number: got %v, %v; want line 50 answered", got, err)
+	}
+	if got, err := parseAttributionLines("49: Mira\n", map[int]bool{50: true, 52: true}); err == nil {
+		t.Fatalf("one stray line for two asked lines: got %v, want an error", got)
+	}
 	if _, err := parseAttributionLines("I can't tell.", answer); err == nil {
 		t.Fatal("a reply with no usable line should be an error, so it's retried")
 	}
