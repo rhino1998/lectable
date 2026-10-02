@@ -480,7 +480,13 @@ building/running `ttsworker` does, since both now link into that binary.
   `splitQuoteSegments`, splitting on double-quote boundaries (straight `"`
   and curly `“ ”`, not single quotes - those are almost always an
   apostrophe) into alternating narration/dialogue segments, e.g. `"The
-  bridge is out," Sam said.` → two segments. Every segment after the first
+  bridge is out," Sam said.` → two segments. A curly/guillemet opener left
+  unclosed at the paragraph's end quotes the rest of it - a speech running
+  over several paragraphs leaves each one's “ unclosed by convention, and
+  those used to read as narration (58 paragraphs of Arise: Reclaimer, in
+  the narrator's voice); a stray straight `"` still doesn't (inch marks).
+  Books imported before that keep their rows - `PUT .../paragraphs/{pidx}/quote`
+  flags one by hand. Every segment after the first
   in a source paragraph is flagged `Block.Inline` - a display hint meaning
   "part of the same visual paragraph as the previous one", not a real
   break - while still being its own row/idx/audio/speaker. This is what
@@ -736,7 +742,10 @@ building/running `ttsworker` does, since both now link into that binary.
        character (`SpeakerNameResolver`); (2) an untagged quote continues
        the previous quote's speaker within the same paragraph, unless a
        pronoun/joint tag or another character starting a sentence in the
-       narration between them ("Bert rounded on Fritz.") says otherwise.
+       narration between them ("Bert rounded on Fritz.") says otherwise;
+       (3) an untagged quote opening a paragraph right after one whose last
+       quote never closed continues that speech and keeps its speaker (the
+       model took each paragraph of a multi-paragraph speech as a new line).
        Measured on Spire's Spite before adding it: of 624 quotes with an
        explicit named trailing tag the model credited 42 to someone else,
        and 25% of multi-quote paragraphs had mixed speakers. Tuned against

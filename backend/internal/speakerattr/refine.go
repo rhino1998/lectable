@@ -456,7 +456,11 @@ type TagChange struct {
 //     I…”" stays Sid) - the convention systemPrompt already states. A
 //     pronoun tag ("she replied") blocks this, since it can mark a new
 //     speaker in a paragraph that merged several turns.
-//  3. In a first-person book (resolver.WithFirstPerson), a line the
+//  3. A quote opening a paragraph with no tag of its own, right after a
+//     paragraph whose last quote never closed, continues that speech - a
+//     speech running over several paragraphs leaves each one's opener
+//     unclosed (“…the valley. / “The passes…”) - and keeps its speaker.
+//  4. In a first-person book (resolver.WithFirstPerson), a line the
 //     narrator got whose trailing tag is "he said"/"she asked" isn't
 //     theirs - they'd be "I" - and becomes Unknown. Qwen3.6 gave Arise's
 //     narrator whole runs of his friend's "he said" lines.
@@ -477,6 +481,7 @@ func RefineWithSpeechTags(paras []ParagraphInput, speakers map[int]string, resol
 		changes = append(changes, TagChange{Idx: idx, From: cur, To: name, Reason: reason})
 	}
 
+	openSpeaker := "" // speaker of the previous paragraph's unclosed speech
 	for start := 0; start < len(paras); {
 		end := start + 1
 		for end < len(paras) && paras[end].Inline {
@@ -501,6 +506,8 @@ func RefineWithSpeechTags(paras []ParagraphInput, speakers map[int]string, resol
 			switch {
 			case name != "":
 				set(p.Idx, name, "tag")
+			case i == 0 && openSpeaker != "" && strings.ContainsAny(firstRune(p.Text), quoteOpeners):
+				set(p.Idx, openSpeaker, "continued speech")
 			case !pronoun && prevSpeaker != "" && !otherActorBetween(group[lastQuote+1:i], prevSpeaker, resolver):
 				set(p.Idx, prevSpeaker, "continuation")
 			case pronoun && next != nil && resolver.narrator() != "" && out[p.Idx] == resolver.narrator() &&
@@ -514,9 +521,35 @@ func RefineWithSpeechTags(paras []ParagraphInput, speakers map[int]string, resol
 				prevSpeaker = ""
 			}
 		}
+		openSpeaker = ""
+		if last := group[len(group)-1]; last.IsQuote && unclosedQuote(last.Text) && !isSentinel(out[last.Idx]) {
+			openSpeaker = out[last.Idx]
+		}
 		start = end
 	}
 	return out, changes
+}
+
+// quoteOpeners/quoteClosers are the directional quote marks a speech
+// continuing into the next paragraph is recognized by (the same marks
+// internal/epub.splitQuoteSegments lets run unclosed).
+const (
+	quoteOpeners = "“«"
+	quoteClosers = "”»"
+)
+
+// unclosedQuote reports whether text's last directional opener has no
+// closer after it - a speech that carries on into the next paragraph.
+func unclosedQuote(text string) bool {
+	open := strings.LastIndexAny(text, quoteOpeners)
+	return open >= 0 && !strings.ContainsAny(text[open:], quoteClosers)
+}
+
+func firstRune(s string) string {
+	for _, r := range s {
+		return string(r)
+	}
+	return ""
 }
 
 // nonAnswers are speaker values that name no one - a model filling the

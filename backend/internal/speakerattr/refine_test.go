@@ -72,6 +72,31 @@ func TestRefineWithSpeechTags(t *testing.T) {
 	}
 }
 
+func TestRefineWithSpeechTagsContinuedSpeech(t *testing.T) {
+	// Bert's speech runs over three paragraphs, the first two left
+	// unclosed; the model took the untagged continuations for others.
+	var paras []ParagraphInput
+	paras = append(paras, para(0, "“Well,”", "Bert said.", "“I made it to the Refuge.")...)
+	paras = append(paras, para(3, "“I’d forgotten how beautiful it is.")...)
+	paras = append(paras, para(4, "“The passes were carved to be held.”")...)
+	paras = append(paras, para(5, "“And?”")...)
+	paras = append(paras, para(6, "“Nothing,”", "Sid said.", "“They just stood there.")...)
+	paras = append(paras, para(9, "“Then they left.”", "Fritz said.")...)
+	speakers := map[int]string{0: "Bert", 2: "Bert", 3: "Sid", 4: "Unknown", 5: "Fritz", 6: "Sid", 8: "Sid", 9: "Unknown"}
+	out, _ := RefineWithSpeechTags(paras, speakers, testCast)
+	want := map[int]string{
+		3: "Bert",  // continues the unclosed speech
+		4: "Bert",  // and again
+		5: "Fritz", // the speech closed at 4 - a new line keeps the model's answer
+		9: "Fritz", // its own tag beats the continuation
+	}
+	for idx, w := range want {
+		if out[idx] != w {
+			t.Errorf("speaker[%d] = %q, want %q (all: %v)", idx, out[idx], w, out)
+		}
+	}
+}
+
 func TestRefineWithSpeechTagsOnlyTouchesGivenLines(t *testing.T) {
 	paras := para(0, "“I didn’t know you could do that,”", "Bert said.")
 	out, changes := RefineWithSpeechTags(paras, map[int]string{}, testCast)

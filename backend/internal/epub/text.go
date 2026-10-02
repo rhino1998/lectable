@@ -1,9 +1,14 @@
 package epub
 
 import (
+	"regexp"
 	"strings"
 	"unicode"
 )
+
+// mismatchedCloser matches an opener whose first word is closed by a
+// right single quote - “ghosts’ I’d loaded - a typo, not a speech.
+var mismatchedCloser = regexp.MustCompile(`^“[\p{L}-]+’(?:[\s\p{P}]|$)`)
 
 // sceneBreakGlyphs is the closed set of characters a prose scene/section
 // break is conventionally spelled out with when an epub doesn't use a real
@@ -90,10 +95,11 @@ type quoteSegment struct {
 // internal/speakerattr, internal/narration) that the reader still sees as
 // one paragraph (see Block.Inline). A straight " toggles in/out of a quote
 // (it's both opener and closer); every other pair only opens on its own
-// left-hand rune and only closes on its own right-hand rune. Unbalanced or
-// quote-free text comes back as a single unsplit, non-quote segment -
-// splitting only happens where a quote clearly opens and closes within the
-// same paragraph, never on a guess. Every span that opens and closes
+// left-hand rune and only closes on its own right-hand rune. Quote-free
+// text comes back as a single unsplit, non-quote segment, and so does a
+// stray closer; the one open-ended span is a curly/guillemet opener left
+// unclosed at the paragraph's end - a speech continuing into the next
+// paragraph. Every span that opens and closes
 // cleanly becomes an IsQuote segment, including scare quotes and mentions
 // (`the "downward" stairway`) - telling those apart from real dialogue is
 // left entirely to internal/speakerattr.Client.ScareQuoteChapter's LLM
@@ -116,6 +122,15 @@ func splitQuoteSegments(text string) []quoteSegment {
 			spans = append(spans, span{quoteStart, i + 1})
 			inQuote = false
 		}
+	}
+	// A speech running on into the next paragraph leaves its opener
+	// unclosed by convention (“They knew… / “And they didn’t care…”), so
+	// an unclosed curly or guillemet opener quotes the rest of the
+	// paragraph. Not a straight " (an odd one is as likely an inch mark as
+	// a speech) or <, nor a word closed by an apostrophe (“ghosts’ - a
+	// mismatched mark in narration, from Arise: Reclaimer).
+	if inQuote && strings.ContainsRune("“«", runes[quoteStart]) && !mismatchedCloser.MatchString(string(runes[quoteStart:])) {
+		spans = append(spans, span{quoteStart, len(runes)})
 	}
 	if len(spans) == 0 {
 		return []quoteSegment{{Text: text}}

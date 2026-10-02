@@ -49,6 +49,45 @@ func TestSplitQuoteSegments(t *testing.T) {
 			},
 		},
 		{
+			name: "speech continuing into the next paragraph leaves its opener unclosed",
+			text: "“They knew—do you see? They already knew about you!",
+			want: []quoteSegment{
+				{Text: "“They knew—do you see? They already knew about you!", IsQuote: true},
+			},
+		},
+		{
+			name: "tag before an unclosed speech splits off",
+			text: "Hans said quickly, smiling again. “They allow all new Arisen to visit once.",
+			want: []quoteSegment{
+				{Text: "Hans said quickly, smiling again."},
+				{Text: "“They allow all new Arisen to visit once.", IsQuote: true},
+			},
+		},
+		{
+			name: "closed quote then unclosed one",
+			text: "“No.” He shook his head. “They’d have gone to the council.",
+			want: []quoteSegment{
+				{Text: "“No.”", IsQuote: true},
+				{Text: "He shook his head."},
+				{Text: "“They’d have gone to the council.", IsQuote: true},
+			},
+		},
+		{
+			name: "word closed by an apostrophe is a typo, not a speech",
+			text: "one of the “ghosts’ I’d loaded had been erased.",
+			want: []quoteSegment{{Text: "one of the “ghosts’ I’d loaded had been erased."}},
+		},
+		{
+			name: "nested single quotes don't stop an unclosed speech",
+			text: "“I think I fucked my ‘build.’ I unlocked different trees.",
+			want: []quoteSegment{{Text: "“I think I fucked my ‘build.’ I unlocked different trees.", IsQuote: true}},
+		},
+		{
+			name: "unclosed straight quote stays narration",
+			text: `He was 6" tall.`,
+			want: []quoteSegment{{Text: `He was 6" tall.`}},
+		},
+		{
 			name: "scare quote mid-sentence still splits as a quote",
 			// Not dialogue-shaped, but splitQuoteSegments no longer judges
 			// that - speakerattr.Client.ScareQuoteChapter does, later.
