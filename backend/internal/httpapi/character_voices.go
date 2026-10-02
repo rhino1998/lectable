@@ -219,42 +219,6 @@ func characterRefText(characterized store.Character) string {
 	return voices.DefaultRefText
 }
 
-// normalizeCharacterVoiceVolume rescales presetID's just-rendered
-// reference clip (voicerefs.NormalizeVolume) so its overall loudness
-// matches book's own narrator voice - an auto-provisioned character's
-// independent VoiceDesign render can otherwise land much louder or
-// quieter than the book's voice, and that difference carries straight
-// into every paragraph cloned from it. Best-effort and silent on failure,
-// the same tolerance provisionCharacterVoiceAttempt/regenerateCharacterVoice
-// already give the render itself - a reader still gets *a* voice for the
-// character even if it can't be leveled against the narrator (e.g. the
-// book's own voice hasn't rendered anything yet either).
-//
-// Calls voicerefs.EnsureFile directly rather than s.ensureVoiceRef -
-// exactly like provisionCharacterVoiceAttempt/regenerateCharacterVoice's
-// own render calls just above/below each call site, and for the same
-// reason (see ensureVoiceRef's own doc comment): both callers can
-// themselves already be running inside a dispatched poolDesign task, and
-// s.ensureVoiceRef's RunVoiceProvision would deadlock nesting a second
-// poolDesign task from inside the first.
-func (s *Server) normalizeCharacterVoiceVolume(ctx context.Context, book *store.Book, presetID string) {
-	bookVoice, err := s.Narration.BookVoice(book)
-	if err != nil {
-		log.Printf("httpapi: normalize voice volume for preset %s: resolve book voice: %v", presetID, err)
-		return
-	}
-	if bookVoice.PresetID == "" {
-		return // fully custom instruct, no rendered clip to normalize against
-	}
-	if _, err := voicerefs.EnsureFile(ctx, s.TTS, s.DataDir, bookVoice.PresetID, bookVoice.Instruct, bookVoice.Seed, bookVoice.RefText, bookVoice.SpeedMultiplier, bookVoice.DesignModel); err != nil {
-		log.Printf("httpapi: normalize voice volume for preset %s: ensure book voice reference clip: %v", presetID, err)
-		return
-	}
-	if err := voicerefs.NormalizeVolume(s.DataDir, presetID, bookVoice.PresetID); err != nil {
-		log.Printf("httpapi: normalize voice volume for preset %s: %v", presetID, err)
-	}
-}
-
 // provisionCharacterVoice matches jobs.CharacterVoiceProvisioner's fixed
 // signature - see provisionCharacterVoiceAttempt's own doc comment for what
 // it actually does. Always attempt 0 (no seed bump ever possible) because
@@ -352,8 +316,6 @@ func (s *Server) provisionCharacterVoiceAttempt(ctx context.Context, bookID stri
 		return voicerefs.EnsureFile(ctx, s.TTS, s.DataDir, preset.ID, preset.Instruct, effectiveSeed, preset.RefText, preset.SpeedMultiplier, preset.DesignModel)
 	}); err != nil {
 		log.Printf("httpapi: render reference clip for character %q: %v", char.Name, err)
-	} else {
-		s.normalizeCharacterVoiceVolume(ctx, book, preset.ID)
 	}
 	if err := s.Store.SetCharacterVoice(char.ID, cloneModel, preset.ID); err != nil {
 		return "", fmt.Errorf("assign auto-created voice: %w", err)
@@ -511,7 +473,6 @@ func (s *Server) regenerateCharacterVoice(ctx context.Context, bookID string, ch
 	}); err != nil {
 		return "", fmt.Errorf("regenerate reference clip: %w", err)
 	}
-	s.normalizeCharacterVoiceVolume(ctx, book, preset.ID)
 	return preset.ID, nil
 }
 

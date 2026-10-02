@@ -10,12 +10,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"math"
 	"os"
 	"sync"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
-	"github.com/rhino1998/lectable/backend/internal/loudness"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
 	"github.com/rhino1998/lectable/backend/internal/wav"
 	"github.com/rhino1998/lectable/backend/internal/wsola"
@@ -200,85 +198,15 @@ func truncateToMaxDuration(data []byte) ([]byte, error) {
 	return out, nil
 }
 
-// minNormalizeGain/maxNormalizeGain bound NormalizeVolume's computed gain
-// factor to roughly -12dB/+12dB - a defensive clamp against a nearly
-// silent (but nonzero) reference clip producing a wildly large factor that
-// would mostly amplify quantization noise/background hiss rather than
-// produce a usable voice.
+// minNormalizeGain/maxNormalizeGain bound normalizeLoudness's computed
+// gain factor to roughly -12dB/+12dB - a defensive clamp against a nearly
+// silent (but nonzero) clip producing a wildly large factor that would
+// mostly amplify quantization noise/background hiss rather than produce a
+// usable voice.
 const (
 	minNormalizeGain = 0.25
 	maxNormalizeGain = 4.0
 )
-
-// NormalizeVolume rescales presetID's already-rendered reference clip by a
-// single uniform gain factor (clamped to [minNormalizeGain,
-// maxNormalizeGain]) so its overall loudness matches referencePresetID's
-// own already-rendered clip - one multiply applied across the whole clip,
-// preserving its internal relative dynamics rather than compressing/
-// limiting it. Loudness is measured via internal/loudness.Integrated
-// (ITU-R BS.1770/"EBU R128" perceptually-weighted, silence-gated
-// loudness) rather than plain whole-clip RMS specifically because RMS is
-// diluted by however much silence/pause a clip contains - a character
-// preset's reference line and the book's own can differ quite a bit in
-// that respect, and matching plain RMS between them would chase that
-// difference instead of the two voices' actual speaking volume, inflating
-// gain (and whatever background noise floor rides along with the speech)
-// well past what the voice itself needs. Voice cloning carries a
-// reference clip's own loudness into every paragraph generated from it
-// (see internal/audioworker), so an auto-provisioned character voice's
-// independent VoiceDesign render can otherwise land at a very different
-// overall level than the book's own narrator voice, making that
-// character's dialogue jarringly louder or quieter than the narration
-// around it.
-//
-// A no-op (nil error) if referencePresetID has no rendered clip yet (the
-// book's own voice hasn't been generated against yet) or either clip has
-// no content that survives loudness gating at all (effectively silent,
-// nothing sensible to scale toward/from) - a caller normalizing a
-// freshly-rendered character voice shouldn't fail the whole provisioning
-// attempt over this.
-func NormalizeVolume(dataDir, presetID, referencePresetID string) error {
-	refData, err := os.ReadFile(audiopath.VoicePresetRefFile(dataDir, referencePresetID))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	refClip, err := wav.Decode(refData)
-	if err != nil {
-		return fmt.Errorf("decode reference voice's clip: %w", err)
-	}
-	targetLUFS := loudness.Integrated(refClip.Samples, refClip.SampleRate)
-	if math.IsInf(targetLUFS, -1) {
-		return nil
-	}
-
-	path := audiopath.VoicePresetRefFile(dataDir, presetID)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	clip, err := wav.Decode(data)
-	if err != nil {
-		return fmt.Errorf("decode wav: %w", err)
-	}
-	currentLUFS := loudness.Integrated(clip.Samples, clip.SampleRate)
-	if math.IsInf(currentLUFS, -1) {
-		return nil
-	}
-
-	applyGain(clip.Samples, clampGain(loudness.GainFor(currentLUFS, targetLUFS)))
-	out, err := wav.Encode(clip.Samples, clip.SampleRate, clip.Channels)
-	if err != nil {
-		return fmt.Errorf("encode wav: %w", err)
-	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
-		return err
-	}
-	// Variants were loudness-bounded against the old level.
-	return DeleteVariants(dataDir, presetID)
-}
 
 // applyGain scales every sample by factor in place. wav.Encode clips
 // anything left outside [-1, 1] afterward, so an aggressive factor
@@ -299,12 +227,18 @@ func clampGain(factor float64) float64 {
 	return factor
 }
 
+// save normalizes data to TargetLUFS (normalizeLoudness) and writes it as
+// presetID's reference clip.
 func save(dataDir, presetID string, data []byte) (string, error) {
+	data, err := normalizeWAV(data)
+	if err != nil {
+		return "", err
+	}
 	if err := audiopath.EnsureVoiceRefDir(dataDir); err != nil {
 		return "", err
 	}
 	path := audiopath.VoicePresetRefFile(dataDir, presetID)
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	if err := writeFileAtomic(path, data); err != nil {
 		return "", err
 	}
 	// Every emotion variant was cloned from the clip just replaced.

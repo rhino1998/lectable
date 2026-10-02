@@ -266,12 +266,12 @@ func TestDeriveFromExistingAndCached(t *testing.T) {
 
 // constantAmplitudeClip returns WAV bytes for a clip alternating +amp/-amp
 // samples for n samples, at sampleRate - a convenient known-loudness
-// fixture for NormalizeVolume's tests: any two clips built from this same
+// fixture for the loudness tests: any two clips built from this same
 // waveform shape differ only by a linear scale factor, so BS.1770's
 // K-weighting filter (itself linear) scales their measured loudness by
 // exactly that same factor regardless of its own exact frequency-response
 // details, which is what makes peakAmplitude below a reliable way to
-// check NormalizeVolume's applied gain without depending on
+// check an applied gain without depending on
 // internal/loudness's internals from this test.
 func constantAmplitudeClip(t *testing.T, amp float32, n int, sampleRate int) []byte {
 	t.Helper()
@@ -319,129 +319,6 @@ func peakAmplitude(t *testing.T, path string) float64 {
 	return peak
 }
 
-func TestNormalizeVolumeScalesToMatchReference(t *testing.T) {
-	dataDir := t.TempDir()
-	writePresetClip(t, dataDir, "book-voice", constantAmplitudeClip(t, 0.4, 1000, 16000))
-	writePresetClip(t, dataDir, "character-voice", constantAmplitudeClip(t, 0.2, 1000, 16000))
-
-	if err := NormalizeVolume(dataDir, "character-voice", "book-voice"); err != nil {
-		t.Fatalf("NormalizeVolume: %v", err)
-	}
-
-	got := peakAmplitude(t, audiopath.VoicePresetRefFile(dataDir, "character-voice"))
-	want := peakAmplitude(t, audiopath.VoicePresetRefFile(dataDir, "book-voice"))
-	if diff := math.Abs(got - want); diff > 0.01 {
-		t.Fatalf("expected normalized amplitude %.4f to match reference amplitude %.4f, diff %.4f", got, want, diff)
-	}
-}
-
-func TestNormalizeVolumeClampsExtremeGain(t *testing.T) {
-	dataDir := t.TempDir()
-	writePresetClip(t, dataDir, "book-voice", constantAmplitudeClip(t, 0.8, 1000, 16000))
-	writePresetClip(t, dataDir, "character-voice", constantAmplitudeClip(t, 0.01, 1000, 16000))
-
-	before := peakAmplitude(t, audiopath.VoicePresetRefFile(dataDir, "character-voice"))
-	if err := NormalizeVolume(dataDir, "character-voice", "book-voice"); err != nil {
-		t.Fatalf("NormalizeVolume: %v", err)
-	}
-	after := peakAmplitude(t, audiopath.VoicePresetRefFile(dataDir, "character-voice"))
-
-	// 0.8/0.01 = 80x, far past maxNormalizeGain (4.0) - the result should
-	// reflect the clamped factor, not the full ratio up to the book
-	// voice's own loudness.
-	wantFactor := maxNormalizeGain
-	gotFactor := after / before
-	if diff := math.Abs(gotFactor - wantFactor); diff > 0.1 {
-		t.Fatalf("expected gain clamped to %.2fx, got %.2fx (before=%.4f after=%.4f)", wantFactor, gotFactor, before, after)
-	}
-}
-
-// TestNormalizeVolumeIgnoresSilencePadding is the actual motivating case
-// for measuring loudness via internal/loudness.Integrated instead of
-// plain whole-clip RMS: a clip whose voice is already at the reference's
-// own level, but which happens to carry a lot of extra trailing silence,
-// should need little to no gain - not a large boost computed by diluting
-// its average level against all that silence, since that would blow the
-// actual voice content (and any noise riding along with it) well past the
-// reference's own loudness.
-func TestNormalizeVolumeIgnoresSilencePadding(t *testing.T) {
-	const sampleRate = 16000
-	dataDir := t.TempDir()
-
-	// Reference: half a second of a steady tone, no silence at all.
-	writePresetClip(t, dataDir, "book-voice", constantAmplitudeClip(t, 0.3, sampleRate/2, sampleRate))
-
-	// Character: the exact same tone at the exact same level, followed by
-	// 5 seconds of silence - same voice, mostly padding.
-	tone := constantAmplitudeClip(t, 0.3, sampleRate/2, sampleRate)
-	toneClip, err := wav.Decode(tone)
-	if err != nil {
-		t.Fatalf("wav.Decode(tone): %v", err)
-	}
-	padded := append(append([]float32{}, toneClip.Samples...), make([]float32, sampleRate*5)...)
-	paddedData, err := wav.Encode(padded, sampleRate, 1)
-	if err != nil {
-		t.Fatalf("wav.Encode(padded): %v", err)
-	}
-	writePresetClip(t, dataDir, "character-voice", paddedData)
-
-	if err := NormalizeVolume(dataDir, "character-voice", "book-voice"); err != nil {
-		t.Fatalf("NormalizeVolume: %v", err)
-	}
-
-	// A naive whole-clip-RMS approach would see this clip's average level
-	// diluted by ~91% silence (5.5s total, 0.5s of actual tone) and try to
-	// boost it roughly 3.3x to compensate - clamped to maxNormalizeGain
-	// (4.0x) in the worst case. Gating should keep the applied gain much
-	// closer to unity, since the tone itself already matches the
-	// reference's own level.
-	got := peakAmplitude(t, audiopath.VoicePresetRefFile(dataDir, "character-voice"))
-	const naiveWholeClipGain = 0.3 / 0.0905 // see this test's own doc comment
-	if got >= 0.3*naiveWholeClipGain*0.9 {
-		t.Fatalf("expected gating to avoid the naive whole-clip-RMS boost (~%.2fx): tone peak ended up at %.4f", naiveWholeClipGain, got)
-	}
-	if diff := math.Abs(got - 0.3); diff > 0.3*0.5 {
-		t.Fatalf("expected gating to land close to the reference's own 0.3 amplitude, got %.4f", got)
-	}
-}
-
-func TestNormalizeVolumeNoOpWhenReferenceMissing(t *testing.T) {
-	dataDir := t.TempDir()
-	original := constantAmplitudeClip(t, 0.2, 1000, 16000)
-	writePresetClip(t, dataDir, "character-voice", original)
-
-	if err := NormalizeVolume(dataDir, "character-voice", "no-such-book-voice"); err != nil {
-		t.Fatalf("NormalizeVolume: %v", err)
-	}
-
-	data, err := os.ReadFile(audiopath.VoicePresetRefFile(dataDir, "character-voice"))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if string(data) != string(original) {
-		t.Fatalf("expected character-voice's clip to be left untouched when the reference clip doesn't exist")
-	}
-}
-
-func TestNormalizeVolumeNoOpOnSilentClip(t *testing.T) {
-	dataDir := t.TempDir()
-	writePresetClip(t, dataDir, "book-voice", constantAmplitudeClip(t, 0.4, 1000, 16000))
-	silent := constantAmplitudeClip(t, 0, 1000, 16000)
-	writePresetClip(t, dataDir, "character-voice", silent)
-
-	if err := NormalizeVolume(dataDir, "character-voice", "book-voice"); err != nil {
-		t.Fatalf("NormalizeVolume: %v", err)
-	}
-
-	data, err := os.ReadFile(audiopath.VoicePresetRefFile(dataDir, "character-voice"))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if string(data) != string(silent) {
-		t.Fatalf("expected a silent clip to be left untouched (nothing sensible to scale)")
-	}
-}
-
 func TestDeleteIsSafeOnMissingFile(t *testing.T) {
 	dataDir := t.TempDir()
 	if err := Delete(dataDir, "never-created"); err != nil {
@@ -485,9 +362,9 @@ func TestBoundLoudness(t *testing.T) {
 		amplitude float32
 		want      float64
 	}{
-		// Default band is -10 LU..+5.85 LU around 0.2: amplitudes ~0.0632..~0.3927.
+		// Default band is -3.2 LU..+5.85 LU around 0.2: amplitudes ~0.138..~0.3927.
 		{"within band louder", "sad", 0.35, 0.35},
-		{"within band quieter", "sad", 0.08, 0.08},
+		{"within band quieter", "sad", 0.15, 0.15},
 		{"too loud", "sad", 0.8, 0.2 * math.Pow(10, maxVariantLU/20)},
 		{"too quiet", "sad", 0.03, 0.2 * math.Pow(10, minVariantLU/20)},
 		// Shout's floor is above the base: a shout as loud as the base is raised.
@@ -495,6 +372,8 @@ func TestBoundLoudness(t *testing.T) {
 		{"shout too loud", "shout", 0.8, 0.2 * math.Pow(10, 10*math.Log2(1.75)/20)},
 		// Whisper's floor is just under the base: a -10 LU whisper is raised.
 		{"whisper raised", "whisper", 0.0632, 0.2 * math.Pow(10, 10*math.Log2(0.8)/20)},
+		// A raise may exceed clampGain's +12 dB (here ~+23 dB).
+		{"whisper raised past 12 dB", "whisper", 0.01, 0.2 * math.Pow(10, 10*math.Log2(0.8)/20)},
 		{"whisper too loud", "whisper", 0.3, 0.2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -512,7 +391,7 @@ func TestBoundLoudness(t *testing.T) {
 
 func TestBoundLoudnessPeakCeiling(t *testing.T) {
 	// A shout matching a loud base would need ~0.95 peak to reach its
-	// floor; the raise stops at variantPeakCeiling instead of clipping.
+	// floor; the raise stops at peakCeiling instead of clipping.
 	base := constantAmplitudeClip(t, 0.7, 1000, 16000)
 	variant := constantAmplitudeClip(t, 0.7, 1000, 16000)
 	out, err := boundLoudness(variant, base, "shout")
@@ -527,7 +406,7 @@ func TestBoundLoudnessPeakCeiling(t *testing.T) {
 	for _, s := range clip.Samples {
 		p = max(p, math.Abs(float64(s)))
 	}
-	if math.Abs(p-variantPeakCeiling) > 0.005 {
-		t.Fatalf("peak = %.4f, want %.4f", p, variantPeakCeiling)
+	if math.Abs(p-peakCeiling) > 0.005 {
+		t.Fatalf("peak = %.4f, want %.4f", p, peakCeiling)
 	}
 }

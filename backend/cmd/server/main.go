@@ -27,6 +27,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
+	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
@@ -145,6 +146,14 @@ func main() {
 	// Converts clips from before the switch to Ogg Opus and deletes audio
 	// the library no longer refers to - once now, then sweeping daily.
 	go audiomaint.Run(ctx, dataDir, st)
+	// Levels reference clips saved before normalization (or restored from
+	// an export) to voicerefs.TargetLUFS; a no-op once they all are.
+	go func() {
+		if s := voicerefs.NormalizeAll(ctx, dataDir); s.Normalized+s.Failed+len(s.Rebounded) > 0 {
+			log.Printf("voicerefs: normalized %d reference clips to %.0f LUFS (%d variants rescaled), %d variants pulled into their loudness band, %d failed",
+				s.Normalized, voicerefs.TargetLUFS, s.Variants, len(s.Rebounded), s.Failed)
+		}
+	}()
 	go audiomaint.MigrateSeedLatents(ctx, dataDir, func(ctx context.Context, wav []byte) (*ttsproto.Latents, error) {
 		return ttsMgr.CodecEncode(ctx, "stable_audio_medium", wav)
 	}, ttsMgr.Idle)

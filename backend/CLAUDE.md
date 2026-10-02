@@ -461,7 +461,20 @@ building/running `ttsworker` does, since both now link into that binary.
   brand-new preset could each find no cached clip and race to render/write
   the same file. `Regenerate` (the explicit "always re-render" path for a
   preset edit) stays unlocked - a deliberate one-off action never called
-  concurrently with itself. `variants.go` renders/caches each preset's
+  concurrently with itself. Every base clip is normalized to
+  `voicerefs.TargetLUFS` (-20 LUFS, BS.1770 integrated via
+  `internal/loudness`) as it's saved (`save`), with the gain clamped to
+  ±12 dB and a lookahead peak limiter (`limitPeaks`) holding peaks under
+  ~-1 dBFS - cloning carries a reference's level into every paragraph, so
+  this keeps narrators, custom presets and characters at one level.
+  `NormalizeAll` runs at startup (`cmd/server`) to level clips saved before
+  this or restored from an export: it skips clips within 1 LU of the
+  target and shifts a rewritten clip's emotion variants by the same gain
+  instead of deleting them. A rewritten clip's bytes change, so its cached
+  reference encodings (`voice-refs/cache/refcodes`, keyed by content hash)
+  miss and re-encode; the stale ones can just be deleted. Existing
+  paragraph audio keeps its old level until regenerated.
+  `variants.go` renders/caches each preset's
   emotion variants (`EnsureVariantFile`, its own per-(preset, emotion)
   lock) - see "Emotions" under `internal/speakerattr/` below.
 - `internal/wsola/` — a from-scratch Go port of Chromium's WSOLA
@@ -1009,12 +1022,19 @@ building/running `ttsworker` does, since both now link into that binary.
   speaking that emotion's `RefLine` under its `Instruction`, capped at
   `maxRefClipSeconds` and loudness-bounded against the base clip
   (`voicerefs.variantBand`, taking +10 LU as twice as loud): most emotions
-  may sound half to 1.5x as loud (-10..+5.85 LU), a shout 1.3-1.75x
+  may sound 0.8x to 1.5x as loud (-3.2..+5.85 LU), a shout 1.3-1.75x
   (forced louder - Breeze's shouts often landed no louder than the base),
-  a whisper 0.8-1x (Breeze's whispers landed up to -10 LU, inaudible once
-  cloned, since paragraph audio isn't normalized and inherits its
-  reference's level); a raise never pushes the peak past ~-1 dBFS. Only
-  base clips are fully normalized. An emotional
+  a whisper 0.8-1x. The floor was half as loud (-10 LU) until 2026-10-01:
+  Breeze renders warm/sad/weary 5-7 LU under the base and whispers as low
+  as -42 LUFS, and since paragraph audio isn't normalized and inherits
+  its reference's level, mostly-emotional characters sat 4-8 LU under the
+  narration. A raise is capped at +24 dB (`maxVariantRaise`, not
+  `clampGain`'s +12 dB, which left the quietest whispers under their
+  floor) and never pushes the peak past ~-1 dBFS. `NormalizeAll` re-bounds
+  existing variants at startup (`ReboundVariants`), so a band change
+  reaches them without a re-render - but lines already cloned from them
+  keep their old level until regenerated. Only
+  base clips are fully normalized (to `voicerefs.TargetLUFS`). An emotional
   line then clones from the variant (with its `RefLine` as the reference
   transcript) instead of the base clip - `jobs.Manager.generate`, via
   `emotionVariant`, which re-reads the paragraph's emotion from the store
@@ -1036,7 +1056,7 @@ building/running `ttsworker` does, since both now link into that binary.
   attempt writes a `.failed` marker (`voicerefs.MarkVariantFailed`), which
   clears the dependency - those lines clone from the base clip instead of
   blocking forever. Every base-clip write or delete (`voicerefs.save`/
-  `NormalizeVolume`/`Delete`) wipes that preset's variants, since each was
+  `Delete`) wipes that preset's variants, since each was
   cloned from the old clip. Skipped for a scare-quote merge group (one
   call renders narration and quote together).
 

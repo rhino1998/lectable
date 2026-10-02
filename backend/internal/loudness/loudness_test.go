@@ -33,8 +33,8 @@ func TestIntegratedSilenceIsNegativeInfinity(t *testing.T) {
 	}
 }
 
-// TestIntegratedScalesWithAmplitude checks the property NormalizeVolume's
-// own gain math leans on: doubling a signal's amplitude should raise its
+// TestIntegratedScalesWithAmplitude checks the property voicerefs' normalization
+// gain math leans on: doubling a signal's amplitude should raise its
 // measured loudness by exactly 20*log10(2) ~= 6.02 dB, regardless of
 // K-weighting's own exact frequency-response details - K-weighting is a
 // linear filter, so scaling its input by k scales its output (and thus
@@ -54,7 +54,7 @@ func TestIntegratedScalesWithAmplitude(t *testing.T) {
 }
 
 // TestIntegratedGatesOutSilence is loudness's own version of the property
-// internal/voicerefs.NormalizeVolume depends on: appending a lot of
+// internal/voicerefs' normalization depends on: appending a lot of
 // silence to a clip shouldn't meaningfully change its measured loudness,
 // unlike plain whole-clip RMS (which the silence would dilute).
 func TestIntegratedGatesOutSilence(t *testing.T) {

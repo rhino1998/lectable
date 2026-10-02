@@ -3,7 +3,7 @@
 // silence-gated "how loud does this actually sound" measure streaming/
 // broadcast platforms normalize against, as opposed to a plain
 // root-mean-square amplitude over the whole clip. internal/voicerefs uses
-// this (NormalizeVolume) in place of plain RMS specifically because RMS is
+// this (normalizing reference clips to TargetLUFS) in place of plain RMS specifically because RMS is
 // diluted by however much silence/pause a clip happens to contain: two
 // clips with the same actual voice level but different amounts of
 // leading/trailing/internal silence read as different loudnesses under
@@ -58,7 +58,7 @@ const (
 // negative infinity if samples has no content that survives gating at all
 // (empty, or effectively silent throughout). Callers should check
 // math.IsInf(result, -1) before feeding it to GainFor - see
-// internal/voicerefs.NormalizeVolume. Mono only, matching every reference
+// internal/voicerefs.normalizeLoudness. Mono only, matching every reference
 // clip this package ever measures (internal/wav.Clip.Samples is always
 // interleaved-mono for those).
 func Integrated(samples []float32, sampleRate int) float64 {
