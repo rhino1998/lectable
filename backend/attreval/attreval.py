@@ -13,7 +13,9 @@ GET .../paragraph-edits). An identical re-run flips ~5 lines and moves that
 score by ~3 (batches run in parallel and share discovered names), so read
 every changed line (diff) rather than trusting a small delta.
 
-Runs go to ../data/attreval-runs/ (a live backend on :8080 is required).
+Runs go to ../data/attreval-runs/ (a live backend on :8080 is required;
+LECTABLE_URL points it at another instance, e.g. a copy running a
+candidate model).
 Each run pauses the job queue and waits for it to drain first, so its
 previews run alone (no model swaps against generation), then resumes it -
 generation stops for the ~5-10 minutes a run takes.
@@ -36,7 +38,8 @@ usage: attreval.py <label> [set] [--given=half] [--no-corrections]
 import json, os, sys, time, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-BASE = "http://localhost:8080/api/books"
+HOST = os.environ.get("LECTABLE_URL", "http://localhost:8080").rstrip("/")
+BASE = HOST + "/api/books"
 ARISE = "b225960dc6812f3a8bfc534cb64e94b1"
 SPIRE = "c228368c10437fa0e83b436a7042b375"
 JAKE = "3fe07ab5323c39550cf03bbde77d4245"
@@ -58,15 +61,15 @@ class exclusive:
     unless the queue was already paused before."""
 
     def __enter__(self):
-        with urllib.request.urlopen("http://localhost:8080/api/jobs") as r:
+        with urllib.request.urlopen(HOST + "/api/jobs") as r:
             self.was_paused = json.load(r)["paused"]
         print("pausing the job queue and waiting for it to drain...", flush=True)
-        urllib.request.urlopen(urllib.request.Request("http://localhost:8080/api/jobs/pause?drain=1", method="POST"), timeout=3600)
+        urllib.request.urlopen(urllib.request.Request(HOST + "/api/jobs/pause?drain=1", method="POST"), timeout=3600)
         return self
 
     def __exit__(self, *exc):
         if not self.was_paused:
-            urllib.request.urlopen(urllib.request.Request("http://localhost:8080/api/jobs/resume", method="POST"))
+            urllib.request.urlopen(urllib.request.Request(HOST + "/api/jobs/resume", method="POST"))
             print("job queue resumed", flush=True)
 
 

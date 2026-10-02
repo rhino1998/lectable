@@ -21,6 +21,9 @@
 
 24. Voice-ref caching for PocketTTS (and BreezeTTS)
     - audio.cpp patch: PocketTTS `return_reference_latents`/`reference_latents` (normalized Mimi latents, bit-identical conditioning), BreezeTTS `return_reference_codes`/`reference_codes`; the backend's refcodes cache now covers Higgs, BreezeTTS, and PocketTTS. Soprano dropped (no cloning).
+
+30. Bench Qwen3.8-9B (GGUF) as the LLM against the current Qwen3.6-35B-A3B. The 35B (18.2 GB with its MTP head) is too big to share the 24 GB card, so every switch between LLM and TTS work unloads the other side (`llmExclusive`, ~15 s a load); a 9B quant that fits beside the clone model would drop those swaps. Measure with the queue drained: `attreval.py` (attribution, several runs for noise) and `attreval.py sq` (scare quotes), `cmd/attrreplay` on its runs, and side-by-side summary notes, setting, characterization, emotion and pronunciation output on the same chapters, plus prompt/generation tok/s and whole-pass wall time. Check it fits beside each clone model at `LECTABLE_SPEAKER_LLM_MAX_CONCURRENT=2`, and whether it has an MTP head / thinking-template quirks like Qwen3.6's.
+    - Rejected (2026-09-30): the only Qwen3.8-9B is a community distill (`empero-ai/Qwen3.8-9B-Distill-GGUF`, Qwen3.5-9B architecture, has an MTP head and the same think-block template as Qwen3.6). At Q6_K (7 GiB) it was slower per call - dense 9B vs 3B-active MoE: the attreval set took 413-418s of per-chapter time vs 213-246s for the 35B, prefill ~2380 tok/s - and worse: Arise 91.3% (first-person narrator lines given to the other speaker), scare-quote recall 79/112, characterization gave up on at least 2 characters (copied another character's casting, named co-stars). Spire even (99.5%). Stopped before the same-code 35B baseline and the VRAM fit check. `attreval.py` now takes `LECTABLE_URL` to target a bench instance.
 ---------------------
 
 5. Consider switching to sqlite
