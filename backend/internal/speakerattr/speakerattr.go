@@ -807,7 +807,8 @@ func canonicalizeSpeakerNames(knownCharacters []string, raw map[int]string, role
 // DescribeChapter's own canonicalizeDescribes.
 // roles are the known role labels: a name is never folded into one of
 // them ("Woman" is not "Refugee Woman" - a role is a type, not a person
-// whose short name that would be).
+// whose short name that would be), and one of them is never folded into a
+// longer name.
 func canonMapFromPool(pool map[string]bool, roles map[string]bool) map[string]string {
 	names := make([]string, 0, len(pool))
 	for n := range pool {
@@ -950,6 +951,12 @@ Reply with ONLY plain text lines, no JSON, no code fence, no commentary: one lin
 
 12: Gandalf | he
 14: Mira | she
+		if roles[short] {
+			// Nor is a role label a short form of anyone's name: "Guard"
+			// was folding into "The storm guard sergeant", who took every
+			// guard's line in the scene (Spire's Spite ch. 62).
+			continue
+		}
 15: Guard [role]
 16: Unknown
 
