@@ -45,6 +45,7 @@ func main() {
 	flash := flag.String("flash", "auto", "flash attention: auto, on, off")
 	prime := flag.Int("prime", -1, "prime only the first N of speakerattr.SystemPrompts (attribution's is first); -1 = all, like production")
 	primeState := flag.Bool("prime-state", false, "llmworker PrimeAsState: primed prompts as restored KV snapshots in a non-unified cache")
+	mtpDraft := flag.Int("mtp", 3, "MTP speculative-decoding draft length, as ttsworker's LECTABLE_SPEAKER_LLM_MTP (0 = off)")
 	kvType := flag.String("kv", "", "KV cache type: f16, q8_0 (empty = llama.cpp default)")
 	flag.Parse()
 
@@ -86,6 +87,7 @@ func main() {
 		MaxConcurrent: *maxConcurrent,
 		PrimeAsState:  *primeState,
 		NUBatch:       uint32(*ubatch),
+		MTPDraft:      *mtpDraft,
 		FlashAttn:     map[string]llamacpp.FlashAttnMode{"auto": llamacpp.FlashAttnAuto, "on": llamacpp.FlashAttnOn, "off": llamacpp.FlashAttnOff}[*flash],
 		KVType:        map[string]llamacpp.KVType{"": llamacpp.KVTypeDefault, "f16": llamacpp.KVTypeF16, "q8_0": llamacpp.KVTypeQ8_0}[*kvType],
 	})
@@ -127,6 +129,7 @@ func main() {
 			remaining   []speakerattr.ParagraphInput
 			attrErr     error
 			speakers    map[int]string
+			indexes     map[int]int
 			describes   map[int][]string
 			scareQuotes map[int]bool
 		)
@@ -142,7 +145,7 @@ func main() {
 				r.Prominent = append(append([]string(nil), roster.Prominent...), recentSpeakers(db, *bookID, ch.idx)...)
 			}
 			var pronouns map[string]string
-			speakers, _, pronouns, remaining, attrErr = client.AttributeChapter(context.Background(), bookTitle, ch.title, r, paras, nil)
+			speakers, indexes, _, pronouns, remaining, attrErr = client.AttributeChapter(context.Background(), bookTitle, ch.title, r, paras, nil)
 			if len(pronouns) > 0 {
 				fmt.Printf("pronouns: %v\n", pronouns)
 			}
@@ -199,7 +202,11 @@ func main() {
 				continue
 			}
 			speaker := speakers[p.Idx]
-			fmt.Printf("[%3d] %-20s | %s\n", p.Idx, speaker, text)
+			shown := speaker
+			if n := indexes[p.Idx]; n > 0 {
+				shown = fmt.Sprintf("%s #%d", speaker, n)
+			}
+			fmt.Printf("[%3d] %-20s | %s\n", p.Idx, shown, text)
 			known = addKnownLocal(known, speaker)
 		}
 	}

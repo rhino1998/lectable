@@ -192,6 +192,12 @@ export interface AttributionPreviewLine {
   text: string
   current: string
   proposed: string
+  /**
+   * CurrentIndex and ProposedIndex are the line's stored and proposed
+   * speaker numbers (store.Paragraph.SpeakerIndex), omitted when 0.
+   */
+  currentIndex?: number
+  proposedIndex?: number
   edited: boolean
   original?: string
   /**
@@ -1045,6 +1051,12 @@ export interface Paragraph {
    * assigned - otherwise purely informational.
    */
   speaker?: string
+  /**
+   * SpeakerIndex tells apart several unnamed people sharing Speaker's
+   * role label in one conversation ("Guard 2") - see
+   * store.Paragraph.SpeakerIndex. Omitted (0) for a line with no number.
+   */
+  speakerIndex?: number
   /**
    * Inline marks this paragraph as a split-out continuation of the
    * previous one, not the start of a new visual paragraph - see

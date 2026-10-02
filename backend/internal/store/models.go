@@ -516,6 +516,14 @@ type Paragraph struct {
 	// voice once that name is registered in the characters table AND
 	// assigned a voice - see internal/narration.Resolver.
 	Speaker string
+	// SpeakerIndex tells apart several unnamed people who share Speaker's
+	// role label (store.Character.IsRole) in one conversation: attribution
+	// answers "Guard 1", "Guard 2" (speakerattr.Client.AttributeChapter's
+	// indexes) and stores Speaker "Guard" with the number here. 0 is a
+	// line with no number. The numbers are slots, not identities - "Guard
+	// 2" in the next scene is someone else - and mean nothing on a line
+	// whose Speaker isn't a role. Every write of Speaker sets it too.
+	SpeakerIndex int
 	// Inline marks this paragraph as a split-out continuation of the
 	// immediately preceding paragraph, rather than the start of a new
 	// visual one - set at import time when a source paragraph mixing

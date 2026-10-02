@@ -357,6 +357,12 @@ data class AttributionPreviewLineDto(
     val text: String = "",
     val current: String = "",
     val proposed: String = "",
+    /**
+     * CurrentIndex and ProposedIndex are the line's stored and proposed
+     * speaker numbers (store.Paragraph.SpeakerIndex), omitted when 0.
+     */
+    val currentIndex: Int? = null,
+    val proposedIndex: Int? = null,
     val edited: Boolean = false,
     val original: String? = null,
     /**
@@ -1328,6 +1334,12 @@ data class ParagraphDto(
      * assigned - otherwise purely informational.
      */
     val speaker: String? = null,
+    /**
+     * SpeakerIndex tells apart several unnamed people sharing Speaker's
+     * role label in one conversation ("Guard 2") - see
+     * store.Paragraph.SpeakerIndex. Omitted (0) for a line with no number.
+     */
+    val speakerIndex: Int? = null,
     /**
      * Inline marks this paragraph as a split-out continuation of the
      * previous one, not the start of a new visual paragraph - see

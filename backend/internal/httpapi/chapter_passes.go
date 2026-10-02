@@ -116,7 +116,10 @@ func (inv invalidSpeakers) has(name string) bool {
 // attributionRun is one speaker-attribution pass's unpersisted result -
 // see runAttribution.
 type attributionRun struct {
-	speakers  map[int]string
+	speakers map[int]string
+	// indexes is each numbered role line's speaker number - see
+	// speakerattr.Client.AttributeChapter.
+	indexes   map[int]int
 	roleNames map[string]bool
 	pronouns  map[string]string
 	remaining []speakerattr.ParagraphInput
@@ -221,6 +224,9 @@ func (s *Server) runAttribution(ctx context.Context, book *store.Book, ch *store
 		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: inline, IsQuote: p.IsQuote && !p.ScareQuote}
 		if inputs[i].IsQuote {
 			inputs[i].Known = given[p.Idx]
+			if inputs[i].Known != "" && knownRoles[inputs[i].Known] {
+				inputs[i].KnownIndex = p.SpeakerIndex
+			}
 			inputs[i].ContextOnly = opts.contextOnly != nil && opts.contextOnly(p.Idx)
 		}
 	}
@@ -242,8 +248,8 @@ func (s *Server) runAttribution(ctx context.Context, book *store.Book, ch *store
 	// "the smith" or "he" still sees who's in the scene.
 	attrRoster = s.withChapterCast(attrRoster, ch, invalid, all)
 	attrRoster.Corrections = corrections
-	speakers, roleNames, pronouns, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, attrRoster, inputs, nil)
-	return attributionRun{speakers: speakers, roleNames: roleNames, pronouns: pronouns, remaining: remaining, err: attrErr, scope: scope, invalid: invalid}, nil
+	speakers, indexes, roleNames, pronouns, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, attrRoster, inputs, nil)
+	return attributionRun{speakers: speakers, indexes: indexes, roleNames: roleNames, pronouns: pronouns, remaining: remaining, err: attrErr, scope: scope, invalid: invalid}, nil
 }
 
 // attributeChapter runs speaker attribution (internal/speakerattr) over
@@ -333,6 +339,9 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	}
 
 	bySpeakerIdx := make(map[int]string, len(speakers))
+	// A speaker number is only stored on a line whose speaker ended up a
+	// role: it tells unnamed people of one type apart, nothing else.
+	indexes := make(map[int]int, len(run.indexes))
 	var newChars []store.Character // created by this run - see absorbShortNames
 	for idx, name := range speakers {
 		if name == "" {
@@ -368,6 +377,9 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		// The row's own spelling: the lookup is case-insensitive, so
 		// "woman" lands on an existing "Woman".
 		bySpeakerIdx[idx] = char.Name
+		if n := run.indexes[idx]; n > 0 && char.IsRole {
+			indexes[idx] = n
+		}
 		if created {
 			newChars = append(newChars, char)
 		}
@@ -385,7 +397,7 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	// model occasionally blows its whole token budget on an unclosed
 	// <think> trace and never produces JSON) shouldn't discard whatever
 	// earlier batches in *this same call* actually did succeed at.
-	if serr := s.Store.SetParagraphSpeakers(ch.ID, bySpeakerIdx); serr != nil {
+	if serr := s.Store.SetParagraphSpeakersIndexed(ch.ID, bySpeakerIdx, indexes); serr != nil {
 		return 0, nil, serr
 	}
 	// A full name met for the first time absorbs a first-name-only

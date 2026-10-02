@@ -90,7 +90,7 @@ func TestAttributeChapterAsksOnlyDialogueInParallel(t *testing.T) {
 	}
 	llm := &recordingLLM{}
 	c := NewClient(Config{}, llm)
-	out, _, _, remaining, err := c.AttributeChapter(context.Background(), "Book", "Ch", Roster{Names: []string{"Bert"}}, paras, nil)
+	out, _, _, _, remaining, err := c.AttributeChapter(context.Background(), "Book", "Ch", Roster{Names: []string{"Bert"}}, paras, nil)
 	if err != nil || len(remaining) != 0 {
 		t.Fatalf("err=%v remaining=%d", err, len(remaining))
 	}
@@ -139,7 +139,7 @@ func TestAttributeChapterTurnsDescriptionsIntoRoles(t *testing.T) {
 	for i := 0; i < 90; i++ {
 		paras = append(paras, ParagraphInput{Idx: i, Text: fmt.Sprintf("“line %d”", i), IsQuote: true})
 	}
-	out, roles, _, _, err := NewClient(Config{}, descriptorLLM{}).AttributeChapter(context.Background(), "Book", "Ch", Roster{Names: []string{"Bert"}}, paras, nil)
+	out, _, roles, _, _, err := NewClient(Config{}, descriptorLLM{}).AttributeChapter(context.Background(), "Book", "Ch", Roster{Names: []string{"Bert"}}, paras, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestAttributeChapterPromptCarriesNarratorAndScenes(t *testing.T) {
 		Scenes: []Scene{{StartIdx: 0, Location: "the flat", Present: []string{"Steve", "Kev"}}, {StartIdx: 2, Present: []string{"Steve", "Dave"}}},
 	}
 	llm := &recordingLLM{}
-	if _, _, _, _, err := NewClient(Config{}, llm).AttributeChapter(context.Background(), "Book", "Ch", roster, paras, nil); err != nil {
+	if _, _, _, _, _, err := NewClient(Config{}, llm).AttributeChapter(context.Background(), "Book", "Ch", roster, paras, nil); err != nil {
 		t.Fatal(err)
 	}
 	prompt := llm.prompts[0]
@@ -194,7 +194,7 @@ func TestAttributeChapterUsesReaderCorrections(t *testing.T) {
 		},
 	}
 	llm := &recordingLLM{}
-	got, _, _, _, err := NewClient(Config{}, llm).AttributeChapter(context.Background(), "Book", "Ch", roster, paras, nil)
+	got, _, _, _, _, err := NewClient(Config{}, llm).AttributeChapter(context.Background(), "Book", "Ch", roster, paras, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -34,6 +34,13 @@ func Open(path string) (*DuckStore, error) {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	// Temporary: adds paragraphs.speaker_index to a library created before
+	// it. Delete once the live server has started with this build (see
+	// CLAUDE.md's "No migrations in code").
+	if _, err := db.Exec(`ALTER TABLE paragraphs ADD COLUMN IF NOT EXISTS speaker_index INTEGER DEFAULT 0`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("add paragraphs.speaker_index: %w", err)
+	}
 	if _, err := db.Exec(`INSERT INTO default_voice (id) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM default_voice)`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("seed default_voice: %w", err)

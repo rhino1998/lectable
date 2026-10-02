@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"strconv"
@@ -85,8 +86,12 @@ type attributionPreviewLineDTO struct {
 	Text         string `json:"text"`
 	Current      string `json:"current"`
 	Proposed     string `json:"proposed"`
-	Edited       bool   `json:"edited"`
-	Original     string `json:"original,omitempty"`
+	// CurrentIndex and ProposedIndex are the line's stored and proposed
+	// speaker numbers (store.Paragraph.SpeakerIndex), omitted when 0.
+	CurrentIndex  int    `json:"currentIndex,omitempty"`
+	ProposedIndex int    `json:"proposedIndex,omitempty"`
+	Edited        bool   `json:"edited"`
+	Original      string `json:"original,omitempty"`
 	// Given is a corrected line the run was shown with its speaker
 	// (?given=), so Proposed is just the reader's value back - leave it
 	// out of any score.
@@ -161,6 +166,18 @@ func (s *Server) handlePreviewAttribution(w http.ResponseWriter, r *http.Request
 			original[e.ParagraphIdx] = e.Original
 		}
 	}
+	// Who attributeChapter would store as a role: the roster's own flags,
+	// then, for a name this run introduces, the same check it applies.
+	roster, err := s.Store.ListCharacters(run.scope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	isRole := map[string]bool{}
+	maps.Copy(isRole, s.realRoles(book, run.roleNames))
+	for _, c := range roster {
+		isRole[c.Name] = c.IsRole
+	}
 	out := attributionPreviewResponse{Lines: []attributionPreviewLineDTO{}}
 	if run.err != nil {
 		out.Error = run.err.Error()
@@ -176,7 +193,11 @@ func (s *Server) handlePreviewAttribution(w http.ResponseWriter, r *http.Request
 		if run.invalid.has(proposed) || speakerattr.IsGroupSpeaker(proposed) {
 			proposed = "Unknown"
 		}
-		line := attributionPreviewLineDTO{ParagraphIdx: p.Idx, Text: p.Text, Current: speakerLabel(p.Speaker), Proposed: speakerLabel(proposed)}
+		line := attributionPreviewLineDTO{ParagraphIdx: p.Idx, Text: p.Text, Current: speakerLabel(p.Speaker), Proposed: speakerLabel(proposed), CurrentIndex: p.SpeakerIndex}
+		// Like attributeChapter: a number only counts on a role's line.
+		if isRole[proposed] {
+			line.ProposedIndex = run.indexes[p.Idx]
+		}
 		if o, ok := original[p.Idx]; ok {
 			line.Edited, line.Original = true, speakerLabel(o)
 			line.Given = opts.given != nil && opts.given(p.Idx)

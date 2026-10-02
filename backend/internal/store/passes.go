@@ -122,7 +122,7 @@ var PassResets = map[string]PassReset{
 	// own voice, so only a real character's lines have stale audio.
 	"attribution": {
 		Flag:     "attribution",
-		Set:      "speaker = ''",
+		Set:      "speaker = '', speaker_index = 0",
 		Where:    "speaker <> '' AND NOT scare_quote",
 		Affected: "speaker NOT IN ('', 'Narrator') AND NOT scare_quote",
 	},

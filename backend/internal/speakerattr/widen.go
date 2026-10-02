@@ -105,7 +105,10 @@ func (c *Client) AttributeWithWideningContext(ctx context.Context, bookTitle, ch
 				if !ok {
 					continue
 				}
-				speaker, _ := sanitizeSpeaker(firstPersonAnswer(a.Speaker, roster.FirstPerson), a.Role)
+				// The speaker number is dropped: a line re-asked on its own
+				// has no conversation to be numbered within.
+				answer, _ := roleNumber(firstPersonAnswer(a.Speaker, roster.FirstPerson), a.Role, roster.Roles, resolver)
+				speaker, _ := sanitizeSpeaker(answer, a.Role)
 				raw[idx] = disallowNarratorForDialogue(all[pos].IsQuote, resolver.Canonical(speaker))
 			}
 			roles := maps.Clone(roster.Roles)

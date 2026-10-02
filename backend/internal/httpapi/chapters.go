@@ -136,6 +136,10 @@ type paragraphDTO struct {
 	// internal/narration.Resolver) and the named character has a voice
 	// assigned - otherwise purely informational.
 	Speaker string `json:"speaker,omitempty"`
+	// SpeakerIndex tells apart several unnamed people sharing Speaker's
+	// role label in one conversation ("Guard 2") - see
+	// store.Paragraph.SpeakerIndex. Omitted (0) for a line with no number.
+	SpeakerIndex int `json:"speakerIndex,omitempty"`
 	// Inline marks this paragraph as a split-out continuation of the
 	// previous one, not the start of a new visual paragraph - see
 	// store.Paragraph.Inline. The frontend should render consecutive
@@ -403,6 +407,7 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 			Idx:                 p.Idx,
 			Text:                p.Text,
 			Speaker:             p.Speaker,
+			SpeakerIndex:        p.SpeakerIndex,
 			Inline:              p.Inline,
 			IsQuote:             p.IsQuote,
 			ScareQuote:          p.ScareQuote,

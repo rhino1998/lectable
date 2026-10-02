@@ -1586,3 +1586,43 @@ func TestCoSpeakersForBooks(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+// TestParagraphSpeakerIndex covers a role line's speaker number: stored with
+// the speaker, and cleared by any later write of the speaker.
+func TestParagraphSpeakerIndex(t *testing.T) {
+	s := openTestStore(t)
+	bookID, chapterID := oneChapterBook(t, s, "", 0, "“Halt.”", "“Who goes there?”", "“Me.”")
+	if err := s.SetParagraphSpeakersIndexed(chapterID, map[int]string{0: "Guard", 1: "Guard", 2: "Bert"}, map[int]int{0: 1, 1: 2}); err != nil {
+		t.Fatalf("SetParagraphSpeakersIndexed: %v", err)
+	}
+	indexes := func() []int {
+		t.Helper()
+		paragraphs, err := s.ListParagraphsRaw(chapterID)
+		if err != nil {
+			t.Fatalf("ListParagraphsRaw: %v", err)
+		}
+		out := make([]int, len(paragraphs))
+		for i, p := range paragraphs {
+			out[i] = p.SpeakerIndex
+		}
+		return out
+	}
+	if got := indexes(); !slices.Equal(got, []int{1, 2, 0}) {
+		t.Fatalf("indexes = %v, want [1 2 0]", got)
+	}
+	all, err := s.ListParagraphsRawForBook(bookID)
+	if err != nil || len(all) != 3 || all[1].SpeakerIndex != 2 {
+		t.Fatalf("ListParagraphsRawForBook = %+v, %v; want paragraph 1 at index 2", all, err)
+	}
+
+	// A plain re-attribution and a reader's single-line fix both clear it.
+	if err := s.SetParagraphSpeakers(chapterID, map[int]string{0: "Guard"}); err != nil {
+		t.Fatalf("SetParagraphSpeakers: %v", err)
+	}
+	if err := s.SetParagraphSpeaker(all[1].ID, "Thug"); err != nil {
+		t.Fatalf("SetParagraphSpeaker: %v", err)
+	}
+	if got := indexes(); !slices.Equal(got, []int{0, 0, 0}) {
+		t.Fatalf("indexes after rewriting the speakers = %v, want all 0", got)
+	}
+}

@@ -368,6 +368,9 @@ type ParagraphInput struct {
 	// (who the conversation is between, whose turn came before), and Known
 	// is its answer.
 	Known string
+	// KnownIndex is Known's speaker number when Known is a role label and
+	// the reader's line carries one (store.Paragraph.SpeakerIndex), else 0.
+	KnownIndex int
 	// ContextOnly shows a dialogue line to the model without asking about
 	// it or returning an answer for it - surrounding context for a run
 	// that only re-asks some of a chapter's lines (httpapi's
@@ -388,6 +391,11 @@ const maxBatchParagraphs = 40
 // the job queue already runs one at a time, in chapter order) keeps both
 // busy instead of leaving one idle.
 const attributeParallelBatches = 2
+
+// seamContextLines is how far either side of a batch seam AttributeChapter
+// looks for a conversation between numbered roles running across it, and
+// how many of the earlier batch's lines the re-asked batch is shown.
+const seamContextLines = 12
 
 // batchContextLines is how many paragraphs before each batch are shown as
 // unanswered context, so a batch's first lines aren't cut off from the
@@ -452,6 +460,13 @@ const jsonPassMaxTokens = 4096
 // least once - a caller persists it via store.UpsertCharacter's own isRole
 // parameter the same way it persists out via Store.SetParagraphSpeakers.
 //
+// indexes, also returned alongside out, is the speaker number of each line
+// answered as a numbered role ("Guard 2 [role]" - out holds "Guard", indexes
+// 2): the model numbers several unnamed people of one type talking in the
+// same conversation so each can get their own voice. The numbers are only
+// meaningful within a conversation - "Guard 2" here and in the next scene
+// are not the same person. A line with no number has no entry.
+//
 // pronouns, also returned alongside out, is each final speaker's
 // pronouns (see store.Character.Pronouns) where this call's own lines
 // settled on one by strict majority - the model appends " | he"/" | she"/
@@ -489,9 +504,10 @@ const jsonPassMaxTokens = 4096
 // character's own name when it's one of their aliases or a case variant.
 // Once every batch is done, RefineWithSpeechTags corrects the result
 // against explicit speech tags in the chapter text - see refine.go.
-func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle string, roster Roster, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int]string, roleNames map[string]bool, pronouns map[string]string, remaining []ParagraphInput, err error) {
+func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle string, roster Roster, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int]string, indexes map[int]int, roleNames map[string]bool, pronouns map[string]string, remaining []ParagraphInput, err error) {
 	knownCharacters := roster.Names
 	out = make(map[int]string, len(paragraphs))
+	numberByIdx := make(map[int]int) // the model's own speaker number per line, see roleNumber
 	isRoleByIdx := make(map[int]bool, len(paragraphs))
 	pronounsByIdx := make(map[int]string, len(paragraphs))
 	known := append([]string(nil), knownCharacters...)
@@ -505,8 +521,9 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		isQuoteByIdx[p.Idx] = p.IsQuote
 	}
 
-	finish := func(out map[int]string) (map[int]string, map[string]bool, map[string]string, []ParagraphInput, error) {
+	finish := func(out map[int]string) (map[int]string, map[int]int, map[string]bool, map[string]string, []ParagraphInput, error) {
 		canon := canonicalizeSpeakerNames(knownCharacters, out, knownIsRole)
+		answered := maps.Clone(canon)
 		// Votes go to the name the model itself answered (canonicalized),
 		// before speech-tag refinement can move a line to someone else -
 		// the pronouns were its judgment about that speaker, not theirs.
@@ -524,6 +541,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		allPronouns := maps.Clone(pronouns)
 		maps.Copy(allPronouns, roster.Pronouns)
 		canon, _ = RefinePronounTags(paragraphs, canon, tagResolver, allPronouns)
+		refined := maps.Clone(canon)
 		roleNames = make(map[string]bool, len(isRoleByIdx))
 		for idx, isRole := range isRoleByIdx {
 			if !isRole {
@@ -547,7 +565,40 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 				roleNames[name] = true
 			}
 		}
-		return canon, roleNames, pronouns, remaining, err
+		// A number stays with the line only while the line is still the
+		// role answer it came with: a tag refinement that moved the line
+		// to someone else took it from a different speaker.
+		indexes := make(map[int]int, len(numberByIdx))
+		for idx, n := range numberByIdx {
+			if roles[canon[idx]] && refined[idx] == answered[idx] {
+				indexes[idx] = n
+			}
+		}
+		// A role label that carries its own number - a chapter's cast lists
+		// "Thug 1" and "Thug 2", and older rosters hold such names - is that
+		// number of the plain label.
+		nameResolver := NewSpeakerNameResolver(knownCharacters, roster.Aliases)
+		for idx, name := range canon {
+			if !roles[name] {
+				continue
+			}
+			label, n := SplitRoleIndex(name)
+			if one, ok := splitRoleOne(name, maps.Keys(roles)); ok {
+				label, n = one, 1
+			}
+			if n > 0 {
+				label = nameResolver.Canonical(label)
+				canon[idx], indexes[idx] = label, n
+				roleNames[label] = true
+			}
+		}
+		for name := range roleNames {
+			if _, n := SplitRoleIndex(name); n > 0 {
+				delete(roleNames, name)
+			}
+		}
+		shareParagraphNumbers(paragraphs, canon, indexes)
+		return canon, indexes, roleNames, pronouns, remaining, err
 	}
 
 	var starts []int
@@ -569,18 +620,38 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		stopAt     = len(starts)
 		firstErr   error
 	)
-	sem := make(chan struct{}, attributeParallelBatches)
-	for bi, start := range starts {
-		if bi > 0 && shouldPause != nil && shouldPause() {
-			mu.Lock()
-			stopAt = min(stopAt, bi)
-			mu.Unlock()
-			break
+	// resolve is one raw answer's speaker and speaker number (roleNumber).
+	resolve := func(idx int, a Attributed) (speaker string, role bool, number int) {
+		answer, number := roleNumber(firstPersonAnswer(a.Speaker, roster.FirstPerson), a.Role, knownIsRole, resolver)
+		speaker, role = sanitizeSpeaker(answer, a.Role)
+		speaker = disallowNarratorForDialogue(isQuoteByIdx[idx], resolver.Canonical(speaker))
+		if isSentinel(speaker) {
+			return speaker, false, 0
 		}
-		sem <- struct{}{}
-		mu.Lock()
-		failed := firstErr != nil
-		batchRoster := Roster{
+		return speaker, role, number
+	}
+	// record stores one line's answer. Callers hold mu.
+	record := func(idx int, a Attributed) {
+		speaker, role, number := resolve(idx, a)
+		out[idx] = speaker
+		delete(numberByIdx, idx)
+		if number > 0 {
+			numberByIdx[idx] = number
+		}
+		pronounsByIdx[idx] = a.Pronouns
+		if !isSentinel(speaker) && !slices.Contains(known, speaker) {
+			discovered = append(discovered, speaker)
+		}
+		known = addKnown(known, speaker)
+		isRoleByIdx[idx] = role
+		if role {
+			knownIsRole[speaker] = true
+		}
+	}
+	// batchRoster is the roster a batch launched now is shown. Callers
+	// hold mu.
+	batchRoster := func() Roster {
+		return Roster{
 			Names:        append([]string(nil), known...),
 			Descriptions: roster.Descriptions,
 			Roles:        maps.Clone(knownIsRole),
@@ -594,18 +665,35 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 			FirstPerson: roster.FirstPerson,
 			Corrections: roster.Corrections,
 		}
-		mu.Unlock()
-		if failed {
-			<-sem
-			break
-		}
-		end := min(start+maxBatchParagraphs, len(paragraphs))
+	}
+	batchAnswer := func(start, end int) map[int]bool {
 		answer := map[int]bool{}
 		for _, p := range paragraphs[start:end] {
 			if p.IsQuote && p.Known == "" && !p.ContextOnly {
 				answer[p.Idx] = true
 			}
 		}
+		return answer
+	}
+	sem := make(chan struct{}, attributeParallelBatches)
+	for bi, start := range starts {
+		if bi > 0 && shouldPause != nil && shouldPause() {
+			mu.Lock()
+			stopAt = min(stopAt, bi)
+			mu.Unlock()
+			break
+		}
+		sem <- struct{}{}
+		mu.Lock()
+		failed := firstErr != nil
+		batchRoster := batchRoster()
+		mu.Unlock()
+		if failed {
+			<-sem
+			break
+		}
+		end := min(start+maxBatchParagraphs, len(paragraphs))
+		answer := batchAnswer(start, end)
 		lines := paragraphs[max(0, start-batchContextLines):end]
 		wg.Add(1)
 		go func() {
@@ -622,23 +710,50 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 				return
 			}
 			for idx, a := range result {
-				speaker, role := sanitizeSpeaker(firstPersonAnswer(a.Speaker, roster.FirstPerson), a.Role)
-				speaker = resolver.Canonical(speaker)
-				speaker = disallowNarratorForDialogue(isQuoteByIdx[idx], speaker)
-				out[idx] = speaker
-				pronounsByIdx[idx] = a.Pronouns
-				if !isSentinel(speaker) && !slices.Contains(known, speaker) {
-					discovered = append(discovered, speaker)
-				}
-				known = addKnown(known, speaker)
-				if role && !isSentinel(speaker) {
-					isRoleByIdx[idx] = true
-					knownIsRole[speaker] = true
-				}
+				record(idx, a)
 			}
 		}()
 	}
 	wg.Wait()
+
+	// Numbered roles across a batch seam. Batches run side by side, so the
+	// one after a seam never saw which guard was "Guard 2" just before it
+	// and starts again at 1 - the same man changing voice mid-conversation.
+	// Where numbered role lines end one batch and that role speaks early in
+	// the next, the next is asked again with the earlier lines shown as
+	// settled, and its answers for that role replace the first ones. In
+	// order, so each seam builds on the one before. One extra call per such
+	// seam; a failed one keeps the first answers.
+	for bi := 1; bi < min(stopAt, len(starts)) && ctx.Err() == nil; bi++ {
+		start := starts[bi]
+		end := min(start+maxBatchParagraphs, len(paragraphs))
+		tail := append([]ParagraphInput(nil), paragraphs[max(0, start-seamContextLines):start]...)
+		labels := map[string]bool{}
+		for i, p := range tail {
+			if sp := out[p.Idx]; p.IsQuote && p.Known == "" && sp != "" && !isSentinel(sp) {
+				tail[i].Known, tail[i].KnownIndex = sp, numberByIdx[p.Idx]
+				if numberByIdx[p.Idx] > 0 {
+					labels[sp] = true
+				}
+			}
+		}
+		continues := false
+		for _, p := range paragraphs[start:min(start+seamContextLines, end)] {
+			continues = continues || labels[out[p.Idx]]
+		}
+		if !continues {
+			continue
+		}
+		result, seamErr := c.attributeBatch(ctx, bookTitle, chapterTitle, batchRoster(), append(tail, paragraphs[start:end]...), batchAnswer(start, end))
+		if seamErr != nil {
+			continue
+		}
+		for idx, a := range result {
+			if speaker, _, _ := resolve(idx, a); labels[speaker] || labels[out[idx]] {
+				record(idx, a)
+			}
+		}
+	}
 	if stopAt < len(starts) {
 		remaining = paragraphs[starts[stopAt]:]
 	}
@@ -651,13 +766,17 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 			out[p.Idx] = p.Known
 		}
 	}
-	canon, roleNames, pronouns, remaining, err := finish(out)
+	canon, indexes, roleNames, pronouns, remaining, err := finish(out)
 	for _, p := range paragraphs {
 		if p.Known != "" {
 			canon[p.Idx] = p.Known
+			delete(indexes, p.Idx)
+			if p.KnownIndex > 0 {
+				indexes[p.Idx] = p.KnownIndex
+			}
 		}
 	}
-	return canon, roleNames, pronouns, remaining, err
+	return canon, indexes, roleNames, pronouns, remaining, err
 }
 
 // cleanDescribes trims and dedupes a raw "describes" list from one line's
@@ -832,6 +951,12 @@ func canonMapFromPool(pool map[string]bool, roles map[string]bool) map[string]st
 	foldedCanon := make(map[string]string, len(foldedNames))
 	for _, short := range foldedNames {
 		foldedCanon[short] = short
+		if roles[short] {
+			// Nor is a role label a short form of anyone's name: "Guard"
+			// was folding into "The storm guard sergeant", who took every
+			// guard's line in the scene (Spire's Spite ch. 62).
+			continue
+		}
 		for _, long := range foldedNames {
 			if long == short || roles[long] {
 				continue
@@ -951,14 +1076,10 @@ Reply with ONLY plain text lines, no JSON, no code fence, no commentary: one lin
 
 12: Gandalf | he
 14: Mira | she
-		if roles[short] {
-			// Nor is a role label a short form of anyone's name: "Guard"
-			// was folding into "The storm guard sergeant", who took every
-			// guard's line in the scene (Spire's Spite ch. 62).
-			continue
-		}
 15: Guard [role]
 16: Unknown
+21: Sailor 1 [role]
+22: Sailor 2 [role]
 
 Every "(who?)" line gets exactly one reply line. Lines without "(who?)" - narration, and dialogue outside the part you're asked about - are context only and never appear in your reply. Each number must be copied exactly from the number printed before that line.
 Rules:
@@ -970,6 +1091,7 @@ Rules:
 - A bare pronoun ("I"/"me"/"myself"/"he"/"she"/"him"/"her"/"they"/"them") is never a valid speaker value, even when context makes the referent obvious to you - resolve it to that character's actual proper name instead, or use exactly "Unknown" if the name genuinely can't be determined from context.
 - A character's name appearing INSIDE the quoted words themselves does not mean that character is speaking - it almost always means the opposite: someone else is addressing them by name (e.g. "Well, Jake, I wasn't expecting that," or "Thank you, Jake," or a bare "Jake!") is being said TO Jake by another character, not BY Jake. Never pick a name as the speaker just because it's mentioned, vocative, or exclaimed inside the line - identify the actual speaker from the surrounding narration/context, and if that's genuinely unclear, use "Unknown" rather than defaulting to whoever's name appears in the text.
 - If a dialogue line's speaker isn't a specific named individual, but the surrounding narration clearly gives a generic function/type for whoever's speaking instead (e.g. "the guard demanded," "a merchant called out," "one of the thugs replied"), use that type as speaker, followed by " [role]" - a short, generic, capitalized label with no article ("Guard", "Merchant", "Thug", never "a guard" or "the merchant"). A role label doesn't claim this is the same specific person every time it's used, only the same TYPE of minor, unindividuated speaker filling that function - reuse the same role label for every such speaker of that type throughout, the same way you'd reuse a real name, but understand it may cover several different unnamed people rather than one consistent individual. Only fall back to "Unknown" when even a generic type can't be determined. Never add " [role]" for a real named individual, including one only ever addressed by a title/epithet that clearly identifies one specific known person (e.g. "the captain" for a single established Captain Mocar) - that's a real individual, not a role, even though it reads like one; " [role]" is only for a genuinely interchangeable type.
+- When two or more DIFFERENT unnamed people of the same type speak in the same conversation (two guards questioning someone, sailors calling to each other, several villagers answering in turn), number them so their lines can be told apart: "Guard 1 [role]", "Guard 2 [role]" - 1 for the first of them to speak, 2 for the next new one, and so on, each keeping their own number for every one of their lines in that conversation. The narration usually signals the switch ("the other guard said", "the taller one", "his companion", "a second voice", "the first man replied"). A type with only one such speaker in the conversation gets no number - plain "Guard [role]" - and a named character never gets one. The numbers only tell people apart within one conversation; they start again at 1 in the next. An entry in "Known characters" that already ends in a number ("Thug 1 [role]", "Thug 2 [role]") is one of several such people in this chapter: answer with it exactly as listed and never add a second number to it. A line shown with a numbered speaker in place of "(who?)" ("12 (Guard 2): …") tells you who that number is - keep the same numbers for the same people in the lines you answer.
 - If a dialogue line's speaker is genuinely unclear from context, use exactly "Unknown" rather than guessing.
 - Pronouns: after a named speaker, add " | " and ONE word - he, she, they, or it - for the pronoun the text uses for that character (e.g. "she said", "his voice", "the old man", "the queen"), or the pronouns listed for them in "Known characters". Omit the " | ..." part entirely when nothing establishes it - never guess from the name alone. Never add pronouns after "Unknown" or a " [role]" label. Pronouns can also help identify the speaker: a tag like "she said" can't belong to a character listed as "he/him".
 - A blank line in "Lines:" marks a real paragraph break. Lines with NO blank line between them come from one continuous original paragraph - often a quote, then a short "X said" narration tag, then more dialogue right after it, but just as often a quote followed by a longer run of action/description/thought (several sentences, not just a short tag) before the next quote. In either case, the quote before that in-between narration and the quote after it are almost always the SAME speaker - the narration is a beat inside one character's continuous turn, not a hand-off to someone else, no matter how long that beat runs. This holds even when the in-between narration mentions another character by name or describes something that other character does - a passing mention or reaction shot does NOT make that other character the speaker of the quote that follows. Only attribute the quote after the gap to a different speaker when the in-between narration itself explicitly says someone else is now speaking (e.g. a tag like "Jake cut in" or "she interrupted" naming a different character than whoever spoke the line before it).
@@ -1362,7 +1484,11 @@ func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle
 		case answer[p.Idx]:
 			fmt.Fprintf(&user, "%d (who?): %s\n", p.Idx, oneLine(p.Text))
 		case p.Known != "" && p.IsQuote:
-			fmt.Fprintf(&user, "%d (%s): %s\n", p.Idx, p.Known, oneLine(p.Text))
+			known := p.Known
+			if p.KnownIndex > 0 {
+				known = fmt.Sprintf("%s %d", p.Known, p.KnownIndex)
+			}
+			fmt.Fprintf(&user, "%d (%s): %s\n", p.Idx, known, oneLine(p.Text))
 		default:
 			fmt.Fprintf(&user, "%d: %s\n", p.Idx, oneLine(p.Text))
 		}

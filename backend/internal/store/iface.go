@@ -138,6 +138,7 @@ type Store interface {
 	ParagraphEdits(bookID, field string) ([]ParagraphEdit, error)
 	EditedParagraphIdx(chapterID, field string) (map[int]bool, error)
 	SetParagraphSpeakers(chapterID string, bySpeakerIdx map[int]string) error
+	SetParagraphSpeakersIndexed(chapterID string, bySpeakerIdx map[int]string, indexes map[int]int) error
 	SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error
 	SpeakerLineCounts(bookID string) (map[string]int, error)
 	SyncFingerprints(bookID string) (book string, chapters map[int]string, err error)

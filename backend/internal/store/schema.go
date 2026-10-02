@@ -153,6 +153,9 @@ CREATE TABLE IF NOT EXISTS paragraphs (
 	-- voice; anything else is a character name - see Paragraph.Speaker and
 	-- internal/narration.Resolver.
 	speaker TEXT NOT NULL DEFAULT '',
+	-- Which of several unnamed people sharing a role label this line is
+	-- (attribution's "Guard 2"), 0 for none - see Paragraph.SpeakerIndex.
+	speaker_index INTEGER NOT NULL DEFAULT 0,
 	-- Set at import time for a segment split out of a mixed narration/
 	-- dialogue source paragraph - see Paragraph.Inline.
 	inline BOOLEAN NOT NULL DEFAULT false,

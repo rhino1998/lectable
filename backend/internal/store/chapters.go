@@ -241,7 +241,7 @@ func (s *DuckStore) GetChapterByIdx(bookID string, idx int) (*Chapter, error) {
 // applicable voice_id themselves and batch-fetch status via
 // ParagraphAudioStatuses.
 func (s *DuckStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
-	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
+	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +250,7 @@ func (s *DuckStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 	var out []Paragraph
 	for rows.Next() {
 		var p Paragraph
-		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis); err != nil {
+		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -265,7 +265,7 @@ func (s *DuckStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 // at a time.
 func (s *DuckStore) ListParagraphsRawForBook(bookID string) ([]Paragraph, error) {
 	rows, err := s.db.Query(`
-		SELECT p.id, p.chapter_id, p.idx, p.position, p.content, p.speaker, p.inline, p.is_quote, p.scare_quote, p.emotion
+		SELECT p.id, p.chapter_id, p.idx, p.position, p.content, p.speaker, p.speaker_index, p.inline, p.is_quote, p.scare_quote, p.emotion
 		FROM paragraphs p
 		JOIN chapters c ON c.id = p.chapter_id
 		WHERE c.book_id = ?
@@ -278,7 +278,7 @@ func (s *DuckStore) ListParagraphsRawForBook(bookID string) ([]Paragraph, error)
 	var out []Paragraph
 	for rows.Next() {
 		var p Paragraph
-		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.Emotion); err != nil {
+		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.Emotion); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -292,8 +292,8 @@ func (s *DuckStore) ListParagraphsRawForBook(bookID string) ([]Paragraph, error)
 // paragraph belongs to before it can even determine which voice applies.
 func (s *DuckStore) GetParagraph(id string) (*Paragraph, error) {
 	var p Paragraph
-	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE id = ?`, id).
-		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis)
+	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE id = ?`, id).
+		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -345,8 +345,16 @@ func (s *DuckStore) ParagraphsDescribing(bookIDs []string, name string) ([]Speak
 // paragraphs, keyed by paragraph Idx (what internal/speakerattr's
 // input/output both use) rather than id - the caller works from the same
 // ListParagraphsRaw slice speakerattr was fed and never needs paragraph
-// ids in between.
+// ids in between. Every line written loses its speaker number - see
+// SetParagraphSpeakersIndexed.
 func (s *DuckStore) SetParagraphSpeakers(chapterID string, bySpeakerIdx map[int]string) error {
+	return s.SetParagraphSpeakersIndexed(chapterID, bySpeakerIdx, nil)
+}
+
+// SetParagraphSpeakersIndexed is SetParagraphSpeakers plus each line's
+// speaker number (Paragraph.SpeakerIndex), keyed like bySpeakerIdx; a line
+// with no entry in indexes gets 0.
+func (s *DuckStore) SetParagraphSpeakersIndexed(chapterID string, bySpeakerIdx map[int]string, indexes map[int]int) error {
 	if len(bySpeakerIdx) == 0 {
 		return nil
 	}
@@ -356,7 +364,7 @@ func (s *DuckStore) SetParagraphSpeakers(chapterID string, bySpeakerIdx map[int]
 	}
 	defer tx.Rollback()
 	for idx, speaker := range bySpeakerIdx {
-		if _, err := tx.Exec(`UPDATE paragraphs SET speaker = ? WHERE chapter_id = ? AND idx = ?`, speaker, chapterID, idx); err != nil {
+		if _, err := tx.Exec(`UPDATE paragraphs SET speaker = ?, speaker_index = ? WHERE chapter_id = ? AND idx = ?`, speaker, indexes[idx], chapterID, idx); err != nil {
 			return fmt.Errorf("set speaker for paragraph idx %d: %w", idx, err)
 		}
 	}
@@ -449,7 +457,7 @@ func (s *DuckStore) SetParagraphQuote(chapterID string, idx int, quote bool) (bo
 	if quote {
 		speaker = "Unknown"
 	}
-	res, err := s.db.Exec(`UPDATE paragraphs SET is_quote = ?, speaker = ?, scare_quote = false,
+	res, err := s.db.Exec(`UPDATE paragraphs SET is_quote = ?, speaker = ?, speaker_index = 0, scare_quote = false,
 		emotion = '', describes_characters = '[]'
 		WHERE chapter_id = ? AND idx = ? AND is_quote <> ?`, quote, speaker, chapterID, idx, quote)
 	if err != nil {
@@ -560,9 +568,10 @@ func (s *DuckStore) SetParagraphPronunciation(chapterID string, byIdx map[int][]
 // paragraph currently attributed to one name, across a whole book) - for
 // correcting one individual misattributed line from the Speakers page's
 // per-character "appearances" list without touching any other paragraph
-// that happens to share the same (wrong) speaker.
+// that happens to share the same (wrong) speaker. The line's speaker
+// number (Paragraph.SpeakerIndex) is cleared: it belonged to the old value.
 func (s *DuckStore) SetParagraphSpeaker(paragraphID, speaker string) error {
-	_, err := s.db.Exec(`UPDATE paragraphs SET speaker = ? WHERE id = ?`, speaker, paragraphID)
+	_, err := s.db.Exec(`UPDATE paragraphs SET speaker = ?, speaker_index = 0 WHERE id = ?`, speaker, paragraphID)
 	return err
 }
 
@@ -589,7 +598,7 @@ func (s *DuckStore) ClearBookSpeakers(bookID string) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(
-		`UPDATE paragraphs SET speaker = '' WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`,
+		`UPDATE paragraphs SET speaker = '', speaker_index = 0 WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`,
 		bookID,
 	); err != nil {
 		return err
