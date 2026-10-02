@@ -272,7 +272,11 @@ export function LibraryPage() {
           type="file"
           accept=".epub"
           hidden
-          onChange={(e) => handleFileChosen(e.target.files?.[0])}
+          onChange={(e) => {
+            handleFileChosen(e.target.files?.[0])
+            // Cleared so choosing the same file again (a retry) still fires onChange.
+            e.target.value = ''
+          }}
         />
       </div>
 
