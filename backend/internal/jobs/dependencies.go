@@ -630,6 +630,35 @@ func (m *Manager) EnqueueEmotionVariant(bookID, speaker string, base voicerefs.B
 	m.pushTask(m.newVariantTask(TierUrgent, bookID, speaker, base, emotion))
 }
 
+// RunReferenceClipAt renders base's reference clip if it isn't on disk
+// (newReferenceClipTask) and blocks until that's done - a bulk group
+// pre-rendering the voices a book uses. Joins a render already queued for
+// the preset, the lazy dependency path's included.
+func (m *Manager) RunReferenceClipAt(ctx context.Context, tier int, bookID, label string, base voicerefs.BaseClip) error {
+	return m.runProvisionTask(ctx, m.newReferenceClipTask(tier, bookID, label, base))
+}
+
+// RunEmotionVariantAt is RunReferenceClipAt for one of base's emotion
+// variants (newVariantTask).
+func (m *Manager) RunEmotionVariantAt(ctx context.Context, tier int, bookID, speaker string, base voicerefs.BaseClip, emotion string) error {
+	return m.runProvisionTask(ctx, m.newVariantTask(tier, bookID, speaker, base, emotion))
+}
+
+func (m *Manager) runProvisionTask(ctx context.Context, t *task) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	resultCh := make(chan provisionOutcome, 1)
+	t.provisionWaiters = []chan provisionOutcome{resultCh}
+	m.pushTask(t)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case out := <-resultCh:
+		return out.err
+	}
+}
+
 // attributionOrderDependency makes chapter t.chapterIdx-1 of the same
 // book's own speaker attribution (KindSpeakerAttribution) a hard dependency
 // of t's own. httpapi.attributeChapter reads its "already known characters"

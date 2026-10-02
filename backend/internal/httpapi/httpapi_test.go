@@ -18,6 +18,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker/ttsworkertest"
+	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 )
 
 // newTestServer wires a full httpapi.Server against a temp DuckDB store, a
@@ -1163,5 +1164,57 @@ func TestSetParagraphEmotion(t *testing.T) {
 	}
 	if got := emotionOf(0); got != "" {
 		t.Fatalf("emotion after clear = %q, want neutral", got)
+	}
+}
+
+// The "used_voices" bulk action renders what the voices a book's lines use
+// still lack - here the book's own voice's reference clip, and the variant
+// of the one emotion its dialogue carries - and reports nothing to do once
+// they exist.
+func TestBulkUsedVoices(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	bookID, _, err := s.CreateBook("Test Book", "Test Author", "en", "", "", 0, []store.ChapterInput{{
+		Title: "Chapter One",
+		Blocks: []store.BlockInput{
+			{Kind: store.BlockText, Text: "“Get out!”", IsQuote: true},
+			{Kind: store.BlockText, Text: "she shouted.", Inline: true},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("CreateBook: %v", err)
+	}
+	ch, err := s.GetChapterByIdx(bookID, 0)
+	if err != nil || ch == nil {
+		t.Fatalf("GetChapterByIdx: %v", err)
+	}
+	if err := s.SetParagraphEmotions(ch.ID, map[int]string{0: "angry"}); err != nil {
+		t.Fatalf("SetParagraphEmotions: %v", err)
+	}
+	book, err := srv.Store.GetBook(bookID)
+	if err != nil {
+		t.Fatalf("GetBook: %v", err)
+	}
+	voice, err := srv.Narration.BookVoice(book)
+	if err != nil {
+		t.Fatalf("BookVoice: %v", err)
+	}
+
+	url := ts.URL + "/api/books/" + bookID + "/bulk/used_voices"
+	var queued queuedResponse
+	if resp := doJSON(t, http.MethodPost, url, nil, &queued); resp.StatusCode != http.StatusAccepted || queued.Queued != 1 {
+		t.Fatalf("first run: status %d, queued %d, want 202 and 1", resp.StatusCode, queued.Queued)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !voicerefs.VariantExists(srv.DataDir, voice.PresetID, "angry") {
+		if time.Now().After(deadline) {
+			t.Fatalf("angry variant of preset %s never rendered", voice.PresetID)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(audiopath.VoicePresetRefFile(srv.DataDir, voice.PresetID)); err != nil {
+		t.Fatalf("base reference clip: %v", err)
+	}
+	if resp := doJSON(t, http.MethodPost, url, nil, &queued); resp.StatusCode != http.StatusAccepted || queued.Queued != 0 {
+		t.Fatalf("second run: status %d, queued %d, want 202 and 0", resp.StatusCode, queued.Queued)
 	}
 }

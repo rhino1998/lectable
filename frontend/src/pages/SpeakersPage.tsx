@@ -6,6 +6,7 @@ import {
   RiRefreshLine,
   RiUserHeartLine,
   RiUserVoiceLine,
+  RiVoiceprintLine,
 } from 'react-icons/ri'
 import {
   useBulkAction,
@@ -355,6 +356,9 @@ export function SpeakersPage() {
   const runGenerateVoicesAll = () => runBulk('voices', 'rest')
   // Every character, forcing a fresh render whether or not they have a voice.
   const runRegenerateVoicesAll = () => runBulk('voices', 'all')
+  // Only the voices this book's own lines use, but everything each still
+  // lacks: the voice itself, its reference clip, its emotion variants.
+  const runProvisionUsedVoices = () => runBulk('used_voices', 'rest')
 
   // The character roster (names, characterizations, voice assignments,
   // and their auto-created voice presets) is shared across a book's whole
@@ -484,6 +488,14 @@ export function SpeakersPage() {
                   <RiRefreshLine className={bulkRunning.has('voices') ? 'spin' : undefined} />
                 </button>
               )}
+              <button
+                className="icon-action-button"
+                onClick={runProvisionUsedVoices}
+                disabled={bulkRunning.has('used_voices')}
+                title="Provision used voices — for every voice this book's lines use, queue whatever is still missing (a voice for a character without one, its reference clip, and the emotion variants its lines need) so generation doesn't wait on them"
+              >
+                <RiVoiceprintLine className={bulkRunning.has('used_voices') ? 'spin' : undefined} />
+              </button>
               <button
                 className="icon-action-button"
                 onClick={runDedupe}

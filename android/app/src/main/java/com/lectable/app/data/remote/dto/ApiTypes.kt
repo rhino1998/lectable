@@ -71,7 +71,8 @@ object BulkActions {
     const val GENERATE: BulkAction = "generate"
     const val CHARACTERIZATION: BulkAction = "characterization"
     const val VOICES: BulkAction = "voices"
-    val VALUES: List<BulkAction> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, SUMMARY, AMBIENCE, MUSIC_GENERATION, GENERATE, CHARACTERIZATION, VOICES)
+    const val USED_VOICES: BulkAction = "used_voices"
+    val VALUES: List<BulkAction> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, SUMMARY, AMBIENCE, MUSIC_GENERATION, GENERATE, CHARACTERIZATION, VOICES, USED_VOICES)
 }
 
 /**
@@ -1104,7 +1105,6 @@ data class JobsSnapshotDto(
      * queued. Omitted (0) until anything has been measured since startup.
      */
     val lastNarrationCharsPerSecond: Double? = null,
-)
     /**
      * NarrationRealtimeFactor is jobs.Manager.RealtimeFactor: the same run
      * NarrationCharsPerSecond measures, as seconds of audio rendered per
@@ -1112,6 +1112,7 @@ data class JobsSnapshotDto(
      * rounded to 0.1. Omitted (0) whenever that is.
      */
     val narrationRealtimeFactor: Double? = null,
+)
 
 @Serializable
 data class LanguagesResponseDto(
@@ -1795,6 +1796,11 @@ data class SetParagraphEmotionRequestDto(
 )
 
 @Serializable
+data class SetParagraphQuoteRequestDto(
+    val quote: Boolean = false,
+)
+
+@Serializable
 data class SetParagraphSFXPromptRequestDto(
     val prompt: String = "",
     /**
@@ -1802,11 +1808,6 @@ data class SetParagraphSFXPromptRequestDto(
      * into this paragraph's own forced-alignment Words) playback should
      * start the sound effect at - see store.Paragraph.SFXTriggerWord.
      * Folded into this same request rather than a separate endpoint since
-@Serializable
-data class SetParagraphQuoteRequestDto(
-    val quote: Boolean = false,
-)
-
      * the frontend's SFX panel always edits both together (see
      * ChapterSection.tsx's own word-picker).
      */

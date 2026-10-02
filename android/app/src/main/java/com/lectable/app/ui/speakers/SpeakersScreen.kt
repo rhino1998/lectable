@@ -42,6 +42,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
@@ -155,10 +156,13 @@ fun SpeakersScreen(
                             Text(if (uiState.preprocessing) "Preprocessing…" else "Preprocess book")
                         }
                         if (uiState.preprocessing) CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        OutlinedButton(onClick = viewModel::provisionUsedVoices) { Text("Provision voices") }
                     }
                     Text(
                         "Runs attribution, characterization, voice provisioning, direction-tagging, and pronunciation for the " +
-                            "whole book in one pass, adding any newly-found character to the roster below.",
+                            "whole book in one pass, adding any newly-found character to the roster below. " +
+                            "\"Provision voices\" only readies the voices this book's lines use: a voice for a character " +
+                            "without one, its reference clip, and the emotion variants its lines need.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

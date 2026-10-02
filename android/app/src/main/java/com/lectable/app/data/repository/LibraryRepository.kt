@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import com.lectable.app.data.remote.LectableApi
 import com.lectable.app.data.remote.dto.BookDetailDto
+import com.lectable.app.data.remote.dto.BulkActions
 import com.lectable.app.data.remote.dto.BookSummaryDto
 import com.lectable.app.data.remote.dto.BookmarkDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
@@ -66,6 +67,10 @@ class LibraryRepository @Inject constructor(
 
     /** [LectableApi.preprocessBook] - see its own doc comment. */
     suspend fun preprocessBook(id: String): Boolean = api.preprocessBook(id).queued > 0
+
+    /** The "used_voices" bulk action (backend httpapi.usedVoicesBulkRun): queues whatever the
+     *  voices this book's lines use still lack. Returns how many voices needed something. */
+    suspend fun provisionUsedVoices(id: String): Int = api.bulkAction(id, BulkActions.USED_VOICES).queued
 
     /** [LectableApi.generateBook] - see its own doc comment. */
     suspend fun generateBook(id: String): Boolean = api.generateBook(id).queued > 0

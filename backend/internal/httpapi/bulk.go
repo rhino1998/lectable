@@ -6,13 +6,17 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"sync"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
+	"github.com/rhino1998/lectable/backend/internal/voicerefs"
+	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
 // bulkScope is the ?scope= query param of POST .../bulk/{action}: "rest"
@@ -42,6 +46,7 @@ const (
 	bulkGenerate         bulkAction = "generate"
 	bulkCharacterization bulkAction = "characterization"
 	bulkVoices           bulkAction = "voices"
+	bulkUsedVoices       bulkAction = "used_voices"
 )
 
 // resetPass is a pass the Speakers page can reset across a whole book
@@ -163,6 +168,8 @@ var chapterBulkPasses = map[bulkAction]chapterBulkPass{
 //   - "characterization": re-characterize every valid character
 //   - "voices": rest provisions characters with no voice for the book's clone
 //     model yet; all force-regenerates every character's voice
+//   - "used_voices": everything the voices this book's own lines use still
+//     lack - see usedVoicesBulkRun (scope is moot)
 //
 // 202 {"queued": n} with how many chapters/characters the group covers (0,
 // with nothing enqueued, if there's nothing to do). A repeat click while the
@@ -195,6 +202,26 @@ func (s *Server) handleBulkAction(w http.ResponseWriter, r *http.Request) {
 	case bulkMusicGeneration:
 		s.Jobs.EnqueueBookMusicGeneration(book.ID)
 		writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
+		return
+	case bulkUsedVoices:
+		// Ahead of the LLM check below: only a character with no voice at
+		// all needs it (to be characterized); reference clips and emotion
+		// variants don't.
+		queued, run, err := s.usedVoicesBulkRun(book)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if queued > 0 {
+			s.Jobs.EnqueueBulk(book.ID, jobs.BulkGroup{
+				Kind:     jobs.Kind("pipeline_bulk_" + action),
+				Key:      "bulk:" + string(action),
+				Label:    "Voices this book uses",
+				Tier:     jobs.TierBackground,
+				Children: &jobs.ChildFilter{Kinds: []jobs.Kind{jobs.KindVoiceProvision, jobs.KindSpeakerCharacterization}},
+			}, run)
+		}
+		writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
 		return
 	}
 
@@ -351,6 +378,216 @@ func (s *Server) voicesBulkRun(book *store.Book, scope bulkScope, group *jobs.Bu
 			})
 			return err
 		})
+}
+
+// usedVoice is one voice this book's lines generate under, with what
+// usedVoicesBulkRun found it still lacks.
+type usedVoice struct {
+	// label names it on its Jobs rows: the speaker, or "Narrator" for the
+	// book's own voice.
+	label string
+	// unvoiced is the character to provision a voice for first, when they
+	// have none for the book's clone model; voice is then resolved after.
+	unvoiced *store.Character
+	voice    narration.ResolvedVoice
+	// emotions are the ones this voice's lines use, in emotions.All order.
+	emotions []string
+}
+
+// usedVoicesBulkRun is the "used_voices" action: get every voice this
+// book's own lines generate under ready ahead of generation, instead of
+// each being provisioned the first time a line needs it (jobs'
+// provisionMissingCharacterVoices/referenceClipDependency/
+// variantClipDependency, which hold that line - and the reader - until it's
+// done). Unlike "voices", which covers the whole series roster, it only
+// touches speakers with lines in this book, and it goes past the voice
+// itself: for each one, a voice for the book's clone model if a character
+// has none (multi-voice books only), the voice's base reference clip, and
+// the emotion variant of every emotion its lines carry. Whatever already
+// exists is left alone - a variant that failed for good included.
+//
+// queued counts the voices with anything missing.
+func (s *Server) usedVoicesBulkRun(book *store.Book) (int, jobs.PipelinePhaseFunc, error) {
+	paragraphs, err := s.Store.ListParagraphsRawForBook(book.ID)
+	if err != nil {
+		return 0, nil, err
+	}
+	characters, err := s.Store.ListCharacters(store.SeriesScope(book))
+	if err != nil {
+		return 0, nil, err
+	}
+	charByName := make(map[string]store.Character, len(characters))
+	characterIDs := make([]string, len(characters))
+	for i, c := range characters {
+		charByName[c.Name] = c
+		characterIDs[i] = c.ID
+	}
+	bookVoice, err := s.Narration.BookVoice(book)
+	if err != nil {
+		return 0, nil, err
+	}
+	cloneModel := narration.EffectiveCloneModel(bookVoice)
+	presetIDByChar, err := s.Store.CharacterVoicesForModel(characterIDs, cloneModel)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	// Who speaks in this book, in first-appearance order, and in which emotions.
+	var speakers []string
+	emotionsBySpeaker := map[string]map[string]bool{}
+	for _, p := range paragraphs {
+		name := p.Speaker
+		if name == "" {
+			name = "Narrator"
+		}
+		if emotionsBySpeaker[name] == nil {
+			emotionsBySpeaker[name] = map[string]bool{}
+			speakers = append(speakers, name)
+		}
+		if e := p.EffectiveEmotion(); e != emotions.Neutral {
+			emotionsBySpeaker[name][e] = true
+		}
+	}
+
+	// Several speakers can share a voice (everyone without their own falls
+	// back to the book's), so clips are gathered per preset.
+	byPreset := map[string]*usedVoice{}
+	presetEmotions := map[string]map[string]bool{}
+	var order []string
+	var unvoiced []usedVoice
+	// A character this book voices through its narrator's own voice, styled
+	// by their characterization, never gets a preset - nothing to provision
+	// once they're characterized (see provisionCharacterVoiceAttempt).
+	instructed := (book.InstructCharacterVoices() || book.InstructAllCharacterVoices()) && cloneModel == voices.InstructedCloneModel
+	for _, name := range speakers {
+		uv := usedVoice{label: "Narrator", voice: bookVoice}
+		if c, ok := charByName[name]; ok && book.MultiVoice() && name != "Narrator" && !c.Invalid {
+			uv.label = name
+			if presetIDByChar[c.ID] == "" && (!instructed || c.Summary == "") {
+				uv.unvoiced = &c
+				uv.emotions = sortedEmotions(emotionsBySpeaker[name])
+				unvoiced = append(unvoiced, uv)
+				continue
+			}
+			resolved, err := s.Narration.ResolveCharacterVoice(book, bookVoice, c, cloneModel, presetIDByChar[c.ID])
+			if err != nil {
+				return 0, nil, err
+			}
+			uv.voice = resolved
+		}
+		if uv.voice.PresetID == "" {
+			continue // a designed voice with no preset has no reference clip to render
+		}
+		if byPreset[uv.voice.PresetID] == nil {
+			byPreset[uv.voice.PresetID] = &uv
+			presetEmotions[uv.voice.PresetID] = map[string]bool{}
+			order = append(order, uv.voice.PresetID)
+		}
+		for e := range emotionsBySpeaker[name] {
+			presetEmotions[uv.voice.PresetID][e] = true
+		}
+	}
+	work := unvoiced
+	for _, presetID := range order {
+		uv := byPreset[presetID]
+		uv.emotions = sortedEmotions(presetEmotions[presetID])
+		if s.missingVoiceClips(uv.voice.PresetID, uv.emotions) {
+			work = append(work, *uv)
+		}
+	}
+
+	return len(work), func(ctx context.Context, tier func() int) error {
+		var wg sync.WaitGroup
+		for _, uv := range work {
+			wg.Go(func() {
+				if err := s.provisionUsedVoice(ctx, tier, book, bookVoice, cloneModel, uv); err != nil {
+					log.Printf("httpapi: bulk %s for book %s voice %q: %v", bulkUsedVoices, book.ID, uv.label, err)
+				}
+			})
+		}
+		wg.Wait()
+		return nil
+	}, nil
+}
+
+func sortedEmotions(set map[string]bool) []string {
+	var out []string
+	for _, e := range emotions.All {
+		if set[e.ID] {
+			out = append(out, e.ID)
+		}
+	}
+	return out
+}
+
+// missingVoiceClips reports whether presetID's base reference clip, or the
+// variant of any of emotions, has yet to be rendered (a variant marked
+// failed counts as settled - its lines clone from the base clip).
+func (s *Server) missingVoiceClips(presetID string, emotionIDs []string) bool {
+	if _, err := os.Stat(audiopath.VoicePresetRefFile(s.DataDir, presetID)); err != nil {
+		return true
+	}
+	return slices.ContainsFunc(emotionIDs, func(e string) bool { return s.missingVariant(presetID, e) })
+}
+
+func (s *Server) missingVariant(presetID, emotion string) bool {
+	return !voicerefs.VariantExists(s.DataDir, presetID, emotion) && !voicerefs.VariantFailed(s.DataDir, presetID, emotion)
+}
+
+// provisionUsedVoice runs one usedVoice's missing steps in order - each a
+// real jobs task it blocks on, at the bulk row's live tier: the character's
+// voice, then the base clip (a variant is cloned from it), then each
+// variant. A failed variant doesn't stop the rest.
+func (s *Server) provisionUsedVoice(ctx context.Context, tier func() int, book *store.Book, bookVoice narration.ResolvedVoice, cloneModel string, uv usedVoice) error {
+	voice := uv.voice
+	if char := uv.unvoiced; char != nil {
+		presetID, err := s.Jobs.RunVoiceProvisionAt(ctx, tier(), book.ID, char.ID, "generate", char.Name, func(ctx context.Context, attempt int) (string, error) {
+			return s.provisionCharacterVoiceAttempt(ctx, book.ID, *char, cloneModel, attempt)
+		})
+		if err != nil {
+			return err
+		}
+		// Re-read: provisioning characterizes them, which an instructed
+		// narrator voice (no preset of their own) is resolved from.
+		fresh, err := s.Store.GetCharacterByName(store.SeriesScope(book), char.Name)
+		if err != nil {
+			return err
+		}
+		if fresh == nil {
+			return nil // deleted or merged away meanwhile
+		}
+		if voice, err = s.Narration.ResolveCharacterVoice(book, bookVoice, *fresh, cloneModel, presetID); err != nil {
+			return err
+		}
+	}
+	if voice.PresetID == "" {
+		return nil
+	}
+	base := voicerefs.BaseClip{
+		PresetID:        voice.PresetID,
+		Instruct:        voice.Instruct,
+		Seed:            voice.Seed,
+		RefText:         voice.RefText,
+		SpeedMultiplier: voice.SpeedMultiplier,
+		DesignModel:     voice.DesignModel,
+	}
+	if _, err := os.Stat(audiopath.VoicePresetRefFile(s.DataDir, voice.PresetID)); err != nil {
+		if err := s.Jobs.RunReferenceClipAt(ctx, tier(), book.ID, uv.label, base); err != nil {
+			return err
+		}
+	}
+	for _, emotion := range uv.emotions {
+		if !s.missingVariant(voice.PresetID, emotion) {
+			continue
+		}
+		if err := s.Jobs.RunEmotionVariantAt(ctx, tier(), book.ID, uv.label, base, emotion); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			log.Printf("httpapi: bulk %s for book %s: %s variant of %q: %v", bulkUsedVoices, book.ID, emotion, uv.label, err)
+		}
+	}
+	return nil
 }
 
 // handleResetPass is POST /api/books/{id}/reset/{pass} - the Speakers

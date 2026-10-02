@@ -76,6 +76,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pipeline_bulk_music_generation: 'Bulk: Music Generation',
   pipeline_bulk_characterization: 'Bulk: Characterization',
   pipeline_bulk_voices: 'Bulk: Voices',
+  pipeline_bulk_used_voices: 'Bulk: Used Voices',
   // A book export (see ExportPage) - renders its chapters' missing audio
   // first unless queued as-is, then builds the file.
   pipeline_export: 'Export',
@@ -514,8 +515,8 @@ export function JobsPage() {
           title="Queued and in-flight narration only, at the recently measured rate across every generation slot - reading ahead or a bulk Generate adds more as it goes"
         >
           Narration left: ~{formatEta(eta.totalSeconds)} at {eta.charsPerSecond.toFixed(1)} chars/s
-          {eta.books.length > 1 &&
           {eta.realtimeFactor > 0 && ` (${eta.realtimeFactor.toFixed(1)}× realtime)`}
+          {eta.books.length > 1 &&
             ` (${eta.books.map((b) => `${b.bookTitle} ~${formatEta(b.seconds)}`).join(', ')})`}
         </p>
       )}

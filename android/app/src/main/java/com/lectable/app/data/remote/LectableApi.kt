@@ -116,6 +116,8 @@ interface LectableApi {
      *   - "characterization": re-characterize every valid character
      *   - "voices": rest provisions characters with no voice for the book's clone
      *     model yet; all force-regenerates every character's voice
+     *   - "used_voices": everything the voices this book's own lines use still
+     *     lack - see usedVoicesBulkRun (scope is moot)
      *
      * 202 {"queued": n} with how many chapters/characters the group covers (0,
      * with nothing enqueued, if there's nothing to do). A repeat click while the
@@ -335,8 +337,6 @@ interface LectableApi {
     ): QueuedResponseDto
 
     /**
-     * handleRegenerateParagraph re-renders one already-generated paragraph
-    /**
      * handleSetParagraphQuote serves PUT
      * /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote: marks one
      * paragraph as quoted dialogue (or back to narration) by hand - the fix for
@@ -358,6 +358,8 @@ interface LectableApi {
         @Body body: SetParagraphQuoteRequestDto,
     ): Unit
 
+    /**
+     * handleRegenerateParagraph re-renders one already-generated paragraph
      * from scratch - the reader didn't like how a specific line came out, not
      * the normal "this hasn't been generated yet" path handleGenerateChapter
      * covers.

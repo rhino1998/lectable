@@ -23,7 +23,7 @@ export type BookSettingSource = (typeof BOOK_SETTING_SOURCES)[number]
  * queues the same "pipeline_generate_book" row as the library page's
  * Generate: All.
  */
-export const BULK_ACTIONS = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'summary', 'ambience', 'music_generation', 'generate', 'characterization', 'voices'] as const
+export const BULK_ACTIONS = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'summary', 'ambience', 'music_generation', 'generate', 'characterization', 'voices', 'used_voices'] as const
 export type BulkAction = (typeof BULK_ACTIONS)[number]
 
 /**
@@ -1489,6 +1489,10 @@ export interface SetParagraphEmotionRequest {
   emotion: string
 }
 
+export interface SetParagraphQuoteRequest {
+  quote: boolean
+}
+
 export interface SetParagraphSFXPromptRequest {
   prompt: string
   /**
@@ -1496,10 +1500,6 @@ export interface SetParagraphSFXPromptRequest {
    * into this paragraph's own forced-alignment Words) playback should
    * start the sound effect at - see store.Paragraph.SFXTriggerWord.
    * Folded into this same request rather than a separate endpoint since
-export interface SetParagraphQuoteRequest {
-  quote: boolean
-}
-
    * the frontend's SFX panel always edits both together (see
    * ChapterSection.tsx's own word-picker).
    */
@@ -2047,6 +2047,8 @@ export interface Routes {
    *   - "characterization": re-characterize every valid character
    *   - "voices": rest provisions characters with no voice for the book's clone
    *     model yet; all force-regenerates every character's voice
+   *   - "used_voices": everything the voices this book's own lines use still
+   *     lack - see usedVoicesBulkRun (scope is moot)
    *
    * 202 {"queued": n} with how many chapters/characters the group covers (0,
    * with nothing enqueued, if there's nothing to do). A repeat click while the
@@ -2268,15 +2270,6 @@ export interface Routes {
     errorCode: never
   }
   /**
-   * handleRegenerateParagraph re-renders one already-generated paragraph
-   * from scratch - the reader didn't like how a specific line came out, not
-   * the normal "this hasn't been generated yet" path handleGenerateChapter
-   * covers.
-   */
-  'POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/regenerate': {
-    path: { id: string; idx: number; pidx: number }
-    query: Record<never, never>
-  /**
    * handleSetParagraphQuote serves PUT
    * /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote: marks one
    * paragraph as quoted dialogue (or back to narration) by hand - the fix for
@@ -2297,6 +2290,15 @@ export interface Routes {
     response: void
     errorCode: never
   }
+  /**
+   * handleRegenerateParagraph re-renders one already-generated paragraph
+   * from scratch - the reader didn't like how a specific line came out, not
+   * the normal "this hasn't been generated yet" path handleGenerateChapter
+   * covers.
+   */
+  'POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/regenerate': {
+    path: { id: string; idx: number; pidx: number }
+    query: Record<never, never>
     body: never
     response: QueuedResponse
     errorCode: never
@@ -3797,6 +3799,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description': 'none',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion': 'none',
   'POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/generate-sfx': 'json',
+  'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote': 'none',
   'POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/regenerate': 'json',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/scare-quote': 'none',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/sfx-prompt': 'none',
@@ -3806,7 +3809,6 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/retag-descriptions': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes/preview': 'json',
-  'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote': 'none',
   'POST /api/books/{id}/chapters/{idx}/run-ambience': 'json',
   'POST /api/books/{id}/chapters/{idx}/summarize': 'json',
   'POST /api/books/{id}/chapters/{idx}/tag-directions': 'json',

@@ -382,7 +382,9 @@ compiled-in default in place if nothing answers in time.
   vs. `SpeakersPage.tsx`.** `ui/speakers/SpeakersScreen.kt` +
   `SpeakerViewModel` cover: the multi-voice toggle, a "Preprocess book"
   button, and the roster itself (ready/total counts, characterization
-  summary, ref-clip playback, a `⋮` menu for
+  summary, ref-clip playback, a "Provision voices" button - the backend's
+  `used_voices` bulk action: readies every voice this book's lines use -
+  a `⋮` menu for
   Characterize/Generate-voice/Assign-voice/Merge/Delete). Tapping a row
   expands its appearances list for regenerate/reassign; the `⋮` menu's own
   "View descriptions" independently expands that same character's

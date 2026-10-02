@@ -195,6 +195,21 @@ class SpeakerViewModel @Inject constructor(
         }
     }
 
+    /** "Provision voices" - the web Speakers page's "Provision used voices" button: one Jobs row
+     *  covering every voice this book's lines use that still lacks something (a character's
+     *  voice, its reference clip, an emotion variant). The roster's own live topic shows the
+     *  results; the snackbar only says what was queued. */
+    fun provisionUsedVoices() {
+        viewModelScope.launch {
+            runCatching { libraryRepository.provisionUsedVoices(bookId) }
+                .onSuccess { queued ->
+                    val message = if (queued == 0) "Every voice this book uses is ready" else "Provisioning $queued ${if (queued == 1) "voice" else "voices"}"
+                    _uiState.update { it.copy(error = message) }
+                }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
     fun characterize(characterId: String) {
         viewModelScope.launch {
             _uiState.update { it.copy(characterizingIds = it.characterizingIds + characterId) }
