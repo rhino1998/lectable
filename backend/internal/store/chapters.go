@@ -18,20 +18,30 @@ import (
 // simply unmatched) falls back to the book's own voiceID, same as before
 // this existed. Empty overrides (the common, non-multi-voice case) skips
 // the extra JOIN below entirely and costs nothing over the old query.
+//
+// SpeakerIndex 0 is the speaker's own voice. A row with SpeakerIndex n > 0
+// is the voice of that speaker's lines numbered n (Paragraph.SpeakerIndex -
+// several unnamed people sharing a role); a numbered line with no such row
+// takes the speaker's own voice.
 type SpeakerVoice struct {
-	Speaker string
-	VoiceID string
+	Speaker      string
+	SpeakerIndex int
+	VoiceID      string
 }
+
+// MaxSpeakerIndex is the highest Paragraph.SpeakerIndex ever stored (see
+// speakerattr.MaxRoleIndex) - how many numbered voices a role can need.
+const MaxSpeakerIndex = 6
 
 // speakerVoiceValues builds a `VALUES (?, ?), (?, ?), ...` fragment plus
 // its matching args, mirroring bookVoiceValues below but keyed by speaker
 // name instead of book id.
 func speakerVoiceValues(overrides []SpeakerVoice) (fragment string, args []any) {
 	rows := make([]string, len(overrides))
-	args = make([]any, 0, len(overrides)*2)
+	args = make([]any, 0, len(overrides)*3)
 	for i, ov := range overrides {
-		rows[i] = "(?, ?)"
-		args = append(args, ov.Speaker, ov.VoiceID)
+		rows[i] = "(?, CAST(? AS INTEGER), ?)"
+		args = append(args, ov.Speaker, ov.SpeakerIndex, ov.VoiceID)
 	}
 	return strings.Join(rows, ", "), args
 }
@@ -60,14 +70,15 @@ func (s *DuckStore) ListChapterSummaries(bookID, voiceID string, overrides []Spe
 		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
 		args := append(append([]any{}, valuesArgs...), voiceID, bookID)
 		rows, err = s.db.Query(`
-			WITH speaker_voice(speaker, voice_id) AS (VALUES `+valuesFragment+`)
+			WITH speaker_voice(speaker, speaker_index, voice_id) AS (VALUES `+valuesFragment+`)
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
 				COUNT(p.id) AS total,
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
 			FROM chapters c
 			LEFT JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(sv.voice_id, ?)
+			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0
+			LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
 			WHERE c.book_id = ?
 			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
 			ORDER BY c.idx ASC`, args...)
@@ -101,9 +112,10 @@ type BookVoice struct {
 // queries below - SpeakerVoice plus a BookID, since speaker names aren't
 // globally unique across an unrelated book/series.
 type BookSpeakerVoice struct {
-	BookID  string
-	Speaker string
-	VoiceID string
+	BookID       string
+	Speaker      string
+	SpeakerIndex int
+	VoiceID      string
 }
 
 // bookVoiceValues builds a `VALUES (?, ?), (?, ?), ...` fragment plus its
@@ -119,14 +131,14 @@ func bookVoiceValues(bookVoices []BookVoice) (fragment string, args []any) {
 }
 
 // bookSpeakerVoiceValues is bookVoiceValues' per-character counterpart,
-// building a `VALUES (?, ?, ?), ...` fragment (book_id, speaker, voice_id)
+// building a `VALUES (?, ?, ?, ?), ...` fragment (book_id, speaker, speaker_index, voice_id)
 // for the batch queries' own speaker_voice CTE.
 func bookSpeakerVoiceValues(overrides []BookSpeakerVoice) (fragment string, args []any) {
 	rows := make([]string, len(overrides))
-	args = make([]any, 0, len(overrides)*3)
+	args = make([]any, 0, len(overrides)*4)
 	for i, ov := range overrides {
-		rows[i] = "(?, ?, ?)"
-		args = append(args, ov.BookID, ov.Speaker, ov.VoiceID)
+		rows[i] = "(?, ?, CAST(? AS INTEGER), ?)"
+		args = append(args, ov.BookID, ov.Speaker, ov.SpeakerIndex, ov.VoiceID)
 	}
 	return strings.Join(rows, ", "), args
 }
@@ -172,15 +184,16 @@ func (s *DuckStore) ListChapterSummariesForBooks(bookVoices []BookVoice, overrid
 		args := append(append([]any{}, bvArgs...), svArgs...)
 		rows, err = s.db.Query(`
 			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`),
-				speaker_voice(book_id, speaker, voice_id) AS (VALUES `+svFragment+`)
+				speaker_voice(book_id, speaker, speaker_index, voice_id) AS (VALUES `+svFragment+`)
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
 				COUNT(p.id) AS total,
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
 			FROM chapters c
 			JOIN book_voice bv ON bv.book_id = c.book_id
 			LEFT JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN speaker_voice sv ON sv.book_id = c.book_id AND sv.speaker = p.speaker
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(sv.voice_id, bv.voice_id)
+			LEFT JOIN speaker_voice sv ON sv.book_id = c.book_id AND sv.speaker = p.speaker AND sv.speaker_index = 0
+			LEFT JOIN speaker_voice svm ON svm.book_id = c.book_id AND svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, bv.voice_id)
 			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
 			ORDER BY c.book_id, c.idx ASC`, args...)
 	}

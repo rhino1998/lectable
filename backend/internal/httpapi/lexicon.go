@@ -317,7 +317,7 @@ func (s *Server) handlePreviewLexicon(w http.ResponseWriter, r *http.Request) {
 	}
 	text := lexiconPreviewText(paragraphs, rule)
 
-	voice, err := s.Narration.ForParagraph(book, "")
+	voice, err := s.Narration.ForParagraph(book, "", 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

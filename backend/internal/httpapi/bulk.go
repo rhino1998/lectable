@@ -389,7 +389,10 @@ type usedVoice struct {
 	// unvoiced is the character to provision a voice for first, when they
 	// have none for the book's clone model; voice is then resolved after.
 	unvoiced *store.Character
-	voice    narration.ResolvedVoice
+	// index is the speaker number of the lines this voice is for - a
+	// role's numbered lines each have their own (narration.MemberVoice).
+	index int
+	voice narration.ResolvedVoice
 	// emotions are the ones this voice's lines use, in emotions.All order.
 	emotions []string
 }
@@ -432,20 +435,25 @@ func (s *Server) usedVoicesBulkRun(book *store.Book) (int, jobs.PipelinePhaseFun
 		return 0, nil, err
 	}
 
-	// Who speaks in this book, in first-appearance order, and in which emotions.
-	var speakers []string
-	emotionsBySpeaker := map[string]map[string]bool{}
+	// Who speaks in this book (and under which number), in first-appearance
+	// order, and in which emotions.
+	type speakerLine struct {
+		name  string
+		index int
+	}
+	var speakers []speakerLine
+	emotionsBySpeaker := map[speakerLine]map[string]bool{}
 	for _, p := range paragraphs {
-		name := p.Speaker
-		if name == "" {
-			name = "Narrator"
+		sp := speakerLine{p.Speaker, p.SpeakerIndex}
+		if sp.name == "" {
+			sp.name = "Narrator"
 		}
-		if emotionsBySpeaker[name] == nil {
-			emotionsBySpeaker[name] = map[string]bool{}
-			speakers = append(speakers, name)
+		if emotionsBySpeaker[sp] == nil {
+			emotionsBySpeaker[sp] = map[string]bool{}
+			speakers = append(speakers, sp)
 		}
 		if e := p.EffectiveEmotion(); e != emotions.Neutral {
-			emotionsBySpeaker[name][e] = true
+			emotionsBySpeaker[sp][e] = true
 		}
 	}
 
@@ -459,13 +467,17 @@ func (s *Server) usedVoicesBulkRun(book *store.Book) (int, jobs.PipelinePhaseFun
 	// by their characterization, never gets a preset - nothing to provision
 	// once they're characterized (see provisionCharacterVoiceAttempt).
 	instructed := (book.InstructCharacterVoices() || book.InstructAllCharacterVoices()) && cloneModel == voices.InstructedCloneModel
-	for _, name := range speakers {
+	for _, sp := range speakers {
+		name := sp.name
 		uv := usedVoice{label: "Narrator", voice: bookVoice}
 		if c, ok := charByName[name]; ok && book.MultiVoice() && name != "Narrator" && !c.Invalid {
-			uv.label = name
+			uv.label, uv.index = name, sp.index
+			if sp.index > 1 && c.IsRole {
+				uv.label = fmt.Sprintf("%s %d", name, sp.index)
+			}
 			if presetIDByChar[c.ID] == "" && (!instructed || c.Summary == "") {
 				uv.unvoiced = &c
-				uv.emotions = sortedEmotions(emotionsBySpeaker[name])
+				uv.emotions = sortedEmotions(emotionsBySpeaker[sp])
 				unvoiced = append(unvoiced, uv)
 				continue
 			}
@@ -473,7 +485,7 @@ func (s *Server) usedVoicesBulkRun(book *store.Book) (int, jobs.PipelinePhaseFun
 			if err != nil {
 				return 0, nil, err
 			}
-			uv.voice = resolved
+			uv.voice = narration.MemberVoice(resolved, c, sp.index)
 		}
 		if uv.voice.PresetID == "" {
 			continue // a designed voice with no preset has no reference clip to render
@@ -483,7 +495,7 @@ func (s *Server) usedVoicesBulkRun(book *store.Book) (int, jobs.PipelinePhaseFun
 			presetEmotions[uv.voice.PresetID] = map[string]bool{}
 			order = append(order, uv.voice.PresetID)
 		}
-		for e := range emotionsBySpeaker[name] {
+		for e := range emotionsBySpeaker[sp] {
 			presetEmotions[uv.voice.PresetID][e] = true
 		}
 	}
@@ -559,6 +571,7 @@ func (s *Server) provisionUsedVoice(ctx context.Context, tier func() int, book *
 		if voice, err = s.Narration.ResolveCharacterVoice(book, bookVoice, *fresh, cloneModel, presetID); err != nil {
 			return err
 		}
+		voice = narration.MemberVoice(voice, *fresh, uv.index)
 	}
 	if voice.PresetID == "" {
 		return nil

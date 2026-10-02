@@ -36,7 +36,7 @@ func (s *DuckStore) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides
 		args := append(append([]any{}, bvArgs...), svArgs...)
 		rows, err = s.db.Query(`
 			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`),
-				speaker_voice(book_id, speaker, voice_id) AS (VALUES `+svFragment+`)
+				speaker_voice(book_id, speaker, speaker_index, voice_id) AS (VALUES `+svFragment+`)
 			SELECT c.book_id,
 				COALESCE(SUM(LENGTH(p.content)), 0),
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
@@ -44,8 +44,9 @@ func (s *DuckStore) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides
 			FROM chapters c
 			JOIN book_voice bv ON bv.book_id = c.book_id
 			JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN speaker_voice sv ON sv.book_id = c.book_id AND sv.speaker = p.speaker
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(sv.voice_id, bv.voice_id)
+			LEFT JOIN speaker_voice sv ON sv.book_id = c.book_id AND sv.speaker = p.speaker AND sv.speaker_index = 0
+			LEFT JOIN speaker_voice svm ON svm.book_id = c.book_id AND svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, bv.voice_id)
 			GROUP BY c.book_id`, args...)
 	}
 	if err != nil {
@@ -668,15 +669,16 @@ func (s *DuckStore) BookNarrationStats(bookID, voiceID string, overrides []Speak
 		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
 		args := append(append([]any{}, valuesArgs...), voiceID, bookID)
 		err = s.db.QueryRow(`
-			WITH speaker_voice(speaker, voice_id) AS (VALUES `+valuesFragment+`)
+			WITH speaker_voice(speaker, speaker_index, voice_id) AS (VALUES `+valuesFragment+`)
 			SELECT
 				COALESCE(SUM(LENGTH(p.content)), 0),
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
 			FROM paragraphs p
 			JOIN chapters c ON c.id = p.chapter_id
-			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(sv.voice_id, ?)
+			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0
+			LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
 			WHERE c.book_id = ?`, args...).
 			Scan(&stats.TotalChars, &stats.ReadyChars, &stats.ReadySeconds)
 	}

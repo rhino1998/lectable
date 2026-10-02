@@ -238,6 +238,8 @@ type SpeakerAppearance struct {
 	ParagraphIdx int
 	ParagraphID  string
 	Text         string
+	// SpeakerIndex is the line's Paragraph.SpeakerIndex.
+	SpeakerIndex int
 }
 
 // ParagraphsForSpeaker returns every paragraph attributed to name across
@@ -254,7 +256,7 @@ func (s *DuckStore) ParagraphsForSpeaker(bookIDs []string, name string) ([]Speak
 	var out []SpeakerAppearance
 	for _, bookID := range bookIDs {
 		query := `
-			SELECT b.id, b.title, c.idx, c.title, p.idx, p.id, p.content
+			SELECT b.id, b.title, c.idx, c.title, p.idx, p.id, p.content, COALESCE(p.speaker_index, 0)
 			FROM paragraphs p
 			JOIN chapters c ON c.id = p.chapter_id
 			JOIN books b ON b.id = c.book_id
@@ -263,7 +265,7 @@ func (s *DuckStore) ParagraphsForSpeaker(bookIDs []string, name string) ([]Speak
 		args := []any{bookID, name}
 		if name == "Narrator" {
 			query = `
-				SELECT b.id, b.title, c.idx, c.title, p.idx, p.id, p.content
+				SELECT b.id, b.title, c.idx, c.title, p.idx, p.id, p.content, COALESCE(p.speaker_index, 0)
 				FROM paragraphs p
 				JOIN chapters c ON c.id = p.chapter_id
 				JOIN books b ON b.id = c.book_id
@@ -278,7 +280,7 @@ func (s *DuckStore) ParagraphsForSpeaker(bookIDs []string, name string) ([]Speak
 		}
 		for rows.Next() {
 			var a SpeakerAppearance
-			if err := rows.Scan(&a.BookID, &a.BookTitle, &a.ChapterIdx, &a.ChapterTitle, &a.ParagraphIdx, &a.ParagraphID, &a.Text); err != nil {
+			if err := rows.Scan(&a.BookID, &a.BookTitle, &a.ChapterIdx, &a.ChapterTitle, &a.ParagraphIdx, &a.ParagraphID, &a.Text, &a.SpeakerIndex); err != nil {
 				rows.Close()
 				return nil, err
 			}

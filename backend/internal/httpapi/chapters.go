@@ -363,7 +363,7 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 	// active for it right now (see paragraphDTO.DirectionTag below).
 	cloneModelByParagraph := make(map[string]string, len(paragraphs))
 	for _, p := range paragraphs {
-		v, err := voices.ForSpeaker(p.Speaker)
+		v, err := voices.ForSpeaker(p.Speaker, p.SpeakerIndex)
 		if err != nil {
 			return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 		}
@@ -1329,7 +1329,7 @@ func (s *Server) handleGetAudio(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
-	v, err := s.Narration.ForParagraph(book, p.Speaker)
+	v, err := s.Narration.ForParagraph(book, p.Speaker, p.SpeakerIndex)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

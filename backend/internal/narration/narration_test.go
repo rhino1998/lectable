@@ -133,7 +133,7 @@ func TestForParagraphMultiVoiceOffAlwaysUsesBookVoice(t *testing.T) {
 
 	// book.MultiVoice defaults to false - a character's assigned voice must
 	// not override the book's own voice until it's explicitly turned on.
-	got, err := r.ForParagraph(book, "Alice")
+	got, err := r.ForParagraph(book, "Alice", 0)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestForParagraphMultiVoiceOnUsesCharacterVoice(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	got, err := r.ForParagraph(book, "Alice")
+	got, err := r.ForParagraph(book, "Alice", 0)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestForParagraphMultiVoiceOnUsesCharacterVoice(t *testing.T) {
 		t.Fatalf("BookVoice: %v", err)
 	}
 	for _, speaker := range []string{"", "Narrator"} {
-		got, err := r.ForParagraph(book, speaker)
+		got, err := r.ForParagraph(book, speaker, 0)
 		if err != nil {
 			t.Fatalf("ForParagraph(%q): %v", speaker, err)
 		}
@@ -225,11 +225,11 @@ func TestForParagraphAgreesWithBookVoicesOnCase(t *testing.T) {
 		t.Fatalf("BookVoices: %v", err)
 	}
 	for _, speaker := range []string{"Unknown", "unknown"} {
-		one, err := r.ForParagraph(book, speaker)
+		one, err := r.ForParagraph(book, speaker, 0)
 		if err != nil {
 			t.Fatalf("ForParagraph(%q): %v", speaker, err)
 		}
-		bulk, err := bv.ForSpeaker(speaker)
+		bulk, err := bv.ForSpeaker(speaker, 0)
 		if err != nil {
 			t.Fatalf("ForSpeaker(%q): %v", speaker, err)
 		}
@@ -259,7 +259,7 @@ func TestForParagraphFallsBackWhenCharacterHasNoVoiceYet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BookVoice: %v", err)
 	}
-	got, err := r.ForParagraph(book, "Bob")
+	got, err := r.ForParagraph(book, "Bob", 0)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestForParagraphInstructCharacterVoicesUsesNarratorRefWithCloneInstruct(t *
 		t.Fatalf("BookVoice: %v", err)
 	}
 
-	aliceVoice, err := r.ForParagraph(book, "Alice")
+	aliceVoice, err := r.ForParagraph(book, "Alice", 0)
 	if err != nil {
 		t.Fatalf("ForParagraph(Alice): %v", err)
 	}
@@ -337,7 +337,7 @@ func TestForParagraphInstructCharacterVoicesUsesNarratorRefWithCloneInstruct(t *
 		t.Fatalf("expected Alice's voice_id to differ from the narrator's own despite sharing a preset")
 	}
 
-	bobVoice, err := r.ForParagraph(book, "Bob")
+	bobVoice, err := r.ForParagraph(book, "Bob", 0)
 	if err != nil {
 		t.Fatalf("ForParagraph(Bob): %v", err)
 	}
@@ -378,7 +378,7 @@ func TestForParagraphInstructCharacterVoicesNoOpForOtherCloneModel(t *testing.T)
 	if err != nil {
 		t.Fatalf("BookVoice: %v", err)
 	}
-	got, err := r.ForParagraph(book, "Alice")
+	got, err := r.ForParagraph(book, "Alice", 0)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestForParagraphInstructAllOverridesExplicitAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BookVoice: %v", err)
 	}
-	got, err := r.ForParagraph(book, "Alice")
+	got, err := r.ForParagraph(book, "Alice", 0)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}
@@ -443,5 +443,40 @@ func TestForParagraphInstructAllOverridesExplicitAssignment(t *testing.T) {
 	}
 	if got.CloneInstruct != "Speak as a bright, energetic teenager." {
 		t.Fatalf("expected Alice's own characterization as CloneInstruct, got %q", got.CloneInstruct)
+	}
+}
+
+// A role's numbered lines past the first get a sibling of the role's voice
+// - same casting, another seed, its own preset id - and nothing else does.
+func TestMemberVoice(t *testing.T) {
+	base := ResolvedVoice{PresetID: "p1", Instruct: "a stern guard", Seed: 42, RefText: "Halt.", SpeedMultiplier: 1, Language: "English"}
+	guard := store.Character{Name: "Guard", IsRole: true}
+
+	two, three := MemberVoice(base, guard, 2), MemberVoice(base, guard, 3)
+	if two.PresetID == base.PresetID || two.Seed == base.Seed || two.Instruct != base.Instruct || two.RefText != base.RefText {
+		t.Fatalf("number 2 = %+v, want the same casting under its own preset id and seed", two)
+	}
+	if two.PresetID == three.PresetID || two.Seed == three.Seed || two.VoiceID() == three.VoiceID() {
+		t.Fatalf("numbers 2 and 3 share a voice: %+v / %+v", two, three)
+	}
+	if again := MemberVoice(base, guard, 2); again != two {
+		t.Fatalf("number 2 isn't stable: %+v vs %+v", again, two)
+	}
+	recast := base
+	recast.Instruct = "a weary old guard"
+	if MemberVoice(recast, guard, 2).PresetID == two.PresetID {
+		t.Fatal("a recast role kept its numbered voice's preset id (and so its old clip)")
+	}
+
+	for name, v := range map[string]ResolvedVoice{
+		"number 1":            MemberVoice(base, guard, 1),
+		"no number":           MemberVoice(base, guard, 0),
+		"not a role":          MemberVoice(base, store.Character{Name: "Bert"}, 2),
+		"no preset":           MemberVoice(ResolvedVoice{Instruct: "x"}, guard, 2),
+		"instructed narrator": MemberVoice(instructedNarratorVoice(base, "gruff"), guard, 2),
+	} {
+		if v.PresetID != base.PresetID && v.PresetID != "" {
+			t.Errorf("%s: got preset %q, want the voice unchanged", name, v.PresetID)
+		}
 	}
 }

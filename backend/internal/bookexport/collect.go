@@ -128,7 +128,7 @@ func (c *collector) chapter(ch *store.Chapter) (Chapter, error) {
 	voiceByParagraph := make(map[string]narration.ResolvedVoice, len(paragraphs))
 	idsByVoice := map[string][]string{}
 	for _, p := range paragraphs {
-		v, err := c.voices.ForSpeaker(p.Speaker)
+		v, err := c.voices.ForSpeaker(p.Speaker, p.SpeakerIndex)
 		if err != nil {
 			return Chapter{}, err
 		}

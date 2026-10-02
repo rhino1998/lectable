@@ -291,6 +291,15 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		// NOT set from this resolution; see below.
 		resolved := resolveFor(name)
 		row.ReadyCount = readyCounts[name][resolved.VoiceID()]
+		// A role's numbered lines render under their own voices
+		// (narration.MemberVoice).
+		if c, ok := charByName[name]; ok && book.MultiVoice() {
+			for n := 2; n <= store.MaxSpeakerIndex; n++ {
+				if member := narration.MemberVoice(resolved, c, n); member.PresetID != resolved.PresetID {
+					row.ReadyCount += readyCounts[name][member.VoiceID()]
+				}
+			}
+		}
 		// RefAudioURL previews this speaker's *own* voice specifically -
 		// the Narrator row's own voice genuinely is the book's (that's
 		// what Narrator means), but a character with no voice assigned
@@ -1141,7 +1150,7 @@ func (s *Server) buildCharacterAppearances(bookID, characterID string) ([]speake
 		// see Store.CountReadyAudioForSpeaker's own doc comment for why
 		// that distinction matters here.
 		if b, ok := bookByID[a.BookID]; ok {
-			if v, err := s.Narration.ForParagraph(b, char.Name); err == nil {
+			if v, err := s.Narration.ForParagraph(b, char.Name, a.SpeakerIndex); err == nil {
 				dto.AudioURL = s.resolveAppearanceAudioURL(a.ParagraphID, v.VoiceID())
 			}
 		}
@@ -1231,7 +1240,7 @@ func (s *Server) buildCharacterDescriptions(bookID, characterID string) ([]speak
 			ParagraphIdx: a.ParagraphIdx, Text: a.Text,
 		}
 		if b, ok := bookByID[a.BookID]; ok {
-			if v, err := s.Narration.ForParagraph(b, "Narrator"); err == nil {
+			if v, err := s.Narration.ForParagraph(b, "Narrator", 0); err == nil {
 				dto.AudioURL = s.resolveAppearanceAudioURL(a.ParagraphID, v.VoiceID())
 			}
 		}

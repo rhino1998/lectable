@@ -190,6 +190,7 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 					resolvedVoiceCache[c.ID] = resolved
 					v = resolved
 				}
+				v = narration.MemberVoice(v, c, p.SpeakerIndex)
 			}
 		}
 		voiceByParagraph[i] = v
@@ -618,7 +619,7 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 	} else {
 		m.provisionMissingCharacterVoices(m.ctx, book, []string{paragraph.Speaker}, narration.EffectiveCloneModel(bookVoice))
 	}
-	v, err := m.narration.ForParagraph(book, paragraph.Speaker)
+	v, err := m.narration.ForParagraph(book, paragraph.Speaker, paragraph.SpeakerIndex)
 	if err != nil {
 		log.Printf("jobs: resolve voice for paragraph %s: %v", paragraph.ID, err)
 		return

@@ -750,9 +750,23 @@ building/running `ttsworker` does, since both now link into that binary.
        none; `AttributeChapter`'s `indexes`) - kept beside the name, not in
        it, so renames, merges, the Speakers page and the evals still key on
        `Guard`. The numbers are slots within a conversation, not
-       identities: "Guard 2" in the next scene is someone else. Nothing
-       reads them yet - a per-number voice (the role's own VoiceDesign
-       instruction under another seed) is the planned use. `roleNumber`
+       identities: "Guard 2" in the next scene is someone else. Each
+       number from 2 up has its own voice (`narration.MemberVoice`): the
+       role's own casting - same instruct, reference line and design model
+       - rendered under another seed, which listening tests (2026-10-02,
+       BreezeTTS design cloned through Higgs) showed comes out as a
+       different person; blending reference latents and pitch/formant
+       scaling of the role's clip didn't. Number 1 and unnumbered lines
+       keep the role's voice. A sibling is never stored: its preset id is
+       derived (`<presetID>~<n>-<hash of the casting>`), so its reference
+       clip, emotion variants, audio and voice_id key on it like any
+       preset's, a recast gives it a new id, and nothing lists it on the
+       Voices page. A role voiced from a bare instruct or through the
+       instructed-narrator modes has no siblings. Every per-paragraph
+       resolution takes the number (`ForParagraph`/`ForSpeaker`,
+       generation, the chapter view, exports, the used-voices bulk
+       action), and the readiness joins carry one `SpeakerVoice` row per
+       number (`speaker_voice.speaker_index`). `roleNumber`
        takes a number off an answer only when it is a role (marked, a known
        role, or a description like "the second guard"; "Unit 7" stays a
        name, as does "the Old One" - a trailing "One" needs a "Two"

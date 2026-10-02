@@ -12,6 +12,8 @@
 package narration
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 )
@@ -159,7 +161,10 @@ func (r *Resolver) CharacterVoice(presetID, language, cloneModel string) (v Reso
 // voice, so switching a book's mode is a single field change, not
 // something that depends on whether attribution happens to have been run
 // or characters happen to have voices assigned.
-func (r *Resolver) ForParagraph(book *store.Book, speaker string) (ResolvedVoice, error) {
+//
+// speakerIndex is the line's store.Paragraph.SpeakerIndex - see
+// MemberVoice.
+func (r *Resolver) ForParagraph(book *store.Book, speaker string, speakerIndex int) (ResolvedVoice, error) {
 	bookVoice, err := r.BookVoice(book)
 	if err != nil {
 		return ResolvedVoice{}, err
@@ -186,7 +191,11 @@ func (r *Resolver) ForParagraph(book *store.Book, speaker string) (ResolvedVoice
 	if err != nil {
 		return ResolvedVoice{}, err
 	}
-	return r.ResolveCharacterVoice(book, bookVoice, *char, cloneModel, presetID)
+	v, err := r.ResolveCharacterVoice(book, bookVoice, *char, cloneModel, presetID)
+	if err != nil {
+		return ResolvedVoice{}, err
+	}
+	return MemberVoice(v, *char, speakerIndex), nil
 }
 
 // BookVoices resolves many paragraphs of one book at once - ForParagraph's
@@ -234,8 +243,9 @@ func (r *Resolver) BookVoices(book *store.Book) (*BookVoices, error) {
 	return bv, nil
 }
 
-// ForSpeaker is ForParagraph for a paragraph attributed to speaker.
-func (bv *BookVoices) ForSpeaker(speaker string) (ResolvedVoice, error) {
+// ForSpeaker is ForParagraph for a paragraph attributed to speaker, its
+// line numbered speakerIndex (store.Paragraph.SpeakerIndex).
+func (bv *BookVoices) ForSpeaker(speaker string, speakerIndex int) (ResolvedVoice, error) {
 	if !bv.book.MultiVoice() || speaker == "" || speaker == "Narrator" {
 		return bv.Book, nil
 	}
@@ -244,14 +254,14 @@ func (bv *BookVoices) ForSpeaker(speaker string) (ResolvedVoice, error) {
 		return bv.Book, nil
 	}
 	if v, ok := bv.resolved[c.ID]; ok {
-		return v, nil
+		return MemberVoice(v, c, speakerIndex), nil
 	}
 	v, err := bv.r.ResolveCharacterVoice(bv.book, bv.Book, c, bv.cloneModel, bv.presetByChar[c.ID])
 	if err != nil {
 		return ResolvedVoice{}, err
 	}
 	bv.resolved[c.ID] = v
-	return v, nil
+	return MemberVoice(v, c, speakerIndex), nil
 }
 
 // ResolveCharacterVoice is ForParagraph's own per-character resolution,
@@ -325,4 +335,46 @@ func EffectiveCloneModel(bookVoice ResolvedVoice) string {
 		return voices.DefaultCloneModel
 	}
 	return bookVoice.CloneModel
+}
+
+// MemberVoice is the voice of a role's numbered line: v (the role
+// character's own resolved voice) for an unnumbered line or number 1, and
+// for number n > 1 a sibling of it - the same VoiceDesign casting
+// rendered under another seed, which comes out as a different person of
+// the same kind. Several unnamed guards in one conversation
+// (speakerattr's "Guard 1", "Guard 2") get several voices this way, from
+// the one "Guard" voice the roster has.
+//
+// A sibling is not stored anywhere: its preset id is derived (see
+// memberPresetID), so its reference clip, emotion variants and audio all
+// key on that id the same way a stored preset's do. v is returned as is
+// for a character that isn't a role, for a voice with no preset to vary
+// (a book narrated from a bare instruct) and for one styled per line
+// (CloneInstruct - the instructed-narrator modes), where every role
+// already shares the narrator's voice.
+func MemberVoice(v ResolvedVoice, char store.Character, speakerIndex int) ResolvedVoice {
+	if speakerIndex < 2 || !char.IsRole || v.PresetID == "" || v.CloneInstruct != "" {
+		return v
+	}
+	m := v
+	m.PresetID = memberPresetID(v, speakerIndex)
+	m.Seed = memberSeed(v.Seed, speakerIndex)
+	return m
+}
+
+// memberPresetID names a role voice's numbered sibling: the role's preset
+// id, the number, and a hash of the casting it's rendered from - so a
+// recast of the role (new instruct, reference text or seed) gives its
+// siblings new ids, and new clips, rather than leaving clips rendered from
+// the old casting in place under the old ones.
+func memberPresetID(v ResolvedVoice, speakerIndex int) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d\x00%s\x00%g\x00%s", v.Instruct, v.Seed, v.RefText, v.SpeedMultiplier, v.DesignModel)))
+	return fmt.Sprintf("%s~%d-%x", v.PresetID, speakerIndex, h[:4])
+}
+
+// memberSeed is the seed number speakerIndex's sibling renders under - any
+// fixed value other than the role's own; a large odd step keeps siblings
+// of nearby seeds apart.
+func memberSeed(seed, speakerIndex int) int {
+	return (seed + speakerIndex*1_000_003) & 0x7fffffff
 }

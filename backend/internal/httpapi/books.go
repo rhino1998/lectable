@@ -208,13 +208,21 @@ func (s *Server) characterVoiceOverrides(book *store.Book, bookVoice narration.R
 	if err != nil {
 		return nil, err
 	}
-	overrides := make([]store.SpeakerVoice, len(characters))
-	for i, c := range characters {
+	overrides := make([]store.SpeakerVoice, 0, len(characters))
+	for _, c := range characters {
 		resolved, err := s.Narration.ResolveCharacterVoice(book, bookVoice, c, cloneModel, presetIDByChar[c.ID])
 		if err != nil {
 			return nil, err
 		}
-		overrides[i] = store.SpeakerVoice{Speaker: c.Name, VoiceID: resolved.VoiceID()}
+		overrides = append(overrides, store.SpeakerVoice{Speaker: c.Name, VoiceID: resolved.VoiceID()})
+		// A role's numbered lines each have their own voice
+		// (narration.MemberVoice); a number with no row here, or on a
+		// character that isn't a role, takes the character's own.
+		for n := 2; n <= store.MaxSpeakerIndex; n++ {
+			if member := narration.MemberVoice(resolved, c, n); member.PresetID != resolved.PresetID {
+				overrides = append(overrides, store.SpeakerVoice{Speaker: c.Name, SpeakerIndex: n, VoiceID: member.VoiceID()})
+			}
+		}
 	}
 	return overrides, nil
 }
@@ -593,7 +601,7 @@ func (s *Server) buildBooks() ([]bookSummaryDTO, error) {
 			return nil, httpError(http.StatusInternalServerError, err.Error())
 		}
 		for _, ov := range bookOverrides {
-			overrides = append(overrides, store.BookSpeakerVoice{BookID: b.ID, Speaker: ov.Speaker, VoiceID: ov.VoiceID})
+			overrides = append(overrides, store.BookSpeakerVoice{BookID: b.ID, Speaker: ov.Speaker, SpeakerIndex: ov.SpeakerIndex, VoiceID: ov.VoiceID})
 		}
 	}
 	chaptersByBook, err := s.Store.ListChapterSummariesForBooks(bookVoices, overrides)

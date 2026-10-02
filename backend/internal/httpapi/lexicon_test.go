@@ -27,7 +27,7 @@ func TestLexiconUpsertInvalidatesMatchesAndMarksThem(t *testing.T) {
 	if err != nil || ch == nil {
 		t.Fatalf("GetChapterByIdx: %v", err)
 	}
-	voice, err := srv.Narration.ForParagraph(book, "")
+	voice, err := srv.Narration.ForParagraph(book, "", 0)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}

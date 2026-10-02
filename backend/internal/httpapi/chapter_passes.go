@@ -884,7 +884,7 @@ func (s *Server) expandToInlineSets(chapterID string, paragraphs []store.Paragra
 // themselves, not a lost update.
 func (s *Server) invalidateParagraphAudio(book *store.Book, paragraphs []store.Paragraph) {
 	for _, p := range paragraphs {
-		voice, err := s.Narration.ForParagraph(book, p.Speaker)
+		voice, err := s.Narration.ForParagraph(book, p.Speaker, p.SpeakerIndex)
 		if err != nil {
 			log.Printf("invalidateParagraphAudio: resolve voice for paragraph %s: %v", p.ID, err)
 			continue

@@ -1022,7 +1022,7 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 	if speaker == "" {
 		speaker = "Narrator"
 	}
-	voice, err := s.Narration.ForParagraph(book, speaker)
+	voice, err := s.Narration.ForParagraph(book, speaker, 0)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

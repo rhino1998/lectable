@@ -2517,3 +2517,48 @@ func TestPausedDrainedQueueRunsOnlyPreviews(t *testing.T) {
 	}
 	waitFor(t, 5*time.Second, func() bool { return allParagraphsReady(t, s, chapterID, bookVoice.VoiceID()) })
 }
+
+// A role's numbered lines past the first are generated under their own
+// voice (narration.MemberVoice): line 1 of "Guard 2" doesn't share a voice
+// or an audio slot with "Guard 1" or an unnumbered guard line.
+func TestParagraphsNeedingGenerationNumberedRoleVoices(t *testing.T) {
+	s := openTestStore(t)
+	book, chapterID := createBookWithBlocks(t, s,
+		store.BlockInput{Kind: store.BlockText, Text: "“Halt.”", IsQuote: true},
+		store.BlockInput{Kind: store.BlockText, Text: "“Who goes there?”", IsQuote: true},
+		store.BlockInput{Kind: store.BlockText, Text: "“Move along.”", IsQuote: true},
+	)
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CloneModel, store.CharacterVoiceModeAssigned, false, false); err != nil {
+		t.Fatalf("UpdateVoice: %v", err)
+	}
+	guard, _, err := s.UpsertCharacter(store.SeriesScope(book), "Guard", true)
+	if err != nil {
+		t.Fatalf("UpsertCharacter: %v", err)
+	}
+	preset, err := s.CreateVoicePreset("Guard", "a stern guard", "Halt.", 42, 1, "breeze_tts")
+	if err != nil {
+		t.Fatalf("CreateVoicePreset: %v", err)
+	}
+	book, _ = s.GetBook(book.ID)
+	if err := s.SetCharacterVoice(guard.ID, book.CloneModel, preset.ID); err != nil {
+		t.Fatalf("SetCharacterVoice: %v", err)
+	}
+	if err := s.SetParagraphSpeakersIndexed(chapterID, map[int]string{0: "Guard", 1: "Guard", 2: "Guard"}, map[int]int{1: 1, 2: 2}); err != nil {
+		t.Fatalf("SetParagraphSpeakersIndexed: %v", err)
+	}
+	mgr := newTestManagerWithStore(s)
+	resolved, _, err := mgr.paragraphsNeedingGeneration(t.Context(), book, chapterID)
+	if err != nil || len(resolved) != 3 {
+		t.Fatalf("paragraphsNeedingGeneration = %d lines, %v; want 3", len(resolved), err)
+	}
+	voiceOf := map[int]string{}
+	for _, rp := range resolved {
+		voiceOf[rp.paragraph.Idx] = rp.voice.PresetID
+	}
+	if voiceOf[0] != preset.ID || voiceOf[1] != preset.ID {
+		t.Errorf("unnumbered and number-1 lines = %q, %q; want the Guard's own preset %q", voiceOf[0], voiceOf[1], preset.ID)
+	}
+	if voiceOf[2] == preset.ID || !strings.HasPrefix(voiceOf[2], preset.ID+"~2-") {
+		t.Errorf("number-2 line = %q, want a sibling of %q", voiceOf[2], preset.ID)
+	}
+}

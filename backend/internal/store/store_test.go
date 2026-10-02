@@ -1626,3 +1626,45 @@ func TestParagraphSpeakerIndex(t *testing.T) {
 		t.Fatalf("indexes after rewriting the speakers = %v, want all 0", got)
 	}
 }
+
+// A role's numbered line counts as ready under its own voice
+// (SpeakerVoice.SpeakerIndex), and a number with no override row - like an
+// unnumbered line - falls back to the speaker's own voice.
+func TestListChapterSummariesNumberedSpeakerVoices(t *testing.T) {
+	s := openTestStore(t)
+	bookID, chapterID := oneChapterBook(t, s, "", 0, "“Halt.”", "“Who goes there?”", "“Move along.”")
+	if err := s.SetParagraphSpeakersIndexed(chapterID, map[int]string{0: "Guard", 1: "Guard", 2: "Guard"}, map[int]int{1: 2, 2: 3}); err != nil {
+		t.Fatalf("SetParagraphSpeakersIndexed: %v", err)
+	}
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatalf("ListParagraphsRaw: %v", err)
+	}
+	ready := map[int]string{0: "guard-voice", 1: "guard-2-voice", 2: "guard-voice"}
+	for _, p := range paragraphs {
+		if err := s.SetParagraphReady(p.ID, ready[p.Idx], 1); err != nil {
+			t.Fatalf("SetParagraphReady: %v", err)
+		}
+	}
+	overrides := []SpeakerVoice{
+		{Speaker: "Guard", VoiceID: "guard-voice"},
+		{Speaker: "Guard", SpeakerIndex: 2, VoiceID: "guard-2-voice"},
+	}
+	got, err := s.ListChapterSummaries(bookID, "book-voice", overrides)
+	if err != nil {
+		t.Fatalf("ListChapterSummaries: %v", err)
+	}
+	if len(got) != 1 || got[0].ReadyCount != 3 {
+		t.Fatalf("got %+v, want all 3 lines ready under their own voices", got)
+	}
+	books, err := s.ListChapterSummariesForBooks([]BookVoice{{BookID: bookID, VoiceID: "book-voice"}}, []BookSpeakerVoice{
+		{BookID: bookID, Speaker: "Guard", VoiceID: "guard-voice"},
+		{BookID: bookID, Speaker: "Guard", SpeakerIndex: 2, VoiceID: "guard-2-voice"},
+	})
+	if err != nil {
+		t.Fatalf("ListChapterSummariesForBooks: %v", err)
+	}
+	if len(books[bookID]) != 1 || books[bookID][0].ReadyCount != 3 {
+		t.Fatalf("batch form = %+v, want all 3 lines ready", books[bookID])
+	}
+}
