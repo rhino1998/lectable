@@ -30,9 +30,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,6 +91,8 @@ internal fun ParagraphRow(
     onOpenDescriptionPicker: (fromName: String, paragraphIndices: List<Int>) -> Unit,
     onToggleScareQuote: (paragraphIndices: List<Int>, scareQuote: Boolean) -> Unit,
     onSetEmotion: (paragraphIndices: List<Int>, emotion: String) -> Unit,
+    // See ParagraphBodyText.
+    onActiveLine: (fraction: Float) -> Unit,
 ) {
     val isActive = activeSegmentIdx >= 0
     val background = if (isActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
@@ -178,6 +182,7 @@ internal fun ParagraphRow(
                 annotationsMode = annotationsMode,
                 onWordTap = onWordTap,
                 onLongPress = { showMenu = true },
+                onActiveLine = onActiveLine,
             )
             DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
                 if (speakers.isNotEmpty()) {
@@ -369,6 +374,10 @@ internal fun ParagraphBodyText(
     annotationsMode: Boolean,
     onWordTap: (paragraphIdx: Int, seconds: Double) -> Unit,
     onLongPress: () -> Unit,
+    // Where the line holding the active word sits, as a fraction of this text's height -
+    // reported each time the word moves to another line, so auto-follow can track the line
+    // rather than the whole block when the block is too tall to centre (see centerItem).
+    onActiveLine: (fraction: Float) -> Unit,
 ) {
     // A dialogue segment's emotion, shown in annotations mode as a small inline icon right at
     // the start of the segment it applies to - per segment, not per block, since a block with
@@ -441,6 +450,19 @@ internal fun ParagraphBodyText(
     } else {
         null
     }
+
+    val activeLineFraction = remember(textLayoutResult, activeRange?.first) {
+        val layout = textLayoutResult
+        val start = activeRange?.first
+        if (layout == null || start == null || layout.size.height <= 0) {
+            null
+        } else {
+            val line = layout.getLineForOffset(start.coerceIn(0, layout.layoutInput.text.length))
+            (layout.getLineTop(line) + layout.getLineBottom(line)) / 2f / layout.size.height
+        }
+    }
+    val currentOnActiveLine by rememberUpdatedState(onActiveLine)
+    LaunchedEffect(activeLineFraction) { activeLineFraction?.let { currentOnActiveLine(it) } }
 
     val annotated = remember(baseText, activeRange, highlightTextColor, dimColor, segments) {
         buildAnnotatedString {

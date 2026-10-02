@@ -1,5 +1,6 @@
 package com.lectable.app.ui.reader
 
+import kotlin.math.abs
 import androidx.compose.foundation.border
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
@@ -38,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -196,17 +198,23 @@ internal fun InfiniteChapterContent(
         }
     }
 
+    // The active word's line within its block (chapterIdx, the block's first paragraph idx, then
+    // ParagraphBodyText's fraction) - what a block too tall to centre is followed by.
+    var activeLine by remember { mutableStateOf<Triple<Int, Int, Float>?>(null) }
+
     // Keeps the currently-playing paragraph centered as playback advances - see
     // LazyListState.centerItem. Suspends itself the moment the reader scrolls by their own
     // input (autoFollow, tracked by the caller), same as the web reader's useAutoFollow.
-    LaunchedEffect(playback.chapterIdx, playback.paragraphIdx, autoFollow, entries) {
+    LaunchedEffect(playback.chapterIdx, playback.paragraphIdx, autoFollow, entries, activeLine) {
         if (!autoFollow) return@LaunchedEffect
         val itemIndex = entries.indexOfFirst {
             it is ReaderListEntry.ParagraphItem && it.chapterIdx == playback.chapterIdx &&
                 it.segments.any { s -> s.idx == playback.paragraphIdx }
         }
         if (itemIndex < 0) return@LaunchedEffect
-        listState.centerItem(itemIndex)
+        val item = entries[itemIndex] as ReaderListEntry.ParagraphItem
+        val line = activeLine?.takeIf { it.first == item.chapterIdx && it.second == item.segments.first().idx }?.third
+        listState.centerItem(itemIndex, line)
     }
 
     LazyColumn(
@@ -259,6 +267,7 @@ internal fun InfiniteChapterContent(
                         // ReaderPage.tsx's own regenerate button.
                         onRegenerate = { entry.segments.forEach { onRegenerateParagraph(entry.chapterIdx, it.idx) } },
                         onToggleBookmark = { onToggleBookmark(entry.chapterIdx, firstIdx) },
+                        onActiveLine = { fraction -> activeLine = Triple(entry.chapterIdx, firstIdx, fraction) },
                         // Only this block's own isQuote segment(s) - see SpeakerPickerTarget's doc
                         // comment for why narration/description segments are excluded.
                         onOpenSpeakerPicker = {
@@ -470,13 +479,27 @@ private fun lightEffectLabel(effect: String): String = when (effect) {
  * so it skips straight to a single smooth `animateScrollBy` nudge instead of an instant
  * `scrollToItem` snap immediately followed by a correcting animation - which is what made an
  * earlier version of this feel like an aggressive jump-then-slide rather than one motion.
+ *
+ * An item taller than [TALL_ITEM_VIEWPORT_FRACTION] of the viewport isn't centered as a whole -
+ * that put the start of a very long paragraph above the top of the screen, and never moved
+ * again while it played. It's followed by the line being read instead: [activeLine] (the line's
+ * position as a fraction of the item's height, null until known - then the item's first line)
+ * is what gets centered, so the text scrolls a line at a time under a fixed reading position.
  */
-private suspend fun LazyListState.centerItem(index: Int) {
+private suspend fun LazyListState.centerItem(index: Int, activeLine: Float?) {
     if (layoutInfo.visibleItemsInfo.none { it.index == index }) {
         animateScrollToItem(index)
     }
     val info = layoutInfo.visibleItemsInfo.find { it.index == index } ?: return
+    val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
     val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
-    val itemCenter = info.offset + info.size / 2
-    animateScrollBy((itemCenter - viewportCenter).toFloat())
+    val target = if (info.size > viewportHeight * TALL_ITEM_VIEWPORT_FRACTION) {
+        info.offset + (info.size * (activeLine ?: 0f)).toInt()
+    } else {
+        info.offset + info.size / 2
+    }
+    val delta = (target - viewportCenter).toFloat()
+    if (abs(delta) >= 1f) animateScrollBy(delta)
 }
+
+private const val TALL_ITEM_VIEWPORT_FRACTION = 0.75f
