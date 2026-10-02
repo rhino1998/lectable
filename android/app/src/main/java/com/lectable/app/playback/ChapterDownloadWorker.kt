@@ -3,6 +3,7 @@ package com.lectable.app.playback
 import android.content.Context
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.lectable.app.data.repository.DownloadRepository
@@ -33,6 +34,8 @@ class ChapterDownloadWorker @AssistedInject constructor(
             downloadRepository.downloadChapter(bookId, chapterIdx, voiceKey, pinned) { ready, total ->
                 setProgressAsync(workDataOf(KEY_READY to ready, KEY_TOTAL to total))
             }
+            // The chapter's background music and lighting follow separately - see there.
+            AmbienceDownloadWorker.enqueue(WorkManager.getInstance(applicationContext), bookId)
             Result.success()
         } catch (e: CancellationException) {
             throw e

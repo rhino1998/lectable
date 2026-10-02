@@ -9,7 +9,8 @@ import javax.inject.Singleton
  * they're relative paths embedded in DTOs (e.g. `coverUrl: "/api/books/{id}/cover"`,
  * see backend/internal/httpapi/books.go) that Coil and Media3 need as full
  * URLs. This resolves them against the currently configured server, same as
- * [DynamicBaseUrlInterceptor] does for Retrofit calls.
+ * [DynamicBaseUrlInterceptor] does for Retrofit calls. A `file://` URI - a downloaded
+ * chapter's clip, see DownloadRepository.cachedChapter - is already absolute and passes through.
  */
 @Singleton
 class MediaUrlResolver @Inject constructor(
@@ -17,6 +18,7 @@ class MediaUrlResolver @Inject constructor(
 ) {
     fun resolve(relativePath: String?): String? {
         if (relativePath.isNullOrBlank()) return null
+        if (relativePath.startsWith("file://")) return relativePath
         val base = settingsRepository.currentBaseUrl().trimEnd('/')
         val path = if (relativePath.startsWith("/")) relativePath else "/$relativePath"
         return base + path

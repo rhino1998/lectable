@@ -8,6 +8,7 @@ import com.lectable.app.BuildConfig
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -16,6 +17,8 @@ import kotlinx.coroutines.runBlocking
 
 private val Context.settingsDataStore by preferencesDataStore(name = "settings")
 private val SERVER_URL_KEY = stringPreferencesKey("server_url")
+private val LIBRARY_ID_KEY = stringPreferencesKey("library_id")
+private val LIBRARY_ID_URL_KEY = stringPreferencesKey("library_id_url")
 
 /**
  * The backend is a self-hosted, single-user service on the user's own
@@ -34,9 +37,36 @@ class ServerSettingsRepository @Inject constructor(
     private val _baseUrl = MutableStateFlow(BuildConfig.DEFAULT_SERVER_URL)
     val baseUrl: StateFlow<String> = _baseUrl
 
+    // The library id the backend at a given URL last reported (url to id) - see knownLibraryId.
+    @Volatile private var knownLibrary: Pair<String, String>? = null
+
+    private val loaded = CompletableDeferred<Unit>()
+
     suspend fun load() {
-        val stored = dataStore.data.map { it[SERVER_URL_KEY] }.first()
-        if (stored != null) _baseUrl.value = stored
+        val prefs = dataStore.data.first()
+        prefs[SERVER_URL_KEY]?.let { _baseUrl.value = it }
+        val libraryUrl = prefs[LIBRARY_ID_URL_KEY]
+        val libraryId = prefs[LIBRARY_ID_KEY]
+        if (libraryUrl != null && libraryId != null) knownLibrary = libraryUrl to libraryId
+        loaded.complete(Unit)
+    }
+
+    /** Suspends until [load] has run - for anything constructed before it (Hilt injects the
+     *  Application's fields ahead of LectableApplication.onCreate's own load call). */
+    suspend fun awaitLoaded() = loaded.await()
+
+    /** The library id (see BackendIdentityRepository) the backend at [baseUrl] reported the
+     *  last time it was reached, on this launch or an earlier one - what lets downloaded books
+     *  be found before the backend has answered, or without it answering at all. */
+    fun knownLibraryId(baseUrl: String): String? = knownLibrary?.takeIf { it.first == baseUrl }?.second
+
+    suspend fun rememberLibraryId(baseUrl: String, libraryId: String) {
+        if (knownLibraryId(baseUrl) == libraryId) return
+        dataStore.edit {
+            it[LIBRARY_ID_URL_KEY] = baseUrl
+            it[LIBRARY_ID_KEY] = libraryId
+        }
+        knownLibrary = baseUrl to libraryId
     }
 
     /** Whether a server URL has ever actually been saved - by hand in Settings, by picking a

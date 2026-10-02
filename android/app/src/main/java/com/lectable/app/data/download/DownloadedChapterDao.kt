@@ -30,6 +30,10 @@ interface DownloadedChapterDao {
     @Upsert
     suspend fun upsert(entity: DownloadedChapter)
 
+    /** Just the one column, so storing ambience can't clobber a concurrent text/audio refresh. */
+    @Query("UPDATE downloaded_chapters SET musicJson = :musicJson WHERE libraryId = :libraryId AND bookId = :bookId AND chapterIdx = :chapterIdx")
+    suspend fun setMusicJson(libraryId: String, bookId: String, chapterIdx: Int, musicJson: String)
+
     @Query("DELETE FROM downloaded_chapters WHERE libraryId = :libraryId AND bookId = :bookId AND chapterIdx = :chapterIdx")
     suspend fun delete(libraryId: String, bookId: String, chapterIdx: Int)
 

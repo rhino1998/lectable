@@ -148,7 +148,7 @@ fun LibraryScreen(
                         if (uiState.offline) {
                             item {
                                 Text(
-                                    "Offline - showing downloaded books only",
+                                    if (uiState.isLoading) "Connecting - showing downloaded books" else "Offline - showing downloaded books only",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),

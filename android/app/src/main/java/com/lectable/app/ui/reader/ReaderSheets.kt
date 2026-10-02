@@ -24,6 +24,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Person
@@ -70,6 +71,7 @@ import com.lectable.app.data.remote.dto.ChapterSummaryDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.data.remote.dto.VoicePresetDto
+import com.lectable.app.data.repository.AmbienceDownloadState
 import com.lectable.app.data.repository.ChapterDownloadState
 import com.lectable.app.playback.SleepTimerOption
 import com.lectable.app.playback.SleepTimerState
@@ -445,6 +447,7 @@ internal fun ChapterPickerSheet(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
+                            state?.ambience?.let { AmbienceDownloadBadge(it) }
                             when (state?.status) {
                                 DownloadStatus.DOWNLOADING -> {
                                     val ready = state.readyParagraphs
@@ -518,6 +521,37 @@ internal fun ChapterPickerSheet(
                     }
                 }
             }
+        }
+    }
+}
+
+/** A downloaded chapter's offline-ambience state, beside its download icon: a lightbulb when
+ *  only the lighting cues are kept (the book's music is off), else a music note - dimmed with
+ *  "…" until the chapter is scored, then with a clip count until every region's music is on
+ *  the device. */
+@Composable
+private fun AmbienceDownloadBadge(state: AmbienceDownloadState) {
+    val icon = if (state.withClips) Icons.Filled.MusicNote else Icons.Filled.Lightbulb
+    val progress = when {
+        state.settled -> null
+        !state.scored -> "…"
+        else -> "${state.readyClips}/${state.totalClips}"
+    }
+    val description = when {
+        !state.settled && !state.scored -> "Ambience not scored yet"
+        !state.settled -> "Background music downloading, ${state.readyClips} of ${state.totalClips} regions"
+        state.withClips -> "Background music and lighting downloaded"
+        else -> "Lighting cues downloaded"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(start = 8.dp)) {
+        Icon(
+            icon,
+            contentDescription = description,
+            tint = if (state.settled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(16.dp),
+        )
+        if (progress != null) {
+            Text(progress, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

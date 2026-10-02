@@ -58,6 +58,11 @@ data class DownloadedChapter(
     // OfflineReconciler to find what changed server-side. "" (never matches) for a row
     // downloaded before hashes existed.
     @ColumnInfo(defaultValue = "") val hash: String = "",
+    // This chapter's ambience as last fetched (JSON-serialized ChapterMusicDto - music regions
+    // with their lighting cues), "" until DownloadRepository.downloadBookAmbience first stores
+    // it. A region is READY here only while its clip is on disk (under the book's music dir,
+    // by region id), with the durationSeconds of that clip.
+    @ColumnInfo(defaultValue = "") val musicJson: String = "",
     // Directory holding this chapter's %05d.wav files - always
     // context.filesDir/downloads/<libraryId-hash>/<bookId>/<chapterIdx>/<voiceKey-hash>/ in
     // practice (see DownloadRepository.chapterDir), stored explicitly rather than recomputed so

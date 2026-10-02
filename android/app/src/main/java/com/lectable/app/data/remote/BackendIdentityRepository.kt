@@ -10,8 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.launchIn
-import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.launch
 
 /**
  * Resolves and caches the currently-configured backend's stable identity (see
@@ -30,16 +29,20 @@ import kotlinx.coroutines.flow.onEach
 @Singleton
 class BackendIdentityRepository @Inject constructor(
     private val api: LectableApi,
-    serverSettingsRepository: ServerSettingsRepository,
+    private val serverSettingsRepository: ServerSettingsRepository,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    // Null until resolved (or between a base-URL change and the next successful fetch) - callers
-    // that need a synchronous, non-suspending read (e.g. ParagraphPlayer.playParagraph, which
-    // can't suspend) treat null the same as "no local file available yet", falling back to
-    // streaming exactly like an unresolved bookId/voiceKey already does there.
+    // The id this backend reported - or, until it answers, the one it reported last time (see
+    // ServerSettingsRepository.knownLibraryId), so downloads can be read while it's still
+    // loading or unreachable. Null only for a backend that has never been reached at its
+    // current URL - callers that need a synchronous, non-suspending read (e.g.
+    // DownloadRepository.localAudioFile) treat that the same as "nothing downloaded".
     private val _libraryId = MutableStateFlow<String?>(null)
     val libraryId: StateFlow<String?> = _libraryId
+
+    // Whether [libraryId] came from the backend itself on this launch, not just remembered.
+    @Volatile private var confirmed = false
 
     // "" if the current backend never set LECTABLE_LIBRARY_NAME (or hasn't resolved yet) - purely
     // cosmetic (see InstanceDto), for a Settings-screen-style "which backend is this" label.
@@ -47,39 +50,45 @@ class BackendIdentityRepository @Inject constructor(
     val libraryName: StateFlow<String> = _libraryName
 
     init {
-        // Re-resolves whenever the configured backend changes, including the very first value
-        // once ServerSettingsRepository.load() has run (see LectableApplication.onCreate) -
-        // StateFlow already only emits on actual change (no distinctUntilChanged needed), but a
-        // baseUrl that hasn't changed since app start still gets one fetch here regardless (this
-        // collector's first emission), which is fine: it's one cheap request, and confirms the
-        // cached value is still valid for whatever's actually running there now.
-        serverSettingsRepository.baseUrl
-            .onEach { refresh() }
-            .launchIn(scope)
+        // Re-resolves whenever the configured backend changes. A baseUrl that hasn't changed
+        // since the last launch still gets one fetch here (this collector's first emission),
+        // which is fine: it's one cheap request, and confirms the remembered id is still valid
+        // for whatever's actually running there now.
+        scope.launch {
+            // This is constructed before LectableApplication.onCreate loads the stored URL and
+            // remembered id - see ServerSettingsRepository.awaitLoaded.
+            serverSettingsRepository.awaitLoaded()
+            serverSettingsRepository.baseUrl.collect { refresh() }
+        }
     }
 
     private suspend fun refresh() {
-        _libraryId.value = null
+        val baseUrl = serverSettingsRepository.currentBaseUrl()
+        confirmed = false
+        _libraryId.value = serverSettingsRepository.knownLibraryId(baseUrl)
         _libraryName.value = ""
         runCatching { api.getInstance() }.onSuccess {
             _libraryId.value = it.id
             _libraryName.value = it.name
+            confirmed = true
+            if (serverSettingsRepository.currentBaseUrl() == baseUrl) serverSettingsRepository.rememberLibraryId(baseUrl, it.id)
         }
     }
 
     /** Suspends until the current backend's library id is known - for callers that can suspend
-     *  (most of DownloadRepository). A backend that's genuinely unreachable just leaves this
-     *  suspended until connectivity returns and [refresh] (re-triggered by the next baseUrl
-     *  change, or a fresh app start) succeeds. */
+     *  and have something to write (most of DownloadRepository). Immediate once the backend has
+     *  ever been reached at this URL; one that never has leaves this suspended until [refresh]
+     *  (re-triggered by the next baseUrl change, [resolveLibraryId], or a fresh app start)
+     *  succeeds. */
     suspend fun currentLibraryId(): String = libraryId.filterNotNull().first()
 
-    /** The current library id, fetching it now if it isn't known yet - unlike
-     *  [currentLibraryId], never waits for someone else to resolve it: an app started offline
-     *  never re-runs [refresh] on its own, so background work that runs once the backend is back
-     *  (OfflineReconciler) resolves it itself. Null if the backend still can't be reached. */
+    /** The current library id as the backend itself reports it, fetching it now if it hasn't
+     *  answered yet on this launch - unlike [currentLibraryId], never waits for someone else to
+     *  resolve it (an app started offline never re-runs [refresh] on its own) and never settles
+     *  for the remembered id: OfflineReconciler deletes downloads the backend no longer has, so
+     *  it must know which backend is actually there. Null if it still can't be reached. */
     suspend fun resolveLibraryId(): String? {
-        libraryId.value?.let { return it }
-        refresh()
-        return libraryId.value
+        if (!confirmed) refresh()
+        return libraryId.value.takeIf { confirmed }
     }
 }

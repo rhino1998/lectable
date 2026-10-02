@@ -41,6 +41,7 @@ import com.lectable.app.data.settings.LightingSettingsRepository
 import com.lectable.app.playback.lighting.LightingStatus
 import com.lectable.app.playback.BackgroundMusicPlayer
 import com.lectable.app.playback.lighting.HueLightingController
+import com.lectable.app.playback.AmbienceDownloadWorker
 import com.lectable.app.playback.ChapterDownloadWorker
 import com.lectable.app.playback.ParagraphPlayer
 import com.lectable.app.playback.PlaybackState
@@ -175,9 +176,13 @@ class ReaderViewModel @Inject constructor(
     // syncMusicSubscriptions.
     private val musicJobs = mutableMapOf<Int, Job>()
 
-    // Whether the first book value (live, or the offline fallback) has already set up the
-    // starting chapter/position - later book-topic updates only refresh uiState.book.
+    // Whether the first live book value has already set up the starting chapter/position -
+    // later book-topic updates only refresh uiState.book.
     private var bookInitialized = false
+
+    // Where startFromOfflineCopy put the reader, if it opened the downloaded copy - see
+    // adoptLivePosition. Null when it didn't, or when the player kept its own position.
+    private var offlineStart: ParagraphPos? = null
 
     // This reader's own recent position saves (plus where it resumed from), and a dismissed
     // remote position - see remotePosition/withRemotePosition.
@@ -369,28 +374,38 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    /** Subscribes to this book's live book/voice/bookmarks topics (see [LiveStore]). The first
-     *  book value sets up the starting chapter and position; if the backend can't be reached (or
-     *  the book can't be loaded) before that, falls back to a fully offline-downloaded copy -
-     *  and if the backend comes back later, the live values simply take over. */
+    /** Subscribes to this book's live book/voice/bookmarks topics (see [LiveStore]). Until the
+     *  first live book value arrives the reader opens on the downloaded copy, if the book has
+     *  one where it would resume; that first value then sets up the starting chapter and
+     *  position (or just takes over, see [adoptLivePosition]). If the backend can't be reached
+     *  (or the book can't be loaded), the downloaded copy stays - any part of it will do then -
+     *  and the live values still take over whenever the backend comes back. */
     private fun loadBook() {
         viewModelScope.launch {
+            val live = liveStore.book(bookId)
+            var offline = live.value.data == null && startFromOfflineCopy(whileLoading = true)
             syncPendingPosition()
-            liveStore.book(bookId).collect { result ->
+            var failed = false
+            live.collect { result ->
                 val book = result.data
                 val error = result.error
                 when {
                     book != null -> {
-                        if (!bookInitialized) noteOwnPositionSave(book.posChapterIdx to book.posParagraphIdx)
-                        _uiState.update { withRemotePosition(it.copy(loading = false, book = book)) }
-                        if (!bookInitialized) {
-                            bookInitialized = true
-                            startFromLiveBook(book)
-                        }
-                    }
-                    error != null && !bookInitialized -> {
+                        val first = !bookInitialized
                         bookInitialized = true
-                        startFromOfflineCopy(error.message)
+                        // Before the update below, so a position adopted here isn't first
+                        // reported as another device's (see withRemotePosition).
+                        if (first && offline) adoptLivePosition(book)
+                        if (first && !offline) noteOwnPositionSave(book.posChapterIdx to book.posParagraphIdx)
+                        _uiState.update { withRemotePosition(it.copy(loading = false, book = book)) }
+                        if (first && !offline) startFromLiveBook(book)
+                    }
+                    error != null && !bookInitialized && !offline && !failed -> {
+                        offline = startFromOfflineCopy(whileLoading = false)
+                        if (!offline) {
+                            failed = true
+                            _uiState.update { it.copy(loading = false, error = error.message) }
+                        }
                     }
                 }
             }
@@ -426,12 +441,12 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    private suspend fun startFromOfflineCopy(errorMessage: String) {
-        val cachedBook = downloadRepository.cachedBook(bookId)
-        if (cachedBook == null) {
-            _uiState.update { it.copy(loading = false, error = errorMessage) }
-            return
-        }
+    /** Opens the reader on this book's downloaded copy, returning whether there was one to
+     *  open. [whileLoading] is the look-ahead before the backend has answered: only worth it if
+     *  the chapter the book resumes in is downloaded, since the live book is about to open
+     *  there. Without it (the backend can't be reached) any downloaded chapter will do. */
+    private suspend fun startFromOfflineCopy(whileLoading: Boolean): Boolean {
+        val cachedBook = downloadRepository.cachedBook(bookId) ?: return false
         // Resume from a queued-but-not-yet-synced position (see savePendingPosition/
         // syncPendingPosition) if there is one, else from the backend's own position as of the
         // last reconcile (see OfflineReconciler) - either only if it points at a chapter
@@ -441,11 +456,10 @@ class ReaderViewModel @Inject constructor(
         val serverPos = cachedBook.takeIf { pending == null && it.posChapterIdx in downloadedIdx }
         // Same as startFromLiveBook: a player already on this book keeps its own position.
         val resumePlayer = player.hasPositionIn(bookId) && player.state.value.chapterIdx in downloadedIdx
-        val startChapterIdx = if (resumePlayer) {
-            player.state.value.chapterIdx
-        } else {
-            pending?.chapterIdx ?: serverPos?.posChapterIdx ?: (cachedBook.chapters.firstOrNull()?.idx ?: 0)
-        }
+        val resumeChapterIdx = if (resumePlayer) player.state.value.chapterIdx else pending?.chapterIdx ?: serverPos?.posChapterIdx
+        // (A player elsewhere in this book is left for startFromLiveBook to follow.)
+        if (whileLoading && (resumeChapterIdx == null || (player.hasPositionIn(bookId) && !resumePlayer))) return false
+        val startChapterIdx = resumeChapterIdx ?: cachedBook.chapters.firstOrNull()?.idx ?: 0
         _uiState.update { it.copy(loading = false, book = cachedBook, range = startChapterIdx..startChapterIdx, error = null) }
         player.setBookInfo(bookId, cachedBook.title, cachedBook.author, cachedBook.coverUrl)
         awaitChapter(startChapterIdx)
@@ -454,13 +468,40 @@ class ReaderViewModel @Inject constructor(
             player.setVoiceKey(voiceKey)
             _uiState.update { it.copy(voiceKey = voiceKey) }
         }
-        if (resumePlayer) return
-        player.playFrom(
-            startChapterIdx,
-            pending?.paragraphIdx ?: serverPos?.posParagraphIdx ?: 0,
-            pending?.seconds ?: serverPos?.posSeconds ?: 0.0,
-        )
+        // The book's music toggle normally arrives with the live voice (applyVoice, which takes
+        // over when it does) - until then, as the downloaded chapter last saw it.
+        if (currentVoice == null && downloadRepository.cachedChapterMusic(bookId, startChapterIdx)?.enabled == true) {
+            _uiState.update { it.copy(musicEnabled = true) }
+            backgroundMusicPlayer.setMusicEnabled(true)
+        }
+        if (resumePlayer) return true
+        val startParagraphIdx = pending?.paragraphIdx ?: serverPos?.posParagraphIdx ?: 0
+        offlineStart = startChapterIdx to startParagraphIdx
+        player.playFrom(startChapterIdx, startParagraphIdx, pending?.seconds ?: serverPos?.posSeconds ?: 0.0)
         player.pause()
+        return true
+    }
+
+    /** The first live book value arriving after [startFromOfflineCopy] already opened the
+     *  reader: moves to the backend's position if that's somewhere else (another device read
+     *  on since the downloaded copy last synced) and the reader hasn't been touched meanwhile.
+     *  Once it has, the difference is left to the moved-elsewhere notice (see remotePosition). */
+    private suspend fun adoptLivePosition(book: BookDetailDto) {
+        player.setBookInfo(bookId, book.title, book.author, book.coverUrl)
+        val start = offlineStart ?: return
+        val playback = player.state.value
+        val untouched = !playback.isPlaying && (playback.chapterIdx < 0 || (playback.chapterIdx to playback.paragraphIdx) == start)
+        if (!untouched) return
+        val livePos = book.posChapterIdx to book.posParagraphIdx
+        noteOwnPositionSave(livePos)
+        // A position still queued here is newer than the backend's - see syncPendingPosition.
+        if (livePos == start || downloadRepository.pendingPosition(bookId) != null) return
+        if (livePos.first !in _uiState.value.loadedChapters) resetLoadedChapters(livePos.first)
+        viewModelScope.launch {
+            awaitChapter(livePos.first)
+            player.playFrom(livePos.first, livePos.second, book.posSeconds)
+            player.pause()
+        }
     }
 
     /** Applies the live voice topic - from this screen's own voice/multi-voice/music changes or
@@ -508,26 +549,24 @@ class ReaderViewModel @Inject constructor(
 
     /** Starts (if not already running) this chapter's live subscription, which merges every
      *  value it receives into [ReaderUiState.loadedChapters] - callers are responsible for
-     *  widening [ReaderUiState.range] to include it if needed. If the backend can't provide it
-     *  (unreachable, or an error) before any live value arrived, falls back to a fully
-     *  offline-downloaded copy (see DownloadRepository.cachedChapter) - a cached chapter always
-     *  reports every paragraph READY with no audioUrl, so playback resolves through
-     *  ParagraphPlayer's local-file check instead. */
+     *  widening [ReaderUiState.range] to include it if needed. A fully downloaded chapter (see
+     *  DownloadRepository.cachedChapter) is shown first, until the live value replaces it - or
+     *  for good, if the backend can't provide one. A cached chapter reports every paragraph
+     *  READY, playing from its downloaded clip. */
     private fun subscribeChapter(idx: Int) {
         if (chapterJobs[idx]?.isActive == true) return
         chapterJobs[idx] = viewModelScope.launch {
-            liveStore.chapter(bookId, idx).collect { result ->
+            val live = liveStore.chapter(bookId, idx)
+            if (live.value.data == null && idx !in _uiState.value.loadedChapters) {
+                downloadRepository.cachedChapter(bookId, idx)?.let { mergeChapter(idx, it, live = false) }
+            }
+            live.collect { result ->
                 val chapter = result.data
                 val error = result.error
                 when {
                     chapter != null -> mergeChapter(idx, chapter, live = true)
                     error != null && idx !in _uiState.value.loadedChapters -> {
-                        val cached = downloadRepository.cachedChapter(bookId, idx)
-                        if (cached != null) {
-                            mergeChapter(idx, cached, live = false)
-                        } else {
-                            _uiState.update { it.copy(error = error.message, failedChapterIdx = idx) }
-                        }
+                        _uiState.update { it.copy(error = error.message, failedChapterIdx = idx) }
                     }
                 }
             }
@@ -823,8 +862,13 @@ class ReaderViewModel @Inject constructor(
         (musicJobs.keys - wanted).forEach { idx -> musicJobs.remove(idx)?.cancel() }
         (wanted - musicJobs.keys).forEach { idx ->
             musicJobs[idx] = viewModelScope.launch {
-                liveStore.chapterMusic(bookId, idx).collect { result ->
-                    result.data?.let { onChapterMusic(idx, it) }
+                // A downloaded chapter's stored ambience first, like subscribeChapter.
+                val live = liveStore.chapterMusic(bookId, idx)
+                if (live.value.data == null) {
+                    downloadRepository.cachedChapterMusic(bookId, idx)?.let { onChapterMusic(idx, it, live = false) }
+                }
+                live.collect { result ->
+                    result.data?.let { onChapterMusic(idx, it, live = true) }
                 }
             }
         }
@@ -849,10 +893,13 @@ class ReaderViewModel @Inject constructor(
      *  retriggers music gen sometimes" - a genuine *fresh* retrigger of a chapter that paused and
      *  is no longer queued anywhere is correct, expected behavior (that's exactly how a busy box
      *  eventually finishes scoring a long chapter), not this bug. */
-    private suspend fun onChapterMusic(idx: Int, dto: ChapterMusicDto) {
+    private suspend fun onChapterMusic(idx: Int, dto: ChapterMusicDto, live: Boolean) {
         _uiState.update { it.copy(chapterMusic = it.chapterMusic + (idx to dto)) }
         backgroundMusicPlayer.setChapterMusic(idx, dto)
         lightingController.setChapterMusic(idx, dto)
+        // A stored copy (see DownloadRepository.cachedChapterMusic) says nothing about what the
+        // backend still has to do.
+        if (!live) return
         // The ambience pass is done once its music is scored and its lighting sub-pass has lit
         // every region - a chapter scored before lighting existed still gets (just) lit.
         if ((dto.scored && dto.lit) || idx in scoringMusicChapters) return
@@ -882,6 +929,8 @@ class ReaderViewModel @Inject constructor(
                 voiceRepository.updateVoice(bookId, voice.copy(musicEnabled = enabled))
             }.onSuccess { updated ->
                 applyVoice(updated)
+                // Downloaded chapters want their music offline too.
+                if (enabled) AmbienceDownloadWorker.enqueue(workManager, bookId)
             }.onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -1123,7 +1172,11 @@ class ReaderViewModel @Inject constructor(
     fun toggleLighting(): Boolean {
         val state = _uiState.value
         if (!state.lightingConfigured) return false
-        viewModelScope.launch { lightingSettingsRepository.setEnabled(!state.lightingEnabled) }
+        viewModelScope.launch {
+            lightingSettingsRepository.setEnabled(!state.lightingEnabled)
+            // Downloaded chapters want their lighting cues offline too.
+            if (!state.lightingEnabled) AmbienceDownloadWorker.enqueue(workManager, bookId)
+        }
         return true
     }
 

@@ -139,9 +139,9 @@ compiled-in default in place if nothing answers in time.
   reconnects with backoff (resubscribing everything), and on a Settings
   server-address change drops every cached value and re-points. When the
   backend can't be reached before a topic ever got a value, that topic
-  reports `LiveError.isNetwork` (status 0) - what `LibraryViewModel`/
-  `ReaderViewModel`/`DownloadRepository` key their offline fallbacks on;
-  values already received stay visible across a reconnect. Nothing reads
+  reports `LiveError.isNetwork` (status 0); values already received stay
+  visible across a reconnect (downloaded copies don't wait for that error -
+  see "Offline first" below). Nothing reads
   `LiveClient` directly except `LiveStore` (below) - there is no polling and no
   "refetch after mutation" anywhere; a mutation's own write is what
   produces the update. REST (`LectableApi`) remains for mutations and
@@ -161,6 +161,47 @@ compiled-in default in place if nothing answers in time.
   per-book/per-chapter topics and `jobs` are live only while read (each
   subscription costs a backend rebuild on every relevant write), then
   linger 5s; at most 64 non-eager instances are cached (LRU).
+- **Offline first**: the library and the reader show downloaded copies
+  straight away and swap in the live values when they arrive, rather than
+  only falling back once the connection has failed. `LibraryViewModel`
+  lists downloaded books until the `books` topic has a value (banner:
+  "Connecting" while loading, "Offline" once it failed). `ReaderViewModel
+  .loadBook` opens on `DownloadRepository.cachedBook` when the chapter the
+  book resumes in is downloaded, and `subscribeChapter` shows
+  `cachedChapter` before the live chapter; the first live book value then
+  moves to the backend's position if it differs and the reader hasn't been
+  touched (`adoptLivePosition`). A cached paragraph's `audioUrl` is its
+  downloaded clip's `file://` URI, so it plays like any other. All of this
+  hangs on the library id downloads are scoped by being known without the
+  network: `BackendIdentityRepository` starts from the id remembered for
+  the current URL (`ServerSettingsRepository.knownLibraryId`, DataStore)
+  and confirms it with `GET /api/instance`; cached reads return null
+  rather than wait when there is none. Only `resolveLibraryId`
+  (`OfflineReconciler`, which deletes) insists on a confirmed id.
+- **Offline ambience**: a downloaded chapter also keeps its music regions,
+  their lighting cues, and (while the book's music toggle is on) each
+  region's clip - `DownloadedChapter.musicJson` (a stored `ChapterMusicDto`;
+  `DownloadDatabase` v7, `MIGRATION_6_7`) plus `<book dir>/music/<regionId>`.
+  `playback/AmbienceDownloadWorker` (one unique work per book, started by
+  every finished chapter download, every offline sync, and turning music or
+  lighting on in the reader) runs `DownloadRepository.downloadBookAmbience`:
+  nothing unless the book's music or this device's Hue lighting is on;
+  otherwise, 8 chapters at a time in reading order, it asks the backend
+  for what's missing (`run-ambience`, then `generate-music` - ambience
+  normally only exists for chapters someone has listened to) and polls
+  `GET .../music` every 20s, downloading clips as they turn ready. A window
+  that doesn't move for 4 minutes is skipped until the next run. Settled
+  chapters aren't re-checked, so a region re-rendered later is only picked
+  up when its chapter is downloaded again. In the reader,
+  `syncMusicSubscriptions` feeds `cachedChapterMusic` (clips as `file://`
+  URIs) to `BackgroundMusicPlayer`/`HueLightingController` until the live
+  `chapterMusic` value arrives, and an offline start takes the music toggle
+  from the stored copy. The toggle itself can't be changed offline.
+  The chapter picker shows each downloaded chapter's state beside its
+  download icon (`AmbienceDownloadBadge`, from `ChapterDownloadState
+  .ambience`): a music note (lightbulb when only cues are kept) - dim with
+  "…" until scored, then a clip count, tinted once settled; nothing until
+  the worker has reached the chapter.
 - `data/live/OfflineCacheWriter.kt` - `LiveStore`'s write-through into the
   Room offline cache: every `books` value refreshes downloaded books'
   title/author/cover/chapter count, and every `chapter` value that passes

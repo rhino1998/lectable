@@ -17,6 +17,7 @@ import com.lectable.app.data.remote.LectableApi
 import com.lectable.app.data.remote.LiveClient
 import com.lectable.app.data.repository.DownloadRepository
 import com.lectable.app.data.repository.voiceKeyOf
+import com.lectable.app.playback.AmbienceDownloadWorker
 import com.lectable.app.playback.ChapterDownloadWorker
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -124,6 +125,9 @@ class OfflineReconciler @Inject constructor(
             if (e.code() == HTTP_NOT_FOUND) return
             throw e
         }
+
+        // Ambience sits outside the hash tree; its own worker settles what's missing.
+        AmbienceDownloadWorker.enqueue(workManager, bookId)
 
         var inSync = true
         if (manifest.hash != book.hash) {

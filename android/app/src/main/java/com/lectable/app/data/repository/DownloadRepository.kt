@@ -1,6 +1,8 @@
 package com.lectable.app.data.repository
 
 import android.content.Context
+import android.net.Uri
+import android.os.SystemClock
 import android.system.Os
 import com.lectable.app.data.download.DownloadStatus
 import com.lectable.app.data.download.DownloadedBook
@@ -18,13 +20,17 @@ import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
+import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.ChapterSummaryDto
 import com.lectable.app.data.remote.dto.ContentItemDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.ParagraphDto
+import com.lectable.app.data.settings.LightingSettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.IOException
+import kotlin.coroutines.cancellation.CancellationException
+import retrofit2.HttpException
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -32,12 +38,14 @@ import javax.inject.Singleton
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.withContext
@@ -56,8 +64,35 @@ fun voiceKeyOf(presetId: String, instruct: String, language: String): String =
 
 data class DownloadKey(val libraryId: String, val bookId: String, val chapterIdx: Int, val voiceKey: String)
 
-/** One chapter's download state as the UI needs it - see [DownloadRepository.observeChapterStatuses]. */
-data class ChapterDownloadState(val status: String, val readyParagraphs: Int, val totalParagraphs: Int)
+// downloadBookAmbience: how many chapters it asks the backend to work on (and polls) at once,
+// how often it polls them, and how long none of them may change before it moves on.
+private const val AMBIENCE_WINDOW = 8
+private const val AMBIENCE_POLL_MS = 20_000L
+private const val AMBIENCE_STALL_MS = 4 * 60_000L
+
+/** One chapter's download state as the UI needs it - see [DownloadRepository.observeChapterStatuses].
+ *  [ambience] is null until the chapter has any ambience stored. */
+data class ChapterDownloadState(
+    val status: String,
+    val readyParagraphs: Int,
+    val totalParagraphs: Int,
+    val ambience: AmbienceDownloadState? = null,
+)
+
+/** How much of a downloaded chapter's ambience is on the device (see
+ *  [DownloadRepository.downloadBookAmbience]): [scored] once its regions and lighting cues are
+ *  all there, then - only [withClips], i.e. while the book's background music is on - one clip
+ *  per region. */
+data class AmbienceDownloadState(
+    val scored: Boolean,
+    val withClips: Boolean,
+    val readyClips: Int,
+    val failedClips: Int,
+    val totalClips: Int,
+) {
+    /** Nothing more to fetch - a region whose music failed to render has no clip to wait for. */
+    val settled: Boolean get() = scored && (!withClips || readyClips + failedClips >= totalClips)
+}
 
 /**
  * Downloads a chapter's generated audio to the device for offline playback, one paragraph's
@@ -81,6 +116,7 @@ class DownloadRepository @Inject constructor(
     private val backendIdentity: BackendIdentityRepository,
     private val json: Json,
     private val liveStore: LiveStore,
+    private val lightingSettings: LightingSettingsRepository,
 ) {
     private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -100,20 +136,18 @@ class DownloadRepository @Inject constructor(
     private val storedParagraphs = ConcurrentHashMap<DownloadKey, Pair<String, Map<Int, OfflineParagraph>>>()
 
     /** The downloaded .wav for [paragraph], or null if there isn't one or it's stale. A live
-     *  [paragraph] (non-null audioUrl) is only matched to its local file while its audio is still
-     *  what was downloaded (see [hasAudioOf] - by audioHash): the file is keyed by the book's
-     *  voice only, but a paragraph's audio also depends on its speaker (and scare-quote merge
-     *  group), so a re-attribution after download regenerates it server-side while the local copy
-     *  keeps the old speaker until OfflineReconciler refreshes it. A cached (offline) chapter has
-     *  no audioUrl and nothing newer to compare to. */
+     *  [paragraph] is only matched to its local file while its audio is still what was
+     *  downloaded (see [hasAudioOf] - by audioHash): the file is keyed by the book's voice only,
+     *  but a paragraph's audio also depends on its speaker (and scare-quote merge group), so a
+     *  re-attribution after download regenerates it server-side while the local copy keeps the
+     *  old speaker until OfflineReconciler refreshes it. (A [cachedChapter] paragraph never needs
+     *  this - its audioUrl already is its local file.) */
     fun localAudioFile(bookId: String, chapterIdx: Int, voiceKey: String, paragraph: ParagraphDto): File? {
         val libraryId = backendIdentity.libraryId.value ?: return null
         val key = DownloadKey(libraryId, bookId, chapterIdx, voiceKey)
         val entry = completeByKey.value[key] ?: return null
-        if (paragraph.audioUrl != null) {
-            val stored = storedParagraphs(key, entry)[paragraph.idx] ?: return null
-            if (!stored.hasAudioOf(paragraph)) return null
-        }
+        val stored = storedParagraphs(key, entry)[paragraph.idx] ?: return null
+        if (!stored.hasAudioOf(paragraph)) return null
         return audioFile(File(entry.localDir), paragraph.idx).takeIf { it.exists() }
     }
 
@@ -135,25 +169,53 @@ class DownloadRepository @Inject constructor(
     fun observeChapterStatuses(bookId: String): Flow<Map<Int, ChapterDownloadState>> =
         backendIdentity.libraryId.filterNotNull().flatMapLatest { libraryId ->
             dao.observeForBook(libraryId, bookId).map { rows ->
-                rows.associate { it.chapterIdx to ChapterDownloadState(it.status, it.readyParagraphs, it.totalParagraphs) }
+                rows.associate { it.chapterIdx to ChapterDownloadState(it.status, it.readyParagraphs, it.totalParagraphs, ambienceState(it)) }
             }
         }
 
-    /** Every downloaded book on the current library - the offline fallback for
-     *  LibraryViewModel's book list when a live `listBooks()` fails. */
+    // Each row's decoded ambience summary, re-decoded only when its musicJson changes - this
+    // flow re-emits every row on every paragraph of a download in progress.
+    private val ambienceStates = ConcurrentHashMap<DownloadKey, Pair<String, AmbienceDownloadState?>>()
+
+    private fun ambienceState(row: DownloadedChapter): AmbienceDownloadState? {
+        if (row.status != DownloadStatus.COMPLETE) return null
+        val key = DownloadKey(row.libraryId, row.bookId, row.chapterIdx, "")
+        ambienceStates[key]?.let { (raw, state) -> if (raw == row.musicJson) return state }
+        val state = decodeMusic(row.musicJson)?.let { music ->
+            AmbienceDownloadState(
+                scored = music.scored && music.lit,
+                withClips = music.enabled,
+                readyClips = music.regions.count { it.status == AudioStatuses.READY },
+                failedClips = music.regions.count { it.status == AudioStatuses.ERROR },
+                totalClips = music.regions.size,
+            )
+        }
+        ambienceStates[key] = row.musicJson to state
+        return state
+    }
+
+    /** Every downloaded book on the current library - what LibraryViewModel's book list shows
+     *  until the live one arrives, or instead of it when the backend can't be reached. Empty
+     *  (rather than silent) while the library id isn't known: nothing can have been downloaded
+     *  from a backend that has never been reached. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun observeDownloadedBooks(): Flow<List<DownloadedBook>> =
-        backendIdentity.libraryId.filterNotNull().flatMapLatest { libraryId ->
-            bookDao.observeAll().map { books -> books.filter { it.libraryId == libraryId } }
+        backendIdentity.libraryId.flatMapLatest { libraryId ->
+            if (libraryId == null) {
+                flowOf(emptyList())
+            } else {
+                bookDao.observeAll().map { books -> books.filter { it.libraryId == libraryId } }
+            }
         }
 
-    /** Reconstructs a BookDetailDto from cached metadata, for opening a downloaded book with no
-     *  network at all (see ReaderViewModel.loadBook's offline fallback) - `chapters` only
-     *  includes chapters that are actually fully downloaded (status == COMPLETE), same as a live
-     *  fetch would only ever show what's real; the position is the backend's as last seen online
-     *  (see DownloadedBook.posChapterIdx). */
+    /** Reconstructs a BookDetailDto from cached metadata, for opening a downloaded book before
+     *  the backend has answered, or with no network at all (see ReaderViewModel.loadBook) -
+     *  `chapters` only includes chapters that are actually fully downloaded (status ==
+     *  COMPLETE), same as a live fetch would only ever show what's real; the position is the
+     *  backend's as last seen online (see DownloadedBook.posChapterIdx). Like every cached read
+     *  here, never waits on the network: null when the library id isn't known yet. */
     suspend fun cachedBook(bookId: String): BookDetailDto? = withContext(Dispatchers.IO) {
-        val libraryId = backendIdentity.currentLibraryId()
+        val libraryId = backendIdentity.libraryId.value ?: return@withContext null
         val book = bookDao.get(libraryId, bookId) ?: return@withContext null
         val chapters = dao.forBook(libraryId, bookId)
             .filter { it.status == DownloadStatus.COMPLETE }
@@ -178,19 +240,25 @@ class DownloadRepository @Inject constructor(
     }
 
     /** Reconstructs a ChapterDetailDto from cached paragraph text/durations, for reading a
-     *  downloaded chapter with no network at all - null unless it's fully COMPLETE. Every
-     *  paragraph reports READY with no audioUrl: ParagraphPlayer resolves playback through
-     *  [localAudioFile] instead, which is guaranteed to have every one of these once this chapter
-     *  is COMPLETE, so a missing audioUrl here never actually gets used to try streaming. */
+     *  downloaded chapter before the backend has answered, or with no network at all - null
+     *  unless it's fully COMPLETE. Every paragraph reports READY with its downloaded clip's
+     *  `file://` URI as its audioUrl (MediaUrlResolver passes those through), so ParagraphPlayer
+     *  plays it like any other. The members of a scare-quote merge group share their anchor's
+     *  file - each one's own is a duplicate of the same whole clip (see
+     *  OfflineParagraph.audioPointerSeconds), and the player tells a group by its shared URL. */
     suspend fun cachedChapter(bookId: String, chapterIdx: Int): ChapterDetailDto? = withContext(Dispatchers.IO) {
-        val libraryId = backendIdentity.currentLibraryId()
+        val libraryId = backendIdentity.libraryId.value ?: return@withContext null
         val row = dao.get(libraryId, bookId, chapterIdx)?.takeIf { it.status == DownloadStatus.COMPLETE } ?: return@withContext null
         val offlineParagraphs = runCatching { json.decodeFromString<List<OfflineParagraph>>(row.paragraphsJson) }.getOrDefault(emptyList())
+        val dir = File(row.localDir)
+        var clipAnchorIdx = 0
         val paragraphs = offlineParagraphs.map { p ->
+            if (p.audioPointerSeconds == 0.0) clipAnchorIdx = p.idx
             ParagraphDto(
                 idx = p.idx,
                 text = p.text,
                 audioStatus = AudioStatuses.READY,
+                audioUrl = Uri.fromFile(audioFile(dir, clipAnchorIdx)).toString(),
                 durationSeconds = p.durationSeconds,
                 speaker = p.speaker,
                 inline = p.inline,
@@ -231,12 +299,158 @@ class DownloadRepository @Inject constructor(
         return File(imagesDir(libraryId, bookId), id).takeIf { it.exists() }
     }
 
+    /** A downloaded chapter's stored ambience (see [downloadBookAmbience]), for the reader's
+     *  background music and room lighting before the backend has answered, or with no network at
+     *  all - null if none was ever stored. A region whose clip is on disk is READY with that
+     *  clip's `file://` URI as its audioUrl; any other has no audio (its lighting cue still
+     *  applies). `enabled` is the book's music toggle as last seen online. */
+    suspend fun cachedChapterMusic(bookId: String, chapterIdx: Int): ChapterMusicDto? = withContext(Dispatchers.IO) {
+        val libraryId = backendIdentity.libraryId.value ?: return@withContext null
+        val row = dao.get(libraryId, bookId, chapterIdx)?.takeIf { it.status == DownloadStatus.COMPLETE } ?: return@withContext null
+        val music = decodeMusic(row.musicJson) ?: return@withContext null
+        val dir = musicDir(libraryId, bookId)
+        music.copy(
+            regions = music.regions.map { r ->
+                val file = File(dir, r.id)
+                if (r.status == AudioStatuses.READY && file.exists()) {
+                    r.copy(audioUrl = Uri.fromFile(file).toString())
+                } else {
+                    r.copy(status = AudioStatuses.PENDING, audioUrl = null)
+                }
+            },
+        )
+    }
+
+    private fun decodeMusic(raw: String): ChapterMusicDto? =
+        raw.takeIf { it.isNotEmpty() }?.let { runCatching { json.decodeFromString<ChapterMusicDto>(it) }.getOrNull() }
+
+    /**
+     * Brings every downloaded chapter of [bookId] up to having its ambience offline too: the
+     * music regions and their lighting cues, plus each region's clip while the book's background
+     * music is on. Does nothing unless the listener uses ambience at all (the book's music
+     * toggle, or Hue lighting on this device). Unlike narration, ambience usually doesn't exist
+     * yet for chapters nobody has listened to - regions are scored and their music rendered as a
+     * reader reaches them - so this asks the backend for whatever is missing (the ambience pass,
+     * then the whole-chapter music run) and polls until it lands, [AMBIENCE_WINDOW] chapters at
+     * a time in reading order. All progress is in the rows themselves, so a run that's stopped
+     * just picks up where it left off.
+     *
+     * Returns whether every downloaded chapter is settled. Chapters whose ambience doesn't move
+     * for [AMBIENCE_STALL_MS] (backend busy with something else, queue paused) are skipped for
+     * this run, as are ones the backend refuses - the caller retries later. A chapter already
+     * settled isn't looked at again, so a region re-rendered afterwards is only picked up when
+     * its chapter is next downloaded.
+     */
+    suspend fun downloadBookAmbience(bookId: String): Boolean = withContext(Dispatchers.IO) {
+        val libraryId = backendIdentity.currentLibraryId()
+        val music = api.getVoice(bookId).musicEnabled
+        if (!music && !lightingSettings.settings.first().enabled) return@withContext true
+        val askedScoring = mutableSetOf<Int>()
+        val askedMusic = mutableSetOf<Int>()
+        val skipped = mutableSetOf<Int>()
+        var lastChangeAt = SystemClock.elapsedRealtime()
+        while (true) {
+            val open = dao.forBook(libraryId, bookId)
+                .filter { it.status == DownloadStatus.COMPLETE && it.chapterIdx !in skipped && !ambienceSettled(it, music) }
+                .sortedBy { it.chapterIdx }
+                .take(AMBIENCE_WINDOW)
+            if (open.isEmpty()) return@withContext skipped.isEmpty()
+            var changed = false
+            for (row in open) {
+                val idx = row.chapterIdx
+                val dto = api.getChapterMusic(bookId, idx)
+                if (storeAmbience(libraryId, bookId, idx, dto, withClips = music)) changed = true
+                try {
+                    if (!dto.scored || !dto.lit) {
+                        if (askedScoring.add(idx)) {
+                            api.runChapterAmbience(bookId, idx)
+                            changed = true
+                        }
+                    } else if (music && dto.regions.any { it.status != AudioStatuses.READY && it.status != AudioStatuses.ERROR }) {
+                        if (askedMusic.add(idx)) {
+                            api.generateChapterMusic(bookId, idx)
+                            changed = true
+                        }
+                    }
+                } catch (e: HttpException) {
+                    // No LLM configured, narration regenerating, chapter gone - not something
+                    // waiting will fix.
+                    skipped += idx
+                }
+            }
+            val now = SystemClock.elapsedRealtime()
+            if (changed) {
+                lastChangeAt = now
+            } else if (now - lastChangeAt > AMBIENCE_STALL_MS) {
+                open.mapTo(skipped) { it.chapterIdx }
+                lastChangeAt = now
+                continue
+            }
+            delay(AMBIENCE_POLL_MS)
+        }
+        @Suppress("UNREACHABLE_CODE")
+        false
+    }
+
+    /** Whether [row]'s stored ambience is everything there is to have: scored and lit, and - when
+     *  clips are wanted - every region either has its clip or failed to render. */
+    private fun ambienceSettled(row: DownloadedChapter, music: Boolean): Boolean {
+        val stored = decodeMusic(row.musicJson) ?: return false
+        if (!stored.scored || !stored.lit) return false
+        return !music || stored.regions.all { it.status == AudioStatuses.READY || it.status == AudioStatuses.ERROR }
+    }
+
+    /** Stores [dto] as a downloaded chapter's ambience, fetching (when [withClips]) the clip of
+     *  every READY region that isn't on disk yet or was re-rendered since, and dropping clips of
+     *  regions the chapter no longer has. A clip the backend is re-rendering, or one that fails
+     *  to download, keeps its old local copy. Returns whether anything stored changed. */
+    private suspend fun storeAmbience(libraryId: String, bookId: String, chapterIdx: Int, dto: ChapterMusicDto, withClips: Boolean): Boolean {
+        val row = dao.get(libraryId, bookId, chapterIdx)?.takeIf { it.status == DownloadStatus.COMPLETE } ?: return false
+        val stored = decodeMusic(row.musicJson)?.regions.orEmpty().associateBy { it.id }
+        val dir = musicDir(libraryId, bookId).apply { mkdirs() }
+        val regions = dto.regions.map { r ->
+            val file = File(dir, r.id)
+            val local = stored[r.id]?.takeIf { it.status == AudioStatuses.READY && file.exists() }
+            val url = r.audioUrl
+            val ready = r.status == AudioStatuses.READY
+            when {
+                ready && local != null && local.durationSeconds == r.durationSeconds -> r
+                ready && url != null && withClips && fetchClip(url, file) -> r
+                local != null -> r.copy(status = AudioStatuses.READY, audioUrl = local.audioUrl, durationSeconds = local.durationSeconds, error = null)
+                r.status == AudioStatuses.ERROR -> r
+                else -> r.copy(status = AudioStatuses.PENDING, audioUrl = null)
+            }
+        }
+        val liveIds = dto.regions.mapTo(mutableSetOf()) { it.id }
+        stored.keys.filter { it !in liveIds }.forEach { File(dir, it).delete() }
+        val encoded = json.encodeToString(dto.copy(regions = regions))
+        if (encoded == row.musicJson) return false
+        dao.setMusicJson(libraryId, bookId, chapterIdx, encoded)
+        return true
+    }
+
+    /** Downloads [url] to [target] via a staged file, so a clip being played is never half
+     *  written. False if it couldn't be fetched. */
+    private suspend fun fetchClip(url: String, target: File): Boolean {
+        val part = File(target.path + STAGED_SUFFIX)
+        return try {
+            mediaApi.downloadFile(url).use { body -> part.outputStream().use { out -> body.byteStream().copyTo(out) } }
+            part.renameTo(target)
+        } catch (e: CancellationException) {
+            part.delete()
+            throw e
+        } catch (e: Exception) {
+            part.delete()
+            false
+        }
+    }
+
     /** The voiceKey a downloaded chapter was fetched under, if it's fully COMPLETE - lets
      *  ReaderViewModel's offline fallback set [ParagraphPlayer]'s voiceKey to whatever will
      *  actually match [localAudioFile] for this chapter, since there's no live voice endpoint to
      *  ask when offline. */
     suspend fun cachedChapterVoiceKey(bookId: String, chapterIdx: Int): String? = withContext(Dispatchers.IO) {
-        val libraryId = backendIdentity.currentLibraryId()
+        val libraryId = backendIdentity.libraryId.value ?: return@withContext null
         dao.get(libraryId, bookId, chapterIdx)?.takeIf { it.status == DownloadStatus.COMPLETE }?.voiceKey
     }
 
@@ -255,7 +469,7 @@ class DownloadRepository @Inject constructor(
      *  the book while *still* offline (otherwise there'd be nothing distinguishing "never
      *  synced" from "nothing new to sync" once the book's own cached position, if any, is gone). */
     suspend fun pendingPosition(bookId: String): PendingPosition? = withContext(Dispatchers.IO) {
-        val libraryId = backendIdentity.currentLibraryId()
+        val libraryId = backendIdentity.libraryId.value ?: return@withContext null
         positionDao.get(libraryId, bookId)
     }
 
@@ -524,6 +738,9 @@ class DownloadRepository @Inject constructor(
                     totalBytes = dir.listFiles { f -> f.name.endsWith(".wav") }?.sumOf { it.length() } ?: 0L,
                     lastAccessedAt = System.currentTimeMillis(),
                     hash = chapter.hash,
+                    // Ambience isn't part of this download (see downloadBookAmbience) - a
+                    // refresh keeps whatever is stored, re-read since it may have moved.
+                    musicJson = dao.get(libraryId, bookId, chapterIdx)?.musicJson.orEmpty(),
                     localDir = dir.path,
                 ),
             )
@@ -576,6 +793,8 @@ class DownloadRepository @Inject constructor(
         val libraryId = backendIdentity.currentLibraryId()
         val entry = dao.get(libraryId, bookId, chapterIdx) ?: return@withContext
         File(entry.localDir).deleteRecursively()
+        val music = musicDir(libraryId, bookId)
+        decodeMusic(entry.musicJson)?.regions?.forEach { File(music, it.id).delete() }
         dao.delete(libraryId, bookId, chapterIdx)
     }
 
@@ -586,6 +805,7 @@ class DownloadRepository @Inject constructor(
         val libraryId = backendIdentity.currentLibraryId()
         dao.forBook(libraryId, bookId).forEach { File(it.localDir).deleteRecursively() }
         imagesDir(libraryId, bookId).deleteRecursively()
+        musicDir(libraryId, bookId).deleteRecursively()
         dao.deleteForBook(libraryId, bookId)
         bookDao.get(libraryId, bookId)?.localCoverPath?.let { File(it).delete() }
         bookDao.delete(libraryId, bookId)
@@ -625,6 +845,9 @@ class DownloadRepository @Inject constructor(
     // bytes don't depend on voice, so they're shared across every voice/chapter download for
     // this book rather than duplicated per voiceKey. See localImageFile/downloadChapter.
     private fun imagesDir(libraryId: String, bookId: String): File = File(bookDir(libraryId, bookId), "images")
+
+    // Music clips, by region id - like images, not voice-dependent. See storeAmbience.
+    private fun musicDir(libraryId: String, bookId: String): File = File(bookDir(libraryId, bookId), "music")
 
     private fun bookDir(libraryId: String, bookId: String): File =
         File(context.filesDir, "downloads/${hash(libraryId)}/$bookId")

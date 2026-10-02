@@ -25,13 +25,14 @@ import javax.inject.Inject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /** [BookSummaryDto] plus its cover pre-resolved for Coil - a network URL (see [MediaUrlResolver])
- *  when the list came from a live fetch, or a local [File] when it's the offline fallback (see
+ *  when the list is the live one, or a local [File] when it's the downloaded copy (see
  *  [LibraryViewModel.refresh]); Coil's AsyncImage model accepts either directly. */
 // How long LibraryViewModel.autoConfigureServerIfNeeded waits for mDNS to find a backend on
 // first launch before giving up and falling back to the compiled-in default.
@@ -46,7 +47,8 @@ data class LibraryUiState(
     val error: String? = null,
     // True when `books` came from the offline downloaded-book cache (see DownloadRepository)
     // rather than the live books topic - only downloaded books show up, and their
-    // progress/generation figures are unknown offline (zeroed, see toOfflineSummary).
+    // progress/generation figures are unknown offline (zeroed, see toOfflineSummary). With
+    // isLoading still set, the live list just hasn't arrived yet.
     val offline: Boolean = false,
     // Book ids with at least one chapter downloaded locally (see DownloadRepository
     // .observeDownloadedBooks) - gates a book row's long-press "Remove downloaded copy" item,
@@ -124,32 +126,27 @@ class LibraryViewModel @Inject constructor(
         booksJob?.cancel()
         booksJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
-            // Show whatever's already downloaded immediately, rather than leaving the reader
-            // staring at a blank loading spinner for however long a slow/unreachable backend
-            // takes - LibraryScreen's own `isLoading && books.isEmpty()` full-screen spinner
-            // check already steps aside the moment `books` is non-empty. Replaced by the live
-            // list the moment it actually arrives.
-            val downloaded = downloadRepository.observeDownloadedBooks().first()
-            if (downloaded.isNotEmpty() && _uiState.value.books.isEmpty()) {
-                _uiState.update { it.copy(books = downloaded.toBookListItems(), offline = true) }
-            }
-            liveStore.books().collect { result ->
-                val books = result.data
-                val error = result.error
-                when {
-                    books != null -> {
-                        val items = books.map { BookListItem(it, mediaUrlResolver.resolve(it.coverUrl)) }
-                        _uiState.update { it.copy(books = items, isLoading = false, offline = false, error = null) }
-                    }
-                    // Backend unreachable (offline, or just down) - the eager display above
-                    // already covers "something's downloaded"; a real error only needs
-                    // reporting when there was nothing to show at all. LiveClient keeps
-                    // retrying, so the live list replaces this once the backend's back.
-                    error != null -> _uiState.update {
-                        if (downloaded.isEmpty()) it.copy(isLoading = false, error = error.message, offline = false) else it.copy(isLoading = false)
+            combine(liveStore.books(), downloadRepository.observeDownloadedBooks()) { result, downloaded -> result to downloaded }
+                .collect { (result, downloaded) ->
+                    val books = result.data
+                    val error = result.error
+                    when {
+                        books != null -> {
+                            val items = books.map { BookListItem(it, mediaUrlResolver.resolve(it.coverUrl)) }
+                            _uiState.update { it.copy(books = items, isLoading = false, offline = false, error = null) }
+                        }
+                        // Until the live list arrives, show whatever's downloaded rather than
+                        // a blank loading spinner for however long a slow/unreachable backend
+                        // takes (LibraryScreen says which of the two it is, by isLoading).
+                        // LiveClient keeps retrying, so the live list replaces this once the
+                        // backend's back.
+                        downloaded.isNotEmpty() -> _uiState.update {
+                            it.copy(books = downloaded.toBookListItems(), isLoading = error == null, offline = true, error = null)
+                        }
+                        // Backend unreachable with nothing downloaded to show instead.
+                        error != null -> _uiState.update { it.copy(isLoading = false, error = error.message, offline = false) }
                     }
                 }
-            }
         }
     }
 
@@ -278,18 +275,19 @@ class LibraryViewModel @Inject constructor(
 private fun List<DownloadedBook>.toBookListItems(): List<BookListItem> =
     map { book -> BookListItem(book.toOfflineSummary(), book.localCoverPath?.let(::File)) }
 
-/** Best-effort BookSummaryDto for offline display - progress/generation/estimate figures are
- *  simply unknown without a live backend, so they're zeroed rather than guessed; LibraryScreen's
- *  offline banner (see [LibraryUiState.offline]) is what actually tells the user why. */
+/** Best-effort BookSummaryDto for offline display - the position is the backend's as last seen
+ *  online; progress/generation/estimate figures are simply unknown without a live backend, so
+ *  they're zeroed rather than guessed. LibraryScreen's offline banner (see
+ *  [LibraryUiState.offline]) is what actually tells the user why. */
 private fun DownloadedBook.toOfflineSummary(): BookSummaryDto = BookSummaryDto(
     id = bookId,
     title = title,
     author = author,
     coverUrl = coverUrl,
     chapterCount = chapterCount,
-    posChapterIdx = 0,
-    posParagraphIdx = 0,
-    posSeconds = 0.0,
+    posChapterIdx = posChapterIdx,
+    posParagraphIdx = posParagraphIdx,
+    posSeconds = posSeconds,
     progressPercent = 0.0,
     finished = false,
     estimatedTotalSeconds = 0.0,
