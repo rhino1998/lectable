@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"slices"
 	"sort"
@@ -111,10 +112,24 @@ func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle s
 	castIndex := map[string]int{}
 	var prev []ParagraphInput
 	for _, window := range summaryWindows(paragraphs) {
-		raw, err := c.summarizeWindow(ctx, bookTitle, chapterTitle, setting, roster, window, carryOver(out)+leadIn(prev))
+		carry := carryOver(out) + leadIn(prev)
+		raw, err := c.summarizeWindow(ctx, bookTitle, chapterTitle, setting, roster, window, carry, "")
 		prev = window
 		if err != nil {
 			return out, err
+		}
+		// The model sometimes tells a first-person chapter as some other
+		// character's - Reclaimer ch. 14's "Dan", named once in a memory,
+		// was cast and placed in every scene in Steve's stead (9 of its
+		// chapters). Ask once more, pointing that out; keep the retry only
+		// if it now has the narrator.
+		if note := narratorMissedNote(raw, roster, window, resolver); note != "" {
+			retry, err := c.summarizeWindow(ctx, bookTitle, chapterTitle, setting, roster, window, carry, note)
+			kept := err == nil && castHasNarrator(retry, roster, resolver)
+			if kept {
+				raw = retry
+			}
+			log.Printf("speakerattr: summary of %q left out narrator %s, re-asked (kept: %v)", chapterTitle, roster.FirstPerson, kept)
 		}
 		text := strings.ToLower(windowText(window))
 		rename := map[string]string{} // the model's cast name -> ours
@@ -277,7 +292,72 @@ func leadIn(prev []ParagraphInput) string {
 	return sb.String()
 }
 
-func (c *Client) summarizeWindow(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, roster Roster, window []ParagraphInput, carry string) (summaryRaw, error) {
+// narratorMissedNote is the correction for a window whose cast leaves out
+// a first-person book's narrator although its narration is theirs ("" when
+// nothing is missed). It names the stand-in when there is one - the
+// non-role cast member in the most scenes - and how rarely the text itself
+// names them, which is what gives the swap away.
+func narratorMissedNote(raw summaryRaw, roster Roster, window []ParagraphInput, resolver *SpeakerNameResolver) string {
+	narrator := roster.FirstPerson
+	if narrator == "" || castHasNarrator(raw, roster, resolver) || !FirstPersonNarration(window) {
+		return ""
+	}
+	standIn, most := "", 0
+	for _, m := range raw.Cast {
+		if m.Role {
+			continue
+		}
+		n := 0
+		for _, sc := range raw.Scenes {
+			if slices.ContainsFunc(sc.Present, func(p string) bool { return strings.EqualFold(strings.TrimSpace(p), m.Name) }) {
+				n++
+			}
+		}
+		if n > most {
+			standIn, most = strings.TrimSpace(m.Name), n
+		}
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "\nA first draft of these notes left %s out of the cast. This chapter is told by %s as \"I\": %s is in every scene the narration is in, and what \"I\" does, %s does.", narrator, narrator, narrator, narrator)
+	if standIn != "" {
+		fmt.Fprintf(&sb, " It made %s, whom these paragraphs name in only %d of them, the one acting instead.", standIn, paragraphsNaming(window, standIn, roster.Aliases[resolver.Canonical(standIn)]))
+	}
+	fmt.Fprintf(&sb, " Write the notes again with %s in the cast and the scenes, and list anyone else only if they are actually there.\n", narrator)
+	return sb.String()
+}
+
+// castHasNarrator reports whether raw's cast names the first-person
+// narrator, by name, alias or a placeholder ("Protagonist" - which
+// FoldFirstPersonCast renames).
+func castHasNarrator(raw summaryRaw, roster Roster, resolver *SpeakerNameResolver) bool {
+	for _, m := range raw.Cast {
+		if IsFirstPersonLabel(m.Name) || strings.EqualFold(resolver.Canonical(strings.TrimSpace(m.Name)), roster.FirstPerson) {
+			return true
+		}
+	}
+	return false
+}
+
+// paragraphsNaming counts the paragraphs of window whose text has name, or
+// one of its aliases, as a whole word.
+func paragraphsNaming(window []ParagraphInput, name string, aliases []string) int {
+	alts := []string{regexp.QuoteMeta(name)}
+	for _, a := range aliases {
+		alts = append(alts, regexp.QuoteMeta(a))
+	}
+	re := regexp.MustCompile(`\b(?:` + strings.Join(alts, "|") + `)\b`)
+	n := 0
+	for _, p := range window {
+		if re.MatchString(p.Text) {
+			n++
+		}
+	}
+	return n
+}
+
+// summarizeWindow asks for one window's notes. note, when set, goes after
+// the paragraphs - a correction for a retry (narratorMissedNote).
+func (c *Client) summarizeWindow(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, roster Roster, window []ParagraphInput, carry, note string) (summaryRaw, error) {
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
 	if lines := setting.promptLines(); lines != "" {
@@ -322,6 +402,7 @@ func (c *Client) summarizeWindow(ctx context.Context, bookTitle, chapterTitle st
 		fmt.Fprintf(&user, "%d: %s", p.Idx, oneLine(p.Text))
 	}
 	user.WriteString("\n")
+	user.WriteString(note)
 	if c.cfg.NoThink {
 		user.WriteString("\n/no_think")
 	}

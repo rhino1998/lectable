@@ -285,6 +285,62 @@ func TestResolveCastRefsIgnoresRoleNameRefs(t *testing.T) {
 	}
 }
 
+// A first-person chapter summarized as someone else's (Reclaimer ch. 14's
+// Dan, named once in a memory) is asked again, and the retry is kept only
+// when it has the narrator.
+func TestSummarizeChapterReasksWhenNarratorMissing(t *testing.T) {
+	paras := []ParagraphInput{
+		{Idx: 0, Text: "I crept down the corridor, rifle raised."},
+		{Idx: 1, Text: "I remembered the device Dan had given me back at the police station."},
+		{Idx: 2, Text: "I wired it into the panel and waited."},
+		{Idx: 3, Text: "The door slid open, and I went through."},
+	}
+	roster := Roster{Names: []string{"Steve", "Dan"}, FirstPerson: "Steve"}
+	standIn := `{"summary": "Dan breaks into the security station.", "scenes": [{"start": 0, "location": "corridor", "time": "", "present": ["Dan"]}], "cast": [{"name": "Dan", "role": false, "pronoun": "he", "refs": []}]}`
+	fixed := `{"summary": "Steve breaks into the security station.", "scenes": [{"start": 0, "location": "corridor", "time": "", "present": ["Steve"]}], "cast": [{"name": "Steve", "role": false, "pronoun": "he", "refs": []}]}`
+
+	llm := &replyLLM{replies: []string{standIn, fixed}}
+	got, err := NewClient(Config{}, llm).SummarizeChapter(context.Background(), "B", "C", nil, roster, paras)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llm.users) != 2 {
+		t.Fatalf("%d calls, want the summary and one re-ask", len(llm.users))
+	}
+	if note := llm.users[1]; !strings.Contains(note, "left Steve out") || !strings.Contains(note, "made Dan, whom these paragraphs name in only 1 of them") {
+		t.Fatalf("re-ask doesn't explain the miss:\n%s", note)
+	}
+	if got.Summary != "Steve breaks into the security station." || len(got.Cast) != 1 || got.Cast[0].Name != "Steve" || !reflect.DeepEqual(got.Scenes[0].Present, []string{"Steve"}) {
+		t.Fatalf("got %+v, want the retry's notes", got)
+	}
+
+	// A retry that still leaves the narrator out is dropped.
+	llm = &replyLLM{replies: []string{standIn, standIn}}
+	got, _ = NewClient(Config{}, llm).SummarizeChapter(context.Background(), "B", "C", nil, roster, paras)
+	if len(llm.users) != 2 || got.Summary != "Dan breaks into the security station." {
+		t.Fatalf("calls %d, summary %q: want the first answer kept after a failed re-ask", len(llm.users), got.Summary)
+	}
+
+	// Narrator present (or a placeholder for them): no re-ask.
+	for _, name := range []string{"Steve", "Protagonist"} {
+		llm = &replyLLM{replies: []string{strings.ReplaceAll(fixed, `"name": "Steve"`, `"name": "`+name+`"`)}}
+		if _, err := NewClient(Config{}, llm).SummarizeChapter(context.Background(), "B", "C", nil, roster, paras); err != nil || len(llm.users) != 1 {
+			t.Fatalf("cast %s: %d calls (err %v), want 1", name, len(llm.users), err)
+		}
+	}
+
+	// Third-person narration (a prologue elsewhere in time): no re-ask.
+	third := []ParagraphInput{
+		{Idx: 0, Text: "Dan crept down the corridor."},
+		{Idx: 1, Text: "He wired the device into the panel."},
+		{Idx: 2, Text: "The door slid open."},
+	}
+	llm = &replyLLM{replies: []string{standIn}}
+	if _, err := NewClient(Config{}, llm).SummarizeChapter(context.Background(), "B", "C", nil, roster, third); err != nil || len(llm.users) != 1 {
+		t.Fatalf("third person: %d calls (err %v), want 1", len(llm.users), err)
+	}
+}
+
 // A chapter's notes pronouns win over the roster's for a named character
 // (a book can change one mid-way), under the roster's own spelling; a role's
 // only fill a gap.
