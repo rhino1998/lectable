@@ -470,6 +470,46 @@ func TestSetParagraphScareQuotesRewritesSpeaker(t *testing.T) {
 	}
 }
 
+// TestSetParagraphQuote covers a reader flagging a misparsed paragraph as
+// dialogue and back: dialogue starts as Unknown, narration has no speaker,
+// and setting the value it already has reports no change.
+func TestSetParagraphQuote(t *testing.T) {
+	s := openTestStore(t)
+	_, chapterID := oneChapterBook(t, s, "", 0, "“They knew—do you see?", "He sighed.")
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatalf("ListParagraphsRaw: %v", err)
+	}
+	get := func() *Paragraph {
+		t.Helper()
+		p, err := s.GetParagraph(paragraphs[0].ID)
+		if err != nil {
+			t.Fatalf("GetParagraph: %v", err)
+		}
+		return p
+	}
+
+	if changed, err := s.SetParagraphQuote(chapterID, 0, true); err != nil || !changed {
+		t.Fatalf("SetParagraphQuote(true) = %v, %v; want true, nil", changed, err)
+	}
+	if p := get(); !p.IsQuote || p.Speaker != "Unknown" {
+		t.Fatalf("after marking: isQuote %v speaker %q, want true Unknown", p.IsQuote, p.Speaker)
+	}
+	if changed, err := s.SetParagraphQuote(chapterID, 0, true); err != nil || changed {
+		t.Fatalf("re-marking = %v, %v; want false, nil", changed, err)
+	}
+
+	if err := s.SetParagraphSpeakers(chapterID, map[int]string{0: "Hans"}); err != nil {
+		t.Fatalf("SetParagraphSpeakers: %v", err)
+	}
+	if changed, err := s.SetParagraphQuote(chapterID, 0, false); err != nil || !changed {
+		t.Fatalf("SetParagraphQuote(false) = %v, %v; want true, nil", changed, err)
+	}
+	if p := get(); p.IsQuote || p.Speaker != "" {
+		t.Fatalf("after unmarking: isQuote %v speaker %q, want false \"\"", p.IsQuote, p.Speaker)
+	}
+}
+
 // TestQuotesForBooksContextOnlyFromInlineNarration covers QuoteContext's
 // own Inline requirement on the "next" self-join: a quote's Context should
 // only ever be the attribution tag glued to it as a later segment of the

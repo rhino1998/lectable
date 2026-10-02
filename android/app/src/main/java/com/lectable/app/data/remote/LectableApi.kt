@@ -336,6 +336,28 @@ interface LectableApi {
 
     /**
      * handleRegenerateParagraph re-renders one already-generated paragraph
+    /**
+     * handleSetParagraphQuote serves PUT
+     * /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote: marks one
+     * paragraph as quoted dialogue (or back to narration) by hand - the fix for
+     * a line the parser misread, mainly a multi-paragraph speech whose opening
+     * paragraphs end without a closing ” (internal/epub.splitQuoteSegments now
+     * splits those on import, but existing books keep their old rows), without
+     * re-importing the chapter and losing its attribution, edits and audio.
+     * Paragraphs are never split or merged, so a paragraph mixing a tag and the
+     * speech ("Hans said quickly. “They allow…") is flagged whole. Dialogue
+     * starts as "Unknown" (store.SetParagraphQuote) - attribute it with the
+     * speaker route or a pass re-run. Like handleSetParagraphScareQuote it
+     * regenerates the paragraph's inline set, whose merge groups can change.
+     */
+    @PUT("api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote")
+    suspend fun setParagraphQuote(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+        @Path("pidx") pidx: Int,
+        @Body body: SetParagraphQuoteRequestDto,
+    ): Unit
+
      * from scratch - the reader didn't like how a specific line came out, not
      * the normal "this hasn't been generated yet" path handleGenerateChapter
      * covers.

@@ -11,6 +11,7 @@ import { RiEmotionNormalLine } from 'react-icons/ri'
 import {
   useSetParagraphDescription,
   useSetParagraphEmotion,
+  useSetParagraphQuote,
   useSetParagraphScareQuote,
   useSetParagraphSpeaker,
 } from '../api/queries'
@@ -47,6 +48,7 @@ export const ParagraphContextMenu = forwardRef<
   const setParagraphSpeaker = useSetParagraphSpeaker(bookId)
   const setParagraphDescription = useSetParagraphDescription(bookId)
   const setParagraphScareQuote = useSetParagraphScareQuote(bookId)
+  const setParagraphQuote = useSetParagraphQuote(bookId)
   const setParagraphEmotion = useSetParagraphEmotion(bookId)
   const [contextMenu, setContextMenu] = useState<{
     chapterIdx: number
@@ -177,6 +179,29 @@ export const ParagraphContextMenu = forwardRef<
     setContextMenu(null)
   }, [contextMenu, setParagraphScareQuote, onError])
 
+  // Flips the paragraph between dialogue and narration - for a line the
+  // parser misread (see handleSetParagraphQuote); regenerates server-side.
+  const toggleQuote = useCallback(() => {
+    if (!contextMenu) return
+    onError(null)
+    setParagraphQuote.mutate(
+      {
+        chapterIdx: contextMenu.chapterIdx,
+        paragraphIdx: contextMenu.paragraphIdx,
+        quote: !contextMenu.isQuote,
+      },
+      {
+        onError: (err) =>
+          onError(
+            err instanceof ApiError
+              ? err.message
+              : 'Could not change this line to ' + (contextMenu.isQuote ? 'narration' : 'dialogue'),
+          ),
+      },
+    )
+    setContextMenu(null)
+  }, [contextMenu, setParagraphQuote, onError])
+
   // Manual emotion override for a dialogue line ('' = neutral) - like
   // toggleScareQuote, the backend invalidates and regenerates the line's
   // audio itself when its effective emotion changes.
@@ -246,6 +271,9 @@ export const ParagraphContextMenu = forwardRef<
           <button className="speaker-context-menu-item" onClick={toggleScareQuote}>
             {contextMenu.scareQuote ? 'Unmark as scare quote' : 'Mark as scare quote'}
           </button>
+          <button className="speaker-context-menu-item" onClick={toggleQuote}>
+            Mark as narration
+          </button>
           {!contextMenu.scareQuote && (
             <>
               <div className="speaker-context-menu-section">Emotion</div>
@@ -275,6 +303,9 @@ export const ParagraphContextMenu = forwardRef<
         </>
       ) : contextMenu.describesCharacters.length > 0 ? (
         <>
+          <button className="speaker-context-menu-item" onClick={toggleQuote}>
+            Mark as dialogue
+          </button>
           <div className="speaker-context-menu-title">Reassign description</div>
           {contextMenu.describesCharacters.map((from) => (
             <div key={from} className="speaker-context-menu-group">
@@ -298,6 +329,9 @@ export const ParagraphContextMenu = forwardRef<
         </>
       ) : (
         <>
+          <button className="speaker-context-menu-item" onClick={toggleQuote}>
+            Mark as dialogue
+          </button>
           {/* Plain narration: tag it as describing someone (from '' just
               adds the name - see handleSetParagraphDescription). */}
           <div className="speaker-context-menu-title">Mark as description of</div>

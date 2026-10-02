@@ -198,6 +198,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker", s.handleSetParagraphSpeaker)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description", s.handleSetParagraphDescription)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/scare-quote", s.handleSetParagraphScareQuote)
+	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote", s.handleSetParagraphQuote)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion", s.handleSetParagraphEmotion)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/sfx-prompt", s.handleSetParagraphSFXPrompt)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/generate-sfx", s.handleGenerateParagraphSFX)

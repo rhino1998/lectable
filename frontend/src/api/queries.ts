@@ -266,6 +266,21 @@ export function useSetParagraphScareQuote(bookId: string) {
   })
 }
 
+// Marks one paragraph as dialogue or narration - see api.setParagraphQuote.
+export function useSetParagraphQuote(bookId: string) {
+  return useMutation({
+    mutationFn: ({
+      chapterIdx,
+      paragraphIdx,
+      quote,
+    }: {
+      chapterIdx: number
+      paragraphIdx: number
+      quote: boolean
+    }) => api.setParagraphQuote(bookId, chapterIdx, paragraphIdx, quote),
+  })
+}
+
 // Manual per-line emotion override - see api.setParagraphEmotion.
 export function useSetParagraphEmotion(bookId: string) {
   return useMutation({

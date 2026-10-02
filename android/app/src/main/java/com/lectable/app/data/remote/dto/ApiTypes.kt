@@ -1795,6 +1795,11 @@ data class SetParagraphSFXPromptRequestDto(
      * into this paragraph's own forced-alignment Words) playback should
      * start the sound effect at - see store.Paragraph.SFXTriggerWord.
      * Folded into this same request rather than a separate endpoint since
+@Serializable
+data class SetParagraphQuoteRequestDto(
+    val quote: Boolean = false,
+)
+
      * the frontend's SFX panel always edits both together (see
      * ChapterSection.tsx's own word-picker).
      */

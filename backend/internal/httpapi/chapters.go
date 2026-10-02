@@ -999,6 +999,10 @@ type setParagraphScareQuoteRequest struct {
 	ScareQuote bool `json:"scareQuote"`
 }
 
+type setParagraphQuoteRequest struct {
+	Quote bool `json:"quote"`
+}
+
 type setParagraphEmotionRequest struct {
 	Emotion string `json:"emotion"`
 }
@@ -1210,6 +1214,64 @@ func (s *Server) handleSetParagraphScareQuote(w http.ResponseWriter, r *http.Req
 	s.invalidateParagraphAudio(book, inlineSet)
 	for _, member := range inlineSet {
 		s.Jobs.EnqueueParagraphRegenerate(bookID, ch.ID, ch.Idx, member)
+	}
+	writeNoContent(w)
+}
+
+// handleSetParagraphQuote serves PUT
+// /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote: marks one
+// paragraph as quoted dialogue (or back to narration) by hand - the fix for
+// a line the parser misread, mainly a multi-paragraph speech whose opening
+// paragraphs end without a closing ” (internal/epub.splitQuoteSegments now
+// splits those on import, but existing books keep their old rows), without
+// re-importing the chapter and losing its attribution, edits and audio.
+// Paragraphs are never split or merged, so a paragraph mixing a tag and the
+// speech ("Hans said quickly. “They allow…") is flagged whole. Dialogue
+// starts as "Unknown" (store.SetParagraphQuote) - attribute it with the
+// speaker route or a pass re-run. Like handleSetParagraphScareQuote it
+// regenerates the paragraph's inline set, whose merge groups can change.
+func (s *Server) handleSetParagraphQuote(w http.ResponseWriter, r *http.Request) {
+	book, ch, ok := s.chapterTarget(w, r)
+	if !ok {
+		return
+	}
+	paragraphIdx, err := strconv.Atoi(r.PathValue("pidx"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid paragraph index")
+		return
+	}
+	var req setParagraphQuoteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	paragraphID, err := s.Store.GetParagraphIDByIdx(ch.ID, paragraphIdx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if paragraphID == "" {
+		writeError(w, http.StatusNotFound, "paragraph not found")
+		return
+	}
+	changed, err := s.Store.SetParagraphQuote(ch.ID, paragraphIdx, req.Quote)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !changed {
+		writeNoContent(w)
+		return
+	}
+	p, err := s.Store.GetParagraph(paragraphID)
+	if err != nil || p == nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("reload paragraph: %v", err))
+		return
+	}
+	inlineSet := s.expandToInlineSets(ch.ID, []store.Paragraph{*p})
+	s.invalidateParagraphAudio(book, inlineSet)
+	for _, member := range inlineSet {
+		s.Jobs.EnqueueParagraphRegenerate(book.ID, ch.ID, ch.Idx, member)
 	}
 	writeNoContent(w)
 }

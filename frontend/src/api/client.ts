@@ -214,6 +214,16 @@ export const api = {
       body: { scareQuote },
     }),
 
+  // Marks one paragraph as dialogue (or back to narration) - the fix for a
+  // line the parser misread, e.g. a multi-paragraph speech's unclosed “ (see
+  // httpapi.handleSetParagraphQuote). Dialogue starts as Unknown; the
+  // paragraph's audio regenerates server-side.
+  setParagraphQuote: (bookId: string, chapterIdx: number, paragraphIdx: number, quote: boolean) =>
+    call('PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote', {
+      path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx },
+      body: { quote },
+    }),
+
   // Manually overrides one dialogue line's emotion (an id from
   // utils/emotions.ts, or '' for neutral) - see
   // httpapi.handleSetParagraphEmotion. The line's audio regenerates

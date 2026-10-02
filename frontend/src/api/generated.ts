@@ -1489,6 +1489,10 @@ export interface SetParagraphSFXPromptRequest {
    * into this paragraph's own forced-alignment Words) playback should
    * start the sound effect at - see store.Paragraph.SFXTriggerWord.
    * Folded into this same request rather than a separate endpoint since
+export interface SetParagraphQuoteRequest {
+  quote: boolean
+}
+
    * the frontend's SFX panel always edits both together (see
    * ChapterSection.tsx's own word-picker).
    */
@@ -2265,6 +2269,27 @@ export interface Routes {
   'POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/regenerate': {
     path: { id: string; idx: number; pidx: number }
     query: Record<never, never>
+  /**
+   * handleSetParagraphQuote serves PUT
+   * /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote: marks one
+   * paragraph as quoted dialogue (or back to narration) by hand - the fix for
+   * a line the parser misread, mainly a multi-paragraph speech whose opening
+   * paragraphs end without a closing ” (internal/epub.splitQuoteSegments now
+   * splits those on import, but existing books keep their old rows), without
+   * re-importing the chapter and losing its attribution, edits and audio.
+   * Paragraphs are never split or merged, so a paragraph mixing a tag and the
+   * speech ("Hans said quickly. “They allow…") is flagged whole. Dialogue
+   * starts as "Unknown" (store.SetParagraphQuote) - attribute it with the
+   * speaker route or a pass re-run. Like handleSetParagraphScareQuote it
+   * regenerates the paragraph's inline set, whose merge groups can change.
+   */
+  'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote': {
+    path: { id: string; idx: number; pidx: number }
+    query: Record<never, never>
+    body: SetParagraphQuoteRequest
+    response: void
+    errorCode: never
+  }
     body: never
     response: QueuedResponse
     errorCode: never
@@ -3774,6 +3799,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/retag-descriptions': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes/preview': 'json',
+  'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote': 'none',
   'POST /api/books/{id}/chapters/{idx}/run-ambience': 'json',
   'POST /api/books/{id}/chapters/{idx}/summarize': 'json',
   'POST /api/books/{id}/chapters/{idx}/tag-directions': 'json',

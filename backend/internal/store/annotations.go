@@ -438,6 +438,27 @@ func (s *DuckStore) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool
 	return tx.Commit()
 }
 
+// SetParagraphQuote sets one paragraph's is_quote - a reader's fix for a
+// line the parser got wrong (a multi-paragraph speech's unclosed “ reads as
+// narration), without re-importing the chapter. Either way the line starts
+// over: marked dialogue is "Unknown" until attributed, marked narration has
+// no speaker; both drop the scare-quote flag, emotion and description tags,
+// which only fit the other kind. Reports whether anything changed.
+func (s *DuckStore) SetParagraphQuote(chapterID string, idx int, quote bool) (bool, error) {
+	speaker := ""
+	if quote {
+		speaker = "Unknown"
+	}
+	res, err := s.db.Exec(`UPDATE paragraphs SET is_quote = ?, speaker = ?, scare_quote = false,
+		emotion = '', describes_characters = '[]'
+		WHERE chapter_id = ? AND idx = ? AND is_quote <> ?`, quote, speaker, chapterID, idx, quote)
+	if err != nil {
+		return false, fmt.Errorf("set is_quote for paragraph idx %d: %w", idx, err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // ClearLegacyTags empties chapterID's legacy paragraphs.tts_tags (Higgs
 // delivery tags from the LLM tag passes the emotion pass replaced) and
 // returns the Idx of every paragraph that still had any - their existing
