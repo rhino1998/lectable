@@ -46,10 +46,10 @@ func newTestManager() *Manager {
 	return m
 }
 
-// newTestManagerWithStore is newTestManager plus a real *store.DuckStore - for
+// newTestManagerWithStore is newTestManager plus a real *store.SQLiteStore - for
 // tests whose dependency resolvers need to look up real persisted state
 // (a character's Summary, a chapter's State).
-func newTestManagerWithStore(s *store.DuckStore) *Manager {
+func newTestManagerWithStore(s *store.SQLiteStore) *Manager {
 	m := newTestManager()
 	// Through the cache, as in cmd/server - see store.Cached.
 	m.store = store.NewCached(s)
@@ -86,9 +86,9 @@ func popAll(mgr *Manager) []*task {
 	}
 }
 
-func openTestStore(t *testing.T) *store.DuckStore {
+func openTestStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
-	s, err := store.Open(filepath.Join(t.TempDir(), "library.duckdb"))
+	s, err := store.Open(filepath.Join(t.TempDir(), "library.sqlite"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -99,7 +99,7 @@ func openTestStore(t *testing.T) *store.DuckStore {
 // createBookAndChapter makes a book (optionally in a series) with one
 // chapter containing paragraphTexts, returning the book (already
 // re-fetched) and its one chapter's id.
-func createBookAndChapter(t *testing.T, s *store.DuckStore, seriesName string, seriesIndex float64, paragraphTexts ...string) (*store.Book, string) {
+func createBookAndChapter(t *testing.T, s *store.SQLiteStore, seriesName string, seriesIndex float64, paragraphTexts ...string) (*store.Book, string) {
 	t.Helper()
 	blocks := make([]store.BlockInput, len(paragraphTexts))
 	for i, text := range paragraphTexts {
@@ -126,7 +126,7 @@ func createBookAndChapter(t *testing.T, s *store.DuckStore, seriesName string, s
 // that need to control Inline/IsQuote directly (scare-quote merge group
 // tests) rather than accepting whatever createBookAndChapter's plain-text
 // blocks default to (both false).
-func createBookWithBlocks(t *testing.T, s *store.DuckStore, blocks ...store.BlockInput) (*store.Book, string) {
+func createBookWithBlocks(t *testing.T, s *store.SQLiteStore, blocks ...store.BlockInput) (*store.Book, string) {
 	t.Helper()
 	bookID, _, err := s.CreateBook("Book", "Author", "en", "", "", 0, []store.ChapterInput{
 		{Title: "Ch1", Blocks: blocks},
@@ -164,7 +164,7 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	}
 }
 
-func allParagraphsReady(t *testing.T, s *store.DuckStore, chapterID, voiceID string) bool {
+func allParagraphsReady(t *testing.T, s *store.SQLiteStore, chapterID, voiceID string) bool {
 	t.Helper()
 	paragraphs, err := s.ListParagraphsRaw(chapterID)
 	if err != nil {
@@ -734,7 +734,7 @@ func TestCharacterizationDependencyIgnoresNarratorAndUnrelatedSpeakers(t *testin
 // twoChapterBook creates a book with two chapters (one paragraph each),
 // returning the book id and both chapters, in order - attributionOrderDependency
 // tests' own shared setup.
-func twoChapterBook(t *testing.T, s *store.DuckStore) (bookID string, ch0, ch1 *store.Chapter) {
+func twoChapterBook(t *testing.T, s *store.SQLiteStore) (bookID string, ch0, ch1 *store.Chapter) {
 	t.Helper()
 	bookID, _, err := s.CreateBook("Book", "Author", "en", "", "", 0, []store.ChapterInput{
 		{Title: "Ch0", Blocks: []store.BlockInput{{Kind: store.BlockText, Text: "Alice said hello."}}},

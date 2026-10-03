@@ -7,7 +7,7 @@ import (
 // SetMusicRegionLighting stores each region id's lighting cue in one
 // transaction - one lighting sub-pass call's worth (a region plus the
 // length-only splits sharing its description).
-func (s *DuckStore) SetMusicRegionLighting(lighting map[string]Lighting) error {
+func (s *SQLiteStore) SetMusicRegionLighting(lighting map[string]Lighting) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -25,7 +25,7 @@ func (s *DuckStore) SetMusicRegionLighting(lighting map[string]Lighting) error {
 // and unsets each chapter's passes.lighting, leaving the music itself
 // alone - the Speakers page's "lighting" reset, so the next ambience run
 // re-lights every chapter without re-scoring its music.
-func (s *DuckStore) ClearBookLighting(bookID string) error {
+func (s *SQLiteStore) ClearBookLighting(bookID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -34,7 +34,7 @@ func (s *DuckStore) ClearBookLighting(bookID string) error {
 	if _, err := tx.Exec(`UPDATE music_regions SET lighting = NULL WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, '{"lighting": null}') WHERE book_id = ?`, bookID); err != nil {
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_patch(passes, '{"lighting": null}') WHERE book_id = ?`, bookID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -43,7 +43,7 @@ func (s *DuckStore) ClearBookLighting(bookID string) error {
 // ClearMusicRegions deletes every music_regions row for chapterID and
 // clears the chapter's own passes.ambience and passes.lighting flags back
 // to unset (lighting lives on the regions, so it goes with them) (same
-// json_merge_patch-null-deletes-the-key pattern ResetBookAttribution's own
+// json_patch-null-deletes-the-key pattern ResetBookAttribution's own
 // bulk equivalent uses) - called once, up front, by
 // httpapi.ambienceChapter's own wipeExisting branch before a (re)scoring
 // run starts on a chapter that's already fully scored: a chapter's regions
@@ -73,7 +73,7 @@ func (s *DuckStore) ClearBookLighting(bookID string) error {
 // the caller can remove each region's own on-disk audio file - this
 // package never touches the filesystem itself, see DeleteChapterAudio's
 // own doc comment for that DB-delete/disk-delete split.
-func (s *DuckStore) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
+func (s *SQLiteStore) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 	regions, err := s.ListMusicRegions(chapterID)
 	if err != nil {
 		return nil, err
@@ -87,7 +87,7 @@ func (s *DuckStore) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 		return nil, err
 	}
 	if _, err := tx.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"ambience": null, "lighting": null}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"ambience": null, "lighting": null}') WHERE id = ?`,
 		chapterID,
 	); err != nil {
 		return nil, err
@@ -123,7 +123,7 @@ func (s *DuckStore) ClearMusicRegions(chapterID string) ([]MusicRegion, error) {
 // batch gets appended too. If one does, that later call's own first step
 // fixes this batch's own last region back up to the real boundary, before
 // inserting anything new - see the UPDATE below.
-func (s *DuckStore) AppendMusicRegions(chapterID string, regions []MusicRegionInput, lastParagraphIdx int) ([]MusicRegion, error) {
+func (s *SQLiteStore) AppendMusicRegions(chapterID string, regions []MusicRegionInput, lastParagraphIdx int) ([]MusicRegion, error) {
 	if len(regions) == 0 {
 		return nil, nil
 	}
@@ -190,7 +190,7 @@ type MusicRegionInput struct {
 }
 
 // ListMusicRegions returns chapterID's own music regions in idx order.
-func (s *DuckStore) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
+func (s *SQLiteStore) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
 	rows, err := s.db.Query(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, lighting, status, error, duration_seconds FROM music_regions WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
@@ -210,7 +210,7 @@ func (s *DuckStore) ListMusicRegions(chapterID string) ([]MusicRegion, error) {
 
 // GetMusicRegion looks up one region by id - httpapi.handleGetMusicRegionAudio's
 // own single-row lookup, not a whole chapter's list.
-func (s *DuckStore) GetMusicRegion(id string) (*MusicRegion, error) {
+func (s *SQLiteStore) GetMusicRegion(id string) (*MusicRegion, error) {
 	var r MusicRegion
 	err := s.db.QueryRow(`SELECT id, chapter_id, idx, start_idx, end_idx, mood, prompt, ambience, transition, lighting, status, error, duration_seconds FROM music_regions WHERE id = ?`, id).
 		Scan(&r.ID, &r.ChapterID, &r.Idx, &r.StartIdx, &r.EndIdx, &r.Mood, &r.Prompt, &r.Ambience, &r.Transition, &r.Lighting, &r.Status, &r.Error, &r.DurationSeconds)
@@ -233,7 +233,7 @@ type MusicRegionCount struct {
 // region counts, keyed by chapter id - a chapter with no regions (not
 // scored) is simply absent. One grouped query for the whole book, for the
 // Speakers page's chapter table.
-func (s *DuckStore) MusicRegionCounts(bookID string) (map[string]MusicRegionCount, error) {
+func (s *SQLiteStore) MusicRegionCounts(bookID string) (map[string]MusicRegionCount, error) {
 	rows, err := s.db.Query(`
 		SELECT r.chapter_id, COUNT(*),
 			COALESCE(SUM(CASE WHEN r.status = ? THEN 1 ELSE 0 END), 0),
@@ -262,17 +262,17 @@ func (s *DuckStore) MusicRegionCounts(bookID string) (map[string]MusicRegionCoun
 // music_regions' own status-transition writes - SetParagraphGenerating/
 // SetParagraphReady/SetParagraphError's own counterparts (upsertSFXStatus
 // below), just against this table instead.
-func (s *DuckStore) SetMusicRegionGenerating(id string) error {
+func (s *SQLiteStore) SetMusicRegionGenerating(id string) error {
 	_, err := s.db.Exec(`UPDATE music_regions SET status = ?, error = '' WHERE id = ?`, AudioGenerating, id)
 	return err
 }
 
-func (s *DuckStore) SetMusicRegionReady(id string, durationSeconds float64) error {
+func (s *SQLiteStore) SetMusicRegionReady(id string, durationSeconds float64) error {
 	_, err := s.db.Exec(`UPDATE music_regions SET status = ?, error = '', duration_seconds = ? WHERE id = ?`, AudioReady, durationSeconds, id)
 	return err
 }
 
-func (s *DuckStore) SetMusicRegionError(id, message string) error {
+func (s *SQLiteStore) SetMusicRegionError(id, message string) error {
 	_, err := s.db.Exec(`UPDATE music_regions SET status = ?, error = ? WHERE id = ?`, AudioError, message, id)
 	return err
 }
@@ -285,7 +285,7 @@ func (s *DuckStore) SetMusicRegionError(id, message string) error {
 // region's own scored mood/prompt/transition - only its generation state,
 // so jobs.Manager.MaybeAdvanceChapterMusic picks it back up as the next
 // eligible region to generate.
-func (s *DuckStore) ResetMusicRegionAudio(id string) error {
+func (s *SQLiteStore) ResetMusicRegionAudio(id string) error {
 	_, err := s.db.Exec(`UPDATE music_regions SET status = ?, error = '', duration_seconds = 0 WHERE id = ?`, AudioPending, id)
 	return err
 }
@@ -302,7 +302,7 @@ func (s *DuckStore) ResetMusicRegionAudio(id string) error {
 // narration is ready again. Returns the regions as they stood before the
 // reset (same reasoning as ClearMusicRegions) so the caller can remove
 // each one's now-stale on-disk clip.
-func (s *DuckStore) ResetChapterMusicAudio(chapterID string) ([]MusicRegion, error) {
+func (s *SQLiteStore) ResetChapterMusicAudio(chapterID string) ([]MusicRegion, error) {
 	regions, err := s.ListMusicRegions(chapterID)
 	if err != nil {
 		return nil, err
@@ -317,7 +317,7 @@ func (s *DuckStore) ResetChapterMusicAudio(chapterID string) ([]MusicRegion, err
 // once: deletes every music region and unsets each chapter's
 // passes.ambience/passes.lighting.
 // The caller removes the regions' audio files (audiopath.MusicDir).
-func (s *DuckStore) ClearBookMusicRegions(bookID string) error {
+func (s *SQLiteStore) ClearBookMusicRegions(bookID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -326,7 +326,7 @@ func (s *DuckStore) ClearBookMusicRegions(bookID string) error {
 	if _, err := tx.Exec(`DELETE FROM music_regions WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookID); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, '{"ambience": null, "lighting": null}') WHERE book_id = ?`, bookID); err != nil {
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_patch(passes, '{"ambience": null, "lighting": null}') WHERE book_id = ?`, bookID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -341,7 +341,7 @@ func (s *DuckStore) ClearBookMusicRegions(bookID string) error {
 // the same way SFXDir/VoiceDir do), so there's no per-region file to
 // return/remove here the way ClearMusicRegions/ResetChapterMusicAudio
 // have to for their own single-chapter scope.
-func (s *DuckStore) ResetAllChapterMusicAudioForBook(bookID string) error {
+func (s *SQLiteStore) ResetAllChapterMusicAudioForBook(bookID string) error {
 	_, err := s.db.Exec(
 		`UPDATE music_regions SET status = ?, error = '', duration_seconds = 0 WHERE chapter_id IN (
 			SELECT id FROM chapters WHERE book_id = ?

@@ -22,9 +22,9 @@ import (
 
 // newLiveTestServer is newTestServer plus a running live.Hub wired to the
 // store's change hook, the same way cmd/server wires it.
-func newLiveTestServer(t *testing.T) (*store.DuckStore, *httptest.Server) {
+func newLiveTestServer(t *testing.T) (*store.SQLiteStore, *httptest.Server) {
 	t.Helper()
-	s, err := store.Open(filepath.Join(t.TempDir(), "library.duckdb"))
+	s, err := store.Open(filepath.Join(t.TempDir(), "library.sqlite"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

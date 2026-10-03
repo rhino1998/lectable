@@ -30,7 +30,7 @@ type fixture struct {
 
 func openStore(t *testing.T, dir string) store.Store {
 	t.Helper()
-	s, err := store.Open(filepath.Join(dir, "library.duckdb"))
+	s, err := store.Open(filepath.Join(dir, "library.sqlite"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestAllowedDataPath(t *testing.T) {
 		"audio/b2/c/v/00001.opus":  false,
 		"audio/b1/../b2/x":         false,
 		"/etc/passwd":              false,
-		"library.duckdb":           false,
+		"library.sqlite":           false,
 		"covers/b1/../../x":        false,
 		"epubs/b1.epub/../../evil": false,
 	} {

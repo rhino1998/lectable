@@ -10,7 +10,7 @@ func TestBackupRestores(t *testing.T) {
 	s := openTestStore(t)
 	bookID, _ := oneChapterBook(t, s, "", 0, "One.", "Two.")
 
-	dst := filepath.Join(t.TempDir(), "copy.duckdb")
+	dst := filepath.Join(t.TempDir(), "copy.sqlite")
 	if err := s.Backup(context.Background(), dst); err != nil {
 		t.Fatalf("Backup: %v", err)
 	}

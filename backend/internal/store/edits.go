@@ -37,7 +37,7 @@ type ParagraphEdit struct {
 // before to after. The first edit keeps before as the machine's original;
 // later edits only move Value. Setting a field back to its original drops
 // the record - the machine had it right. A no-op edit records nothing.
-func (s *DuckStore) RecordParagraphEdit(paragraphID, field, before, after string) error {
+func (s *SQLiteStore) RecordParagraphEdit(paragraphID, field, before, after string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -66,7 +66,7 @@ func (s *DuckStore) RecordParagraphEdit(paragraphID, field, before, after string
 
 // ParagraphEdits lists bookID's recorded edits of field ("" for every
 // field), in reading order.
-func (s *DuckStore) ParagraphEdits(bookID, field string) ([]ParagraphEdit, error) {
+func (s *SQLiteStore) ParagraphEdits(bookID, field string) ([]ParagraphEdit, error) {
 	rows, err := s.db.Query(`
 		SELECT e.paragraph_id, c.idx, p.idx, e.field, e.original, e.value, e.edited_at, p.content
 		FROM paragraph_edits e
@@ -92,7 +92,7 @@ func (s *DuckStore) ParagraphEdits(bookID, field string) ([]ParagraphEdit, error
 // EditedParagraphIdx returns the idx of chapterID's paragraphs with a
 // recorded manual edit of field - lines a re-run of that field's pass must
 // leave alone.
-func (s *DuckStore) EditedParagraphIdx(chapterID, field string) (map[int]bool, error) {
+func (s *SQLiteStore) EditedParagraphIdx(chapterID, field string) (map[int]bool, error) {
 	rows, err := s.db.Query(`
 		SELECT p.idx FROM paragraph_edits e JOIN paragraphs p ON p.id = e.paragraph_id
 		WHERE p.chapter_id = ? AND e.field = ?`, chapterID, field)

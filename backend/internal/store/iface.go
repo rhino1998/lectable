@@ -7,11 +7,11 @@ import (
 )
 
 // Store is the library's data access: every read and write the rest of the
-// backend makes goes through it. DuckStore is the DuckDB implementation;
+// backend makes goes through it. SQLiteStore is the SQLite implementation;
 // Cached wraps any Store with a read cache invalidated on writes.
 //
 // Every write must be reported through OnChange once it commits -
-// Cached's correctness depends on it (DuckStore reports from notifyDB, so
+// Cached's correctness depends on it (SQLiteStore reports from notifyDB, so
 // a new method gets this for free as long as it writes through s.db).
 type Store interface {
 	AddCharacterAliases(characterID string, aliases ...string) error
@@ -156,4 +156,4 @@ type Store interface {
 	VoicePresetIDsForCharacter(characterID string) ([]string, error)
 }
 
-var _ Store = (*DuckStore)(nil)
+var _ Store = (*SQLiteStore)(nil)

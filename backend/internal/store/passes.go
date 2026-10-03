@@ -9,11 +9,11 @@ import (
 // once internal/speakerattr.Client.ScoreMusic completes a full,
 // uninterrupted pass over the whole chapter, never on a pause or a genuine
 // failure partway through. SetChapterAttributed/SetChapterDirected's own
-// json_merge_patch shape (see SetChapterAttributed's own doc comment for
+// json_patch shape (see SetChapterAttributed's own doc comment for
 // why a single statement like this, not a Go-side read-modify-write).
-func (s *DuckStore) SetChapterAmbienceScored(chapterID string) error {
+func (s *SQLiteStore) SetChapterAmbienceScored(chapterID string) error {
 	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"ambience": true}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"ambience": true}') WHERE id = ?`,
 		chapterID,
 	)
 	return err
@@ -21,9 +21,9 @@ func (s *DuckStore) SetChapterAmbienceScored(chapterID string) error {
 
 // SetChapterLit marks chapterID's own passes.lighting true - set by
 // httpapi.lightChapter once every music region has a Lighting cue.
-func (s *DuckStore) SetChapterLit(chapterID string) error {
+func (s *SQLiteStore) SetChapterLit(chapterID string) error {
 	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"lighting": true}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"lighting": true}') WHERE id = ?`,
 		chapterID,
 	)
 	return err
@@ -34,7 +34,7 @@ func (s *DuckStore) SetChapterLit(chapterID string) error {
 // chapter in one uninterrupted pass, never on a pause or a genuine failure
 // partway through.
 //
-// Uses DuckDB's own json_merge_patch (RFC 7396) rather than a Go-side
+// Uses SQLite's json_patch (RFC 7396) rather than a Go-side
 // read-modify-write: merging the literal patch object directly into the
 // stored value, in one statement, is both simpler and race-free (no
 // separate SELECT to go stale between reading and writing) - a merge
@@ -43,9 +43,9 @@ func (s *DuckStore) SetChapterLit(chapterID string) error {
 // passes writers wants. The patch itself is always one of the two literal
 // strings below (no external/request-supplied text ever reaches this
 // query), so it's inlined directly rather than bound as a parameter.
-func (s *DuckStore) SetChapterAttributed(chapterID string) error {
+func (s *SQLiteStore) SetChapterAttributed(chapterID string) error {
 	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"attribution": true}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"attribution": true}') WHERE id = ?`,
 		chapterID,
 	)
 	return err
@@ -54,9 +54,9 @@ func (s *DuckStore) SetChapterAttributed(chapterID string) error {
 // SetChapterScareQuoted marks chapterID's own passes.scareQuote true - set
 // by httpapi.scareQuoteChapterForJob once a scare-quote tagging run
 // completes over the whole chapter. SetChapterAttributed's shape.
-func (s *DuckStore) SetChapterScareQuoted(chapterID string) error {
+func (s *SQLiteStore) SetChapterScareQuoted(chapterID string) error {
 	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"scareQuote": true}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"scareQuote": true}') WHERE id = ?`,
 		chapterID,
 	)
 	return err
@@ -65,9 +65,9 @@ func (s *DuckStore) SetChapterScareQuoted(chapterID string) error {
 // SetChapterDescribed marks chapterID's own passes.description true - set
 // by httpapi.describeChapterForJob once a description tagging run
 // completes over the whole chapter. SetChapterAttributed's shape.
-func (s *DuckStore) SetChapterDescribed(chapterID string) error {
+func (s *SQLiteStore) SetChapterDescribed(chapterID string) error {
 	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"description": true}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"description": true}') WHERE id = ?`,
 		chapterID,
 	)
 	return err
@@ -77,11 +77,11 @@ func (s *DuckStore) SetChapterDescribed(chapterID string) error {
 // PassAttribution/PassDescription untouched - SetChapterAttributed's own
 // sibling, set by httpapi.directChapter once a run finishes covering the
 // whole chapter in one uninterrupted pass. See SetChapterAttributed's own
-// doc comment for why this is a single json_merge_patch statement rather
+// doc comment for why this is a single json_patch statement rather
 // than a Go-side read-modify-write.
-func (s *DuckStore) SetChapterDirected(chapterID string) error {
+func (s *SQLiteStore) SetChapterDirected(chapterID string) error {
 	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"direction": true}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"direction": true}') WHERE id = ?`,
 		chapterID,
 	)
 	return err
@@ -90,9 +90,9 @@ func (s *DuckStore) SetChapterDirected(chapterID string) error {
 // SetChapterPronounced marks chapterID's own passes.pronunciation true -
 // set by httpapi.pronounceChapter once a pronunciation resolution run
 // finishes covering the whole chapter. SetChapterDirected's shape.
-func (s *DuckStore) SetChapterPronounced(chapterID string) error {
+func (s *SQLiteStore) SetChapterPronounced(chapterID string) error {
 	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"pronunciation": true}') WHERE id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"pronunciation": true}') WHERE id = ?`,
 		chapterID,
 	)
 	return err
@@ -130,7 +130,7 @@ var PassResets = map[string]PassReset{
 	"description": {
 		Flag:  "description",
 		Set:   "describes_characters = '[]'",
-		Where: "describes_characters::VARCHAR NOT IN ('[]', 'null')",
+		Where: "describes_characters NOT IN ('[]', 'null')",
 	},
 	"scare_quote": {
 		Flag:     "scareQuote",
@@ -149,8 +149,8 @@ var PassResets = map[string]PassReset{
 	"pronunciation": {
 		Flag:     "pronunciation",
 		Set:      "pronunciation = '[]'",
-		Where:    "pronunciation::VARCHAR NOT IN ('[]', 'null')",
-		Affected: "pronunciation::VARCHAR NOT IN ('[]', 'null')",
+		Where:    "pronunciation NOT IN ('[]', 'null')",
+		Affected: "pronunciation NOT IN ('[]', 'null')",
 	},
 }
 
@@ -161,7 +161,7 @@ var PassResets = map[string]PassReset{
 // paragraphs PassReset.Affected matched beforehand, as chapterID -> idxs,
 // for the caller to invalidate their audio (DeleteParagraphAudioForIdxs) -
 // this package never touches the filesystem itself.
-func (s *DuckStore) ResetBookPass(bookID, pass string, fromIdx int) (map[string][]int, error) {
+func (s *SQLiteStore) ResetBookPass(bookID, pass string, fromIdx int) (map[string][]int, error) {
 	pr, ok := PassResets[pass]
 	if !ok {
 		return nil, fmt.Errorf("unknown pass %q", pass)
@@ -197,7 +197,7 @@ func (s *DuckStore) ResetBookPass(bookID, pass string, fromIdx int) (map[string]
 		WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ? AND idx >= ?) AND (`+pr.Where+`)`, bookID, fromIdx); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, json_object(?, NULL)) WHERE book_id = ? AND idx >= ?`, pr.Flag, bookID, fromIdx); err != nil {
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_patch(passes, json_object(?, NULL)) WHERE book_id = ? AND idx >= ?`, pr.Flag, bookID, fromIdx); err != nil {
 		return nil, err
 	}
 	return affected, tx.Commit()

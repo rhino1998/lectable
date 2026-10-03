@@ -17,14 +17,14 @@ type DefaultVoice struct {
 	CloneModel string
 }
 
-func (s *DuckStore) GetDefaultVoice() (DefaultVoice, error) {
+func (s *SQLiteStore) GetDefaultVoice() (DefaultVoice, error) {
 	var v DefaultVoice
 	err := s.db.QueryRow(`SELECT preset_id, instruct, language, seed, clone_model FROM default_voice WHERE id = 0`).
 		Scan(&v.PresetID, &v.Instruct, &v.Language, &v.Seed, &v.CloneModel)
 	return v, err
 }
 
-func (s *DuckStore) SetDefaultVoice(presetID, instruct, language string, seed int, cloneModel string) error {
+func (s *SQLiteStore) SetDefaultVoice(presetID, instruct, language string, seed int, cloneModel string) error {
 	_, err := s.db.Exec(
 		`UPDATE default_voice SET preset_id = ?, instruct = ?, language = ?, seed = ?, clone_model = ? WHERE id = 0`,
 		presetID, instruct, language, seed, cloneModel,
@@ -41,7 +41,7 @@ func VoiceID(presetID, instruct, language string) string {
 	return hex.EncodeToString(h[:])[:16]
 }
 
-func (s *DuckStore) ListVoicePresets() ([]VoicePreset, error) {
+func (s *SQLiteStore) ListVoicePresets() ([]VoicePreset, error) {
 	rows, err := s.db.Query(`SELECT id, name, instruct, ref_text, seed, speed_multiplier, created_at, design_model FROM voice_presets ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, err
@@ -70,8 +70,8 @@ func (s *DuckStore) ListVoicePresets() ([]VoicePreset, error) {
 // belongs to a series/book's speaker roster" apart from "just one of my
 // voices". Scope strings are "series:<name>" or "book:<id>" (see
 // SeriesScope); substr offsets below skip past those literal prefixes
-// (DuckDB substr is 1-indexed).
-func (s *DuckStore) VoicePresetGroups() (map[string]string, error) {
+// (substr is 1-indexed).
+func (s *SQLiteStore) VoicePresetGroups() (map[string]string, error) {
 	rows, err := s.db.Query(`
 		SELECT cv.voice_preset_id,
 			CASE WHEN c.scope LIKE 'series:%' THEN substr(c.scope, 8) ELSE b.title END AS label
@@ -98,7 +98,7 @@ func (s *DuckStore) VoicePresetGroups() (map[string]string, error) {
 	return out, rows.Err()
 }
 
-func (s *DuckStore) GetVoicePreset(id string) (*VoicePreset, error) {
+func (s *SQLiteStore) GetVoicePreset(id string) (*VoicePreset, error) {
 	var p VoicePreset
 	err := s.db.QueryRow(`SELECT id, name, instruct, ref_text, seed, speed_multiplier, created_at, design_model FROM voice_presets WHERE id = ?`, id).
 		Scan(&p.ID, &p.Name, &p.Instruct, &p.RefText, &p.Seed, &p.SpeedMultiplier, &p.CreatedAt, &p.DesignModel)
@@ -111,7 +111,7 @@ func (s *DuckStore) GetVoicePreset(id string) (*VoicePreset, error) {
 	return &p, nil
 }
 
-func (s *DuckStore) CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error) {
+func (s *SQLiteStore) CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error) {
 	p := VoicePreset{
 		ID: NewID(), Name: name, Instruct: instruct, RefText: refText, Seed: seed,
 		SpeedMultiplier: speedMultiplier, CreatedAt: time.Now().Unix(), DesignModel: designModel,
@@ -126,7 +126,7 @@ func (s *DuckStore) CreateVoicePreset(name, instruct, refText string, seed int, 
 	return p, nil
 }
 
-func (s *DuckStore) UpdateVoicePreset(id, name, instruct, refText string, seed int, speedMultiplier float64, designModel string) error {
+func (s *SQLiteStore) UpdateVoicePreset(id, name, instruct, refText string, seed int, speedMultiplier float64, designModel string) error {
 	_, err := s.db.Exec(
 		`UPDATE voice_presets SET name = ?, instruct = ?, ref_text = ?, seed = ?, speed_multiplier = ?, design_model = ? WHERE id = ?`,
 		name, instruct, refText, seed, speedMultiplier, designModel, id,
@@ -141,12 +141,12 @@ func (s *DuckStore) UpdateVoicePreset(id, name, instruct, refText string, seed i
 // not a freshly-read copy of every other field, and shouldn't have to fetch
 // the row just to round-trip its own unchanged fields back through
 // UpdateVoicePreset.
-func (s *DuckStore) UpdateVoicePresetSeed(id string, seed int) error {
+func (s *SQLiteStore) UpdateVoicePresetSeed(id string, seed int) error {
 	_, err := s.db.Exec(`UPDATE voice_presets SET seed = ? WHERE id = ?`, seed, id)
 	return err
 }
 
-func (s *DuckStore) DeleteVoicePreset(id string) error {
+func (s *SQLiteStore) DeleteVoicePreset(id string) error {
 	_, err := s.db.Exec(`DELETE FROM voice_presets WHERE id = ?`, id)
 	return err
 }
@@ -162,7 +162,7 @@ func (s *DuckStore) DeleteVoicePreset(id string) error {
 // that book's own resolved clone model), invalidation has to reach every
 // clone model this character has ever been assigned a voice under, not
 // just whichever one happens to be in use right now.
-func (s *DuckStore) VoicePresetIDsForCharacter(characterID string) ([]string, error) {
+func (s *SQLiteStore) VoicePresetIDsForCharacter(characterID string) ([]string, error) {
 	rows, err := s.db.Query(`SELECT voice_preset_id FROM character_voices WHERE character_id = ?`, characterID)
 	if err != nil {
 		return nil, err

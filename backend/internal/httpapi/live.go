@@ -73,9 +73,7 @@ func withDeps(base []string, extra ...string) []string {
 //
 // MinInterval is set on the topics whose build scans a whole book (or the
 // whole library), so steady background generation - a write every couple
-// of seconds per paragraph - can't keep the single DuckDB connection busy
-// rebuilding them (see internal/store's own doc comment on why one slow
-// query stalls everything).
+// of seconds per paragraph - can't keep the database busy rebuilding them.
 func (s *Server) registerLiveTopics(h *live.Hub) {
 	// Only books/book show the saved reading position (see
 	// store.PositionTable).

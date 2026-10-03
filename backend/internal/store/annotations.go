@@ -38,10 +38,10 @@ type QuoteContext struct {
 // preferring lines of at least minSampleQuoteWords words - gathered for
 // speakerattr.Client.CharacterizeVoice. bookIDs is typically
 // ListSeriesBooks' output in series order; the explicit ORDER BY CASE
-// keeps that order rather than however DuckDB would order an IN (...)
+// keeps that order rather than however the database would order an IN (...)
 // match. One query per character, fetched fresh when their own job runs,
 // since their lines can still be attributed after the job was queued.
-func (s *DuckStore) QuotesForBooks(bookIDs []string, characterName string, limit int) ([]QuoteContext, error) {
+func (s *SQLiteStore) QuotesForBooks(bookIDs []string, characterName string, limit int) ([]QuoteContext, error) {
 	if len(bookIDs) == 0 {
 		return nil, nil
 	}
@@ -96,7 +96,7 @@ func (s *DuckStore) QuotesForBooks(bookIDs []string, characterName string, limit
 // most of the chapters characterName speaks in, across bookIDs, most shared
 // chapters first - the cast characterization keeps a voice distinguishable
 // from. Narrator and Unknown are left out.
-func (s *DuckStore) CoSpeakersForBooks(bookIDs []string, characterName string, limit int) ([]string, error) {
+func (s *SQLiteStore) CoSpeakersForBooks(bookIDs []string, characterName string, limit int) ([]string, error) {
 	if len(bookIDs) == 0 {
 		return nil, nil
 	}
@@ -185,7 +185,7 @@ func likeEscape(s string) string {
 // paragraph_audio.word_timings already uses - the quoting keeps a match from
 // crossing a name boundary (e.g. "Jo" cannot match inside "John") the way an
 // unquoted substring search could.
-func (s *DuckStore) DescriptionsForBooks(bookIDs []string, characterName string, limit int) ([]DescriptionContext, error) {
+func (s *SQLiteStore) DescriptionsForBooks(bookIDs []string, characterName string, limit int) ([]DescriptionContext, error) {
 	if len(bookIDs) == 0 {
 		return nil, nil
 	}
@@ -252,7 +252,7 @@ type SpeakerAppearance struct {
 // narration-voice-resolution path in this app treats the two as
 // equivalent (see internal/narration.Resolver). Backed by
 // idx_paragraphs_speaker.
-func (s *DuckStore) ParagraphsForSpeaker(bookIDs []string, name string) ([]SpeakerAppearance, error) {
+func (s *SQLiteStore) ParagraphsForSpeaker(bookIDs []string, name string) ([]SpeakerAppearance, error) {
 	var out []SpeakerAppearance
 	for _, bookID := range bookIDs {
 		query := `
@@ -310,7 +310,7 @@ func (s *DuckStore) ParagraphsForSpeaker(bookIDs []string, name string) ([]Speak
 // there's no separate "Narrator" special case to handle here. Matching
 // uses the same JSON-quoted LIKE technique as DescriptionsForBooks, for
 // the same reason (a match can't cross a name boundary).
-func (s *DuckStore) ParagraphsDescribing(bookIDs []string, name string) ([]SpeakerAppearance, error) {
+func (s *SQLiteStore) ParagraphsDescribing(bookIDs []string, name string) ([]SpeakerAppearance, error) {
 	needle := `%"` + likeEscape(name) + `"%`
 	var out []SpeakerAppearance
 	for _, bookID := range bookIDs {
@@ -349,14 +349,14 @@ func (s *DuckStore) ParagraphsDescribing(bookIDs []string, name string) ([]Speak
 // ListParagraphsRaw slice speakerattr was fed and never needs paragraph
 // ids in between. Every line written loses its speaker number - see
 // SetParagraphSpeakersIndexed.
-func (s *DuckStore) SetParagraphSpeakers(chapterID string, bySpeakerIdx map[int]string) error {
+func (s *SQLiteStore) SetParagraphSpeakers(chapterID string, bySpeakerIdx map[int]string) error {
 	return s.SetParagraphSpeakersIndexed(chapterID, bySpeakerIdx, nil)
 }
 
 // SetParagraphSpeakersIndexed is SetParagraphSpeakers plus each line's
 // speaker number (Paragraph.SpeakerIndex), keyed like bySpeakerIdx; a line
 // with no entry in indexes gets 0.
-func (s *DuckStore) SetParagraphSpeakersIndexed(chapterID string, bySpeakerIdx map[int]string, indexes map[int]int) error {
+func (s *SQLiteStore) SetParagraphSpeakersIndexed(chapterID string, bySpeakerIdx map[int]string, indexes map[int]int) error {
 	if len(bySpeakerIdx) == 0 {
 		return nil
 	}
@@ -383,7 +383,7 @@ func (s *DuckStore) SetParagraphSpeakersIndexed(chapterID string, bySpeakerIdx m
 // legitimately still describes no one, and rewriting it to '[]' would
 // needlessly discard a description an earlier run (or manual edit) already
 // recorded for it.
-func (s *DuckStore) SetParagraphDescriptions(chapterID string, byDescribesIdx map[int][]string) error {
+func (s *SQLiteStore) SetParagraphDescriptions(chapterID string, byDescribesIdx map[int][]string) error {
 	if len(byDescribesIdx) == 0 {
 		return nil
 	}
@@ -393,14 +393,6 @@ func (s *DuckStore) SetParagraphDescriptions(chapterID string, byDescribesIdx ma
 	}
 	defer tx.Rollback()
 	for idx, names := range byDescribesIdx {
-		// .Value() explicitly, not a bare DescribesCharacterList - this
-		// driver's own JSON-alias bind path (bindJSON) special-cases a
-		// native JSON column's parameter before ever checking
-		// driver.Valuer, so passing the typed value directly fails
-		// ("unsupported data type: JSON interface, need []byte, string or
-		// nil" - confirmed empirically); Value() itself is still what
-		// every one of these types' Scan/Value pair is for, just invoked
-		// by hand here instead of by database/sql.
 		encoded, err := DescribesCharacterList(names).Value()
 		if err != nil {
 			return fmt.Errorf("encode describes for paragraph idx %d: %w", idx, err)
@@ -429,7 +421,7 @@ func (s *DuckStore) SetParagraphDescriptions(chapterID string, byDescribesIdx ma
 // the next attribution run picks the now-real dialogue line up again,
 // since "Narrator" is never valid for dialogue. Any other speaker is left
 // alone on clear.
-func (s *DuckStore) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) error {
+func (s *SQLiteStore) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) error {
 	if len(byIdx) == 0 {
 		return nil
 	}
@@ -454,7 +446,7 @@ func (s *DuckStore) SetParagraphScareQuotes(chapterID string, byIdx map[int]bool
 // over: marked dialogue is "Unknown" until attributed, marked narration has
 // no speaker; both drop the scare-quote flag, emotion and description tags,
 // which only fit the other kind. Reports whether anything changed.
-func (s *DuckStore) SetParagraphQuote(chapterID string, idx int, quote bool) (bool, error) {
+func (s *SQLiteStore) SetParagraphQuote(chapterID string, idx int, quote bool) (bool, error) {
 	speaker := ""
 	if quote {
 		speaker = "Unknown"
@@ -475,8 +467,8 @@ func (s *DuckStore) SetParagraphQuote(chapterID string, idx int, quote bool) (bo
 // audio was generated with those tags baked in, so the caller
 // (httpapi.directChapter) invalidates it. Clearing makes that a one-time
 // migration per chapter rather than something every re-run repeats.
-func (s *DuckStore) ClearLegacyTags(chapterID string) ([]int, error) {
-	rows, err := s.db.Query(`SELECT idx FROM paragraphs WHERE chapter_id = ? AND tts_tags::VARCHAR NOT IN ('{}', 'null', '')`, chapterID)
+func (s *SQLiteStore) ClearLegacyTags(chapterID string) ([]int, error) {
+	rows, err := s.db.Query(`SELECT idx FROM paragraphs WHERE chapter_id = ? AND tts_tags NOT IN ('{}', 'null', '')`, chapterID)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +489,7 @@ func (s *DuckStore) ClearLegacyTags(chapterID string) ([]int, error) {
 	if len(idxs) == 0 {
 		return nil, nil
 	}
-	if _, err := s.db.Exec(`UPDATE paragraphs SET tts_tags = '{}' WHERE chapter_id = ? AND tts_tags::VARCHAR NOT IN ('{}', 'null', '')`, chapterID); err != nil {
+	if _, err := s.db.Exec(`UPDATE paragraphs SET tts_tags = '{}' WHERE chapter_id = ? AND tts_tags NOT IN ('{}', 'null', '')`, chapterID); err != nil {
 		return nil, err
 	}
 	return idxs, nil
@@ -508,7 +500,7 @@ func (s *DuckStore) ClearLegacyTags(chapterID string) ([]int, error) {
 // neutral) - the emotion pass's own counterpart of
 // SetParagraphPronunciation. A paragraph absent from byIdx is left
 // untouched.
-func (s *DuckStore) SetParagraphEmotions(chapterID string, byIdx map[int]string) error {
+func (s *SQLiteStore) SetParagraphEmotions(chapterID string, byIdx map[int]string) error {
 	if len(byIdx) == 0 {
 		return nil
 	}
@@ -537,7 +529,7 @@ func (s *DuckStore) SetParagraphEmotions(chapterID string, byIdx map[int]string)
 // ResolvePronunciation's own idempotent full-chapter-refresh semantics -
 // the same "safe to redo" contract attribution/direction-tagging already
 // have.
-func (s *DuckStore) SetParagraphPronunciation(chapterID string, byIdx map[int][]pronounce.Substitution) error {
+func (s *SQLiteStore) SetParagraphPronunciation(chapterID string, byIdx map[int][]pronounce.Substitution) error {
 	if len(byIdx) == 0 {
 		return nil
 	}
@@ -550,9 +542,6 @@ func (s *DuckStore) SetParagraphPronunciation(chapterID string, byIdx map[int][]
 		if subs == nil {
 			subs = []pronounce.Substitution{}
 		}
-		// .Value() explicitly - see SetParagraphDescriptions' own doc
-		// comment for why a bare PronunciationList can't be passed
-		// directly.
 		encoded, err := PronunciationList(subs).Value()
 		if err != nil {
 			return fmt.Errorf("encode pronunciation for paragraph idx %d: %w", idx, err)
@@ -572,7 +561,7 @@ func (s *DuckStore) SetParagraphPronunciation(chapterID string, byIdx map[int][]
 // per-character "appearances" list without touching any other paragraph
 // that happens to share the same (wrong) speaker. The line's speaker
 // number (Paragraph.SpeakerIndex) is cleared: it belonged to the old value.
-func (s *DuckStore) SetParagraphSpeaker(paragraphID, speaker string) error {
+func (s *SQLiteStore) SetParagraphSpeaker(paragraphID, speaker string) error {
 	_, err := s.db.Exec(`UPDATE paragraphs SET speaker = ?, speaker_index = 0 WHERE id = ?`, speaker, paragraphID)
 	return err
 }
@@ -593,7 +582,7 @@ func (s *DuckStore) SetParagraphSpeaker(paragraphID, speaker string) error {
 // voice presets it leaves untouched are shared series-wide (see
 // store.SeriesScope) and may still be needed by other books in the same
 // series.
-func (s *DuckStore) ClearBookSpeakers(bookID string) error {
+func (s *SQLiteStore) ClearBookSpeakers(bookID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -612,12 +601,12 @@ func (s *DuckStore) ClearBookSpeakers(bookID string) error {
 	// to avoid also losing its direction-tagging progress), there's no such
 	// risk here: PassDirection is a fully independent field now, so
 	// clearing the other three never touches it regardless of whether it's
-	// true, false, or absent. json_merge_patch's own RFC 7396 semantics
+	// true, false, or absent. json_patch's own RFC 7396 semantics
 	// delete a key when the patch sets it to null - see
 	// SetChapterAttributed's own doc comment for why this is a single
 	// statement rather than a Go-side read-modify-write loop.
 	if _, err := tx.Exec(
-		`UPDATE chapters SET passes = json_merge_patch(passes, '{"attribution": null, "description": null, "scareQuote": null}') WHERE book_id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"attribution": null, "description": null, "scareQuote": null}') WHERE book_id = ?`,
 		bookID,
 	); err != nil {
 		return err

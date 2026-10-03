@@ -42,7 +42,7 @@ type StoredBookSetting struct {
 }
 
 // GetBookSetting returns bookID's setting, nil if it has none yet.
-func (s *DuckStore) GetBookSetting(bookID string) (*StoredBookSetting, error) {
+func (s *SQLiteStore) GetBookSetting(bookID string) (*StoredBookSetting, error) {
 	var raw string
 	var out StoredBookSetting
 	err := s.db.QueryRow(`SELECT CAST(setting AS VARCHAR), source, updated_at FROM book_settings WHERE book_id = ?`, bookID).Scan(&raw, &out.Source, &out.UpdatedAt)
@@ -59,7 +59,7 @@ func (s *DuckStore) GetBookSetting(bookID string) (*StoredBookSetting, error) {
 }
 
 // SetBookSetting stores bookID's setting, replacing any existing one.
-func (s *DuckStore) SetBookSetting(bookID string, setting BookSetting, source BookSettingSource) error {
+func (s *SQLiteStore) SetBookSetting(bookID string, setting BookSetting, source BookSettingSource) error {
 	raw, err := json.Marshal(setting)
 	if err != nil {
 		return err
@@ -81,7 +81,7 @@ func (s *DuckStore) SetBookSetting(bookID string, setting BookSetting, source Bo
 
 // DeleteBookSetting removes bookID's setting, so the next pass needing it
 // derives a fresh one.
-func (s *DuckStore) DeleteBookSetting(bookID string) error {
+func (s *SQLiteStore) DeleteBookSetting(bookID string) error {
 	_, err := s.db.Exec(`DELETE FROM book_settings WHERE book_id = ?`, bookID)
 	return err
 }

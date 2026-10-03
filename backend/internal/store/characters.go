@@ -15,7 +15,7 @@ import (
 // n chapters of bookID right before chapterIdx - who's likely still on
 // stage (see httpapi.prominentSpeakers). "", "Narrator" and "Unknown" are
 // left out.
-func (s *DuckStore) RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]string, error) {
+func (s *SQLiteStore) RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]string, error) {
 	rows, err := s.db.Query(`SELECT DISTINCT p.speaker FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id
 		WHERE c.book_id = ? AND c.idx >= ? AND c.idx < ? AND p.is_quote AND p.speaker NOT IN ('', 'Narrator', 'Unknown') ORDER BY p.speaker`, bookID, chapterIdx-n, chapterIdx)
 	if err != nil {
@@ -36,7 +36,7 @@ func (s *DuckStore) RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]s
 // SpeakerLineCounts returns how many of bookID's dialogue lines each
 // speaker has - one GROUP BY, for picking a book's main cast (see
 // httpapi.prominentSpeakers). "", "Narrator" and "Unknown" are left out.
-func (s *DuckStore) SpeakerLineCounts(bookID string) (map[string]int, error) {
+func (s *SQLiteStore) SpeakerLineCounts(bookID string) (map[string]int, error) {
 	rows, err := s.db.Query(`SELECT p.speaker, count(*) FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id
 		WHERE c.book_id = ? AND p.is_quote AND p.speaker NOT IN ('', 'Narrator', 'Unknown') GROUP BY p.speaker`, bookID)
 	if err != nil {
@@ -58,7 +58,7 @@ func (s *DuckStore) SpeakerLineCounts(bookID string) (map[string]int, error) {
 // ListCharacters returns scope's (see SeriesScope) known characters in
 // discovery order. Identity/summary only - see CharacterVoicesForModel for
 // their (per-clone-model) voice assignments.
-func (s *DuckStore) ListCharacters(scope string) ([]Character, error) {
+func (s *SQLiteStore) ListCharacters(scope string) ([]Character, error) {
 	rows, err := s.db.Query(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, pronouns, created_at FROM characters WHERE scope = ? ORDER BY created_at ASC`, scope)
 	if err != nil {
 		return nil, err
@@ -78,7 +78,7 @@ func (s *DuckStore) ListCharacters(scope string) ([]Character, error) {
 
 // GetCharacter is a by-id lookup (e.g. httpapi's .../characters/{id}/...
 // routes, which address a character directly rather than by scope+name).
-func (s *DuckStore) GetCharacter(id string) (*Character, error) {
+func (s *SQLiteStore) GetCharacter(id string) (*Character, error) {
 	var c Character
 	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, pronouns, created_at FROM characters WHERE id = ?`, id).
 		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.Pronouns, &c.CreatedAt)
@@ -91,7 +91,7 @@ func (s *DuckStore) GetCharacter(id string) (*Character, error) {
 	return &c, nil
 }
 
-func (s *DuckStore) GetCharacterByName(scope, name string) (*Character, error) {
+func (s *SQLiteStore) GetCharacterByName(scope, name string) (*Character, error) {
 	var c Character
 	// Case-insensitive, an exact-case match first: "woman" is "Woman", so
 	// attribution's UpsertCharacter never makes a second row that differs
@@ -127,7 +127,7 @@ func (s *DuckStore) GetCharacterByName(scope, name string) (*Character, error) {
 // misjudging one as the other (in either direction) shouldn't silently
 // reclassify an identity every other chapter/book has already been
 // building dialogue/voice history against.
-func (s *DuckStore) UpsertCharacter(scope, name string, isRole bool) (character Character, created bool, err error) {
+func (s *SQLiteStore) UpsertCharacter(scope, name string, isRole bool) (character Character, created bool, err error) {
 	existing, err := s.GetCharacterByName(scope, name)
 	if err != nil {
 		return Character{}, false, err
@@ -154,7 +154,7 @@ func (s *DuckStore) UpsertCharacter(scope, name string, isRole bool) (character 
 // store.Character's doc comment) - callers resolving a single paragraph's
 // voice pass the *book's own* resolved clone model
 // (internal/narration.Resolver.ForParagraph).
-func (s *DuckStore) CharacterVoiceForModel(characterID, cloneModel string) (string, error) {
+func (s *SQLiteStore) CharacterVoiceForModel(characterID, cloneModel string) (string, error) {
 	var presetID string
 	err := s.db.QueryRow(`SELECT voice_preset_id FROM character_voices WHERE character_id = ? AND clone_model = ?`, characterID, cloneModel).Scan(&presetID)
 	if err == sql.ErrNoRows {
@@ -169,7 +169,7 @@ func (s *DuckStore) CharacterVoiceForModel(characterID, cloneModel string) (stri
 // worth of characters at once (httpapi's handleGetChapter/
 // handleListSpeakers) rather than one at a time. A character id absent
 // from the returned map has no voice assigned for cloneModel.
-func (s *DuckStore) CharacterVoicesForModel(characterIDs []string, cloneModel string) (map[string]string, error) {
+func (s *SQLiteStore) CharacterVoicesForModel(characterIDs []string, cloneModel string) (map[string]string, error) {
 	out := make(map[string]string, len(characterIDs))
 	if len(characterIDs) == 0 {
 		return out, nil
@@ -205,7 +205,7 @@ func (s *DuckStore) CharacterVoicesForModel(characterIDs []string, cloneModel st
 // how this then overrides the book's own voice for paragraphs attributed
 // to this character, when the book currently in use narrates through that
 // same clone model.
-func (s *DuckStore) SetCharacterVoice(characterID, cloneModel, voicePresetID string) error {
+func (s *SQLiteStore) SetCharacterVoice(characterID, cloneModel, voicePresetID string) error {
 	if voicePresetID == "" {
 		_, err := s.db.Exec(`DELETE FROM character_voices WHERE character_id = ? AND clone_model = ?`, characterID, cloneModel)
 		return err
@@ -225,7 +225,7 @@ func (s *DuckStore) SetCharacterVoice(characterID, cloneModel, voicePresetID str
 // both from the same generation. Independent of SetCharacterVoice since a
 // manual voice reassignment (handleSetCharacterVoice) shouldn't touch
 // either.
-func (s *DuckStore) SetCharacterSummary(id, summary, refLine string) error {
+func (s *SQLiteStore) SetCharacterSummary(id, summary, refLine string) error {
 	_, err := s.db.Exec(`UPDATE characters SET summary = ?, ref_line = ? WHERE id = ?`, summary, refLine, id)
 	return err
 }
@@ -239,7 +239,7 @@ func (s *DuckStore) SetCharacterSummary(id, summary, refLine string) error {
 // characterization in step with the voice actually narrating them. Only
 // the fields the caller says changed are written, so a name/speed-only
 // edit never touches a character's LLM-written characterization.
-func (s *DuckStore) SyncCharacterSummariesFromPreset(presetID, instruct, refText string, instructChanged, refTextChanged bool) error {
+func (s *SQLiteStore) SyncCharacterSummariesFromPreset(presetID, instruct, refText string, instructChanged, refTextChanged bool) error {
 	const assigned = `id IN (SELECT character_id FROM character_voices WHERE voice_preset_id = ?)`
 	if instructChanged {
 		if _, err := s.db.Exec(`UPDATE characters SET summary = ? WHERE `+assigned, instruct, presetID); err != nil {
@@ -256,21 +256,21 @@ func (s *DuckStore) SyncCharacterSummariesFromPreset(presetID, instruct, refText
 
 // SetCharacterPronouns sets id's pronouns (Character.Pronouns) - "" clears
 // them. Callers normalize first (speakerattr.NormalizePronouns).
-func (s *DuckStore) SetCharacterPronouns(id, pronouns string) error {
+func (s *SQLiteStore) SetCharacterPronouns(id, pronouns string) error {
 	_, err := s.db.Exec(`UPDATE characters SET pronouns = ? WHERE id = ?`, pronouns, id)
 	return err
 }
 
 // RenameCharacter changes id's name - its row only; callers move the
 // paragraphs attributed to the old name (ReassignCharacterSpeaker).
-func (s *DuckStore) RenameCharacter(id, name string) error {
+func (s *SQLiteStore) RenameCharacter(id, name string) error {
 	_, err := s.db.Exec(`UPDATE characters SET name = ? WHERE id = ?`, name, id)
 	return err
 }
 
 // SetCharacterRole marks (or, with false, unmarks) id as a generic role
 // label - see store.Character.IsRole.
-func (s *DuckStore) SetCharacterRole(id string, isRole bool) error {
+func (s *SQLiteStore) SetCharacterRole(id string, isRole bool) error {
 	_, err := s.db.Exec(`UPDATE characters SET is_role = ? WHERE id = ?`, isRole, id)
 	return err
 }
@@ -278,7 +278,7 @@ func (s *DuckStore) SetCharacterRole(id string, isRole bool) error {
 // SetCharacterInvalid marks (or, with false, unmarks) id as invalid - see
 // store.Character.Invalid. Identity/summary/voice assignments are left
 // alone either way, so unmarking restores the character exactly as it was.
-func (s *DuckStore) SetCharacterInvalid(id string, invalid bool) error {
+func (s *SQLiteStore) SetCharacterInvalid(id string, invalid bool) error {
 	_, err := s.db.Exec(`UPDATE characters SET invalid = ? WHERE id = ?`, invalid, id)
 	return err
 }
@@ -291,7 +291,7 @@ func (s *DuckStore) SetCharacterInvalid(id string, invalid bool) error {
 // book's own voice, the default voice, another character sharing it) -
 // callers that also want those gone delete them explicitly themselves
 // (see httpapi.handleDeleteBookSpeakerData).
-func (s *DuckStore) DeleteCharacter(id string) error {
+func (s *SQLiteStore) DeleteCharacter(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -311,7 +311,7 @@ func (s *DuckStore) DeleteCharacter(id string) error {
 // character's own name dropped. Validation against the rest of the roster
 // (an alias that's another character's name) is the caller's job - see
 // httpapi.handleSetCharacterAliases.
-func (s *DuckStore) SetCharacterAliases(characterID string, aliases []string) error {
+func (s *SQLiteStore) SetCharacterAliases(characterID string, aliases []string) error {
 	c, err := s.GetCharacter(characterID)
 	if err != nil {
 		return err
@@ -340,7 +340,7 @@ func (s *DuckStore) SetCharacterAliases(characterID string, aliases []string) er
 
 // AddCharacterAliases adds aliases to characterID's existing ones - see
 // SetCharacterAliases.
-func (s *DuckStore) AddCharacterAliases(characterID string, aliases ...string) error {
+func (s *SQLiteStore) AddCharacterAliases(characterID string, aliases ...string) error {
 	c, err := s.GetCharacter(characterID)
 	if err != nil {
 		return err
@@ -368,7 +368,7 @@ func (s *DuckStore) AddCharacterAliases(characterID string, aliases ...string) e
 // separately, via DeleteCharacter), but no other book's paragraphs are
 // touched here - a reader cleaning up a bad attribution on one book
 // shouldn't silently re-attribute a sibling book they haven't looked at.
-func (s *DuckStore) ReassignCharacterSpeaker(bookID, fromName, toName string) error {
+func (s *SQLiteStore) ReassignCharacterSpeaker(bookID, fromName, toName string) error {
 	_, err := s.db.Exec(
 		`UPDATE paragraphs SET speaker = ? WHERE speaker = ? AND chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`,
 		toName, fromName, bookID,
@@ -383,7 +383,7 @@ func (s *DuckStore) ReassignCharacterSpeaker(bookID, fromName, toName string) er
 // Narrator/Unknown, or a deleted character). Other names in the same
 // list are kept, and toName isn't added twice when it was already there.
 // Same one-book scope as ReassignCharacterSpeaker.
-func (s *DuckStore) ReassignCharacterDescriptions(bookID, fromName, toName string) error {
+func (s *SQLiteStore) ReassignCharacterDescriptions(bookID, fromName, toName string) error {
 	if fromName == toName {
 		return nil
 	}
@@ -455,7 +455,7 @@ func replaceDescribedName(names []string, from, to string) DescribesCharacterLis
 // but is the alias of exactly one, is replaced by that character's name.
 // Names that match nothing are left alone. Idempotent; returns how many
 // paragraphs changed.
-func (s *DuckStore) RepairDescribedNames() (int, error) {
+func (s *SQLiteStore) RepairDescribedNames() (int, error) {
 	books, err := s.ListBooks()
 	if err != nil {
 		return 0, err
@@ -492,7 +492,7 @@ func (s *DuckStore) RepairDescribedNames() (int, error) {
 			SELECT p.id, p.describes_characters
 			FROM paragraphs p
 			JOIN chapters c ON c.id = p.chapter_id
-			WHERE c.book_id = ? AND p.describes_characters::VARCHAR NOT IN ('[]', 'null')`, book.ID)
+			WHERE c.book_id = ? AND p.describes_characters NOT IN ('[]', 'null')`, book.ID)
 		if err != nil {
 			return fixed, err
 		}
@@ -544,7 +544,7 @@ func (s *DuckStore) RepairDescribedNames() (int, error) {
 // a separate character), and the book setting's first-person narrator.
 // Notes match ignoring case, as the summary pass resolves names; notes
 // stay marked as edited or not as they were.
-func (s *DuckStore) RenameSpeakerRecords(bookID, fromName, toName string) error {
+func (s *SQLiteStore) RenameSpeakerRecords(bookID, fromName, toName string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err

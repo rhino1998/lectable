@@ -1,8 +1,7 @@
 # Wraps every day-to-day Go command (build/test/vet/tidy) with the env vars
 # ttsworker's cgo build actually needs (CGO_LDFLAGS/LD_LIBRARY_PATH pointed
 # at local audio.cpp/llama.cpp builds) and the newer Go toolchain this
-# module's go.mod requires (go-duckdb/v2's own dependency chain needs
-# go >= 1.24; see ~/go-toolchains, used only if present) - see run.sh for the same env
+# module's go.mod requires (see ~/go-toolchains, used only if present) - see run.sh for the same env
 # vars applied to actually launching the server, and backend/CLAUDE.md's
 # "Running everything locally" section for the underlying commands this
 # replaces. Override any var below on the command line, e.g.
@@ -16,6 +15,8 @@ ROCM_DIR ?= $(HOME)/rocm7-user/root/opt/rocm-7.2.4
 GO_TOOLCHAIN_DIR ?= $(HOME)/go-toolchains/go1.27.1/bin
 
 export CGO_LDFLAGS := -L$(AUDIOCPP_DIR) -L$(LLAMACPP_DIR)
+# internal/store's search index needs SQLite's FTS5 compiled in.
+export GOFLAGS := -tags=sqlite_fts5 $(GOFLAGS)
 export LD_LIBRARY_PATH := $(LLAMACPP_DIR):$(AUDIOCPP_DIR):$(ROCM_DIR)/lib:$(ROCM_DIR)/llvm/lib:$(LD_LIBRARY_PATH)
 export HSA_ENABLE_DXG_DETECTION := 1
 ifneq ($(wildcard $(GO_TOOLCHAIN_DIR)),)

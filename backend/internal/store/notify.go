@@ -39,7 +39,7 @@ type ChangeFunc func(tables []string)
 // writing goroutine before the write method returns, so it must not block
 // (live.Hub.Invalidate only flips a flag and signals a channel). nil is
 // ignored.
-func (s *DuckStore) OnChange(fn ChangeFunc) {
+func (s *SQLiteStore) OnChange(fn ChangeFunc) {
 	if fn == nil {
 		return
 	}
@@ -58,10 +58,10 @@ func (s *DuckStore) OnChange(fn ChangeFunc) {
 
 // slowCallThreshold is the duration at or above which a DB call is logged
 // (LECTABLE_DB_SLOW_LOG_MS, default 100ms; 0 logs every call, negative disables).
-// With the store's single connection (SetMaxOpenConns(1)) a call's time
-// includes waiting for that connection, so a slow line usually means
-// "queued behind other DB work" rather than "this query is slow" - the
-// transaction lines (time a Begin held the connection) show who held it.
+// Reads run on a pool and don't wait on each other, so a slow query line
+// is a slow query. Writes share one connection: a slow exec or begin line
+// usually means "queued behind another write" - the transaction lines
+// (time a Begin held the write connection) show who held it.
 var slowCallThreshold = func() time.Duration {
 	if v := os.Getenv("LECTABLE_DB_SLOW_LOG_MS"); v != "" {
 		if ms, err := strconv.Atoi(v); err == nil {
@@ -101,22 +101,24 @@ func callerName() string {
 	}
 }
 
-// notifyDB is *sql.DB with Exec/Begin overridden to report which tables a
-// write touched - see Store.OnChange - and every call timed (see
-// logCallTiming).
+// notifyDB is the store's two handles on the database - writes (Exec,
+// Begin) on the embedded single connection, reads (Query, QueryRow) on a
+// pool - with writes reporting which tables they touched (see
+// Store.OnChange) and every call timed (see logCallTiming).
 type notifyDB struct {
-	*sql.DB
+	*sql.DB                               // the single write connection
+	read     *sql.DB                      // read-only pool - see Open
 	onChange atomic.Pointer[[]ChangeFunc] // copy-on-write listener list
 }
 
 func (d *notifyDB) Query(query string, args ...any) (*sql.Rows, error) {
 	defer logCallTiming("query", time.Now())
-	return d.DB.Query(query, args...)
+	return d.read.Query(query, args...)
 }
 
 func (d *notifyDB) QueryRow(query string, args ...any) *sql.Row {
 	defer logCallTiming("queryrow", time.Now())
-	return d.DB.QueryRow(query, args...)
+	return d.read.QueryRow(query, args...)
 }
 
 func (d *notifyDB) notify(tables []string) {
@@ -179,6 +181,14 @@ func (t *notifyTx) Exec(query string, args ...any) (sql.Result, error) {
 		}
 	}
 	return res, err
+}
+
+// touch records table as written, for a write that went through a
+// prepared statement rather than Exec.
+func (t *notifyTx) touch(table string) {
+	if !slices.Contains(t.tables, table) {
+		t.tables = append(t.tables, table)
+	}
 }
 
 func (t *notifyTx) Commit() error {

@@ -131,14 +131,10 @@ CREATE TABLE IF NOT EXISTS chapters (
 	-- Store.ClearBookSpeakers when a chapter's own attribution specifically
 	-- is cleared; direction is never touched by that, since it's now a
 	-- fully independent field instead of entangled in the same value.
-	-- A native JSON column (see Passes' own Scan/Value methods), not TEXT -
-	-- the same choice paragraphs.describes_characters/tts_tags/pronunciation
-	-- below now make too, after confirming DuckDB's own MAP and VARIANT
-	-- types both refuse to bind as a query parameter through this driver
-	-- (empirically confirmed against both go-duckdb and the official
-	-- duckdb-go), while JSON - really just a validated VARCHAR under the
-	-- hood - binds a plain Go string with an ordinary bound parameter
-	-- exactly like this column's own predecessor did.
+	-- Declared JSON (see Passes' own Scan/Value methods), like
+	-- paragraphs.describes_characters/tts_tags/pronunciation below: SQLite
+	-- stores it as text, and the declared type is what tells row export
+	-- (SQLiteStore.rowJSON) to nest the value rather than quote it.
 	passes JSON NOT NULL DEFAULT '{}',
 	UNIQUE(book_id, idx)
 );
@@ -316,6 +312,13 @@ CREATE TABLE IF NOT EXISTS paragraph_audio (
 	-- paragraph with its own real file) means no pointer at all.
 	pointer_offset INTEGER NOT NULL DEFAULT 0,
 	pointer_seconds DOUBLE NOT NULL DEFAULT 0,
+	-- Copies of the paragraph's own chapter_id and length(content), filled
+	-- when the row is inserted (neither ever changes for a paragraph), so
+	-- the single-voice aggregates and AudioRefs read idx_paragraph_audio_chapter
+	-- alone instead of joining every row to its paragraph. '' / 0 on a row
+	-- whose paragraph didn't exist at insert.
+	chapter_id TEXT NOT NULL DEFAULT '',
+	chars INTEGER NOT NULL DEFAULT 0,
 	PRIMARY KEY (paragraph_id, voice_id)
 );
 
@@ -445,11 +448,42 @@ CREATE TABLE IF NOT EXISTS sync_tree_nodes (
 
 CREATE INDEX IF NOT EXISTS idx_chapters_book ON chapters(book_id);
 CREATE INDEX IF NOT EXISTS idx_paragraphs_chapter ON paragraphs(chapter_id);
+-- Covering indexes for the whole-book aggregates (narration stats, chapter
+-- summaries, ready counts by speaker): everything those read per paragraph
+-- and per audio row, so they never touch the wide table rows (content,
+-- word_timings).
+CREATE INDEX IF NOT EXISTS idx_paragraphs_stats ON paragraphs(chapter_id, id, speaker, speaker_index, length(content));
+CREATE INDEX IF NOT EXISTS idx_paragraph_audio_stats ON paragraph_audio(paragraph_id, voice_id, status, duration_seconds);
+CREATE INDEX IF NOT EXISTS idx_paragraph_audio_chapter ON paragraph_audio(chapter_id, voice_id, status, duration_seconds, chars);
+
+-- A deleted paragraph takes its audio rows with it, whichever path deleted
+-- it: paragraph_audio.chapter_id is only trustworthy while every row with
+-- one still has its paragraph.
+CREATE TRIGGER IF NOT EXISTS paragraphs_audio_delete AFTER DELETE ON paragraphs BEGIN
+	DELETE FROM paragraph_audio WHERE paragraph_id = old.id;
+END;
 CREATE INDEX IF NOT EXISTS idx_images_chapter ON images(chapter_id);
-CREATE INDEX IF NOT EXISTS idx_paragraph_audio_paragraph ON paragraph_audio(paragraph_id);
 CREATE INDEX IF NOT EXISTS idx_bookmarks_paragraph ON bookmarks(paragraph_id);
 CREATE INDEX IF NOT EXISTS idx_paragraph_edits_paragraph ON paragraph_edits(paragraph_id);
 CREATE INDEX IF NOT EXISTS idx_characters_scope ON characters(scope);
 CREATE INDEX IF NOT EXISTS idx_character_voices_character ON character_voices(character_id);
 CREATE INDEX IF NOT EXISTS idx_paragraphs_speaker ON paragraphs(speaker);
+
+-- Full-text index over paragraphs.content for SearchParagraphs: trigrams,
+-- so a query matches any substring of three or more characters,
+-- case-insensitively. External-content (the text lives only in paragraphs,
+-- joined by rowid) and kept current by the triggers below. Needs the
+-- sqlite_fts5 build tag.
+CREATE VIRTUAL TABLE IF NOT EXISTS paragraphs_fts USING fts5(content, content='paragraphs', tokenize='trigram');
+
+CREATE TRIGGER IF NOT EXISTS paragraphs_fts_insert AFTER INSERT ON paragraphs BEGIN
+	INSERT INTO paragraphs_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS paragraphs_fts_delete AFTER DELETE ON paragraphs BEGIN
+	INSERT INTO paragraphs_fts(paragraphs_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+END;
+CREATE TRIGGER IF NOT EXISTS paragraphs_fts_update AFTER UPDATE OF content ON paragraphs BEGIN
+	INSERT INTO paragraphs_fts(paragraphs_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+	INSERT INTO paragraphs_fts(rowid, content) VALUES (new.rowid, new.content);
+END;
 `

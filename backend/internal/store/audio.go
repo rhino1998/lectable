@@ -10,7 +10,7 @@ import (
 // the batching itself). A book with no paragraphs is simply absent from
 // the returned map; callers should treat that the same as a zero-value
 // NarrationStats.
-func (s *DuckStore) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string]NarrationStats, error) {
+func (s *SQLiteStore) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string]NarrationStats, error) {
 	out := make(map[string]NarrationStats, len(bookVoices))
 	if len(bookVoices) == 0 {
 		return out, nil
@@ -22,15 +22,14 @@ func (s *DuckStore) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides
 	if len(overrides) == 0 {
 		rows, err = s.db.Query(`
 			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`)
-			SELECT c.book_id,
-				COALESCE(SUM(LENGTH(p.content)), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
-			FROM chapters c
-			JOIN book_voice bv ON bv.book_id = c.book_id
-			JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = bv.voice_id
-			GROUP BY c.book_id`, bvArgs...)
+			SELECT bv.book_id,
+				(SELECT COALESCE(SUM(LENGTH(p.content)), 0) FROM chapters c JOIN paragraphs p ON p.chapter_id = c.id WHERE c.book_id = bv.book_id),
+				(SELECT COALESCE(SUM(pa.chars), 0) FROM chapters c JOIN paragraph_audio pa
+					ON pa.chapter_id = c.id AND pa.voice_id = bv.voice_id AND pa.status = 'ready' WHERE c.book_id = bv.book_id),
+				(SELECT COALESCE(SUM(pa.duration_seconds), 0) FROM chapters c JOIN paragraph_audio pa
+					ON pa.chapter_id = c.id AND pa.voice_id = bv.voice_id AND pa.status = 'ready' WHERE c.book_id = bv.book_id)
+			FROM book_voice bv
+			WHERE EXISTS (SELECT 1 FROM chapters c JOIN paragraphs p ON p.chapter_id = c.id WHERE c.book_id = bv.book_id)`, bvArgs...)
 	} else {
 		svFragment, svArgs := bookSpeakerVoiceValues(overrides)
 		args := append(append([]any{}, bvArgs...), svArgs...)
@@ -92,7 +91,7 @@ type AudioState struct {
 // the returned map has never been touched by voiceID (equivalent to the
 // old COALESCE(..., 'pending') default) - callers should treat that as
 // AudioPending.
-func (s *DuckStore) ParagraphAudioStatuses(paragraphIDs []string, voiceID string) (map[string]AudioState, error) {
+func (s *SQLiteStore) ParagraphAudioStatuses(paragraphIDs []string, voiceID string) (map[string]AudioState, error) {
 	out := make(map[string]AudioState, len(paragraphIDs))
 	if len(paragraphIDs) == 0 {
 		return out, nil
@@ -132,12 +131,10 @@ func (s *DuckStore) ParagraphAudioStatuses(paragraphIDs []string, voiceID string
 // httpapi.handleListSpeakers' own "X/Y generated" figure per row. Scoped
 // via a JOIN on (book, speaker, voice) rather than
 // ParagraphAudioStatuses' approach of one query placeholder per paragraph
-// id, which becomes genuinely expensive - and, worse, holds the single
-// shared DuckDB connection (see this package's own doc comment) for that
-// whole query, stalling every other concurrent request app-wide until it
-// returns - for a speaker with many thousands of paragraphs (the
+// id, which becomes genuinely expensive for a speaker with many thousands
+// of paragraphs (the
 // Narrator, on a long book).
-func (s *DuckStore) CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int, error) {
+func (s *SQLiteStore) CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int, error) {
 	counts, err := s.ReadyAudioCountsBySpeaker(bookID)
 	if err != nil {
 		return 0, err
@@ -151,7 +148,7 @@ func (s *DuckStore) CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (
 // query - the Speakers table used to issue one count per speaker, which on
 // a book with hundreds of characters held the single DuckDB connection for
 // seconds per build.
-func (s *DuckStore) ReadyAudioCountsBySpeaker(bookID string) (map[string]map[string]int, error) {
+func (s *SQLiteStore) ReadyAudioCountsBySpeaker(bookID string) (map[string]map[string]int, error) {
 	rows, err := s.db.Query(`
 		SELECT CASE WHEN p.speaker = '' THEN 'Narrator' ELSE p.speaker END AS speaker, pa.voice_id, COUNT(*)
 		FROM paragraph_audio pa
@@ -180,7 +177,7 @@ func (s *DuckStore) ReadyAudioCountsBySpeaker(bookID string) (map[string]map[str
 
 // GetParagraphAudioStatus reports one paragraph's audio status for one
 // voice specifically ("pending" if that voice has never touched it).
-func (s *DuckStore) GetParagraphAudioStatus(paragraphID, voiceID string) (string, error) {
+func (s *SQLiteStore) GetParagraphAudioStatus(paragraphID, voiceID string) (string, error) {
 	var status string
 	err := s.db.QueryRow(`SELECT status FROM paragraph_audio WHERE paragraph_id = ? AND voice_id = ?`, paragraphID, voiceID).
 		Scan(&status)
@@ -191,10 +188,9 @@ func (s *DuckStore) GetParagraphAudioStatus(paragraphID, voiceID string) (string
 }
 
 // upsertParagraphAudio sets one (paragraph, voice) pair's audio state.
-// DuckDB's ALTER-TABLE-with-constraints gaps earlier in this file were
-// enough of a surprise that this deliberately avoids relying on ON
-// CONFLICT support too: try the update first, and only insert if nothing
-// existed to update.
+// Update first, and only insert if nothing existed to update (written
+// for a database whose ON CONFLICT support wasn't trusted; SQLite's is
+// fine, this just hasn't needed changing).
 // Always resets pointer_offset/pointer_seconds to 0 - every caller of this
 // helper (SetParagraphGenerating/SetParagraphReady/SetParagraphError)
 // represents a paragraph getting its own ordinary, independent audio state,
@@ -203,7 +199,7 @@ func (s *DuckStore) GetParagraphAudioStatus(paragraphID, voiceID string) (string
 // after previously being a pointer (jobs.Manager.generateIndependently's
 // own fallback) must never leave a stale pointer behind once it has real
 // audio of its own again.
-func (s *DuckStore) upsertParagraphAudio(paragraphID, voiceID, status, errMsg string, durationSeconds float64) error {
+func (s *SQLiteStore) upsertParagraphAudio(paragraphID, voiceID, status, errMsg string, durationSeconds float64) error {
 	res, err := s.db.Exec(
 		`UPDATE paragraph_audio SET status = ?, error = ?, duration_seconds = ?, pointer_offset = 0, pointer_seconds = 0 WHERE paragraph_id = ? AND voice_id = ?`,
 		status, errMsg, durationSeconds, paragraphID, voiceID,
@@ -217,17 +213,17 @@ func (s *DuckStore) upsertParagraphAudio(paragraphID, voiceID, status, errMsg st
 		return nil
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, error, duration_seconds) VALUES (?, ?, ?, ?, ?)`,
-		paragraphID, voiceID, status, errMsg, durationSeconds,
+		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, error, duration_seconds, chapter_id, chars) VALUES (?, ?, ?, ?, ?, coalesce((SELECT chapter_id FROM paragraphs WHERE id = ?), ''), coalesce((SELECT length(content) FROM paragraphs WHERE id = ?), 0))`,
+		paragraphID, voiceID, status, errMsg, durationSeconds, paragraphID, paragraphID,
 	)
 	return err
 }
 
-func (s *DuckStore) SetParagraphGenerating(id, voiceID string) error {
+func (s *SQLiteStore) SetParagraphGenerating(id, voiceID string) error {
 	return s.upsertParagraphAudio(id, voiceID, AudioGenerating, "", 0)
 }
 
-func (s *DuckStore) SetParagraphReady(id, voiceID string, durationSeconds float64) error {
+func (s *SQLiteStore) SetParagraphReady(id, voiceID string, durationSeconds float64) error {
 	return s.upsertParagraphAudio(id, voiceID, AudioReady, "", durationSeconds)
 }
 
@@ -248,7 +244,7 @@ func (s *DuckStore) SetParagraphReady(id, voiceID string, durationSeconds float6
 // against it (see usePlayback.ts, which plays straight through the whole
 // shared clip and only uses these values to track which paragraph is
 // "current" for highlighting/position-reporting).
-func (s *DuckStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset int, pointerSeconds, durationSeconds float64) error {
+func (s *SQLiteStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset int, pointerSeconds, durationSeconds float64) error {
 	res, err := s.db.Exec(
 		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = ?, pointer_offset = ?, pointer_seconds = ? WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioReady, durationSeconds, pointerOffset, pointerSeconds, id, voiceID,
@@ -262,8 +258,8 @@ func (s *DuckStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset i
 		return nil
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, duration_seconds, pointer_offset, pointer_seconds) VALUES (?, ?, ?, ?, ?, ?)`,
-		id, voiceID, AudioReady, durationSeconds, pointerOffset, pointerSeconds,
+		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, duration_seconds, pointer_offset, pointer_seconds, chapter_id, chars) VALUES (?, ?, ?, ?, ?, ?, coalesce((SELECT chapter_id FROM paragraphs WHERE id = ?), ''), coalesce((SELECT length(content) FROM paragraphs WHERE id = ?), 0))`,
+		id, voiceID, AudioReady, durationSeconds, pointerOffset, pointerSeconds, id, id,
 	)
 	return err
 }
@@ -275,7 +271,7 @@ func (s *DuckStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset i
 // A no-op if the (paragraph, voice) row doesn't exist yet, which shouldn't
 // happen in practice (SetParagraphReady always runs first) but isn't worth
 // erroring over if it somehow did.
-func (s *DuckStore) SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error {
+func (s *SQLiteStore) SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error {
 	_, err := s.db.Exec(
 		`UPDATE paragraph_audio SET word_timings = ? WHERE paragraph_id = ? AND voice_id = ?`,
 		wordTimingsJSON, id, voiceID,
@@ -283,7 +279,7 @@ func (s *DuckStore) SetParagraphWordTimings(id, voiceID, wordTimingsJSON string)
 	return err
 }
 
-func (s *DuckStore) SetParagraphError(id, voiceID, message string) error {
+func (s *SQLiteStore) SetParagraphError(id, voiceID, message string) error {
 	return s.upsertParagraphAudio(id, voiceID, AudioError, message, 0)
 }
 
@@ -297,7 +293,7 @@ func (s *DuckStore) SetParagraphError(id, voiceID, message string) error {
 // real file or a pointer again is re-decided fresh by whatever regenerates
 // it - see AudioState.PointerOffset's own doc comment - so a stale pointer
 // value must never survive past this reset).
-func (s *DuckStore) ResetParagraphAudio(id, voiceID string) error {
+func (s *SQLiteStore) ResetParagraphAudio(id, voiceID string) error {
 	res, err := s.db.Exec(
 		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = 0, word_timings = '[]', pointer_offset = 0, pointer_seconds = 0 WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioPending, id, voiceID,
@@ -311,8 +307,8 @@ func (s *DuckStore) ResetParagraphAudio(id, voiceID string) error {
 		return nil
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status) VALUES (?, ?, ?)`,
-		id, voiceID, AudioPending,
+		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, chapter_id, chars) VALUES (?, ?, ?, coalesce((SELECT chapter_id FROM paragraphs WHERE id = ?), ''), coalesce((SELECT length(content) FROM paragraphs WHERE id = ?), 0))`,
+		id, voiceID, AudioPending, id, id,
 	)
 	return err
 }
@@ -326,7 +322,7 @@ func (s *DuckStore) ResetParagraphAudio(id, voiceID string) error {
 // book's own audio directory on disk (the actual .wav files) - this alone
 // only clears the DB's own bookkeeping about them, the same split
 // DeleteBook's own paragraph/file cleanup already follows.
-func (s *DuckStore) DeleteBookAudio(bookID string) error {
+func (s *SQLiteStore) DeleteBookAudio(bookID string) error {
 	_, err := s.db.Exec(
 		`DELETE FROM paragraph_audio WHERE paragraph_id IN (
 			SELECT id FROM paragraphs WHERE chapter_id IN (
@@ -344,7 +340,7 @@ func (s *DuckStore) DeleteBookAudio(bookID string) error {
 // under) without touching the rest of the book. httpapi.handleDeleteChapterAudio
 // pairs this with removing that chapter's own audio directory on disk,
 // same split as the book-level version.
-func (s *DuckStore) DeleteChapterAudio(chapterID string) error {
+func (s *SQLiteStore) DeleteChapterAudio(chapterID string) error {
 	_, err := s.db.Exec(
 		`DELETE FROM paragraph_audio WHERE paragraph_id IN (
 			SELECT id FROM paragraphs WHERE chapter_id = ?
@@ -374,7 +370,7 @@ type AudioRefs struct {
 }
 
 // AudioRefs reads the whole library's AudioRefs in four scans.
-func (s *DuckStore) AudioRefs() (AudioRefs, error) {
+func (s *SQLiteStore) AudioRefs() (AudioRefs, error) {
 	refs := AudioRefs{
 		ChapterBooks:   map[string]string{},
 		Books:          map[string]bool{},
@@ -418,8 +414,7 @@ func (s *DuckStore) AudioRefs() (AudioRefs, error) {
 	}); err != nil {
 		return refs, err
 	}
-	if err := scan(`SELECT DISTINCT p.chapter_id, pa.voice_id
-		FROM paragraph_audio pa JOIN paragraphs p ON p.id = pa.paragraph_id`, func(chapterID, voiceID, _ string) {
+	if err := scan(`SELECT DISTINCT chapter_id, voice_id FROM paragraph_audio WHERE chapter_id <> ''`, func(chapterID, voiceID, _ string) {
 		addTo(refs.ChapterVoices, chapterID, voiceID)
 	}); err != nil {
 		return refs, err
@@ -462,14 +457,14 @@ type SpeakerAudioRef struct {
 // they are - don't linger reachable (and wasting disk space) under their
 // old voice_id. Reads every matching row before deleting anything so the
 // caller has enough to remove the matching files, mirroring how
-// ListParagraphsRaw's callers always fully drain a result set before this
-// store's single DuckDB connection runs another query.
+// ListParagraphsRaw's callers always fully drain a result set before
+// running another query.
 //
 // name is compared with a plain equality, not ParagraphsForSpeaker's own
 // "Narrator"/"" folding - this is only ever called with a real character's
 // name (Narrator isn't a Character row and is never recharacterized), so
 // that special case doesn't apply here.
-func (s *DuckStore) DeleteParagraphAudioForSpeaker(bookIDs []string, name string) ([]SpeakerAudioRef, error) {
+func (s *SQLiteStore) DeleteParagraphAudioForSpeaker(bookIDs []string, name string) ([]SpeakerAudioRef, error) {
 	var out []SpeakerAudioRef
 	for _, bookID := range bookIDs {
 		rows, err := s.db.Query(`
@@ -520,7 +515,7 @@ func (s *DuckStore) DeleteParagraphAudioForSpeaker(bookIDs []string, name string
 // the audio whose generation text actually changed. Returns every deleted
 // row so the caller can remove the matching files (a pointer row has no
 // file of its own - removing its path is a harmless no-op).
-func (s *DuckStore) DeleteParagraphAudioForIdxs(bookID, chapterID string, idxs []int) ([]SpeakerAudioRef, error) {
+func (s *SQLiteStore) DeleteParagraphAudioForIdxs(bookID, chapterID string, idxs []int) ([]SpeakerAudioRef, error) {
 	if len(idxs) == 0 {
 		return nil, nil
 	}
@@ -599,7 +594,7 @@ func (s *DuckStore) DeleteParagraphAudioForIdxs(bookID, chapterID string, idxs [
 // under this exact voice - book-level or character-level, whichever
 // speaker it's attributed to - necessarily has this same voice_id, and
 // nothing generated under a different voice can collide with it.
-func (s *DuckStore) DeleteParagraphAudioByVoiceID(bookID, voiceID string) ([]SpeakerAudioRef, error) {
+func (s *SQLiteStore) DeleteParagraphAudioByVoiceID(bookID, voiceID string) ([]SpeakerAudioRef, error) {
 	rows, err := s.db.Query(`
 		SELECT c.book_id, p.chapter_id, pa.voice_id, p.idx
 		FROM paragraph_audio pa
@@ -651,19 +646,21 @@ type NarrationStats struct {
 // mixing another voice's generated seconds in would miscalibrate the
 // estimate for the one currently selected. overrides is ListChapterSummaries'
 // own SpeakerVoice mechanism, for the same per-character-voice reason.
-func (s *DuckStore) BookNarrationStats(bookID, voiceID string, overrides []SpeakerVoice) (NarrationStats, error) {
+func (s *SQLiteStore) BookNarrationStats(bookID, voiceID string, overrides []SpeakerVoice) (NarrationStats, error) {
 	var stats NarrationStats
 	var err error
 	if len(overrides) == 0 {
+		// One voice for the whole book: ready audio is summed straight off
+		// paragraph_audio's own chapter_id/chars (idx_paragraph_audio_chapter)
+		// without visiting each paragraph.
 		err = s.db.QueryRow(`
 			SELECT
-				COALESCE(SUM(LENGTH(p.content)), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
-			FROM paragraphs p
-			JOIN chapters c ON c.id = p.chapter_id
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = ?
-			WHERE c.book_id = ?`, voiceID, bookID).
+				(SELECT COALESCE(SUM(LENGTH(p.content)), 0) FROM chapters c JOIN paragraphs p ON p.chapter_id = c.id WHERE c.book_id = ?),
+				COALESCE(SUM(pa.chars), 0),
+				COALESCE(SUM(pa.duration_seconds), 0)
+			FROM chapters c
+			JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready'
+			WHERE c.book_id = ?`, bookID, voiceID, bookID).
 			Scan(&stats.TotalChars, &stats.ReadyChars, &stats.ReadySeconds)
 	} else {
 		valuesFragment, valuesArgs := speakerVoiceValues(overrides)

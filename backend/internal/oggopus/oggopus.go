@@ -2,7 +2,7 @@
 // every served narration, SFX and music clip is stored in (see
 // audiopath.WriteClip). Pure Go: the Opus encoder is
 // github.com/kazzmir/opus-go (libopus transpiled to Go), so cmd/server
-// still links nothing beyond DuckDB. The Ogg framing is done here rather
+// still links nothing native beyond SQLite. The Ogg framing is done here rather
 // than with that module's own writer, which puts every 20ms packet on its
 // own page (~11kbps of page headers - a third of a speech clip's bitrate);
 // its wav2oggopus command also isn't a model to follow, since it never

@@ -34,7 +34,7 @@ func TestTakeAndPrune(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"library-20260904T030000.duckdb", "library-20260905T030000.duckdb"}
+	want := []string{"library-20260904T030000.sqlite", "library-20260905T030000.sqlite"}
 	if !slices.Equal(names, want) {
 		t.Errorf("after prune: %v, want %v", names, want)
 	}

@@ -52,7 +52,7 @@ type CreatedImage struct {
 // and image placeholders in a single transaction. Returned images are in
 // the same order as the image blocks appeared across the input, so callers
 // can zip them back up with the original image bytes.
-func (s *DuckStore) CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error) {
+func (s *SQLiteStore) CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error) {
 	defaultVoice, err := s.GetDefaultVoice()
 	if err != nil {
 		return "", nil, fmt.Errorf("get default voice: %w", err)
@@ -129,9 +129,6 @@ func insertChapterBlocks(tx *notifyTx, chapterID string, blocks []BlockInput) (i
 			if emphasis == nil {
 				emphasis = []pronounce.Substitution{}
 			}
-			// .Value() explicitly - see SetParagraphDescriptions' own
-			// doc comment for why a bare PronunciationList can't be
-			// passed directly.
 			encodedEmphasis, err := PronunciationList(emphasis).Value()
 			if err != nil {
 				return nil, fmt.Errorf("encode emphasis: %w", err)
@@ -171,7 +168,7 @@ func insertChapterBlocks(tx *notifyTx, chapterID string, blocks []BlockInput) (i
 //
 // Returns the old image IDs/exts (for the caller to delete from disk) and
 // the newly created ones (for the caller to write).
-func (s *DuckStore) ReplaceChapterContent(chapterID, title string, blocks []BlockInput) (oldImages, newImages []CreatedImage, err error) {
+func (s *SQLiteStore) ReplaceChapterContent(chapterID, title string, blocks []BlockInput) (oldImages, newImages []CreatedImage, err error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, nil, err
@@ -291,7 +288,7 @@ func (s *DuckStore) ReplaceChapterContent(chapterID, title string, blocks []Bloc
 	return oldImages, newImages, nil
 }
 
-func (s *DuckStore) ListBooks() ([]Book, error) {
+func (s *SQLiteStore) ListBooks() ([]Book, error) {
 	rows, err := s.db.Query(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
 		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled,
 		pos_chapter_idx, pos_paragraph_idx, pos_seconds, estimate_sec_per_char
@@ -314,7 +311,7 @@ func (s *DuckStore) ListBooks() ([]Book, error) {
 	return out, rows.Err()
 }
 
-func (s *DuckStore) GetBook(id string) (*Book, error) {
+func (s *SQLiteStore) GetBook(id string) (*Book, error) {
 	var b Book
 	err := s.db.QueryRow(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
 		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled,
@@ -332,7 +329,7 @@ func (s *DuckStore) GetBook(id string) (*Book, error) {
 	return &b, nil
 }
 
-func (s *DuckStore) DeleteBook(id string) error {
+func (s *SQLiteStore) DeleteBook(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -381,7 +378,7 @@ func (s *DuckStore) DeleteBook(id string) error {
 // characterVoiceMode sets store.Book.CharacterVoiceMode - see its own doc
 // comment for the four possible values - independent of presetID/instruct/
 // language/seed, which remain the fallback voice regardless of mode.
-func (s *DuckStore) UpdateVoice(bookID, presetID, instruct, language string, seed int, cloneModel string, characterVoiceMode CharacterVoiceMode, speechDirection, musicEnabled bool) error {
+func (s *SQLiteStore) UpdateVoice(bookID, presetID, instruct, language string, seed int, cloneModel string, characterVoiceMode CharacterVoiceMode, speechDirection, musicEnabled bool) error {
 	_, err := s.db.Exec(
 		`UPDATE books SET voice_preset_id = ?, voice_instruct = ?, voice_language = ?, voice_seed = ?, clone_model = ?, character_voice_mode = ?, speech_direction = ?, music_enabled = ? WHERE id = ?`,
 		presetID, instruct, language, seed, cloneModel, characterVoiceMode, speechDirection, musicEnabled, bookID,
@@ -391,14 +388,14 @@ func (s *DuckStore) UpdateVoice(bookID, presetID, instruct, language string, see
 
 // SetLengthEstimate stores bookID's own PocketTTS-calibrated seconds-per-
 // character measurement - see Book.EstimateSecPerChar's own doc comment.
-func (s *DuckStore) SetLengthEstimate(bookID string, secPerChar float64) error {
+func (s *SQLiteStore) SetLengthEstimate(bookID string, secPerChar float64) error {
 	_, err := s.db.Exec(`UPDATE books SET estimate_sec_per_char = ? WHERE id = ?`, secPerChar, bookID)
 	return err
 }
 
 // UpdatePosition reports its write to OnChange as PositionTable rather than
 // "books" - see PositionTable.
-func (s *DuckStore) UpdatePosition(bookID string, chapterIdx, paragraphIdx int, seconds float64) error {
+func (s *SQLiteStore) UpdatePosition(bookID string, chapterIdx, paragraphIdx int, seconds float64) error {
 	_, err := s.db.execAs(PositionTable,
 		`UPDATE books SET pos_chapter_idx = ?, pos_paragraph_idx = ?, pos_seconds = ? WHERE id = ?`,
 		chapterIdx, paragraphIdx, seconds, bookID,
@@ -410,7 +407,7 @@ func (s *DuckStore) UpdatePosition(bookID string, chapterIdx, paragraphIdx int, 
 // series order - used to gather a recurring character's dialogue across a
 // whole series (see QuotesForBooks) and to keep attribution/voice casting
 // consistent throughout it.
-func (s *DuckStore) ListSeriesBooks(seriesName string) ([]Book, error) {
+func (s *SQLiteStore) ListSeriesBooks(seriesName string) ([]Book, error) {
 	rows, err := s.db.Query(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
 		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction,
 		pos_chapter_idx, pos_paragraph_idx, pos_seconds, estimate_sec_per_char

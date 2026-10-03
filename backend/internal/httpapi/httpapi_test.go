@@ -21,16 +21,16 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 )
 
-// newTestServer wires a full httpapi.Server against a temp DuckDB store, a
+// newTestServer wires a full httpapi.Server against a temp SQLite store, a
 // temp data directory, and a real jobs.Manager pointed at a fake ttsworker
 // (see ttsworkertest) instead of a real one - no GPU, no audio.cpp, no
 // network beyond loopback. Speaker is deliberately left nil, matching a
 // deployment with LECTABLE_SPEAKER_LLM_MODEL_PATH unset (see Server.Speaker's own
 // doc comment) - LLM-backed endpoints are expected to report 503 in this
 // configuration, exercised explicitly below rather than left untested.
-func newTestServer(t *testing.T) (*Server, *store.DuckStore, *ttsworkertest.Server, *httptest.Server) {
+func newTestServer(t *testing.T) (*Server, *store.SQLiteStore, *ttsworkertest.Server, *httptest.Server) {
 	t.Helper()
-	s, err := store.Open(filepath.Join(t.TempDir(), "library.duckdb"))
+	s, err := store.Open(filepath.Join(t.TempDir(), "library.sqlite"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -64,7 +64,7 @@ func newTestServer(t *testing.T) (*Server, *store.DuckStore, *ttsworkertest.Serv
 	return srv, s, fake, ts
 }
 
-func createTestBook(t *testing.T, s *store.DuckStore, seriesName string, seriesIndex float64, paragraphs ...string) string {
+func createTestBook(t *testing.T, s *store.SQLiteStore, seriesName string, seriesIndex float64, paragraphs ...string) string {
 	t.Helper()
 	blocks := make([]store.BlockInput, len(paragraphs))
 	for i, p := range paragraphs {

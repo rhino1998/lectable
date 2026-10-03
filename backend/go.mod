@@ -7,6 +7,7 @@ require (
 	github.com/duckdb/duckdb-go/v2 v2.10505.0
 	github.com/hashicorp/mdns v1.0.7
 	github.com/kazzmir/opus-go v1.6.0
+	github.com/mattn/go-sqlite3 v1.14.52
 	github.com/prometheus/client_golang v1.24.1
 	golang.org/x/net v0.59.0
 )

@@ -16,6 +16,8 @@ LLAMACPP_DIR="${LLAMACPP_DIR:-$HOME/llama.cpp-latest/build-live/bin}"
 # system's 6.4.4 on the library path, and reached via librocdxg under WSL.
 ROCM_DIR="${ROCM_DIR:-$HOME/rocm7-user/root/opt/rocm-7.2.4}"
 export CGO_LDFLAGS="-L${AUDIOCPP_DIR} -L${LLAMACPP_DIR}"
+# internal/store's search index needs SQLite's FTS5 compiled in.
+export GOFLAGS="-tags=sqlite_fts5 ${GOFLAGS:-}"
 export LD_LIBRARY_PATH="${LLAMACPP_DIR}:${AUDIOCPP_DIR}:${ROCM_DIR}/lib:${ROCM_DIR}/llvm/lib:${LD_LIBRARY_PATH:-}"
 export HSA_ENABLE_DXG_DETECTION=1
 # cmd/server puts this first on ttsworker's own LD_LIBRARY_PATH; left at its

@@ -5,18 +5,17 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 )
 
-// openTestStore opens a fresh DuckDB-backed Store in a per-test temp
-// directory - each test gets its own file (Store.Open's own single
-// sql.DB/sql.SetMaxOpenConns(1) makes a shared store across tests risky to
-// reason about), and t.Cleanup closes it so it never leaks a connection
+// openTestStore opens a fresh SQLite-backed Store in a per-test temp
+// directory - each test gets its own file, and t.Cleanup closes it so it never leaks a connection
 // past its own test.
-func openTestStore(t *testing.T) *DuckStore {
+func openTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "library.duckdb"))
+	s, err := Open(filepath.Join(t.TempDir(), "library.sqlite"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -24,7 +23,7 @@ func openTestStore(t *testing.T) *DuckStore {
 	return s
 }
 
-func oneChapterBook(t *testing.T, s *DuckStore, seriesName string, seriesIndex float64, paragraphs ...string) (bookID string, chapterID string) {
+func oneChapterBook(t *testing.T, s *SQLiteStore, seriesName string, seriesIndex float64, paragraphs ...string) (bookID string, chapterID string) {
 	t.Helper()
 	blocks := make([]BlockInput, len(paragraphs))
 	for i, p := range paragraphs {
@@ -1666,5 +1665,158 @@ func TestListChapterSummariesNumberedSpeakerVoices(t *testing.T) {
 	}
 	if len(books[bookID]) != 1 || books[bookID][0].ReadyCount != 3 {
 		t.Fatalf("batch form = %+v, want all 3 lines ready", books[bookID])
+	}
+}
+
+// Search goes through the trigram index for three or more characters and
+// a scan below that; both fold case beyond ASCII, take the query
+// literally, and follow edits and deletes.
+func TestSearchParagraphsIndex(t *testing.T) {
+	s := openTestStore(t)
+	bookID, chapterID := oneChapterBook(t, s, "", 0,
+		`She ordered an ÉCLAIR and a "flat white".`, "50% off, under_stood?", "Ünïcode ok.")
+	otherBook, _ := oneChapterBook(t, s, "", 0, "An éclair in another book.")
+
+	count := func(book, q string) int {
+		t.Helper()
+		got, err := s.SearchParagraphs(book, q, 10)
+		if err != nil {
+			t.Fatalf("SearchParagraphs(%q): %v", q, err)
+		}
+		return len(got)
+	}
+	for q, want := range map[string]int{
+		"éclair":       1, // folded, and scoped to its own book
+		"clai":         1, // substring
+		`"flat white"`: 1, // quotes are literal
+		"50%":          1,
+		"r_s":          1,
+		"r%s":          0,
+		"ÜN":           1, // short query: scan path, folded
+		"%":            1,
+		"AND OR":       0, // not FTS query syntax
+	} {
+		if got := count(bookID, q); got != want {
+			t.Errorf("search %q = %d matches, want %d", q, got, want)
+		}
+	}
+	if got := count(otherBook, "ÉCLAIR"); got != 1 {
+		t.Errorf("other book: %d matches, want 1", got)
+	}
+
+	if _, _, err := s.ReplaceChapterContent(chapterID, "One", []BlockInput{{Text: "Only tea now."}}); err != nil {
+		t.Fatalf("ReplaceChapterContent: %v", err)
+	}
+	if got := count(bookID, "éclair"); got != 0 {
+		t.Errorf("after replace: old text still matches (%d)", got)
+	}
+	if got := count(bookID, "only tea"); got != 1 {
+		t.Errorf("after replace: new text = %d matches, want 1", got)
+	}
+	if err := s.DeleteBook(otherBook); err != nil {
+		t.Fatalf("DeleteBook: %v", err)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM paragraphs_fts WHERE paragraphs_fts MATCH '"clair"'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("index after deletes: %d rows match, err %v", n, err)
+	}
+}
+
+// Reads use their own connections: one neither waits for an open write
+// transaction nor sees its uncommitted rows, and sees them once committed.
+func TestReadsDontWaitOnWrites(t *testing.T) {
+	s := openTestStore(t)
+	bookID, _ := oneChapterBook(t, s, "", 0, "One.")
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE books SET title = 'Changed' WHERE id = ?`, bookID); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan string, 1)
+	go func() {
+		b, err := s.GetBook(bookID)
+		if err != nil {
+			done <- err.Error()
+			return
+		}
+		done <- b.Title
+	}()
+	select {
+	case got := <-done:
+		if got != "Test Book" {
+			t.Fatalf("read during a write transaction = %q, want the committed title", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("read blocked behind an open write transaction")
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := s.GetBook(bookID); err != nil || b.Title != "Changed" {
+		t.Fatalf("read after commit = %+v, %v", b, err)
+	}
+}
+
+// paragraph_audio carries its paragraph's chapter and length, and a
+// deleted paragraph's audio rows go with it - what the single-voice
+// aggregates rely on.
+func TestParagraphAudioChapterCopy(t *testing.T) {
+	s := openTestStore(t)
+	bookID, chapterID := oneChapterBook(t, s, "", 0, "One.", "Two two.", "Three.")
+	paras, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const voice = "v1"
+	if err := s.SetParagraphReady(paras[0].ID, voice, 1.5); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetParagraphReadyPointer(paras[1].ID, voice, 1, 0.5, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetParagraphAudio(paras[2].ID, voice); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetParagraphReady("no-such-paragraph", voice, 9); err != nil {
+		t.Fatal(err)
+	}
+
+	var wrong int
+	if err := s.db.QueryRow(`SELECT count(*) FROM paragraph_audio pa JOIN paragraphs p ON p.id = pa.paragraph_id
+		WHERE pa.chapter_id <> p.chapter_id OR pa.chars <> length(p.content)`).Scan(&wrong); err != nil || wrong != 0 {
+		t.Fatalf("%d audio rows disagree with their paragraph (err %v)", wrong, err)
+	}
+	stats, err := s.BookNarrationStats(bookID, voice, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (NarrationStats{TotalChars: 18, ReadyChars: 12, ReadySeconds: 3.5}); stats != want {
+		t.Errorf("BookNarrationStats = %+v, want %+v", stats, want)
+	}
+	batch, err := s.BookNarrationStatsForBooks([]BookVoice{{BookID: bookID, VoiceID: voice}}, nil)
+	if err != nil || batch[bookID] != stats {
+		t.Errorf("BookNarrationStatsForBooks = %+v (err %v), want %+v", batch[bookID], err, stats)
+	}
+	sums, err := s.ListChapterSummaries(bookID, voice, nil)
+	if err != nil || len(sums) != 1 || sums[0].ParagraphCount != 3 || sums[0].ReadyCount != 2 {
+		t.Errorf("ListChapterSummaries = %+v (err %v), want 3 total, 2 ready", sums, err)
+	}
+	refs, err := s.AudioRefs()
+	if err != nil || len(refs.ChapterVoices) != 1 || !refs.ChapterVoices[chapterID][voice] {
+		t.Errorf("AudioRefs.ChapterVoices = %+v (err %v)", refs.ChapterVoices, err)
+	}
+
+	if err := s.DeleteBook(bookID); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := s.db.QueryRow(`SELECT count(*) FROM paragraph_audio WHERE paragraph_id <> 'no-such-paragraph'`).Scan(&left); err != nil || left != 0 {
+		t.Errorf("%d audio rows outlived their paragraphs (err %v)", left, err)
 	}
 }
