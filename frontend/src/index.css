@@ -1118,6 +1118,10 @@ label {
   flex: 1;
   min-width: 0;
 }
+.inline-voice-test select {
+  flex: none;
+  max-width: 14rem;
+}
 .inline-voice-test audio {
   height: 28px;
   max-width: 200px;

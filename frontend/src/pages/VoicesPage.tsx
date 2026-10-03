@@ -102,10 +102,20 @@ function RegenerateButton({
 // lighter-weight sibling of the full test box in the edit form below,
 // usable right from the list without opening anything first. Shared
 // between built-in and custom preset rows; only which mutation it calls
-// differs.
-function InlineVoiceTest({ onTest }: { onTest: (text: string) => Promise<Blob> }) {
+// differs. The clone model picked here is preview-only, like the edit
+// form's (a voice has none of its own) - each row starts at
+// defaultCloneModel, the one new books get.
+function InlineVoiceTest({
+  defaultCloneModel,
+  onTest,
+}: {
+  defaultCloneModel: string
+  onTest: (text: string, cloneModel: string) => Promise<Blob>
+}) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState(DEFAULT_REF_TEXT)
+  const [pickedCloneModel, setPickedCloneModel] = useState<string | null>(null)
+  const cloneModel = pickedCloneModel ?? defaultCloneModel
   const [audioUrl, setAudioUrl] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
@@ -132,7 +142,7 @@ function InlineVoiceTest({ onTest }: { onTest: (text: string) => Promise<Blob> }
     setError(null)
     setPending(true)
     try {
-      setAudioUrl(await onTest(text).then(URL.createObjectURL))
+      setAudioUrl(await onTest(text, cloneModel).then(URL.createObjectURL))
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not synthesize test text')
     } finally {
@@ -148,6 +158,18 @@ function InlineVoiceTest({ onTest }: { onTest: (text: string) => Promise<Blob> }
         placeholder="Type text to test..."
         onKeyDown={(e) => e.key === 'Enter' && text.trim() && !pending && run()}
       />
+      <select
+        value={cloneModel}
+        onChange={(e) => setPickedCloneModel(e.target.value)}
+        title="Cloning model for this test"
+        aria-label="Cloning model for this test"
+      >
+        {CLONE_MODELS.map((m) => (
+          <option key={m.id} value={m.id}>
+            {m.label}
+          </option>
+        ))}
+      </select>
       <button
         className="icon-action-button"
         onClick={run}
@@ -184,6 +206,7 @@ export function VoicesPage() {
   const builtins = builtinsQuery.data?.presets ?? []
   const presets = presetsQuery.data ?? []
   const defaultPresetId = defaultVoiceQuery.data?.presetId
+  const defaultCloneModel = defaultVoiceQuery.data?.cloneModel ?? DEFAULT_CLONE_MODEL
 
   // Bumped per preset id on a successful Regenerate so its <audio> element
   // re-fetches instead of showing/playing the pre-regenerate clip - see
@@ -224,8 +247,7 @@ export function VoicesPage() {
   // through. Not part of the voice (it has none); starts at the default
   // clone model new books get.
   const [previewCloneModel, setPreviewCloneModel] = useState<string | null>(null)
-  const effectivePreviewCloneModel =
-    previewCloneModel ?? defaultVoiceQuery.data?.cloneModel ?? DEFAULT_CLONE_MODEL
+  const effectivePreviewCloneModel = previewCloneModel ?? defaultCloneModel
   // Which VoiceDesign engine renders the reference clip - always reset to
   // DEFAULT_DESIGN_MODEL for a brand-new voice (openNew) or one derived
   // from an existing preset (openDerive), regardless of what that source
@@ -435,7 +457,10 @@ export function VoicesPage() {
       >
         <RiDeleteBinLine />
       </button>
-      <InlineVoiceTest onTest={(text) => testPreset.mutateAsync({ id: p.id, text })} />
+      <InlineVoiceTest
+        defaultCloneModel={defaultCloneModel}
+        onTest={(text, cloneModel) => testPreset.mutateAsync({ id: p.id, text, cloneModel })}
+      />
     </li>
   )
 
@@ -467,7 +492,7 @@ export function VoicesPage() {
           <label>
             Default cloning model for new books
             <select
-              value={defaultVoiceQuery.data?.cloneModel ?? DEFAULT_CLONE_MODEL}
+              value={defaultCloneModel}
               onChange={(e) => updateDefaults({ cloneModel: e.target.value })}
               disabled={!defaultVoiceQuery.data || updateDefaultVoice.isPending}
             >
@@ -481,7 +506,7 @@ export function VoicesPage() {
           <p className="muted">
             Each book picks its own cloning model in its voice settings. This only sets what a newly
             added book starts with. Voices don't have a cloning model of their own, and previews
-            here use this default.
+            here start on this default.
           </p>
 
           <h2>Built-in</h2>
@@ -534,7 +559,10 @@ export function VoicesPage() {
                   onRegenerated={() => bumpAudioVersion(p.id)}
                 />
                 <InlineVoiceTest
-                  onTest={(text) => testBuiltinPreset.mutateAsync({ id: p.id, text })}
+                  defaultCloneModel={defaultCloneModel}
+                  onTest={(text, cloneModel) =>
+                    testBuiltinPreset.mutateAsync({ id: p.id, text, cloneModel })
+                  }
                 />
               </li>
             ))}
