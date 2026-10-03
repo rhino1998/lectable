@@ -59,6 +59,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.text.InlineTextContent
@@ -86,7 +87,8 @@ internal fun ParagraphRow(
     onWordTap: (paragraphIdx: Int, startSeconds: Double) -> Unit,
     onRegenerate: () -> Unit,
     onToggleBookmark: () -> Unit,
-    onOpenSpeakerPicker: () -> Unit,
+    // Only ever isQuote segments - see SpeakerPickerTarget's doc comment.
+    onOpenSpeakerPicker: (paragraphIndices: List<Int>, currentSpeaker: String) -> Unit,
     // fromName "" = tag plain narration as describing someone ("Mark as description").
     onOpenDescriptionPicker: (fromName: String, paragraphIndices: List<Int>) -> Unit,
     onToggleScareQuote: (paragraphIndices: List<Int>, scareQuote: Boolean) -> Unit,
@@ -145,11 +147,21 @@ internal fun ParagraphRow(
     // not yet describing anyone (a quoted line can't describe - the backend rejects it).
     val undescribedNarration = remember(segments) { segments.filter { !it.isQuote && it.describesCharacters.isEmpty() }.map { it.idx } }
     val hasQuoteSegment = quoteSegments.isNotEmpty()
-    // Toggle target for "Mark/unmark as scare quote" - true only when every one of this block's
-    // own quote segments is already marked, mirroring how [speakers]' own "current" value is
-    // read off the block as a whole rather than per-segment; toggling always sets every quote
-    // segment to the same, opposite value (see ReaderViewModel.setScareQuote).
-    val allScareQuote = remember(quoteSegments) { quoteSegments.isNotEmpty() && quoteSegments.all { it.scareQuote } }
+    // The segment the menu's long press landed on (ParagraphDto.idx), or null when it missed the
+    // text's layout.
+    var pressedIdx by remember { mutableStateOf<Int?>(null) }
+    // What "Set speaker", "Mark/unmark as scare quote" and "Set emotion" act on: the quote that
+    // was long-pressed, so a block with several quotes (two speakers, or real dialogue beside a
+    // scare quote) can have each set on its own (the web reader's right-click menu is per quote
+    // too) - or, when the press landed on narration, every quote in the block.
+    val pressedQuote = quoteSegments.firstOrNull { it.idx == pressedIdx }
+    val quoteTargets = pressedQuote?.let(::listOf) ?: quoteSegments
+    // Shown under each of those items when the block has other quotes the action leaves alone.
+    val namedQuote = pressedQuote?.takeIf { quoteSegments.size > 1 }
+    val forAll = if (quoteSegments.size > 1 && pressedQuote == null) " for all" else ""
+    // The toggle's current value - true only when every target is already marked; toggling sets
+    // them all to the opposite (see ReaderViewModel.setScareQuote).
+    val allScareQuote = quoteTargets.isNotEmpty() && quoteTargets.all { it.scareQuote }
     // Whether to show the informational "Scare quote" row (any, not all - unlike allScareQuote,
     // which is the toggle's own target) - mirrors frontend's annotationTitle appending "· Scare
     // quote" to the hover tooltip.
@@ -157,8 +169,8 @@ internal fun ParagraphRow(
     // "Set emotion" targets - only real dialogue carries an emotion (backend
     // store.Paragraph.EffectiveEmotion), so a scare quote is left out. [currentEmotion] is the
     // first dialogue segment's ("" = neutral), checked in the emotion menu.
-    val emotionSegments = remember(quoteSegments) { quoteSegments.filter { !it.scareQuote } }
-    val currentEmotion = remember(emotionSegments) { emotionSegments.firstOrNull()?.emotion.orEmpty() }
+    val emotionSegments = quoteTargets.filter { !it.scareQuote }
+    val currentEmotion = emotionSegments.firstOrNull()?.emotion.orEmpty()
     var showEmotionMenu by remember { mutableStateOf(false) }
 
     Column(
@@ -181,7 +193,7 @@ internal fun ParagraphRow(
                 fontFamily = fontFamily,
                 annotationsMode = annotationsMode,
                 onWordTap = onWordTap,
-                onLongPress = { showMenu = true },
+                onLongPress = { paragraphIdx -> pressedIdx = paragraphIdx; showMenu = true },
                 onActiveLine = onActiveLine,
             )
             DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
@@ -253,18 +265,25 @@ internal fun ParagraphRow(
                 }
                 if (hasQuoteSegment) {
                     DropdownMenuItem(
-                        text = { Text("Set speaker") },
+                        text = { QuoteActionLabel("Set speaker$forAll", namedQuote) },
                         leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
-                        onClick = { onOpenSpeakerPicker(); showMenu = false },
+                        onClick = {
+                            val current = quoteTargets.mapNotNull { it.speaker }.firstOrNull { it.isNotEmpty() } ?: "Narrator"
+                            onOpenSpeakerPicker(quoteTargets.map { it.idx }, current)
+                            showMenu = false
+                        },
                     )
                     DropdownMenuItem(
-                        text = { Text(if (allScareQuote) "Unmark as scare quote" else "Mark as scare quote") },
+                        text = {
+                            val verb = if (allScareQuote) "Unmark" else "Mark"
+                            QuoteActionLabel(if (forAll.isEmpty()) "$verb as scare quote" else "$verb all as scare quotes", namedQuote)
+                        },
                         leadingIcon = { Icon(Icons.Filled.FormatQuote, contentDescription = null) },
-                        onClick = { onToggleScareQuote(quoteSegments.map { it.idx }, !allScareQuote); showMenu = false },
+                        onClick = { onToggleScareQuote(quoteTargets.map { it.idx }, !allScareQuote); showMenu = false },
                     )
                     if (emotionSegments.isNotEmpty()) {
                         DropdownMenuItem(
-                            text = { Text("Set emotion") },
+                            text = { QuoteActionLabel("Set emotion$forAll", namedQuote) },
                             leadingIcon = { Icon(Icons.Filled.Mood, contentDescription = null) },
                             onClick = { showMenu = false; showEmotionMenu = true },
                         )
@@ -315,6 +334,26 @@ internal fun ParagraphRow(
                 )
             }
         }
+    }
+}
+
+/** A long-press menu item acting on quotes: [label], with [quote]'s text beneath it when the
+ *  action is for that one quote out of several in the block (see ParagraphRow's namedQuote). */
+@Composable
+private fun QuoteActionLabel(label: String, quote: ParagraphDto?) {
+    if (quote == null) {
+        Text(label)
+        return
+    }
+    Column {
+        Text(label)
+        Text(
+            quote.text,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -373,7 +412,8 @@ internal fun ParagraphBodyText(
     fontFamily: FontFamily,
     annotationsMode: Boolean,
     onWordTap: (paragraphIdx: Int, seconds: Double) -> Unit,
-    onLongPress: () -> Unit,
+    // The segment under the press (ParagraphDto.idx), or null before the text is laid out.
+    onLongPress: (paragraphIdx: Int?) -> Unit,
     // Where the line holding the active word sits, as a fraction of this text's height -
     // reported each time the word moves to another line, so auto-follow can track the line
     // rather than the whole block when the block is too tall to centre (see centerItem).
@@ -516,7 +556,10 @@ internal fun ParagraphBodyText(
             .fillMaxWidth()
             .pointerInput(combinedText, spans) {
                 detectTapGestures(
-                    onLongPress = { onLongPress() },
+                    onLongPress = { offset ->
+                        val charIndex = textLayoutResult?.getOffsetForPosition(offset)
+                        onLongPress(charIndex?.let { c -> spans.lastOrNull { it.textOffset <= c }?.paragraphIdx })
+                    },
                     onTap = { offset ->
                         val layout = textLayoutResult ?: return@detectTapGestures
                         val charIndex = layout.getOffsetForPosition(offset)

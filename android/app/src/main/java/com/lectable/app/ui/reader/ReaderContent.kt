@@ -268,12 +268,8 @@ internal fun InfiniteChapterContent(
                         onRegenerate = { entry.segments.forEach { onRegenerateParagraph(entry.chapterIdx, it.idx) } },
                         onToggleBookmark = { onToggleBookmark(entry.chapterIdx, firstIdx) },
                         onActiveLine = { fraction -> activeLine = Triple(entry.chapterIdx, firstIdx, fraction) },
-                        // Only this block's own isQuote segment(s) - see SpeakerPickerTarget's doc
-                        // comment for why narration/description segments are excluded.
-                        onOpenSpeakerPicker = {
-                            val quoteSegments = entry.segments.filter { it.isQuote }
-                            val current = quoteSegments.mapNotNull { it.speaker }.firstOrNull { it.isNotEmpty() } ?: "Narrator"
-                            onOpenSpeakerPicker(entry.chapterIdx, quoteSegments.map { it.idx }, current)
+                        onOpenSpeakerPicker = { paragraphIndices, currentSpeaker ->
+                            onOpenSpeakerPicker(entry.chapterIdx, paragraphIndices, currentSpeaker)
                         },
                         onOpenDescriptionPicker = { fromName, paragraphIndices ->
                             onOpenDescriptionPicker(entry.chapterIdx, paragraphIndices, fromName)

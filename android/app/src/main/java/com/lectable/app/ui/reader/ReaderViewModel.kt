@@ -746,9 +746,9 @@ class ReaderViewModel @Inject constructor(
 
     /** The long-press "Mark/unmark as scare quote" action - a reader's own live correction to
      *  the automatic scare-quote pass, mirroring the web reader's own annotations-view context
-     *  menu toggle. [paragraphIndices] is this block's own isQuote segments (see
-     *  [setParagraphSpeaker]'s own doc comment - same gating, since only quoted dialogue can be
-     *  marked a scare quote). Unlike [setParagraphSpeaker], the backend call itself immediately
+     *  menu toggle. [paragraphIndices] is the long-pressed isQuote segment, or all of this
+     *  block's when the press landed on narration (see [setParagraphSpeaker]'s own doc comment - same gating,
+     *  since only quoted dialogue can be marked a scare quote). Unlike [setParagraphSpeaker], the backend call itself immediately
      *  invalidates each paragraph's own already-generated audio - a live correction, not a
      *  passive attribute edit - and the reset-to-pending status arrives on the chapter's live
      *  topic, same as [regenerateParagraph]. */
@@ -764,7 +764,8 @@ class ReaderViewModel @Inject constructor(
 
     /** The long-press "Set emotion" action - a reader's manual override of the emotion pass,
      *  mirroring the web reader's annotations-view context menu. [paragraphIndices] is this
-     *  block's own real-dialogue segments (isQuote and not a scare quote); [emotion] is a
+     *  block's targeted real-dialogue segments (isQuote and not a scare quote - the long-pressed
+     *  one, or all of them); [emotion] is a
      *  backend internal/emotions id, or "" for neutral. The backend regenerates each line whose
      *  effective emotion changed, and the new status arrives on the chapter's live topic. */
     fun setEmotion(chapterIdx: Int, paragraphIndices: List<Int>, emotion: String) {

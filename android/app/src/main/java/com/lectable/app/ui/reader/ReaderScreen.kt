@@ -640,8 +640,9 @@ fun ReaderScreen(
  *  one of its paragraphs, tagged with which chapter it belongs to since several chapters can be
  *  mounted (and rendered as one continuous flow) at once. */
 /** What the long-press "Set speaker" action (see ParagraphRow) is currently targeting -
- *  [paragraphIndices] is one displayed block's own isQuote segment idx's only (see
- *  ReaderListEntry.ParagraphItem/groupContent's Inline grouping) since the backend rejects
+ *  [paragraphIndices] is the long-pressed quote, or every isQuote segment of the displayed block
+ *  when the press landed on narration (see ReaderListEntry.ParagraphItem/groupContent's Inline
+ *  grouping) - isQuote segments only, since the backend rejects
  *  attributing narration/description to a character; [currentSpeaker] seeds the picker sheet's
  *  selection so it can show what this block is already attributed to. */
 internal data class SpeakerPickerTarget(

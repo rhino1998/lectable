@@ -449,7 +449,15 @@ compiled-in default in place if nothing answers in time.
   reader - only shown when the block has at least one `isQuote` segment
   (the backend 400s on attributing narration to a character). Metadata-only,
   same as the web action - doesn't touch already-cached audio, so hearing
-  the new voice still needs a follow-up regenerate.
+  the new voice still needs a follow-up regenerate. The same menu marks
+  scare quotes (`ReaderViewModel.setScareQuote` -> `PUT
+  .../paragraphs/{pidx}/scare-quote`, which regenerates the block): "Set
+  speaker", the scare-quote toggle and "Set emotion" all act on the quote
+  that was long-pressed (`ParagraphBodyText` reports the segment under the
+  press; each item names the quote when the block has others), so a block
+  with two speakers, or real dialogue beside a scare quote, can have each
+  set right - or on every quote in the block when the press landed on
+  narration ("Set speaker for all", "Mark/Unmark all as scare quotes").
 - **Emotions, pause tags and pronunciation fixes all display; emotions
   can also be set here.** `ParagraphDto.emotion` is a dialogue line's
   emotion (backend `internal/emotions` id, null for neutral), shown as an
