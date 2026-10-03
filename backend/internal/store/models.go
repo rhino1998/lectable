@@ -413,7 +413,8 @@ type Lighting struct {
 	// Color is the base color, "#rrggbb".
 	Color string `json:"color"`
 	// Accent is a second "#rrggbb" color the effect moves toward (a
-	// shimmer's other color, a lightning flash's tint) - "" for none.
+	// shimmer's other color, a lightning flash's tint, a siren's second
+	// color) - "" for none.
 	Accent string `json:"accent,omitempty"`
 	// Brightness is 1-100, a fraction of the client's own brightness cap
 	// rather than an absolute level.
@@ -449,7 +450,7 @@ const (
 	// firelight, candles, torches.
 	LightEffectFlicker LightEffect = "flicker"
 	// LightEffectPulse breathes slowly up and down - dread, a heartbeat,
-	// magic, an alarm's glow.
+	// magic.
 	LightEffectPulse LightEffect = "pulse"
 	// LightEffectLightning holds the base with occasional brief flashes of
 	// the accent - a thunderstorm.
@@ -457,10 +458,14 @@ const (
 	// LightEffectShimmer drifts slowly between Color and Accent - water,
 	// aurora, moonlight through leaves.
 	LightEffectShimmer LightEffect = "shimmer"
+	// LightEffectFlash blinks on a 2s cycle - a siren or alarm: between
+	// Color and Accent (police red and blue), or with no Accent between
+	// Color and near dark.
+	LightEffectFlash LightEffect = "flash"
 )
 
 // LightEffects lists every LightEffect, in display order.
-var LightEffects = []LightEffect{LightEffectSteady, LightEffectFlicker, LightEffectPulse, LightEffectLightning, LightEffectShimmer}
+var LightEffects = []LightEffect{LightEffectSteady, LightEffectFlicker, LightEffectPulse, LightEffectLightning, LightEffectShimmer, LightEffectFlash}
 
 type ChapterSummary struct {
 	Chapter

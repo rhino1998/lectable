@@ -462,6 +462,7 @@ private fun lightEffectLabel(effect: String): String = when (effect) {
     LightEffects.PULSE -> "pulsing"
     LightEffects.LIGHTNING -> "lightning"
     LightEffects.SHIMMER -> "shimmering"
+    LightEffects.FLASH -> "flashing"
     else -> "steady"
 }
 

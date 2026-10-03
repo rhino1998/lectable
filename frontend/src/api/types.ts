@@ -32,6 +32,7 @@ export const LIGHT_EFFECT_LABELS: Record<LightEffect, string> = {
   pulse: 'pulsing',
   lightning: 'lightning',
   shimmer: 'shimmering',
+  flash: 'flashing',
 }
 
 export const SFX_ENGINE_LABELS: Record<SFXEngine, string> = {

@@ -66,7 +66,7 @@ export type JobTier = (typeof JOB_TIERS)[number]
  * themselves (see frontend/src/lighting and android's playback/lighting) -
  * the backend never talks to a light.
  */
-export const LIGHT_EFFECTS = ['steady', 'flicker', 'pulse', 'lightning', 'shimmer'] as const
+export const LIGHT_EFFECTS = ['steady', 'flicker', 'pulse', 'lightning', 'shimmer', 'flash'] as const
 export type LightEffect = (typeof LIGHT_EFFECTS)[number]
 
 /**
@@ -934,7 +934,8 @@ export interface Lighting {
   color: string
   /**
    * Accent is a second "#rrggbb" color the effect moves toward (a
-   * shimmer's other color, a lightning flash's tint) - "" for none.
+   * shimmer's other color, a lightning flash's tint, a siren's second
+   * color) - "" for none.
    */
   accent?: string
   /**

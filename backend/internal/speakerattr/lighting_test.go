@@ -10,6 +10,7 @@ func TestParseLighting(t *testing.T) {
 		name        string
 		in          string
 		flameInText bool
+		alarmInText bool
 		want        Lighting
 		wantErr     bool
 	}{
@@ -64,11 +65,27 @@ func TestParseLighting(t *testing.T) {
 			in:   `{"light": "water", "color": "#2266aa", "brightness": 0, "effect": "shimmer"}`,
 			want: Lighting{Description: "water", Color: "#3399ff", Brightness: 1, Effect: "steady"},
 		},
+		{
+			name: "flash for a siren keeps both colors",
+			in:   `{"light": "police lights flashing through the blinds", "color": "#ff2020", "accent": "#2040ff", "brightness": 45, "effect": "flash"}`,
+			want: Lighting{Description: "police lights flashing through the blinds", Color: "#ff2020", Accent: "#2040ff", Brightness: 45, Effect: "flash"},
+		},
+		{
+			name:        "flash kept when the text names an alarm; a same-color accent is dropped",
+			in:          `{"light": "red corridor lights", "color": "#ff2020", "accent": "#ff2020", "brightness": 40, "effect": "flash"}`,
+			alarmInText: true,
+			want:        Lighting{Description: "red corridor lights", Color: "#ff2020", Brightness: 40, Effect: "flash"},
+		},
+		{
+			name: "flash without a siren or alarm is steady",
+			in:   `{"light": "tense red glow in the vault", "color": "#ff2020", "brightness": 40, "effect": "flash"}`,
+			want: Lighting{Description: "tense red glow in the vault", Color: "#ff2020", Brightness: 40, Effect: "steady"},
+		},
 		{name: "bad color", in: `{"color": "orange", "brightness": 20, "effect": "steady"}`, wantErr: true},
 		{name: "no json", in: `sorry`, wantErr: true},
 	}
 	for _, tc := range cases {
-		got, err := parseLighting(tc.in, tc.flameInText)
+		got, err := parseLighting(tc.in, tc.flameInText, tc.alarmInText)
 		if (err != nil) != tc.wantErr {
 			t.Fatalf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
 		}

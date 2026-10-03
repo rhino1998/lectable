@@ -63,7 +63,8 @@ Brightness is 1-100 and must stay comfortable to sit in: bright daylight 60-85, 
 
 Effect - how the light moves. Use "steady" unless the scene clearly has one of these:
 - "flicker": only when the light comes from flames - fire, candles, torches, lanterns. Never for electric light, screens, weather or tension.
-- "pulse": a slow rhythmic throb - an alarm light, a pulsing magical glow, a heartbeat of dread. Use sparingly.
+- "pulse": a slow rhythmic throb - a pulsing magical glow, a heartbeat of dread. Use sparingly.
+- "flash": a siren or alarm is going right now and its lights are flashing - emergency vehicles, a klaxon with warning beacons, a ship at red alert. The color is the flashing light itself; the accent is its second color (police red and blue), or empty for one color blinking. Never for tension or danger alone.
 - "lightning": a thunderstorm is actually happening right now. The accent is the flash color.
 - "shimmer": slow drifting between two colors - light through water, an aurora, dappled moonlight through leaves, shifting magic. The accent is the second color.
 
@@ -71,7 +72,7 @@ Never mention plot events or character names.
 
 Reply with a compact JSON object on a single line only, no other text, no markdown code fence:
 
-{"light": "<at most 12 words describing the light in the scene, e.g. dim flickering candlelight in a stone cellar>", "color": "#rrggbb", "accent": "#rrggbb or empty", "brightness": <integer 1-100>, "effect": "steady" | "flicker" | "pulse" | "lightning" | "shimmer"}`
+{"light": "<at most 12 words describing the light in the scene, e.g. dim flickering candlelight in a stone cellar>", "color": "#rrggbb", "accent": "#rrggbb or empty", "brightness": <integer 1-100>, "effect": "steady" | "flicker" | "pulse" | "flash" | "lightning" | "shimmer"}`
 
 // Lighting is one region's lighting cue - store.Lighting's own shape, kept
 // as a plain value here rather than importing store (see ParagraphInput).
@@ -85,7 +86,7 @@ type Lighting struct {
 
 // LightingEffects are the effect names the lighting sub-pass may return -
 // store.LightEffects' values; anything else parses as "steady".
-var LightingEffects = []string{"steady", "flicker", "pulse", "lightning", "shimmer"}
+var LightingEffects = []string{"steady", "flicker", "pulse", "lightning", "shimmer", "flash"}
 
 // LightingInput is one lighting call's context.
 type LightingInput struct {
@@ -216,8 +217,9 @@ func (c *Client) DescribeLighting(ctx context.Context, bookTitle, chapterTitle s
 		text.WriteString(" ")
 	}
 	flameInText := flameSourceWords.MatchString(text.String())
+	alarmInText := alarmSourceWords.MatchString(text.String())
 	return generateAndParse(ctx, c, lightingSystemPrompt, user.String(), 0, lightingMaxTokens, func(content string) (Lighting, error) {
-		return parseLighting(content, flameInText)
+		return parseLighting(content, flameInText, alarmInText)
 	})
 }
 
@@ -226,8 +228,9 @@ func (c *Client) DescribeLighting(ctx context.Context, bookTitle, chapterTitle s
 // missing one), everything else is clamped or defaulted. flameInText
 // reports that the region's own text names a flame light source (see
 // flameSourceWords), which lets a flicker stand even when the model's
-// description forgot to mention the lantern.
-func parseLighting(content string, flameInText bool) (Lighting, error) {
+// description forgot to mention the lantern; alarmInText does the same for
+// a flash (see alarmSourceWords).
+func parseLighting(content string, flameInText, alarmInText bool) (Lighting, error) {
 	value, found := firstJSONValue(content, '{')
 	if !found {
 		return Lighting{}, fmt.Errorf("no JSON object found in response: %s", truncate(content, 200))
@@ -270,6 +273,13 @@ func parseLighting(content string, flameInText bool) (Lighting, error) {
 	if l.Effect == "flicker" {
 		l.Accent = ""
 	}
+	// Flash is the one effect that's hard to sit through, so like flicker it
+	// has to be earned: a siren or alarm in the description or in the text
+	// itself. Anything else (the model reaching for it to mark danger) is
+	// steady.
+	if l.Effect == "flash" && !alarmWords.MatchString(l.Description) && !alarmInText {
+		l.Effect = "steady"
+	}
 	l.Color, l.Brightness = normalizeCueColor(l.Color, l.Brightness, l.Description)
 	if l.Accent != "" {
 		l.Accent, _ = normalizeCueColor(l.Accent, 0, l.Description)
@@ -285,6 +295,11 @@ func parseLighting(content string, flameInText bool) (Lighting, error) {
 			l.Effect = "steady"
 			l.Accent = ""
 		}
+	case "flash":
+		// One color: clients blink it against near dark instead.
+		if l.Accent == l.Color {
+			l.Accent = ""
+		}
 	}
 	return l, nil
 }
@@ -293,6 +308,14 @@ func parseLighting(content string, flameInText bool) (Lighting, error) {
 // narrower than flameWords, since story text says "fire" and "flames" for
 // spells and gunfire far more often than for a light.
 var flameSourceWords = regexp.MustCompile(`(?i)\b(candles?|candlelight|candlelit|lanterns?|torch(es)?|torchlight|hearth|campfire|fireplace|braziers?|oil lamps?)\b`)
+
+// alarmSourceWords spots a siren or alarm in a region's own text - narrower
+// than alarmWords, since story text says "alarm" for a feeling ("she looked
+// up in alarm") far more often than for a device.
+var alarmSourceWords = regexp.MustCompile(`(?i)\b(sirens?|klaxons?|alarms|alarm (bells?|lights?|systems?|went|blared|sounded|rang|wailed|shrieked)|red alert|strobes?|strobing|(flashing|emergency|warning|police) lights?)\b`)
+
+// alarmWords spots a siren or alarm in a cue's description.
+var alarmWords = regexp.MustCompile(`(?i)\b(sirens?|klaxons?|alarms?|alert|strobes?|strobing|beacons?|flashing|emergency|police)\b`)
 
 // flameWords spots a flame light source in a cue's description - candles,
 // lanterns and the like read as steady too, but should still be orange.

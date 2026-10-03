@@ -189,7 +189,8 @@ object LightEffects {
     const val PULSE: LightEffect = "pulse"
     const val LIGHTNING: LightEffect = "lightning"
     const val SHIMMER: LightEffect = "shimmer"
-    val VALUES: List<LightEffect> = listOf(STEADY, FLICKER, PULSE, LIGHTNING, SHIMMER)
+    const val FLASH: LightEffect = "flash"
+    val VALUES: List<LightEffect> = listOf(STEADY, FLICKER, PULSE, LIGHTNING, SHIMMER, FLASH)
 }
 
 /**
@@ -1212,7 +1213,8 @@ data class LightingDto(
     val color: String = "",
     /**
      * Accent is a second "#rrggbb" color the effect moves toward (a
-     * shimmer's other color, a lightning flash's tint) - "" for none.
+     * shimmer's other color, a lightning flash's tint, a siren's second
+     * color) - "" for none.
      */
     val accent: String? = null,
     /**

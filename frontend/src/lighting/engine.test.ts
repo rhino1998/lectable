@@ -81,6 +81,59 @@ describe('LightingEngine', () => {
     await engine.stop(false)
   })
 
+  it('flashes each light on a 2s cycle, neighbours on opposite colours', async () => {
+    const { bridge, calls } = fakeBridge()
+    const pair: HueLight[] = [lights[0], { ...lights[0], id: '3' }, lights[1]]
+    const engine = new LightingEngine(bridge, 'g', pair, 1)
+    engine.start()
+    engine.setCue(cue({ effect: 'flash', color: '#ff0000', accent: '#0000ff' }), 'cut')
+    engine.setPlaying(true)
+    await vi.advanceTimersByTimeAsync(3000)
+    calls.length = 0
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(calls.every((c) => c.kind === 'light')).toBe(true)
+    for (const id of ['1', '3', '2']) {
+      const mine = calls.filter((c) => c.id === id)
+      expect(mine.length).toBeGreaterThanOrEqual(5)
+      expect(mine.length).toBeLessThanOrEqual(7)
+      for (let i = 1; i < mine.length; i++) {
+        expect(mine[i].at - mine[i - 1].at).toBe(1000)
+        // Colour bulbs swap colour at full level; a white one blinks.
+        if (id === '2') expect(mine[i].state.bri).not.toBe(mine[i - 1].state.bri)
+        else {
+          expect(mine[i].state.xy).not.toEqual(mine[i - 1].state.xy)
+          expect(mine[i].state.bri).toBe(254)
+        }
+      }
+    }
+    // Neighbouring colour bulbs are never on the same colour.
+    const a = calls.filter((c) => c.id === '1')
+    const b = calls.filter((c) => c.id === '3')
+    const partner = b.find((c) => c.at > a[1].at && c.at - a[1].at < 500)
+    expect(partner).toBeDefined()
+    expect(partner?.state.xy).not.toEqual(a[1].state.xy)
+    await engine.stop(false)
+  })
+
+  it('flashes a big room as one group command per half cycle', async () => {
+    const { bridge, calls } = fakeBridge()
+    const many = Array.from({ length: 9 }, (_, i) => ({ ...lights[0], id: String(i + 1) }))
+    const engine = new LightingEngine(bridge, 'g', many, 1)
+    engine.start()
+    engine.setCue(cue({ effect: 'flash' }), 'cut')
+    engine.setPlaying(true)
+    await vi.advanceTimersByTimeAsync(3000)
+    calls.length = 0
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(calls.every((c) => c.kind === 'group')).toBe(true)
+    expect(calls.length).toBeGreaterThanOrEqual(3)
+    for (let i = 1; i < calls.length; i++) {
+      expect(calls[i].at - calls[i - 1].at).toBeGreaterThanOrEqual(1000)
+      expect(calls[i].state.bri).not.toBe(calls[i - 1].state.bri)
+    }
+    await engine.stop(false)
+  })
+
   it("restores the snapshot it took at start, in the light's own colour mode", async () => {
     const { bridge, calls } = fakeBridge()
     const engine = new LightingEngine(bridge, 'g', lights, 1)

@@ -12,7 +12,9 @@
 //     fading over the time until that light's next update, so every light
 //     moves smoothly and the whole room stays within the budget;
 //   - lightning flashes are a pair of group commands (flash, then back),
-//     rare enough to fit the group budget.
+//     rare enough to fit the group budget;
+//   - flash (a siren or alarm) flips each light once per half cycle, one
+//     light per tick - see FLASH_PERIOD_MS.
 // Effects run only while narration plays; paused, the room holds the cue.
 
 import type { LightEffect, Lighting } from '../api/types'
@@ -42,6 +44,19 @@ const FLICKER_DEPTH = 0.4
 const FLICKER_COLOR_SHIFT = 0.4
 const FLICKER_EASE = 0.8
 const FLICKER_MIN_DS = 3
+// Flash is a siren or alarm beacon: every light flips once per half cycle,
+// between the cue's color and its accent (neighbouring lights opposite, like
+// a police lightbar) or, with no accent, between full and FLASH_DIM of the
+// cue's brightness, all together. A 2s cycle is about as fast as the bridge
+// goes: each flip is a command per light, so a room of up to
+// FLASH_MAX_LIGHTS fits the one-light-per-tick budget (the flips ripple
+// across the room, 125ms apart); a bigger room flips as one group command
+// per half cycle instead, which is the whole group budget. Real strobing
+// (several flashes a second) isn't possible over this API.
+const FLASH_PERIOD_MS = 2000
+const FLASH_DIM = 0.15
+const FLASH_TRANSITION_DS = 2
+const FLASH_MAX_LIGHTS = 8
 const MAX_IN_FLIGHT = 2
 
 export type Transition = 'cut' | 'continuation'
@@ -76,6 +91,10 @@ export class LightingEngine {
   private snapshot: Snapshot[] = []
   // Each light's flicker position, 0 (dimmest) to 1 - see FLICKER_DEPTH.
   private flame: number[] = []
+  // The half cycle each light (and, for a big room, the group) last flipped
+  // to - see FLASH_PERIOD_MS.
+  private flashBeat: number[] = []
+  private groupBeat = -1
 
   constructor(
     bridge: HueBridge,
@@ -155,6 +174,9 @@ export class LightingEngine {
       case 'shimmer':
         this.animateNextLight(cue, cue.effect, now)
         return
+      case 'flash':
+        this.flashNext(cue, now)
+        return
     }
   }
 
@@ -212,6 +234,47 @@ export class LightingEngine {
     }
     if (light.color) state.xy = rgbToXy(rgb)
     this.send(this.bridge.setLight(light.id, state))
+  }
+
+  // flashNext flips the next light that hasn't yet taken the current half
+  // cycle's state, or the whole group in a room too big to flip per light.
+  private flashNext(cue: Lighting, now: number) {
+    const beat = Math.floor(now / (FLASH_PERIOD_MS / 2))
+    const n = this.lights.length
+    if (n > FLASH_MAX_LIGHTS) {
+      if (beat === this.groupBeat || now - this.lastGroupSend < GROUP_MIN_INTERVAL_MS) return
+      this.groupBeat = beat
+      this.sendGroup(this.flashState(cue, beat, true), now)
+      return
+    }
+    if (this.inFlight >= MAX_IN_FLIGHT) return
+    for (let k = 0; k < n; k++) {
+      const i = (this.nextLight + k) % n
+      if (this.flashBeat[i] === beat) continue
+      this.flashBeat[i] = beat
+      this.nextLight = i + 1
+      const light = this.lights[i]
+      // With an accent, neighbours sit on opposite colors.
+      const lightBeat = cue.accent && light.color ? beat + i : beat
+      this.send(this.bridge.setLight(light.id, this.flashState(cue, lightBeat, light.color)))
+      return
+    }
+  }
+
+  // flashState is one side of the flash: the cue itself on even beats, and
+  // on odd ones its accent - or, with no accent (or a bulb with no color),
+  // the cue dimmed.
+  private flashState(cue: Lighting, beat: number, color: boolean): HueState {
+    const base = parseHex(cue.color) ?? { r: 1, g: 0.85, b: 0.7 }
+    const accent = color ? parseHex(cue.accent) : null
+    const odd = beat % 2 !== 0
+    const state: HueState = {
+      on: true,
+      bri: hueBrightness(cue.brightness * (odd && !accent ? FLASH_DIM : 1), this.cap),
+      transitiontime: FLASH_TRANSITION_DS,
+    }
+    if (color) state.xy = rgbToXy(odd && accent ? accent : base)
+    return state
   }
 
   private flash(cue: Lighting, now: number) {

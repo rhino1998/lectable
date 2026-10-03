@@ -2689,6 +2689,18 @@ label {
     background: var(--cue-color);
     animation: lighting-cue-lightning 7s linear infinite;
   }
+  .lighting-cue-flash {
+    animation: lighting-cue-flash 2s steps(1) infinite;
+  }
+}
+@keyframes lighting-cue-flash {
+  0%,
+  100% {
+    filter: none;
+  }
+  50% {
+    filter: brightness(0.45) hue-rotate(20deg);
+  }
 }
 @keyframes lighting-cue-flicker {
   0%,

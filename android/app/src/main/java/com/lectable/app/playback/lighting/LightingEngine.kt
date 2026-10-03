@@ -29,6 +29,11 @@ private const val FLICKER_DEPTH = 0.4
 private const val FLICKER_COLOR_SHIFT = 0.4
 private const val FLICKER_EASE = 0.8
 private const val FLICKER_MIN_DS = 3
+// A siren or alarm beacon on a 2s cycle - see frontend engine.ts's FLASH_PERIOD_MS.
+private const val FLASH_PERIOD_MS = 2000L
+private const val FLASH_DIM = 0.15
+private const val FLASH_TRANSITION_DS = 2
+private const val FLASH_MAX_LIGHTS = 8
 private val DEFAULT_BASE = Rgb(1.0, 0.85, 0.7)
 private val DEFAULT_FLASH = Rgb(0.86, 0.9, 1.0)
 
@@ -37,8 +42,8 @@ private val DEFAULT_FLASH = Rgb(0.86, 0.9, 1.0)
  * effect locally - a port of frontend/src/lighting/engine.ts (see its header for the rate-limit
  * reasoning); keep the two in step. A new cue goes out as one group command faded over the
  * region's transition; flicker/pulse/shimmer then animate one light per tick, round-robin;
- * lightning is an occasional flash-and-back pair of group commands. Effects run only while
- * narration plays.
+ * lightning is an occasional flash-and-back pair of group commands; flash (a siren or alarm)
+ * flips each light once per half cycle. Effects run only while narration plays.
  *
  * Driven from [HueLightingController]'s main-thread scope; every field is touched only there.
  */
@@ -64,6 +69,9 @@ class LightingEngine(
     private val snapshot = lights.map { it.id to restorable(it.state) }
     // Each light's flicker position, 0 (dimmest) to 1 - see FLICKER_DEPTH.
     private val flame = DoubleArray(lights.size) { 1.0 }
+    // The half cycle each light (and, for a big room, the group) last flipped to.
+    private val flashBeat = LongArray(lights.size) { -1 }
+    private var groupBeat = -1L
 
     fun start() {
         loop = scope.launch {
@@ -126,6 +134,7 @@ class LightingEngine(
             LightEffects.LIGHTNING ->
                 if (now >= nextFlash && now - lastGroupSend >= GROUP_MIN_INTERVAL_MS) flash(cue, now)
             LightEffects.FLICKER, LightEffects.PULSE, LightEffects.SHIMMER -> animateNextLight(cue, now)
+            LightEffects.FLASH -> flashNext(cue, now)
             else -> {}
         }
     }
@@ -173,6 +182,48 @@ class LightingEngine(
             transitionTime = ds,
         )
         send { bridge.setLight(light.id, state) }
+    }
+
+    /** Flips the next light that hasn't yet taken the current half cycle's state, or the whole
+     *  group in a room too big to flip per light. */
+    private fun flashNext(cue: LightingDto, now: Long) {
+        val beat = now / (FLASH_PERIOD_MS / 2)
+        val n = lights.size
+        if (n > FLASH_MAX_LIGHTS) {
+            if (beat == groupBeat || now - lastGroupSend < GROUP_MIN_INTERVAL_MS) return
+            groupBeat = beat
+            lastGroupSend = now
+            val state = flashState(cue, beat, color = true)
+            send { bridge.setGroup(groupId, state) }
+            return
+        }
+        if (inFlight >= MAX_IN_FLIGHT) return
+        for (k in 0 until n) {
+            val i = (nextLight + k) % n
+            if (flashBeat[i] == beat) continue
+            flashBeat[i] = beat
+            nextLight = i + 1
+            val light = lights[i]
+            // With an accent, neighbours sit on opposite colors.
+            val lightBeat = if (!cue.accent.isNullOrEmpty() && light.color) beat + i else beat
+            val state = flashState(cue, lightBeat, light.color)
+            send { bridge.setLight(light.id, state) }
+            return
+        }
+    }
+
+    /** One side of the flash: the cue itself on even beats, and on odd ones its accent - or, with
+     *  no accent (or a bulb with no color), the cue dimmed. */
+    private fun flashState(cue: LightingDto, beat: Long, color: Boolean): HueState {
+        val accent = if (color) parseHex(cue.accent) else null
+        val odd = beat % 2 != 0L
+        val rgb = if (odd && accent != null) accent else parseHex(cue.color) ?: DEFAULT_BASE
+        return HueState(
+            on = true,
+            bri = hueBrightness(cue.brightness * (if (odd && accent == null) FLASH_DIM else 1.0), cap),
+            xy = if (color) rgbToXy(rgb) else null,
+            transitionTime = FLASH_TRANSITION_DS,
+        )
     }
 
     private fun flash(cue: LightingDto, now: Long) {

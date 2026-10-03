@@ -102,7 +102,10 @@ byte-for-byte.
   region, slow into a `continuation`) and animates flicker/pulse/shimmer
   one light per 125ms tick round-robin (inside Hue's ~10 light cmds/s,
   ~1 group cmd/s limits); lightning is an occasional flash-and-back group
-  pair; effects run only while playing. `controller.ts` is a module
+  pair; flash (a siren or alarm) flips each light once a second for a 2s
+  cycle, neighbours on opposite colors when the cue has an accent - per
+  light in a room of up to 8, as one group command per half cycle in a
+  bigger one (the API can't strobe faster); effects run only while playing. `controller.ts` is a module
   singleton holding the per-browser settings (localStorage
   `lectable.lighting`: bridge, username, room, brightness cap, restore on
   stop) and the engine lifecycle; it snapshots the room's lights on start
