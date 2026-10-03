@@ -19,6 +19,8 @@ LLAMACPP_DIR ?= $(HOME)/llama.cpp-latest/build-live/bin
 # GPU through librocdxg, which needs HSA_ENABLE_DXG_DETECTION=1.
 ROCM_DIR ?= $(HOME)/rocm7-user/root/opt/rocm-7.2.4
 export CGO_LDFLAGS := -L$(AUDIOCPP_DIR) -L$(LLAMACPP_DIR)
+# backend/internal/store's search index needs SQLite's FTS5 compiled in.
+export GOFLAGS := -tags=sqlite_fts5 $(GOFLAGS)
 export LD_LIBRARY_PATH := $(LLAMACPP_DIR):$(AUDIOCPP_DIR):$(ROCM_DIR)/lib:$(ROCM_DIR)/llvm/lib:$(LD_LIBRARY_PATH)
 export HSA_ENABLE_DXG_DETECTION := 1
 

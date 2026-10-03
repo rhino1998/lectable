@@ -52,19 +52,16 @@ func speakerVoiceValues(overrides []SpeakerVoice) (fragment string, args []any) 
 // instead - see SpeakerVoice) - a chapter fully generated under one voice
 // shows as not-yet-generated when a different voice is selected, since
 // that voice's audio doesn't exist yet.
-func (s *DuckStore) ListChapterSummaries(bookID, voiceID string, overrides []SpeakerVoice) ([]ChapterSummary, error) {
+func (s *SQLiteStore) ListChapterSummaries(bookID, voiceID string, overrides []SpeakerVoice) ([]ChapterSummary, error) {
 	var rows *sql.Rows
 	var err error
 	if len(overrides) == 0 {
 		rows, err = s.db.Query(`
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
-				COUNT(p.id) AS total,
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
+				(SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id) AS total,
+				(SELECT COUNT(*) FROM paragraph_audio pa WHERE pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready') AS ready
 			FROM chapters c
-			LEFT JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = ?
 			WHERE c.book_id = ?
-			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
 			ORDER BY c.idx ASC`, voiceID, bookID)
 	} else {
 		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
@@ -146,11 +143,9 @@ func bookSpeakerVoiceValues(overrides []BookSpeakerVoice) (fragment string, args
 // ListChapterSummariesForBooks is ListChapterSummaries' batch counterpart:
 // one query across every book in bookVoices instead of one query per book.
 // Built for httpapi.handleListBooks, which used to call ListChapterSummaries
-// once per book in the library - fine for one book, but 2*N serialized
-// full-book scans (this, plus BookNarrationStatsForBooks's sibling) on
-// this package's single shared connection (see this package's own doc
-// comment) for a whole library, stalling every other request behind
-// whichever scan is running. Joins against a small VALUES list of (book_id,
+// once per book in the library - fine for one book, but 2*N full-book
+// scans (this, plus BookNarrationStatsForBooks's sibling) for a whole
+// library. Joins against a small VALUES list of (book_id,
 // voice_id) pairs instead, so the whole library costs one scan of
 // chapters/paragraphs/paragraph_audio, not one scan per book. Returns a map
 // keyed by book id, each chapter list already in idx order; a book with no
@@ -158,7 +153,7 @@ func bookSpeakerVoiceValues(overrides []BookSpeakerVoice) (fragment string, args
 // overrides is BookSpeakerVoice's flattened form (see SpeakerVoice's own
 // doc comment) - empty for a book with no multi-voice character
 // assignments, so most libraries pay nothing extra over the old query.
-func (s *DuckStore) ListChapterSummariesForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string][]ChapterSummary, error) {
+func (s *SQLiteStore) ListChapterSummariesForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string][]ChapterSummary, error) {
 	out := make(map[string][]ChapterSummary, len(bookVoices))
 	if len(bookVoices) == 0 {
 		return out, nil
@@ -171,13 +166,10 @@ func (s *DuckStore) ListChapterSummariesForBooks(bookVoices []BookVoice, overrid
 		rows, err = s.db.Query(`
 			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`)
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
-				COUNT(p.id) AS total,
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
+				(SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id) AS total,
+				(SELECT COUNT(*) FROM paragraph_audio pa WHERE pa.chapter_id = c.id AND pa.voice_id = bv.voice_id AND pa.status = 'ready') AS ready
 			FROM chapters c
 			JOIN book_voice bv ON bv.book_id = c.book_id
-			LEFT JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = bv.voice_id
-			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
 			ORDER BY c.book_id, c.idx ASC`, bvArgs...)
 	} else {
 		svFragment, svArgs := bookSpeakerVoiceValues(overrides)
@@ -212,7 +204,7 @@ func (s *DuckStore) ListChapterSummariesForBooks(bookVoices []BookVoice, overrid
 	return out, rows.Err()
 }
 
-func (s *DuckStore) GetChapterByID(id string) (*Chapter, error) {
+func (s *SQLiteStore) GetChapterByID(id string) (*Chapter, error) {
 	var c Chapter
 	err := s.db.QueryRow(`SELECT id, book_id, idx, title, passes FROM chapters WHERE id = ?`, id).
 		Scan(&c.ID, &c.BookID, &c.Idx, &c.Title, &c.Passes)
@@ -226,13 +218,13 @@ func (s *DuckStore) GetChapterByID(id string) (*Chapter, error) {
 }
 
 // CountChapters reports how many chapters bookID has.
-func (s *DuckStore) CountChapters(bookID string) (int, error) {
+func (s *SQLiteStore) CountChapters(bookID string) (int, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT count(*) FROM chapters WHERE book_id = ?`, bookID).Scan(&n)
 	return n, err
 }
 
-func (s *DuckStore) GetChapterByIdx(bookID string, idx int) (*Chapter, error) {
+func (s *SQLiteStore) GetChapterByIdx(bookID string, idx int) (*Chapter, error) {
 	var c Chapter
 	err := s.db.QueryRow(`SELECT id, book_id, idx, title, passes FROM chapters WHERE book_id = ? AND idx = ?`, bookID, idx).
 		Scan(&c.ID, &c.BookID, &c.Idx, &c.Title, &c.Passes)
@@ -253,7 +245,7 @@ func (s *DuckStore) GetChapterByIdx(bookID string, idx int) (*Chapter, error) {
 // voice_id a JOIN here could filter on. Callers resolve each paragraph's
 // applicable voice_id themselves and batch-fetch status via
 // ParagraphAudioStatuses.
-func (s *DuckStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
+func (s *SQLiteStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
@@ -276,7 +268,7 @@ func (s *DuckStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 // whole-book counterpart to ListParagraphsRaw, used for book-wide
 // aggregation (httpapi's character summary table) rather than one chapter
 // at a time.
-func (s *DuckStore) ListParagraphsRawForBook(bookID string) ([]Paragraph, error) {
+func (s *SQLiteStore) ListParagraphsRawForBook(bookID string) ([]Paragraph, error) {
 	rows, err := s.db.Query(`
 		SELECT p.id, p.chapter_id, p.idx, p.position, p.content, p.speaker, p.speaker_index, p.inline, p.is_quote, p.scare_quote, p.emotion
 		FROM paragraphs p
@@ -303,7 +295,7 @@ func (s *DuckStore) ListParagraphsRawForBook(bookID string) ([]Paragraph, error)
 // text/speaker only) - used where the caller needs to know which chapter
 // (and, via Speaker, which voice - see internal/narration.Resolver) a
 // paragraph belongs to before it can even determine which voice applies.
-func (s *DuckStore) GetParagraph(id string) (*Paragraph, error) {
+func (s *SQLiteStore) GetParagraph(id string) (*Paragraph, error) {
 	var p Paragraph
 	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE id = ?`, id).
 		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis)
@@ -320,7 +312,7 @@ func (s *DuckStore) GetParagraph(id string) (*Paragraph, error) {
 // idx) position - the public API addresses paragraphs this way (same as
 // search results), so bookmark handlers need this to get to the id the
 // bookmarks table actually keys on. Empty string, nil error if not found.
-func (s *DuckStore) GetParagraphIDByIdx(chapterID string, idx int) (string, error) {
+func (s *SQLiteStore) GetParagraphIDByIdx(chapterID string, idx int) (string, error) {
 	var id string
 	err := s.db.QueryRow(`SELECT id FROM paragraphs WHERE chapter_id = ? AND idx = ?`, chapterID, idx).Scan(&id)
 	if err == sql.ErrNoRows {
@@ -331,7 +323,7 @@ func (s *DuckStore) GetParagraphIDByIdx(chapterID string, idx int) (string, erro
 
 // ListImages returns a chapter's inline images ordered by their position
 // among the chapter's content blocks.
-func (s *DuckStore) ListImages(chapterID string) ([]Image, error) {
+func (s *SQLiteStore) ListImages(chapterID string) ([]Image, error) {
 	rows, err := s.db.Query(`SELECT id, chapter_id, position, ext FROM images WHERE chapter_id = ? ORDER BY position ASC`, chapterID)
 	if err != nil {
 		return nil, err
@@ -352,7 +344,7 @@ func (s *DuckStore) ListImages(chapterID string) ([]Image, error) {
 // ListBreaks returns a chapter's scene breaks ordered by their position
 // among the chapter's content blocks - ListImages' own doc comment,
 // mirrored exactly.
-func (s *DuckStore) ListBreaks(chapterID string) ([]Break, error) {
+func (s *SQLiteStore) ListBreaks(chapterID string) ([]Break, error) {
 	rows, err := s.db.Query(`SELECT id, chapter_id, position FROM breaks WHERE chapter_id = ? ORDER BY position ASC`, chapterID)
 	if err != nil {
 		return nil, err
@@ -370,7 +362,7 @@ func (s *DuckStore) ListBreaks(chapterID string) ([]Break, error) {
 	return out, rows.Err()
 }
 
-func (s *DuckStore) GetImage(id string) (*Image, error) {
+func (s *SQLiteStore) GetImage(id string) (*Image, error) {
 	var img Image
 	err := s.db.QueryRow(`SELECT id, chapter_id, position, ext FROM images WHERE id = ?`, id).
 		Scan(&img.ID, &img.ChapterID, &img.Position, &img.Ext)

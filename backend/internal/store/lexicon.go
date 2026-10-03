@@ -52,7 +52,7 @@ func PronounceLexicon(entries []LexiconEntry) []pronounce.LexiconEntry {
 }
 
 // ListLexicon returns scope's rules, alphabetical by term.
-func (s *DuckStore) ListLexicon(scope string) ([]LexiconEntry, error) {
+func (s *SQLiteStore) ListLexicon(scope string) ([]LexiconEntry, error) {
 	rows, err := s.db.Query(
 		`SELECT id, scope, term, replacement, case_sensitive, COALESCE(prefix, false), created_at
 		 FROM pronunciation_lexicon WHERE scope = ? ORDER BY term_key, term`, scope)
@@ -75,7 +75,7 @@ func (s *DuckStore) ListLexicon(scope string) ([]LexiconEntry, error) {
 // there for the same term (compared case-insensitively, so "Nyx" and "nyx"
 // can't both exist). previous is the replaced rule, nil for a new one -
 // callers use it to find paragraphs the old rule applied to.
-func (s *DuckStore) UpsertLexiconEntry(scope string, e pronounce.LexiconEntry) (entry LexiconEntry, previous *LexiconEntry, err error) {
+func (s *SQLiteStore) UpsertLexiconEntry(scope string, e pronounce.LexiconEntry) (entry LexiconEntry, previous *LexiconEntry, err error) {
 	key := strings.ToLower(e.Term)
 	var prev LexiconEntry
 	err = s.db.QueryRow(
@@ -101,7 +101,7 @@ func (s *DuckStore) UpsertLexiconEntry(scope string, e pronounce.LexiconEntry) (
 }
 
 // DeleteLexiconEntry removes a rule, returning it (nil if there was none).
-func (s *DuckStore) DeleteLexiconEntry(id string) (*LexiconEntry, error) {
+func (s *SQLiteStore) DeleteLexiconEntry(id string) (*LexiconEntry, error) {
 	var e LexiconEntry
 	err := s.db.QueryRow(
 		`SELECT id, scope, term, replacement, case_sensitive, COALESCE(prefix, false), created_at

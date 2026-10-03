@@ -18,8 +18,7 @@ import (
 // chapter/character/preset is looked up once per resolve pass instead of
 // once per queued task - with hundreds of a book's paragraphs queued,
 // that's the difference between a handful of queries and thousands on
-// every single Pop (and every Snapshot/HasHigherPriorityWork), all on the
-// store's one shared DuckDB connection. Errors are memoized alongside the
+// every single Pop (and every Snapshot/HasHigherPriorityWork). Errors are memoized alongside the
 // value; every caller already treats a lookup error as "no dependency".
 
 type bookLookup struct {

@@ -4,7 +4,7 @@ A self-hosted epub reader that narrates books aloud using audio.cpp's
 Qwen3-TTS/Higgs Audio models. Independent components, each with its own
 `CLAUDE.md`:
 
-- `backend/` (Go) — owns the library (epub parsing, DuckDB storage,
+- `backend/` (Go) — owns the library (epub parsing, SQLite storage,
   background TTS generation, audio/cover serving) **and** TTS/LLM
   orchestration (voice presets, reference-clip rendering/caching, speed
   adjustment, speaker-attribution prompting/batching). All native model
@@ -61,7 +61,7 @@ frontend (Vite dev server, :5173)      android (Kotlin/Compose client)
    |  fetch /api/...                      |  http://<lan-ip>:8080/api/...
    v                                      v
 backend/cmd/server (Go, :8080) <---------+
-   |  parses epubs into books -> chapters -> paragraphs (DuckDB)
+   |  parses epubs into books -> chapters -> paragraphs (SQLite)
    |  serves cover images and generated audio files
    |  owns voice presets, reference-clip rendering/caching, WSOLA speed
    |  adjustment, and speaker-attribution prompting/batching - all
@@ -181,13 +181,13 @@ client, not a browser.)
   `LectableApi.kt`, and `LiveTopics.kt` (see `backend/CLAUDE.md`'s
   `internal/httpapi` entry for what it reads and the response conventions).
 
-- Live-topic builds share the store's single DuckDB connection with
-  everything else, so a slow one stalls the whole app; `internal/live` logs
+- Live-topic builds are rebuilt on every relevant write, so a slow one
+  costs a core for as long as generation runs; `internal/live` logs
   any build over `LECTABLE_LIVE_SLOW_BUILD_MS` (default 500) as `live: slow build`.
 
 - No auth, no multi-user support — this is a single-user local app.
 - All persistent state lives under the backend's `LECTABLE_DATA_DIR` (default
-  `./data`): `library.duckdb`,
+  `./data`): `library.sqlite`,
   `audio/<bookID>/<chapterID>/<voiceID>/<idx>.opus` (served clips - narration,
   plus `sfx/` and `music/` beside the voice dirs - are Ogg Opus; model inputs
   like `music/<regionID>.seed.wav` and `audio/<bookID>/ambience/*.wav` stay
@@ -197,7 +197,7 @@ client, not a browser.)
   `backend/CLAUDE.md`'s "Latents in the backend") and music seeds as
   `music/<regionID>.seed.lat` (Stable Audio latents; legacy `.seed.wav` is
   migrated in the background),
-  `backups/library-<timestamp>.duckdb` (rolling daily copies of the
+  `backups/library-<timestamp>.sqlite` (rolling daily copies of the
   database, see `backend/CLAUDE.md`'s `internal/dbbackup`),
   `covers/<bookID>.<ext>`, `epubs/<bookID>.epub` (the source epub, kept for
   single-chapter re-import), `exports/<bookID>/<exportID>.epub` + `.json`

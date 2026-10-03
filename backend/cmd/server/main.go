@@ -81,19 +81,19 @@ func main() {
 		}
 	}
 
-	duck, err := store.Open(filepath.Join(dataDir, "library.duckdb"))
+	lib, err := store.Open(filepath.Join(dataDir, "library.sqlite"))
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
-	defer duck.Close()
-	if n, err := duck.RepairDescribedNames(); err != nil {
+	defer lib.Close()
+	if n, err := lib.RepairDescribedNames(); err != nil {
 		log.Printf("repair description tags: %v", err)
 	} else if n > 0 {
 		log.Printf("repair description tags: re-pointed %d paragraphs from merged-away names", n)
 	}
-	// Everything reads through the cache (invalidated by duck's own write
-	// notifications) - the single DuckDB connection is the bottleneck.
-	cached := store.NewCached(duck)
+	// Everything reads through the cache (invalidated by lib's own write
+	// notifications), sparing the hot lookups a query each.
+	cached := store.NewCached(lib)
 	var st store.Store = cached
 
 	instanceID, err := instanceid.LoadOrCreate(dataDir)
@@ -117,7 +117,7 @@ func main() {
 
 	go cached.LogStatsEvery(time.Minute, ctx.Done())
 
-	// Rolling copies of library.duckdb under LECTABLE_DATA_DIR/backups -
+	// Rolling copies of library.sqlite under LECTABLE_DATA_DIR/backups -
 	// see internal/dbbackup.
 	backupInterval := 24 * time.Hour
 	if v := os.Getenv("LECTABLE_BACKUP_INTERVAL"); v != "" {
@@ -135,7 +135,7 @@ func main() {
 			log.Printf("LECTABLE_BACKUP_KEEP %q is not numeric, using %d", v, backupKeep)
 		}
 	}
-	go dbbackup.Run(ctx, duck, dbbackup.Config{Dir: filepath.Join(dataDir, "backups"), Interval: backupInterval, Keep: backupKeep})
+	go dbbackup.Run(ctx, lib, dbbackup.Config{Dir: filepath.Join(dataDir, "backups"), Interval: backupInterval, Keep: backupKeep})
 
 	jobManager := jobs.NewManager(st, ttsMgr, dataDir)
 	if err := jobManager.RegisterMetrics(prometheus.DefaultRegisterer); err != nil {

@@ -20,7 +20,7 @@ import (
 // Pop's cost is purely the scheduling overhead of re-checking n tasks.
 func benchQueueManager(b *testing.B, n int) *Manager {
 	b.Helper()
-	s, err := store.Open(filepath.Join(b.TempDir(), "library.duckdb"))
+	s, err := store.Open(filepath.Join(b.TempDir(), "library.sqlite"))
 	if err != nil {
 		b.Fatalf("store.Open: %v", err)
 	}

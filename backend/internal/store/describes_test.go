@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func describedNames(t *testing.T, s *DuckStore, chapterID string) [][]string {
+func describedNames(t *testing.T, s *SQLiteStore, chapterID string) [][]string {
 	t.Helper()
 	paras, err := s.ListParagraphsRaw(chapterID)
 	if err != nil {

@@ -15,7 +15,7 @@ import (
 
 // TestDryRunAgainstRealData lists what SweepOrphans would delete in a real
 // data dir, deleting nothing. Opt-in: LECTABLE_DRYRUN_DATA=<data dir> and
-// LECTABLE_DRYRUN_DB=<a copy of its library.duckdb>.
+// LECTABLE_DRYRUN_DB=<a copy of its library.sqlite>.
 func TestDryRunAgainstRealData(t *testing.T) {
 	dataDir, db := os.Getenv("LECTABLE_DRYRUN_DATA"), os.Getenv("LECTABLE_DRYRUN_DB")
 	if dataDir == "" || db == "" {

@@ -1,6 +1,6 @@
 // benchattr is a throwaway benchmarking tool comparing speakerattr's
 // default (hybrid-thinking) prompting against the NoThink variant on real
-// chapters from an existing library.duckdb copy. Not wired into cmd/server
+// chapters from an existing library.sqlite copy. Not wired into cmd/server
 // or any build; delete this directory when done.
 package main
 
@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/duckdb/duckdb-go/v2"
+	_ "github.com/mattn/go-sqlite3"
 	"github.com/rhino1998/lectable/backend/internal/llmworker"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/llamacpp-go/llamacpp"
@@ -26,7 +26,7 @@ type chapter struct {
 }
 
 func main() {
-	dbPath := flag.String("db", "", "path to a read-only copy of library.duckdb")
+	dbPath := flag.String("db", "", "path to a read-only copy of library.sqlite")
 	bookID := flag.String("book", "", "book id")
 	numChapters := flag.Int("chapters", 3, "number of chapters from the start")
 	startIdx := flag.Int("start-idx", 0, "chapter idx to start from")
@@ -49,7 +49,7 @@ func main() {
 	kvType := flag.String("kv", "", "KV cache type: f16, q8_0 (empty = llama.cpp default)")
 	flag.Parse()
 
-	db, err := sql.Open("duckdb", *dbPath+"?access_mode=READ_ONLY")
+	db, err := sql.Open("sqlite3", "file:"+*dbPath+"?mode=ro")
 	if err != nil {
 		log.Fatal(err)
 	}

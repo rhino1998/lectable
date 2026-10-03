@@ -136,9 +136,7 @@ type resolvedParagraph struct {
 // trips each - individually cheap, but this runs from background
 // enqueueChapter/enqueueLookahead goroutines right after every attribution
 // run (attribution flips many paragraphs onto brand-new character speakers
-// at once), so a long chapter meant O(paragraphs) serialized round trips on
-// this package's single shared DuckDB connection, visibly slowing down
-// every other concurrent request while it ran.
+// at once), so a long chapter meant O(paragraphs) database round trips.
 func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.Book, chapterID string) (resolved []resolvedParagraph, all []store.Paragraph, err error) {
 	all, err = m.store.ListParagraphsRaw(chapterID)
 	if err != nil {

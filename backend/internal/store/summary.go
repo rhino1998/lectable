@@ -38,7 +38,7 @@ type CastMember struct {
 }
 
 // GetChapterNotes returns chapterID's summary-pass notes, nil if it has none.
-func (s *DuckStore) GetChapterNotes(chapterID string) (*ChapterNotes, error) {
+func (s *SQLiteStore) GetChapterNotes(chapterID string) (*ChapterNotes, error) {
 	var raw string
 	err := s.db.QueryRow(`SELECT CAST(summary AS VARCHAR) FROM chapter_summaries WHERE chapter_id = ?`, chapterID).Scan(&raw)
 	if err == sql.ErrNoRows {
@@ -56,7 +56,7 @@ func (s *DuckStore) GetChapterNotes(chapterID string) (*ChapterNotes, error) {
 
 // SetChapterNotes stores chapterID's summary-pass notes, replacing any existing one,
 // and marks its passes.summary.
-func (s *DuckStore) SetChapterNotes(chapterID string, notes ChapterNotes) error {
+func (s *SQLiteStore) SetChapterNotes(chapterID string, notes ChapterNotes) error {
 	raw, err := json.Marshal(notes)
 	if err != nil {
 		return err
@@ -72,7 +72,7 @@ func (s *DuckStore) SetChapterNotes(chapterID string, notes ChapterNotes) error 
 	if _, err := tx.Exec(`INSERT INTO chapter_summaries (chapter_id, summary, updated_at) VALUES (?, ?, ?)`, chapterID, string(raw), time.Now().Unix()); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, '{"summary": true}') WHERE id = ?`, chapterID); err != nil {
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_patch(passes, '{"summary": true}') WHERE id = ?`, chapterID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -81,7 +81,7 @@ func (s *DuckStore) SetChapterNotes(chapterID string, notes ChapterNotes) error 
 // ClearBookSummaries deletes the summaries of bookID's chapters with idx >=
 // fromIdx and unsets their passes.summary - the summary pass's Reset.
 // Returns how many were deleted.
-func (s *DuckStore) ClearBookSummaries(bookID string, fromIdx int) (int, error) {
+func (s *SQLiteStore) ClearBookSummaries(bookID string, fromIdx int) (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -92,7 +92,7 @@ func (s *DuckStore) ClearBookSummaries(bookID string, fromIdx int) (int, error) 
 		return 0, err
 	}
 	n, _ := res.RowsAffected()
-	if _, err := tx.Exec(`UPDATE chapters SET passes = json_merge_patch(passes, '{"summary": null}') WHERE book_id = ? AND idx >= ?`, bookID, fromIdx); err != nil {
+	if _, err := tx.Exec(`UPDATE chapters SET passes = json_patch(passes, '{"summary": null}') WHERE book_id = ? AND idx >= ?`, bookID, fromIdx); err != nil {
 		return 0, err
 	}
 	return int(n), tx.Commit()

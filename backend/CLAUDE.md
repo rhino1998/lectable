@@ -509,21 +509,45 @@ building/running `ttsworker` does, since both now link into that binary.
   some epubs put a whole scene in one `<p>` with `<br/><br/>` between its
   real paragraphs, which merged every turn of dialogue into one paragraph
   and threw off speaker attribution. `readZipFile` caps each entry at 64 MiB decompressed (`maxEntrySize`), so a malformed epub or zip bomb fails the upload instead of exhausting memory.
-- `internal/store/` — DuckDB persistence (`books` → `chapters` →
-  `paragraphs`, plus `characters`/`character_voices`, book-scoped). One
-  `*sql.DB` connection (`SetMaxOpenConns(1)`) since DuckDB is single-writer
-  and this app has no need for write concurrency. **Because of that single
-  connection, one slow query stalls every other concurrent request
-  app-wide** - a real, previously-hit bug: an earlier
-  `ParagraphAudioStatuses` call built a SQL `IN (...)` with one placeholder
-  per paragraph id, slow for the Narrator's entire multi-thousand-paragraph
-  history on a long book, and every other request (Jobs page poll, chapter
-  loads) would appear to hang behind it. Fixed by `CountReadyAudioForSpeaker`,
-  which JOINs on `(book, speaker, voice)` instead of materializing an id
-  list - general lesson: prefer a JOIN scoped by book/chapter over an
-  `IN (...)` sized by paragraph count. Data access goes through the
-  `store.Store` interface (`iface.go`, every method); `DuckStore` is the
-  DuckDB implementation and `store.Cached` (`cache.go`, what `cmd/server`
+- `internal/store/` — SQLite persistence (`books` → `chapters` →
+  `paragraphs`, plus `characters`/`character_voices`, book-scoped), through
+  `mattn/go-sqlite3` (cgo, SQLite bundled). WAL mode with **one write
+  connection and a pool of read-only ones**: `notifyDB` sends
+  `Query`/`QueryRow` to the pool and `Exec`/`Begin` to the writer, so reads
+  never wait on a write or on each other; a transaction's own reads go
+  through its `tx`. Whole-book aggregates (narration stats, chapter
+  summaries) cost tens of milliseconds on a long book - SQLite walks rows
+  one at a time - so still prefer a JOIN scoped by book/chapter over an
+  `IN (...)` sized by paragraph count, and keep them covered by an index
+  (`idx_paragraphs_stats`, `idx_paragraph_audio_stats`). `paragraph_audio`
+  carries copies of its paragraph's `chapter_id` and `length(content)`
+  (`chars`), filled at insert - neither ever changes for a paragraph - so
+  the single-voice aggregates and `AudioRefs` read
+  `idx_paragraph_audio_chapter` alone, a few milliseconds for a whole
+  book; the multi-voice variants pick each paragraph's voice by its
+  speaker and still join per paragraph. A trigger deletes a paragraph's
+  audio rows with it (`DeleteBook` used to leave them behind), which is
+  what keeps those copies trustworthy; rows with `chapter_id = ''` are
+  such leftovers migrated from DuckDB. Needs the
+  **`sqlite_fts5` build tag** (the Makefiles, `run.sh` and `deploy.sh`
+  export `GOFLAGS=-tags=sqlite_fts5`; a bare `go build`/`go test` fails at
+  `Open` with "no such module: fts5"): `paragraphs_fts` is a trigram
+  full-text index over `paragraphs.content`, external-content (keyed by
+  `paragraphs.rowid`) and kept current by triggers, which
+  `SearchParagraphs` matches a query against as one phrase - any substring
+  of three or more characters, case-insensitive beyond ASCII; shorter
+  queries scan the book with the Go-registered `fold()`. Never run a plain
+  `VACUUM`: it may renumber `paragraphs` rowids out from under the index
+  (`INSERT INTO paragraphs_fts(paragraphs_fts) VALUES ('rebuild')` repairs
+  it). `rowhash(...)`/`bit_xor(...)`, the row fingerprints' hash and
+  aggregate (`SyncFingerprints`, `ExportFingerprints`), are C functions in
+  `rowhash.go` registered through `sqlite3_auto_extension` - a Go callback
+  per row made a manifest request take half a second. Column types are
+  declared `JSON`/`BOOLEAN`/`DOUBLE`/`BIGINT` as before; SQLite stores JSON
+  as text, and the declared type is what row export reads to nest JSON and
+  write booleans as `true`/`false`. Data access goes through the
+  `store.Store` interface (`iface.go`, every method); `SQLiteStore` is the
+  implementation and `store.Cached` (`cache.go`, what `cmd/server`
   and the httpapi/jobs tests use) wraps any `Store` with a read cache for
   the hot lookups (book, chapter, paragraph list, character, character
   voices, voice presets). Each cached read declares the tables it reads;
@@ -535,18 +559,18 @@ building/running `ttsworker` does, since both now link into that binary.
   `s.db`; a new hot read gets cached by adding one `cachedRead` override
   with the right tables (`GetBook` also depends on `books.position`).
   Logs its hit rate every minute. **No FK `ON DELETE CASCADE`** —
-  DuckDB's support for that isn't something to lean on; `DeleteBook`
-  deletes paragraphs → chapters → book explicitly in a transaction. Column
+  `DeleteBook` deletes paragraphs → chapters → book explicitly in a
+  transaction. Column
   is `content` not `text` (avoids ambiguity with the SQL `TEXT` type
   name). **No migrations in code**: there is exactly one library
   (the live one), so a schema change edits the `CREATE TABLE IF NOT
   EXISTS` statements in `schema.go` and is applied to the live
-  `library.duckdb` once, by hand, with the server stopped and a fresh copy taken (see
-  `internal/dbbackup`). A temporary `ALTER TABLE ... ADD COLUMN IF NOT
-  EXISTS` in `Open` is fine for getting a change deployed, but delete it
-  once the running server has applied it (this DuckDB version rejects
-  `ADD COLUMN` with a constraint, so such a column is nullable-with-default
-  on the live library and `NOT NULL` only in a fresh one).
+  `library.sqlite` once, by hand, with the server stopped and a fresh copy taken (see
+  `internal/dbbackup`). A temporary `ALTER TABLE ... ADD COLUMN` in `Open`
+  is fine for getting a change deployed, but delete it once the running
+  server has applied it. `cmd/duck2sqlite` is the one-off tool that copied
+  the library out of DuckDB, which this app used before; it is the only
+  thing still importing the DuckDB driver.
 - `internal/narration/` — resolves a paragraph's *effective* narration
   voice: `Resolver.BookVoice` (a book's own single voice) as the fallback,
   overridden per paragraph by `Resolver.CharacterVoice` when (a)
@@ -1497,18 +1521,20 @@ building/running `ttsworker` does, since both now link into that binary.
       deletes the cached reference clip, does *not* eagerly re-render)
       that book's resolved clone model's assigned voice preset for the
       character, so it's lazily rebuilt next time it's actually needed.
-- `internal/dbbackup/` — rolling copies of `library.duckdb` in
-  `LECTABLE_DATA_DIR/backups/library-<YYYYMMDDTHHMMSS>.duckdb`. `Run`
+- `internal/dbbackup/` — rolling copies of `library.sqlite` in
+  `LECTABLE_DATA_DIR/backups/library-<YYYYMMDDTHHMMSS>.sqlite`. `Run`
   (started from `cmd/server`) checks at startup and hourly, takes one when
   the newest is at least `LECTABLE_BACKUP_INTERVAL` old, then prunes to the
   newest `LECTABLE_BACKUP_KEEP`. The copy itself is
-  `store.DuckStore.Backup`: it holds the single connection (every query
-  waits - well under a second on the ~250 MB live library), `CHECKPOINT`s,
-  and copies the file via a temp name. A backup is a plain DuckDB file: to
-  restore, stop the server, delete `library.duckdb.wal`, and copy the
-  backup over `library.duckdb`. Hand-applied schema changes (see
-  `internal/store`'s "No migrations in code") also start from a stopped
-  server, so a plain `cp library.duckdb` is enough before one.
+  `store.SQLiteStore.Backup`: SQLite's online backup API on a pooled read
+  connection (nothing else waits), page for page so the search index stays
+  consistent with its table, written via a temp name. A backup is a plain
+  SQLite file: to restore, stop the server, delete `library.sqlite-wal` and
+  `library.sqlite-shm`, and copy the backup over `library.sqlite`.
+  Hand-applied schema changes (see `internal/store`'s "No migrations in
+  code") also start from a stopped server, so a plain `cp library.sqlite`
+  is enough before one. Backups named `.duckdb` are from before the move to
+  SQLite and are neither listed nor pruned.
 - `internal/deliverytags/` — dependency-free leaf package for Higgs inline
   `<|category:value|>` tags: `Insertion` (a tag at a byte offset, the type
   `internal/pronounce.Apply` composes with substitutions), the Go pause
@@ -1613,7 +1639,7 @@ building/running `ttsworker` does, since both now link into that binary.
   `write` is the one place a format plugs in. A **full-book** export also
   carries lectable's own data under `META-INF/lectable/` (readers ignore
   it): `manifest.json` (maps every archive entry to its LECTABLE_DATA_DIR path + mtime),
-  `db/<table>.jsonl` (`store.ExportBookRows` - DuckDB `to_json` of each row,
+  `db/<table>.jsonl` (`store.ExportBookRows` - one JSON object per row,
   paragraph_audio trimmed to the exported clips), and `data/...` (source
   epub, voice refs + emotion variants for every preset in play, SFX, music
   clips/seeds, ambience loops). `Source.Import` restores that into another
@@ -1725,8 +1751,7 @@ building/running `ttsworker` does, since both now link into that binary.
   invalidated, compares marshaled bytes with the last value, and fans out a
   patch only on a real change - computed once per topic regardless of
   subscriber count. Whole-book topics (`books`, `speakers`, appearances)
-  carry a `MinInterval` so steady generation can't monopolize the single
-  DuckDB connection. A subscriber whose outbound buffer fills is dropped
+  carry a `MinInterval` so steady generation doesn't keep rebuilding them. A subscriber whose outbound buffer fills is dropped
   (it reconnects and resnapshots) rather than risk a lost patch. **A new
   topic, or a builder reading a new table, must list that table in its
   deps** or it'll only update on the 30s resync. Every client (web, Android, `cmd/jobswatch` - which applies
@@ -1767,8 +1792,8 @@ building/running `ttsworker` does, since both now link into that binary.
   scrape time.
 - `lectable_http_request_duration_seconds{route,method,code}` - `route` is
   the matched ServeMux pattern (`GET /api/books/{id}`), never a raw path.
-- `lectable_db_call_duration_seconds{op}` - every call on the single DuckDB
-  connection (`begin_wait` is time spent waiting for it).
+- `lectable_db_call_duration_seconds{op}` - every database call (`begin_wait` is time spent waiting for the
+  write connection).
 
 Useful queries: worker CPU cores
 `rate(lectable_ttsworker_process_cpu_seconds_total[5m])`; generation
@@ -1780,8 +1805,7 @@ latency `histogram_quantile(0.9, sum by (le, clone_model)
 ## Toolchain note
 
 This module's `go.mod` needs a newer Go than the box's default
-`/usr/bin/go` (1.22.2) provides — `go-duckdb`'s dependency graph pulled in
-a `go 1.26` requirement. A Go 1.27.1 toolchain is installed locally at
+`/usr/bin/go` (1.22.2) provides (`go 1.26`). A Go 1.27.1 toolchain is installed locally at
 `/home/rhino/go-toolchains/go1.27.1/` for this purpose. Automatic
 toolchain fetching via `GOTOOLCHAIN=auto` does not work in this
 environment (fails with "toolchain not available" even though the Go
@@ -1892,7 +1916,7 @@ build does, since both now link into that one binary.
 - `POST /api/books` (multipart `file` - an epub, or a Lectable export - a whole-book one, or a latent-only transfer of some chapters (restored as its own book) - which restores that book: `409 book_exists` if it's already here) / `GET /api/books` / `GET|DELETE /api/books/{id}`
 - `GET /api/books/{id}/cover`
 - `POST /api/books/{id}/chapters/{idx}/reimport[?force=true]` — re-parses one chapter from the book's source epub and replaces its content (`store.ReplaceChapterContent`), keeping every other chapter's attribution, fixes, and audio. The source is the copy kept at upload (`data/epubs/<bookID>.epub`, `audiopath.SourceEpubFile`), or an optional multipart `file`, which also replaces the kept copy. Cancels the chapter's queued/in-flight jobs first (`jobs.Manager.CancelChapter`). Resets the chapter's paragraphs, audio, SFX, music regions, images, breaks, and pass flags; bookmarks are re-pointed by idx. `409` with `code` `no_source_epub` (upload the file) or `title_mismatch` (retry with `force=true`), or plain `409` if the epub's chapter count differs or a job is still running
-- `GET /api/books/{id}/manifest?chapters=0,3` — the root of the book's offline-sync hash tree (`httpapi/manifest.go`), for clients reconciling an offline copy (Android downloads) against the backend, which always wins: `hash` covers the book's title/author/cover (file size+mtime)/chapter count plus each listed chapter's `hash` (all chapters if `chapters` is omitted), returned in `chapters`. Built chapter hashes are stored in `sync_tree_nodes` (`Store.PutSyncTreeNodes`/`SyncTreeNodes`) tagged with a fingerprint of the rows they came from (`Store.SyncFingerprints`: one aggregate query per book over whole-row DuckDB hashes of the book row minus position/estimate, its chapters/paragraphs/paragraph_audio minus `word_timings`/images/breaks, plus the whole character/voice tables) and with `syncTreeVersion` - a sha256 of the running `server` executable, since fingerprints can't see code (hash fields, DTO shapes, compiled-in voice presets) and Go builds are reproducible; nodes from other builds are pruned on the first manifest request. Only chapters whose rows moved get rebuilt. Validated by value on each request rather than invalidated by writes, since `OnChange` only knows tables, not rows: over-covering inputs can only cause a needless rebuild, never a stale hash. No PRIMARY KEY/index on the table (update-then-insert in one transaction instead) - see this DB's index-corruption history. Measured on the real library: a 244-chapter book's manifest goes from ~11.5s on first build to ~40ms afterwards, including after a restart; a new build of `server` rebuilds each book once. Every chapter value (REST and the live `chapter` topic) carries its own `hash` plus per-paragraph `contentHash` (text/annotations an offline copy stores) and `audioHash` (resolved voice id, status, backing clip, duration, pointer) - so a client can tell "refresh metadata" from "re-download this .wav". Reading position is returned alongside but kept outside the tree
+- `GET /api/books/{id}/manifest?chapters=0,3` — the root of the book's offline-sync hash tree (`httpapi/manifest.go`), for clients reconciling an offline copy (Android downloads) against the backend, which always wins: `hash` covers the book's title/author/cover (file size+mtime)/chapter count plus each listed chapter's `hash` (all chapters if `chapters` is omitted), returned in `chapters`. Built chapter hashes are stored in `sync_tree_nodes` (`Store.PutSyncTreeNodes`/`SyncTreeNodes`) tagged with a fingerprint of the rows they came from (`Store.SyncFingerprints`: one aggregate query per book over whole-row hashes (`rowhash`) of the book row minus position/estimate, its chapters/paragraphs/paragraph_audio minus `word_timings`/images/breaks, plus the whole character/voice tables) and with `syncTreeVersion` - a sha256 of the running `server` executable, since fingerprints can't see code (hash fields, DTO shapes, compiled-in voice presets) and Go builds are reproducible; nodes from other builds are pruned on the first manifest request. Only chapters whose rows moved get rebuilt. Validated by value on each request rather than invalidated by writes, since `OnChange` only knows tables, not rows: over-covering inputs can only cause a needless rebuild, never a stale hash. No PRIMARY KEY on the table (update-then-insert in one transaction instead), a holdover from DuckDB. Measured on the real library: a 244-chapter book's manifest goes from ~11.5s on first build to ~40ms afterwards (under DuckDB; under SQLite the fingerprint query alone is ~100ms for that book), including after a restart; a new build of `server` rebuilds each book once. Every chapter value (REST and the live `chapter` topic) carries its own `hash` plus per-paragraph `contentHash` (text/annotations an offline copy stores) and `audioHash` (resolved voice id, status, backing clip, duration, pointer) - so a client can tell "refresh metadata" from "re-download this .wav". Reading position is returned alongside but kept outside the tree
 - `GET|POST /api/books/{id}/exports`, `GET /api/books/{id}/exports/{exportId}/file`, `DELETE /api/books/{id}/exports/{exportId}` — book exports (`internal/bookexport`, live topic `bookExports`). POST `{"format", "wordLevel", "phraseSeconds", "excludeMusic", "chapters", "asIs"}` queues a `jobs.BulkGroup` (Kind `pipeline_export`, key `export:<id>`, `202`): unless `asIs`, it first renders every not-ready paragraph of the chosen chapters (`jobs.Manager.RenderChapters`, failed ones retried) and waits, then builds - failing with "not fully rendered" if some paragraph still has no audio; `asIs` builds right away, missing audio text-only. Promoting the row promotes the audio it waits on. DELETE cancels the task and/or removes the file. The list overlays the job's queued/running state (`jobs.Manager.BulkState`) on the Manager's own.
 - `GET|PUT /api/books/{id}/voice` — `cloneModel` is the book's own clone model (every voice in it clones through it; voice presets carry none - `""` on PUT leaves it unchanged, and changing it deletes the book's generated audio); changing voice resets that book's paragraph audio to `pending`; `multiVoice` toggles whether character voice assignments (see below) override this book's own voice at all (default off)
 - `GET|PUT /api/books/{id}/position`

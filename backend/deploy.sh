@@ -59,6 +59,8 @@ else
   LLAMACPP_DIR="${LLAMACPP_DIR:-$HOME/llama.cpp-latest/build-live/bin}"
   ROCM_DIR="${ROCM_DIR:-$HOME/rocm7-user/root/opt/rocm-7.2.4}"
   export CGO_LDFLAGS="-L${AUDIOCPP_DIR} -L${LLAMACPP_DIR}"
+  # internal/store's search index needs SQLite's FTS5 compiled in.
+  export GOFLAGS="-tags=sqlite_fts5 ${GOFLAGS:-}"
   # The linker resolves libaudiocpp's own ROCm 7 dependencies through this.
   export LD_LIBRARY_PATH="${LLAMACPP_DIR}:${AUDIOCPP_DIR}:${ROCM_DIR}/lib:${ROCM_DIR}/llvm/lib:${LD_LIBRARY_PATH:-}"
   GO_TOOLCHAIN_DIR="${GO_TOOLCHAIN_DIR:-$HOME/go-toolchains/go1.27.1/bin}"

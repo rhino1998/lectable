@@ -258,23 +258,24 @@ type Passes struct {
 // its lighting sub-pass - has finished for the chapter.
 func (p Passes) AmbienceDone() bool { return p.Ambience && p.Lighting }
 
-// scanJSON is the shared implementation behind every native-JSON column's
-// own Scan method in this package (Passes, DescribesCharacterList,
-// ParagraphTagMap, PronunciationList): this driver decodes a JSON column
-// into a plain Go value (map[string]any/[]any for an object/array, nil for
-// SQL NULL) rather than handing back the original raw text (confirmed
-// empirically against both go-duckdb and the official duckdb-go: scanning
-// a JSON column into *string/*[]byte fails outright, only `any` works), so
-// every one of these types bridges that decoded value into its own typed
-// shape via one encoding/json round trip, instead of every call site
-// doing that bridging by hand.
+// scanJSON is the shared implementation behind every JSON column's own
+// Scan method in this package (Passes, Lighting, DescribesCharacterList,
+// AliasList, PronunciationList): the column holds JSON text, decoded into
+// dst. SQL NULL leaves dst at its zero value.
 func scanJSON(v any, dst any) error {
-	if v == nil {
+	var data []byte
+	switch t := v.(type) {
+	case nil:
 		return nil // dst already holds its own zero value
+	case string:
+		data = []byte(t)
+	case []byte:
+		data = t
+	default:
+		return fmt.Errorf("decode JSON column: unexpected %T", v)
 	}
-	data, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Errorf("re-marshal scanned JSON value: %w", err)
+	if len(data) == 0 {
+		return nil
 	}
 	if err := json.Unmarshal(data, dst); err != nil {
 		return fmt.Errorf("decode JSON column: %w", err)

@@ -17,7 +17,7 @@ import (
 
 const (
 	prefix = "library-"
-	suffix = ".duckdb"
+	suffix = ".sqlite"
 	// stampLayout sorts lexically in time order, which Prune relies on.
 	stampLayout = "20060102T150405"
 	// checkEvery is how often Run looks at the newest backup's age, so a
@@ -25,7 +25,7 @@ const (
 	checkEvery = time.Hour
 )
 
-// Backuper copies the live database to a path - store.DuckStore.Backup.
+// Backuper copies the live database to a path - store.SQLiteStore.Backup.
 type Backuper interface {
 	Backup(ctx context.Context, dst string) error
 }

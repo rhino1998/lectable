@@ -1976,10 +1976,7 @@ export interface Routes {
    * BookNarrationStatsForBooks call), not two queries per book -
    * buildBookSummary's own per-book pair of queries is fine for the
    * single-book callers (upload, get-book), but looping it once per book
-   * here meant 2*N serialized whole-book scans on the single shared DuckDB
-   * connection (internal/store's own doc comment) every time the library
-   * page loaded, stalling every other concurrent request behind whichever
-   * scan was running.
+   * here meant 2*N whole-book scans every time the library page loaded.
    */
   'GET /api/books': {
     path: Record<never, never>

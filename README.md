@@ -16,7 +16,7 @@ https://github.com/user-attachments/assets/9c1ec9c6-6b5c-41b9-adc1-40ff6035b324
 ## Components
 
 - **`backend/`** (Go) — the API server. Owns the library (epub parsing,
-  DuckDB storage, background TTS generation, audio/cover serving) and TTS/LLM
+  SQLite storage, background TTS generation, audio/cover serving) and TTS/LLM
   orchestration (voice presets, reference-clip rendering, speed adjustment,
   speaker-attribution prompting).
 - **`backend/cmd/ttsworker`** — a separate Go binary, spawned and

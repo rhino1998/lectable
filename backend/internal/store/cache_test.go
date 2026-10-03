@@ -4,7 +4,7 @@ import "testing"
 
 func TestCachedServesRepeatReadsFromMemory(t *testing.T) {
 	c := NewCached(openTestStore(t))
-	_, chapterID := oneChapterBook(t, c.Store.(*DuckStore), "", 0, "One.", "Two.")
+	_, chapterID := oneChapterBook(t, c.Store.(*SQLiteStore), "", 0, "One.", "Two.")
 
 	for range 3 {
 		ps, err := c.ListParagraphsRaw(chapterID)

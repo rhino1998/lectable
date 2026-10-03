@@ -19,8 +19,7 @@ import (
 // and reads not worth caching - passes straight through to the inner
 // Store via embedding.
 //
-// Why: the store has a single DuckDB connection, so every read waits for
-// every other one. Job dispatch, lookahead and the live topics re-read the
+// Why: job dispatch, lookahead and the live topics re-read the
 // same book/chapter/character/preset rows constantly, far more often than
 // those rows change.
 //

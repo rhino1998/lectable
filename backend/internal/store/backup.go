@@ -2,58 +2,75 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
-	"io"
 	"os"
+
+	sqlite3 "github.com/mattn/go-sqlite3"
 )
 
-// Backup writes a consistent copy of the database file to dst. It holds
-// the store's only connection for the duration - every other query waits -
-// checkpoints so the file alone holds every committed write, then copies
-// the file byte for byte. The copy is written beside dst and renamed into
-// place, so dst is either absent or complete. A copy is a plain DuckDB
-// file: restore one by stopping the server and putting it back as
-// library.duckdb (deleting any library.duckdb.wal).
-func (s *DuckStore) Backup(ctx context.Context, dst string) error {
-	conn, err := s.db.DB.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("backup: %w", err)
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `CHECKPOINT`); err != nil {
-		return fmt.Errorf("backup: checkpoint: %w", err)
-	}
-	return copyFile(s.path, dst)
-}
-
-func copyFile(src, dst string) (err error) {
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("backup: %w", err)
-	}
-	defer in.Close()
+// Backup writes a consistent copy of the database to dst through SQLite's
+// online backup API, reading one snapshot on a pooled read connection:
+// other readers and the writer carry on meanwhile. A page-for-page copy,
+// so rowids - which paragraphs_fts is keyed by - are preserved. The copy
+// is written beside dst and renamed into place, so dst is either absent or
+// complete. A copy is a plain SQLite file: restore one by stopping the
+// server and putting it back as library.sqlite (deleting any
+// library.sqlite-wal and library.sqlite-shm).
+func (s *SQLiteStore) Backup(ctx context.Context, dst string) (err error) {
 	tmp := dst + ".tmp"
-	out, err := os.Create(tmp)
-	if err != nil {
-		return fmt.Errorf("backup: %w", err)
+	cleanup := func() {
+		for _, f := range []string{tmp, tmp + "-wal", tmp + "-shm", tmp + "-journal"} {
+			os.Remove(f)
+		}
 	}
+	cleanup()
 	defer func() {
 		if err != nil {
-			out.Close()
-			os.Remove(tmp)
+			cleanup()
 		}
 	}()
-	if _, err = io.Copy(out, in); err != nil {
-		return fmt.Errorf("backup: copy: %w", err)
-	}
-	if err = out.Sync(); err != nil {
+
+	out, err := sql.Open(driverName, "file:"+tmp)
+	if err != nil {
 		return fmt.Errorf("backup: %w", err)
 	}
-	if err = out.Close(); err != nil {
+	defer out.Close()
+	dstConn, err := out.Conn(ctx)
+	if err != nil {
 		return fmt.Errorf("backup: %w", err)
 	}
-	if err = os.Rename(tmp, dst); err != nil {
+	defer dstConn.Close()
+	srcConn, err := s.db.read.Conn(ctx)
+	if err != nil {
 		return fmt.Errorf("backup: %w", err)
 	}
+	defer srcConn.Close()
+
+	err = dstConn.Raw(func(d any) error {
+		return srcConn.Raw(func(src any) error {
+			b, err := d.(*sqlite3.SQLiteConn).Backup("main", src.(*sqlite3.SQLiteConn), "main")
+			if err != nil {
+				return err
+			}
+			if _, err := b.Step(-1); err != nil {
+				b.Finish() //nolint:errcheck // the Step error is the one to report
+				return err
+			}
+			return b.Finish()
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	dstConn.Close()
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	os.Remove(tmp + "-wal")
+	os.Remove(tmp + "-shm")
 	return nil
 }
