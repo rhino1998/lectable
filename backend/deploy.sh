@@ -50,8 +50,11 @@ if [ "$ROLLBACK" = "1" ]; then
     [ -f "$bin.prev" ] || { echo "no $bin.prev to roll back to" >&2; exit 1; }
   done
   cp server server.failed 2>/dev/null || true
-  cp server.prev server
-  cp ttsworker.prev ttsworker
+  # Copy then rename: the running server's binary can't be written in place.
+  for bin in server ttsworker; do
+    cp "$bin.prev" "$bin.new"
+    mv "$bin.new" "$bin"
+  done
   echo "rolled back to the previous binaries"
 else
   # Same env/toolchain as run.sh's --build, without launching anything yet.

@@ -40,7 +40,7 @@ func speakerVoiceValues(overrides []SpeakerVoice) (fragment string, args []any) 
 	rows := make([]string, len(overrides))
 	args = make([]any, 0, len(overrides)*3)
 	for i, ov := range overrides {
-		rows[i] = "(?, CAST(? AS INTEGER), ?)"
+		rows[i] = "(CAST(? AS TEXT), CAST(? AS INTEGER), CAST(? AS TEXT))"
 		args = append(args, ov.Speaker, ov.SpeakerIndex, ov.VoiceID)
 	}
 	return strings.Join(rows, ", "), args
@@ -121,7 +121,7 @@ func bookVoiceValues(bookVoices []BookVoice) (fragment string, args []any) {
 	rows := make([]string, len(bookVoices))
 	args = make([]any, 0, len(bookVoices)*2)
 	for i, bv := range bookVoices {
-		rows[i] = "(?, ?)"
+		rows[i] = "(CAST(? AS TEXT), CAST(? AS TEXT))"
 		args = append(args, bv.BookID, bv.VoiceID)
 	}
 	return strings.Join(rows, ", "), args
@@ -134,7 +134,7 @@ func bookSpeakerVoiceValues(overrides []BookSpeakerVoice) (fragment string, args
 	rows := make([]string, len(overrides))
 	args = make([]any, 0, len(overrides)*4)
 	for i, ov := range overrides {
-		rows[i] = "(?, ?, CAST(? AS INTEGER), ?)"
+		rows[i] = "(CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS INTEGER), CAST(? AS TEXT))"
 		args = append(args, ov.BookID, ov.Speaker, ov.SpeakerIndex, ov.VoiceID)
 	}
 	return strings.Join(rows, ", "), args
