@@ -66,10 +66,8 @@ func (s *SQLiteStore) SetChapterNotes(chapterID string, notes ChapterNotes) erro
 		return err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after Commit
-	if _, err := tx.Exec(`DELETE FROM chapter_summaries WHERE chapter_id = ?`, chapterID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`INSERT INTO chapter_summaries (chapter_id, summary, updated_at) VALUES (?, ?, ?)`, chapterID, string(raw), time.Now().Unix()); err != nil {
+	if _, err := tx.Exec(`INSERT INTO chapter_summaries (chapter_id, summary, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT (chapter_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at`, chapterID, string(raw), time.Now().Unix()); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE chapters SET passes = json_patch(passes, '{"summary": true}') WHERE id = ?`, chapterID); err != nil {

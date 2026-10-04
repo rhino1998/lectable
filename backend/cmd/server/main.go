@@ -81,7 +81,11 @@ func main() {
 		}
 	}
 
-	lib, err := store.Open(filepath.Join(dataDir, "library.sqlite"))
+	backupDir := filepath.Join(dataDir, "backups")
+	// A schema migration is preceded by a copy of the library, kept (and
+	// pruned) with the scheduled ones.
+	lib, err := store.OpenWith(filepath.Join(dataDir, "library.sqlite"),
+		store.Options{BackupBeforeMigrate: dbbackup.Path(backupDir, time.Now())})
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
@@ -135,7 +139,7 @@ func main() {
 			log.Printf("LECTABLE_BACKUP_KEEP %q is not numeric, using %d", v, backupKeep)
 		}
 	}
-	go dbbackup.Run(ctx, lib, dbbackup.Config{Dir: filepath.Join(dataDir, "backups"), Interval: backupInterval, Keep: backupKeep})
+	go dbbackup.Run(ctx, lib, dbbackup.Config{Dir: backupDir, Interval: backupInterval, Keep: backupKeep})
 
 	jobManager := jobs.NewManager(st, ttsMgr, dataDir)
 	if err := jobManager.RegisterMetrics(prometheus.DefaultRegisterer); err != nil {

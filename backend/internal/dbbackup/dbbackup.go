@@ -73,11 +73,18 @@ func Run(ctx context.Context, db Backuper, cfg Config) {
 
 // Take writes one backup into dir, named for now.
 func Take(ctx context.Context, db Backuper, dir string, now time.Time) (string, error) {
-	path := filepath.Join(dir, prefix+now.Format(stampLayout)+suffix)
+	path := Path(dir, now)
 	if err := db.Backup(ctx, path); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// Path is the name a backup taken at now has in dir. A copy written there
+// by anything else (store.Options.BackupBeforeMigrate) is listed and
+// pruned with the rest.
+func Path(dir string, now time.Time) string {
+	return filepath.Join(dir, prefix+now.Format(stampLayout)+suffix)
 }
 
 // Prune deletes all but the newest keep backups in dir.

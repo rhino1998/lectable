@@ -17,7 +17,12 @@ import (
 // complete. A copy is a plain SQLite file: restore one by stopping the
 // server and putting it back as library.sqlite (deleting any
 // library.sqlite-wal and library.sqlite-shm).
-func (s *SQLiteStore) Backup(ctx context.Context, dst string) (err error) {
+func (s *SQLiteStore) Backup(ctx context.Context, dst string) error {
+	return backupTo(ctx, s.db.read, dst)
+}
+
+// backupTo is Backup reading from src.
+func backupTo(ctx context.Context, src *sql.DB, dst string) (err error) {
 	tmp := dst + ".tmp"
 	cleanup := func() {
 		for _, f := range []string{tmp, tmp + "-wal", tmp + "-shm", tmp + "-journal"} {
@@ -41,7 +46,7 @@ func (s *SQLiteStore) Backup(ctx context.Context, dst string) (err error) {
 		return fmt.Errorf("backup: %w", err)
 	}
 	defer dstConn.Close()
-	srcConn, err := s.db.read.Conn(ctx)
+	srcConn, err := src.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("backup: %w", err)
 	}

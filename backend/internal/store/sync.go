@@ -115,9 +115,7 @@ func (s *SQLiteStore) SyncTreeNodes(bookID, version string) (map[int]SyncTreeNod
 }
 
 // PutSyncTreeNodes stores nodes for bookID under version, replacing
-// whatever each chapter had. One transaction, so the update-then-insert
-// per node can't race another writer into a duplicate row (the store's
-// single connection is held for its duration).
+// whatever each chapter had, in one transaction.
 func (s *SQLiteStore) PutSyncTreeNodes(bookID, version string, nodes []SyncTreeNode) error {
 	if len(nodes) == 0 {
 		return nil
@@ -128,20 +126,9 @@ func (s *SQLiteStore) PutSyncTreeNodes(bookID, version string, nodes []SyncTreeN
 	}
 	defer tx.Rollback()
 	for _, n := range nodes {
-		res, err := tx.Exec(
-			`UPDATE sync_tree_nodes SET version = ?, book_fp = ?, chapter_fp = ?, hash = ? WHERE book_id = ? AND chapter_idx = ?`,
-			version, n.BookFP, n.ChapterFP, n.Hash, bookID, n.ChapterIdx,
-		)
-		if err != nil {
-			return err
-		}
-		if affected, err := res.RowsAffected(); err != nil {
-			return err
-		} else if affected > 0 {
-			continue
-		}
 		if _, err := tx.Exec(
-			`INSERT INTO sync_tree_nodes (book_id, chapter_idx, version, book_fp, chapter_fp, hash) VALUES (?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO sync_tree_nodes (book_id, chapter_idx, version, book_fp, chapter_fp, hash) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT (book_id, chapter_idx) DO UPDATE SET version = excluded.version, book_fp = excluded.book_fp, chapter_fp = excluded.chapter_fp, hash = excluded.hash`,
 			bookID, n.ChapterIdx, version, n.BookFP, n.ChapterFP, n.Hash,
 		); err != nil {
 			return err

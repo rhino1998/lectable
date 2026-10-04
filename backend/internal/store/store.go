@@ -51,18 +51,30 @@ func dsn(path string, readOnly bool) string {
 	return "file:" + (&url.URL{Path: path}).EscapedPath() + "?" + q.Encode()
 }
 
-// Open opens (creating if needed) the SQLite library at path and applies
+// Options adjusts how OpenWith opens a library.
+type Options struct {
+	// BackupBeforeMigrate, when set, is where a copy of the library is
+	// written before any migration is applied to it - a migration can't be
+	// undone, only restored from a copy. A new library isn't copied. If the
+	// copy fails, nothing is migrated and OpenWith returns the error.
+	BackupBeforeMigrate string
+}
+
+// Open is OpenWith with no options.
+func Open(path string) (*SQLiteStore, error) { return OpenWith(path, Options{}) }
+
+// OpenWith opens (creating if needed) the SQLite library at path and applies
 // any migrations it hasn't had (see migrate): one write
 // connection, since SQLite allows one writer at a time, plus a pool of
 // read-only connections that Query/QueryRow outside a transaction use.
-func Open(path string) (*SQLiteStore, error) {
+func OpenWith(path string, opts Options) (*SQLiteStore, error) {
 	write, err := sql.Open(driverName, dsn(path, false))
 	if err != nil {
 		return nil, err
 	}
 	write.SetMaxOpenConns(1)
 
-	if err := migrate(write); err != nil {
+	if err := migrate(write, opts.BackupBeforeMigrate); err != nil {
 		write.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}

@@ -64,19 +64,10 @@ func (s *SQLiteStore) SetBookSetting(bookID string, setting BookSetting, source 
 	if err != nil {
 		return err
 	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
-	if _, err := tx.Exec(`DELETE FROM book_settings WHERE book_id = ?`, bookID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(`INSERT INTO book_settings (book_id, setting, source, updated_at) VALUES (?, ?, ?, ?)`,
-		bookID, string(raw), string(source), time.Now().Unix()); err != nil {
-		return err
-	}
-	return tx.Commit()
+	_, err = s.db.Exec(`INSERT INTO book_settings (book_id, setting, source, updated_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT (book_id) DO UPDATE SET setting = excluded.setting, source = excluded.source, updated_at = excluded.updated_at`,
+		bookID, string(raw), string(source), time.Now().Unix())
+	return err
 }
 
 // DeleteBookSetting removes bookID's setting, so the next pass needing it
