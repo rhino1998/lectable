@@ -72,6 +72,20 @@ func Open(path string) (*SQLiteStore, error) {
 		write.Close()
 		return nil, fmt.Errorf("seed default_voice: %w", err)
 	}
+	// Temporary: adds books.last_read_at to the live library. Delete once
+	// the running server has applied it (see CLAUDE.md, "No migrations in
+	// code").
+	var hasLastRead int
+	if err := write.QueryRow(`SELECT count(*) FROM pragma_table_info('books') WHERE name = 'last_read_at'`).Scan(&hasLastRead); err != nil {
+		write.Close()
+		return nil, fmt.Errorf("read schema: %w", err)
+	}
+	if hasLastRead == 0 {
+		if _, err := write.Exec(`ALTER TABLE books ADD COLUMN last_read_at BIGINT NOT NULL DEFAULT 0`); err != nil {
+			write.Close()
+			return nil, fmt.Errorf("add books.last_read_at: %w", err)
+		}
+	}
 	columns, err := loadColumns(write)
 	if err != nil {
 		write.Close()

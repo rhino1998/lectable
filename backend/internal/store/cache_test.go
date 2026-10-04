@@ -45,6 +45,14 @@ func TestCachedInvalidatesOnWrite(t *testing.T) {
 	if b, _ := c.GetBook(bookID); b.PosSeconds != 12.5 {
 		t.Fatalf("PosSeconds %v after UpdatePosition, want 12.5 (stale cache)", b.PosSeconds)
 	}
+	// Saving a position stamps the book as read, in both the single and
+	// the list read.
+	if b, _ := c.GetBook(bookID); b.LastReadAt == 0 {
+		t.Fatalf("LastReadAt unset after UpdatePosition")
+	}
+	if books, _ := c.ListBooks(); len(books) != 1 || books[0].LastReadAt == 0 {
+		t.Fatalf("ListBooks after UpdatePosition = %+v, want LastReadAt set", books)
+	}
 }
 
 // Unrelated writes leave other tables' entries cached.

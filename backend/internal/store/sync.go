@@ -71,7 +71,7 @@ func (s *SQLiteStore) SyncFingerprints(bookID string) (book string, chapters map
 // bookVolatileColumns are the books columns no fingerprint covers: reading
 // position and the narration-rate estimate change constantly and feed no
 // hash.
-var bookVolatileColumns = []string{"pos_chapter_idx", "pos_paragraph_idx", "pos_seconds", "estimate_sec_per_char"}
+var bookVolatileColumns = []string{"pos_chapter_idx", "pos_paragraph_idx", "pos_seconds", "last_read_at", "estimate_sec_per_char"}
 
 // rowHash is the SQL expression hashing one row of table (referred to as
 // alias) over all its columns but exclude - see driver.go's rowhash.

@@ -79,7 +79,7 @@ func (c *collector) standalone(out *Book, idxs []int) {
 			switch t {
 			case "books":
 				r["title"], _ = json.Marshal(jsonString(r["title"]) + " (" + label + ")")
-				for _, k := range []string{"pos_chapter_idx", "pos_paragraph_idx", "pos_seconds"} {
+				for _, k := range []string{"pos_chapter_idx", "pos_paragraph_idx", "pos_seconds", "last_read_at"} {
 					if _, ok := r[k]; ok {
 						r[k] = json.RawMessage(`0`)
 					}

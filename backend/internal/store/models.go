@@ -55,6 +55,9 @@ type Book struct {
 	PosChapterIdx   int
 	PosParagraphIdx int
 	PosSeconds      float64
+	// LastReadAt is when the reading position was last saved (unix
+	// seconds), 0 for a book never opened.
+	LastReadAt int64
 	// EstimateSecPerChar is jobs.Manager.EnqueueLengthEstimate's own
 	// PocketTTS-calibrated seconds-per-character measurement - see the
 	// schema's own doc comment on estimate_sec_per_char.

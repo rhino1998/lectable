@@ -82,6 +82,14 @@ fun LibraryScreen(
     var pendingDelete by remember { mutableStateOf<BookSummaryDto?>(null) }
     var pendingDeleteLocal by remember { mutableStateOf<BookSummaryDto?>(null) }
     val libraryEntries = remember(uiState.books) { groupBySeries(uiState.books) }
+    // The "Continue reading" entry: the unfinished book read most recently (it keeps its usual
+    // place below too). Not shown for a one-book library, or offline - downloaded copies don't
+    // record when they were read.
+    val continueItem = remember(uiState.books) {
+        uiState.books.takeIf { it.size > 1 }
+            ?.filter { !it.summary.finished && (it.summary.lastReadAt ?: 0) > 0 }
+            ?.maxByOrNull { it.summary.lastReadAt ?: 0 }
+    }
 
     val pickEpubLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.uploadBook(context.contentResolver, uri, context.cacheDir)
@@ -155,6 +163,32 @@ fun LibraryScreen(
                                 )
                             }
                         }
+                        val bookRow: @Composable (BookListItem, Boolean) -> Unit = { item, showSeriesName ->
+                            BookRow(
+                                item = item,
+                                showSeriesName = showSeriesName,
+                                isDownloaded = item.summary.id in uiState.downloadedBookIds,
+                                narrationRate = uiState.narrationRate,
+                                onClick = { onOpenBook(item.summary.id) },
+                                onPreprocess = { viewModel.preprocessBook(item.summary.id) },
+                                onOpenSpeakers = { onOpenSpeakers(item.summary.id) },
+                                onOpenLexicon = { onOpenLexicon(item.summary.id) },
+                                onGenerate = { viewModel.generateBook(item.summary.id) },
+                                onGenerateRemaining = { viewModel.generateBookRemaining(item.summary.id) },
+                                onDownload = { viewModel.downloadBook(item.summary.id) },
+                                onDownloadRemaining = { viewModel.downloadBookRemaining(item.summary.id) },
+                                onDeleteLocal = { pendingDeleteLocal = item.summary },
+                                onDelete = { pendingDelete = item.summary },
+                            )
+                        }
+                        continueItem?.let { item ->
+                            item(key = "continue") {
+                                Column {
+                                    SectionHeader("Continue reading")
+                                    bookRow(item, true)
+                                }
+                            }
+                        }
                         items(
                             libraryEntries,
                             key = { entry ->
@@ -165,31 +199,8 @@ fun LibraryScreen(
                             },
                         ) { entry ->
                             when (entry) {
-                                is LibraryListEntry.SeriesHeader -> {
-                                    Text(
-                                        entry.seriesName,
-                                        style = MaterialTheme.typography.titleSmall,
-                                        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
-                                    )
-                                }
-                                is LibraryListEntry.Book -> {
-                                    BookRow(
-                                        item = entry.item,
-                                        showSeriesName = entry.showSeriesName,
-                                        isDownloaded = entry.item.summary.id in uiState.downloadedBookIds,
-                                        narrationRate = uiState.narrationRate,
-                                        onClick = { onOpenBook(entry.item.summary.id) },
-                                        onPreprocess = { viewModel.preprocessBook(entry.item.summary.id) },
-                                        onOpenSpeakers = { onOpenSpeakers(entry.item.summary.id) },
-                                        onOpenLexicon = { onOpenLexicon(entry.item.summary.id) },
-                                        onGenerate = { viewModel.generateBook(entry.item.summary.id) },
-                                        onGenerateRemaining = { viewModel.generateBookRemaining(entry.item.summary.id) },
-                                        onDownload = { viewModel.downloadBook(entry.item.summary.id) },
-                                        onDownloadRemaining = { viewModel.downloadBookRemaining(entry.item.summary.id) },
-                                        onDeleteLocal = { pendingDeleteLocal = entry.item.summary },
-                                        onDelete = { pendingDelete = entry.item.summary },
-                                    )
-                                }
+                                is LibraryListEntry.SeriesHeader -> SectionHeader(entry.seriesName)
+                                is LibraryListEntry.Book -> bookRow(entry.item, entry.showSeriesName)
                             }
                         }
                     }
@@ -247,6 +258,16 @@ private fun groupBySeries(items: List<BookListItem>): List<LibraryListEntry> {
         entries.add(LibraryListEntry.Book(item, showSeriesName = true))
     }
     return entries
+}
+
+/** A section title in the library list - a series, or "Continue reading". */
+@Composable
+private fun SectionHeader(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleSmall,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 4.dp),
+    )
 }
 
 private fun formatSeriesIndex(value: Double): String =

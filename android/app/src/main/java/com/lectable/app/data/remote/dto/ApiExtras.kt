@@ -14,6 +14,7 @@ fun BookDetailDto.toSummary() = BookSummaryDto(
     posChapterIdx = posChapterIdx,
     posParagraphIdx = posParagraphIdx,
     posSeconds = posSeconds,
+    lastReadAt = lastReadAt,
     progressPercent = progressPercent,
     finished = finished,
     estimatedTotalSeconds = estimatedTotalSeconds,

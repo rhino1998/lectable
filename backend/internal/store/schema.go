@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS books (
 	pos_chapter_idx INTEGER NOT NULL DEFAULT 0,
 	pos_paragraph_idx INTEGER NOT NULL DEFAULT 0,
 	pos_seconds DOUBLE NOT NULL DEFAULT 0,
+	-- When the reading position was last saved (unix seconds, 0 = never
+	-- opened) - what the libraries' "Continue reading" entry picks by.
+	last_read_at BIGINT NOT NULL DEFAULT 0,
 	-- Seconds-per-character measured from a one-off throwaway sample
 	-- cloned through voices.FastPresetID (PocketTTS) right after upload -
 	-- see jobs.Manager.EnqueueLengthEstimate/Store.SetLengthEstimate. 0

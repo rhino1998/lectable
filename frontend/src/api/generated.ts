@@ -357,6 +357,12 @@ export interface BookSummary {
   posChapterIdx: number
   posParagraphIdx: number
   posSeconds: number
+  /**
+   * LastReadAt is when the reading position was last saved (unix
+   * seconds), absent for a book never opened - the libraries' "Continue
+   * reading" entry is the book with the latest one.
+   */
+  lastReadAt?: number
   progressPercent: number
   finished: boolean
   estimatedTotalSeconds: number

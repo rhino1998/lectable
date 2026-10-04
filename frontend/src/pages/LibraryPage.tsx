@@ -238,6 +238,18 @@ export function LibraryPage() {
   }
 
   const items = useMemo(() => groupBySeries(booksQuery.data ?? []), [booksQuery.data])
+  // The "Continue reading" entry: the unfinished book read most recently.
+  // It also keeps its usual place below. Not shown for a one-book library.
+  const continueBook = useMemo(() => {
+    const books = booksQuery.data ?? []
+    if (books.length < 2) return null
+    return books
+      .filter((b) => !b.finished && b.lastReadAt)
+      .reduce<BookSummary | null>(
+        (best, b) => (!best || (b.lastReadAt ?? 0) > (best.lastReadAt ?? 0) ? b : best),
+        null,
+      )
+  }, [booksQuery.data])
 
   // Approximated, not tracked directly: no event logs actual listening
   // time, so "hours listened" is each book's self-calibrating estimated
@@ -294,6 +306,20 @@ export function LibraryPage() {
           {stats.finished} finished · {stats.inProgress} in progress ·{' '}
           {formatDurationLong(stats.listenedSeconds)} listened
         </div>
+      )}
+
+      {continueBook && (
+        <section className="library-series-group">
+          <h2 className="library-series-heading">Continue reading</h2>
+          <div className="book-grid">
+            <BookCard
+              book={continueBook}
+              onDelete={() => confirmDelete(continueBook)}
+              showSeriesName={true}
+              narrationRate={rate}
+            />
+          </div>
+        </section>
       )}
 
       {items.map((item) =>

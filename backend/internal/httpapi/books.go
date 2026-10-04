@@ -20,16 +20,20 @@ import (
 )
 
 type bookSummaryDTO struct {
-	ID                    string  `json:"id"`
-	Title                 string  `json:"title"`
-	Author                string  `json:"author"`
-	SeriesName            string  `json:"seriesName,omitempty"`
-	SeriesIndex           float64 `json:"seriesIndex,omitempty"`
-	CoverURL              string  `json:"coverUrl,omitempty"`
-	ChapterCount          int     `json:"chapterCount"`
-	PosChapterIdx         int     `json:"posChapterIdx"`
-	PosParagraphIdx       int     `json:"posParagraphIdx"`
-	PosSeconds            float64 `json:"posSeconds"`
+	ID              string  `json:"id"`
+	Title           string  `json:"title"`
+	Author          string  `json:"author"`
+	SeriesName      string  `json:"seriesName,omitempty"`
+	SeriesIndex     float64 `json:"seriesIndex,omitempty"`
+	CoverURL        string  `json:"coverUrl,omitempty"`
+	ChapterCount    int     `json:"chapterCount"`
+	PosChapterIdx   int     `json:"posChapterIdx"`
+	PosParagraphIdx int     `json:"posParagraphIdx"`
+	PosSeconds      float64 `json:"posSeconds"`
+	// LastReadAt is when the reading position was last saved (unix
+	// seconds), absent for a book never opened - the libraries' "Continue
+	// reading" entry is the book with the latest one.
+	LastReadAt            int64   `json:"lastReadAt,omitempty"`
 	ProgressPercent       float64 `json:"progressPercent"`
 	Finished              bool    `json:"finished"`
 	EstimatedTotalSeconds float64 `json:"estimatedTotalSeconds"`
@@ -105,6 +109,7 @@ func toBookSummary(b store.Book, chapters []store.ChapterSummary, stats store.Na
 		PosChapterIdx:   b.PosChapterIdx,
 		PosParagraphIdx: b.PosParagraphIdx,
 		PosSeconds:      b.PosSeconds,
+		LastReadAt:      b.LastReadAt,
 		MusicEnabled:    b.MusicEnabled,
 	}
 	if b.CoverExt != "" {
