@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"log"
 	"slices"
 	"strconv"
@@ -37,6 +38,8 @@ type Cached struct {
 	allGen  uint64
 	entries map[string]any
 	byTable map[string]map[string]struct{} // table -> keys depending on it
+	// narration is ChapterNarration's own cache, per book - see there.
+	narration map[string]*bookNarration
 
 	hits, misses atomic.Uint64
 }
@@ -67,11 +70,15 @@ func (c *Cached) invalidate(tables []string) {
 			c.allGen++
 			c.entries = map[string]any{}
 			c.byTable = map[string]map[string]struct{}{}
+			c.narration = nil
 			return
 		}
 	}
 	for _, t := range tables {
 		c.gens[t]++
+		if slices.Contains(narrationTables, t) {
+			c.narration = nil
+		}
 		for key := range c.byTable[t] {
 			delete(c.entries, key)
 		}
@@ -326,3 +333,89 @@ func (c *Cached) GetDefaultVoice() (DefaultVoice, error) {
 }
 
 var _ Store = (*Cached)(nil)
+
+// bookNarration is one book's cached ChapterNarration result: the chapters
+// as read for one voice assignment (key), and the audio fingerprint each
+// was read at or after.
+type bookNarration struct {
+	key      string
+	chapters []ChapterNarration
+	prints   map[string]string
+}
+
+// narrationTables are what ChapterNarration reads besides paragraph_audio.
+// A write to one drops every book's cached narration; paragraph_audio's
+// own (far more frequent) writes are found per chapter by fingerprint.
+var narrationTables = []string{"chapters", "paragraphs"}
+
+// ChapterNarration answers a whole-book call (no chapterIDs) from the last
+// result for the same book and voices, re-reading only the chapters whose
+// paragraph_audio rows changed since (ChapterAudioFingerprints). Why: the
+// library listing is rebuilt on every paragraph that finishes generating,
+// and the full query joins every paragraph in the book to its audio.
+func (c *Cached) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error) {
+	if len(chapterIDs) > 0 {
+		return c.Store.ChapterNarration(bookID, voiceID, overrides, chapterIDs)
+	}
+	var key strings.Builder
+	key.WriteString(voiceID)
+	for _, ov := range overrides {
+		fmt.Fprintf(&key, "\x00%s\x00%d\x00%s", ov.Speaker, ov.SpeakerIndex, ov.VoiceID)
+	}
+
+	c.mu.Lock()
+	gen := c.genLocked(narrationTables)
+	prev := c.narration[bookID]
+	c.mu.Unlock()
+
+	// Fingerprints are read before the chapters, so a write landing in
+	// between leaves a chapter newer than its fingerprint - re-read next
+	// time, never served stale.
+	prints, err := c.Store.ChapterAudioFingerprints(bookID)
+	if err != nil {
+		return nil, err
+	}
+	var chapters []ChapterNarration
+	if prev == nil || prev.key != key.String() {
+		c.misses.Add(1)
+		if chapters, err = c.Store.ChapterNarration(bookID, voiceID, overrides, nil); err != nil {
+			return nil, err
+		}
+	} else {
+		chapters = slices.Clone(prev.chapters)
+		var changed []string
+		for _, ch := range chapters {
+			if prints[ch.ID] != prev.prints[ch.ID] {
+				changed = append(changed, ch.ID)
+			}
+		}
+		if len(changed) == 0 {
+			c.hits.Add(1)
+			return chapters, nil
+		}
+		c.misses.Add(1)
+		fresh, err := c.Store.ChapterNarration(bookID, voiceID, overrides, changed)
+		if err != nil {
+			return nil, err
+		}
+		byID := make(map[string]ChapterNarration, len(fresh))
+		for _, ch := range fresh {
+			byID[ch.ID] = ch
+		}
+		for i, ch := range chapters {
+			if f, ok := byID[ch.ID]; ok {
+				chapters[i] = f
+			}
+		}
+	}
+
+	c.mu.Lock()
+	if c.genLocked(narrationTables) == gen {
+		if c.narration == nil {
+			c.narration = map[string]*bookNarration{}
+		}
+		c.narration[bookID] = &bookNarration{key: key.String(), chapters: slices.Clone(chapters), prints: prints}
+	}
+	c.mu.Unlock()
+	return chapters, nil
+}

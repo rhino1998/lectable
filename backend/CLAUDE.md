@@ -558,7 +558,18 @@ building/running `ttsworker` does, since both now link into that binary.
   and out. Writes need nothing extra as long as they go through
   `s.db`; a new hot read gets cached by adding one `cachedRead` override
   with the right tables (`GetBook` also depends on `books.position`).
-  Logs its hit rate every minute. **No FK `ON DELETE CASCADE`** —
+  Logs its hit rate every minute. `ChapterNarration` (per-chapter
+  paragraph/ready counts plus narration stats - what every book summary
+  and the `books` live topic are built from) is cached differently, per
+  book: a write to `chapters`/`paragraphs` drops it, but `paragraph_audio`
+  writes - one per generated paragraph - are found per chapter by
+  comparing `ChapterAudioFingerprints` (count and duration/chars/rowid
+  sums per voice and status, one covering-index pass), and only those
+  chapters are re-read. Measured on the live library (11 books, 165k
+  paragraphs, ~5k character-voice overrides): a `books` rebuild went from
+  ~460 ms (two whole-library joins) to ~45 ms while narration generates;
+  the first build after a `chapters`/`paragraphs` write is ~265 ms.
+  **No FK `ON DELETE CASCADE`** —
   `DeleteBook` deletes paragraphs → chapters → book explicitly in a
   transaction. Column
   is `content` not `text` (avoids ambiguity with the SQL `TEXT` type

@@ -110,12 +110,13 @@ func TestListChapterSummariesSpeakerVoiceOverrides(t *testing.T) {
 		t.Fatalf("expected 2/2 ready once Alice's own voice_id is matched via overrides, got %+v", withOverrides)
 	}
 
-	stats, err := s.BookNarrationStats(bookID, bookVoiceID, []SpeakerVoice{
+	narration, err := s.ChapterNarration(bookID, bookVoiceID, []SpeakerVoice{
 		{Speaker: "Alice", VoiceID: aliceVoiceID},
-	})
+	}, nil)
 	if err != nil {
-		t.Fatalf("BookNarrationStats (with overrides): %v", err)
+		t.Fatalf("ChapterNarration (with overrides): %v", err)
 	}
+	_, stats := SumNarration(narration)
 	if stats.ReadySeconds != 2.7 {
 		t.Fatalf("expected both paragraphs' 1.5+1.2=2.7 ready seconds counted, got %v", stats.ReadySeconds)
 	}
@@ -1690,15 +1691,12 @@ func TestListChapterSummariesNumberedSpeakerVoices(t *testing.T) {
 	if len(got) != 1 || got[0].ReadyCount != 3 {
 		t.Fatalf("got %+v, want all 3 lines ready under their own voices", got)
 	}
-	books, err := s.ListChapterSummariesForBooks([]BookVoice{{BookID: bookID, VoiceID: "book-voice"}}, []BookSpeakerVoice{
-		{BookID: bookID, Speaker: "Guard", VoiceID: "guard-voice"},
-		{BookID: bookID, Speaker: "Guard", SpeakerIndex: 2, VoiceID: "guard-2-voice"},
-	})
+	narration, err := s.ChapterNarration(bookID, "book-voice", overrides, nil)
 	if err != nil {
-		t.Fatalf("ListChapterSummariesForBooks: %v", err)
+		t.Fatalf("ChapterNarration: %v", err)
 	}
-	if len(books[bookID]) != 1 || books[bookID][0].ReadyCount != 3 {
-		t.Fatalf("batch form = %+v, want all 3 lines ready", books[bookID])
+	if len(narration) != 1 || narration[0].ReadyCount != 3 {
+		t.Fatalf("narration = %+v, want all 3 lines ready", narration)
 	}
 }
 
@@ -1826,16 +1824,13 @@ func TestParagraphAudioChapterCopy(t *testing.T) {
 		WHERE pa.chapter_id <> p.chapter_id OR pa.chars <> length(p.content)`).Scan(&wrong); err != nil || wrong != 0 {
 		t.Fatalf("%d audio rows disagree with their paragraph (err %v)", wrong, err)
 	}
-	stats, err := s.BookNarrationStats(bookID, voice, nil)
+	narration, err := s.ChapterNarration(bookID, voice, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, stats := SumNarration(narration)
 	if want := (NarrationStats{TotalChars: 18, ReadyChars: 12, ReadySeconds: 3.5}); stats != want {
-		t.Errorf("BookNarrationStats = %+v, want %+v", stats, want)
-	}
-	batch, err := s.BookNarrationStatsForBooks([]BookVoice{{BookID: bookID, VoiceID: voice}}, nil)
-	if err != nil || batch[bookID] != stats {
-		t.Errorf("BookNarrationStatsForBooks = %+v (err %v), want %+v", batch[bookID], err, stats)
+		t.Errorf("ChapterNarration stats = %+v, want %+v", stats, want)
 	}
 	sums, err := s.ListChapterSummaries(bookID, voice, nil)
 	if err != nil || len(sums) != 1 || sums[0].ParagraphCount != 3 || sums[0].ReadyCount != 2 {

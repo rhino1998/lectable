@@ -40,12 +40,10 @@ interface LectableApi {
     ): BookSummaryDto
 
     /**
-     * handleListBooks batch-fetches every book's chapter summaries and
-     * narration stats in two queries total (one per store.ListChapterSummariesForBooks/
-     * BookNarrationStatsForBooks call), not two queries per book -
-     * buildBookSummary's own per-book pair of queries is fine for the
-     * single-book callers (upload, get-book), but looping it once per book
-     * here meant 2*N whole-book scans every time the library page loaded.
+     * handleListBooks builds every book's summary. Each costs a whole-book
+     * read the first time; after that store.Cached.ChapterNarration re-reads
+     * only the chapters whose audio changed, which is what keeps the "books"
+     * live topic cheap while narration generates.
      */
     @GET("api/books")
     suspend fun listBooks(): List<BookSummaryDto>

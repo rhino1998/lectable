@@ -17,8 +17,8 @@ type Store interface {
 	AddCharacterAliases(characterID string, aliases ...string) error
 	AppendMusicRegions(chapterID string, regions []MusicRegionInput, lastParagraphIdx int) ([]MusicRegion, error)
 	AudioRefs() (AudioRefs, error)
-	BookNarrationStats(bookID, voiceID string, overrides []SpeakerVoice) (NarrationStats, error)
-	BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string]NarrationStats, error)
+	ChapterAudioFingerprints(bookID string) (map[string]string, error)
+	ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error)
 	CharacterVoiceForModel(characterID, cloneModel string) (string, error)
 	CharacterVoicesForModel(characterIDs []string, cloneModel string) (map[string]string, error)
 	ClearBookLighting(bookID string) error
@@ -67,7 +67,6 @@ type Store interface {
 	ListBooks() ([]Book, error)
 	ListBreaks(chapterID string) ([]Break, error)
 	ListChapterSummaries(bookID, voiceID string, overrides []SpeakerVoice) ([]ChapterSummary, error)
-	ListChapterSummariesForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string][]ChapterSummary, error)
 	ListCharacters(scope string) ([]Character, error)
 	ListImages(chapterID string) ([]Image, error)
 	ListMusicRegions(chapterID string) ([]MusicRegion, error)

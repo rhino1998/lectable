@@ -2,11 +2,12 @@ package store
 
 import (
 	"database/sql"
+	"strconv"
 	"strings"
 )
 
 // SpeakerVoice pairs a paragraph's speaker attribution with its own
-// resolved voice_id, letting ListChapterSummaries/BookNarrationStats count
+// resolved voice_id, letting ListChapterSummaries/ChapterNarration count
 // readiness per-paragraph-voice instead of assuming every paragraph in the
 // book shares its one book-level voice - true only when Book.MultiVoice is
 // off or no character has an assigned voice yet. store can't resolve this
@@ -96,112 +97,143 @@ func (s *SQLiteStore) ListChapterSummaries(bookID, voiceID string, overrides []S
 	return out, rows.Err()
 }
 
-// BookVoice pairs a book with its currently-resolved voice_id, for the
-// batch queries below - each book in a library listing can be narrated by
-// a different voice, so a single shared voiceID (as ListChapterSummaries/
-// BookNarrationStats take) doesn't work across more than one book at once.
-type BookVoice struct {
-	BookID  string
-	VoiceID string
+// ChapterNarration is one chapter's ChapterSummary plus its share of the
+// book's NarrationStats - everything a book listing shows about narration
+// progress, per chapter, so a caller can keep the chapters that didn't
+// change and re-read only the ones that did (see Cached.ChapterNarration).
+type ChapterNarration struct {
+	ChapterSummary
+	NarrationStats
 }
 
-// BookSpeakerVoice is BookVoice's per-character counterpart for the batch
-// queries below - SpeakerVoice plus a BookID, since speaker names aren't
-// globally unique across an unrelated book/series.
-type BookSpeakerVoice struct {
-	BookID       string
-	Speaker      string
-	SpeakerIndex int
-	VoiceID      string
-}
-
-// bookVoiceValues builds a `VALUES (?, ?), (?, ?), ...` fragment plus its
-// matching args, shared by the two batch queries below.
-func bookVoiceValues(bookVoices []BookVoice) (fragment string, args []any) {
-	rows := make([]string, len(bookVoices))
-	args = make([]any, 0, len(bookVoices)*2)
-	for i, bv := range bookVoices {
-		rows[i] = "(CAST(? AS TEXT), CAST(? AS TEXT))"
-		args = append(args, bv.BookID, bv.VoiceID)
+// SumNarration splits a book's chapters into its chapter summaries and
+// whole-book NarrationStats.
+func SumNarration(chapters []ChapterNarration) ([]ChapterSummary, NarrationStats) {
+	var stats NarrationStats
+	summaries := make([]ChapterSummary, len(chapters))
+	for i, c := range chapters {
+		summaries[i] = c.ChapterSummary
+		stats.TotalChars += c.TotalChars
+		stats.ReadyChars += c.ReadyChars
+		stats.ReadySeconds += c.ReadySeconds
 	}
-	return strings.Join(rows, ", "), args
+	return summaries, stats
 }
 
-// bookSpeakerVoiceValues is bookVoiceValues' per-character counterpart,
-// building a `VALUES (?, ?, ?, ?), ...` fragment (book_id, speaker, speaker_index, voice_id)
-// for the batch queries' own speaker_voice CTE.
-func bookSpeakerVoiceValues(overrides []BookSpeakerVoice) (fragment string, args []any) {
-	rows := make([]string, len(overrides))
-	args = make([]any, 0, len(overrides)*4)
-	for i, ov := range overrides {
-		rows[i] = "(CAST(? AS TEXT), CAST(? AS TEXT), CAST(? AS INTEGER), CAST(? AS TEXT))"
-		args = append(args, ov.BookID, ov.Speaker, ov.SpeakerIndex, ov.VoiceID)
+// ChapterNarration is ListChapterSummaries with each chapter's narration
+// stats alongside: its text length, and the length and duration of what's
+// ready under voiceID (or, per speaker, under overrides - see SpeakerVoice).
+// Stats are voice-scoped because narration pace is voice-specific: another
+// voice's generated seconds would miscalibrate the estimate for this one.
+// A non-empty chapterIDs limits the result to those chapters.
+func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error) {
+	only := ""
+	onlyArgs := make([]any, len(chapterIDs))
+	if len(chapterIDs) > 0 {
+		only = " AND c.id IN (?" + strings.Repeat(", ?", len(chapterIDs)-1) + ")"
+		for i, id := range chapterIDs {
+			onlyArgs[i] = id
+		}
 	}
-	return strings.Join(rows, ", "), args
-}
-
-// ListChapterSummariesForBooks is ListChapterSummaries' batch counterpart:
-// one query across every book in bookVoices instead of one query per book.
-// Built for httpapi.handleListBooks, which used to call ListChapterSummaries
-// once per book in the library - fine for one book, but 2*N full-book
-// scans (this, plus BookNarrationStatsForBooks's sibling) for a whole
-// library. Joins against a small VALUES list of (book_id,
-// voice_id) pairs instead, so the whole library costs one scan of
-// chapters/paragraphs/paragraph_audio, not one scan per book. Returns a map
-// keyed by book id, each chapter list already in idx order; a book with no
-// chapters is simply absent.
-// overrides is BookSpeakerVoice's flattened form (see SpeakerVoice's own
-// doc comment) - empty for a book with no multi-voice character
-// assignments, so most libraries pay nothing extra over the old query.
-func (s *SQLiteStore) ListChapterSummariesForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string][]ChapterSummary, error) {
-	out := make(map[string][]ChapterSummary, len(bookVoices))
-	if len(bookVoices) == 0 {
-		return out, nil
-	}
-	bvFragment, bvArgs := bookVoiceValues(bookVoices)
 
 	var rows *sql.Rows
 	var err error
 	if len(overrides) == 0 {
+		// One voice for the whole book: ready audio is summed straight off
+		// paragraph_audio's own chapter_id/chars (idx_paragraph_audio_chapter)
+		// without visiting each paragraph.
+		args := append([]any{voiceID, bookID}, onlyArgs...)
 		rows, err = s.db.Query(`
-			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`)
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
-				(SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id) AS total,
-				(SELECT COUNT(*) FROM paragraph_audio pa WHERE pa.chapter_id = c.id AND pa.voice_id = bv.voice_id AND pa.status = 'ready') AS ready
+				(SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id),
+				(SELECT COALESCE(SUM(LENGTH(p.content)), 0) FROM paragraphs p WHERE p.chapter_id = c.id),
+				COUNT(pa.paragraph_id),
+				COALESCE(SUM(pa.chars), 0),
+				COALESCE(SUM(pa.duration_seconds), 0)
 			FROM chapters c
-			JOIN book_voice bv ON bv.book_id = c.book_id
-			ORDER BY c.book_id, c.idx ASC`, bvArgs...)
-	} else {
-		svFragment, svArgs := bookSpeakerVoiceValues(overrides)
-		args := append(append([]any{}, bvArgs...), svArgs...)
-		rows, err = s.db.Query(`
-			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`),
-				speaker_voice(book_id, speaker, speaker_index, voice_id) AS (VALUES `+svFragment+`)
-			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
-				COUNT(p.id) AS total,
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
-			FROM chapters c
-			JOIN book_voice bv ON bv.book_id = c.book_id
-			LEFT JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN speaker_voice sv ON sv.book_id = c.book_id AND sv.speaker = p.speaker AND sv.speaker_index = 0
-			LEFT JOIN speaker_voice svm ON svm.book_id = c.book_id AND svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, bv.voice_id)
+			LEFT JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready'
+			WHERE c.book_id = ?`+only+`
 			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
-			ORDER BY c.book_id, c.idx ASC`, args...)
+			ORDER BY c.idx ASC`, args...)
+	} else {
+		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
+		args := append(append(append([]any{}, valuesArgs...), voiceID, bookID), onlyArgs...)
+		rows, err = s.db.Query(`
+			WITH speaker_voice(speaker, speaker_index, voice_id) AS (VALUES `+valuesFragment+`)
+			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
+				COUNT(p.id),
+				COALESCE(SUM(LENGTH(p.content)), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
+				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
+			FROM chapters c
+			LEFT JOIN paragraphs p ON p.chapter_id = c.id
+			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0
+			LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
+			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
+			WHERE c.book_id = ?`+only+`
+			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
+			ORDER BY c.idx ASC`, args...)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
+	var out []ChapterNarration
 	for rows.Next() {
-		var cs ChapterSummary
-		if err := rows.Scan(&cs.ID, &cs.BookID, &cs.Idx, &cs.Title, &cs.Passes, &cs.ParagraphCount, &cs.ReadyCount); err != nil {
+		var cn ChapterNarration
+		if err := rows.Scan(&cn.ID, &cn.BookID, &cn.Idx, &cn.Title, &cn.Passes,
+			&cn.ParagraphCount, &cn.TotalChars, &cn.ReadyCount, &cn.ReadyChars, &cn.ReadySeconds); err != nil {
 			return nil, err
 		}
-		out[cs.BookID] = append(out[cs.BookID], cs)
+		out = append(out, cn)
 	}
 	return out, rows.Err()
+}
+
+// ChapterAudioFingerprints summarizes the paragraph_audio rows of each of
+// bookID's chapters (count, duration, length and rowid sums per voice and
+// status) as an opaque string that changes whenever a chapter's audio rows
+// do - one pass over idx_paragraph_audio_chapter, far cheaper than
+// ChapterNarration's per-paragraph joins. A chapter with no audio rows is
+// absent. Cached.ChapterNarration compares these to find the chapters to
+// re-read.
+func (s *SQLiteStore) ChapterAudioFingerprints(bookID string) (map[string]string, error) {
+	rows, err := s.db.Query(`
+		SELECT pa.chapter_id, pa.voice_id, pa.status, COUNT(*), SUM(pa.duration_seconds), SUM(pa.chars), SUM(pa.rowid)
+		FROM paragraph_audio pa
+		WHERE pa.chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)
+		GROUP BY pa.chapter_id, pa.voice_id, pa.status`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	prints := map[string][]byte{}
+	for rows.Next() {
+		var chapterID, voiceID, status string
+		var n, chars, rowids int64
+		var seconds float64
+		if err := rows.Scan(&chapterID, &voiceID, &status, &n, &seconds, &chars, &rowids); err != nil {
+			return nil, err
+		}
+		b := prints[chapterID]
+		b = append(append(append(append(b, voiceID...), 0), status...), 0)
+		b = strconv.AppendInt(b, n, 10)
+		b = strconv.AppendFloat(append(b, 0), seconds, 'g', -1, 64)
+		b = strconv.AppendInt(append(b, 0), chars, 10)
+		b = strconv.AppendInt(append(b, 0), rowids, 10)
+		prints[chapterID] = append(b, '\n')
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(prints))
+	for id, b := range prints {
+		out[id] = string(b)
+	}
+	return out, nil
 }
 
 func (s *SQLiteStore) GetChapterByID(id string) (*Chapter, error) {

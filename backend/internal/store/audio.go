@@ -5,65 +5,6 @@ import (
 	"strings"
 )
 
-// BookNarrationStatsForBooks is BookNarrationStats' batch counterpart - see
-// ListChapterSummariesForBooks's doc comment for why (both overrides and
-// the batching itself). A book with no paragraphs is simply absent from
-// the returned map; callers should treat that the same as a zero-value
-// NarrationStats.
-func (s *SQLiteStore) BookNarrationStatsForBooks(bookVoices []BookVoice, overrides []BookSpeakerVoice) (map[string]NarrationStats, error) {
-	out := make(map[string]NarrationStats, len(bookVoices))
-	if len(bookVoices) == 0 {
-		return out, nil
-	}
-	bvFragment, bvArgs := bookVoiceValues(bookVoices)
-
-	var rows *sql.Rows
-	var err error
-	if len(overrides) == 0 {
-		rows, err = s.db.Query(`
-			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`)
-			SELECT bv.book_id,
-				(SELECT COALESCE(SUM(LENGTH(p.content)), 0) FROM chapters c JOIN paragraphs p ON p.chapter_id = c.id WHERE c.book_id = bv.book_id),
-				(SELECT COALESCE(SUM(pa.chars), 0) FROM chapters c JOIN paragraph_audio pa
-					ON pa.chapter_id = c.id AND pa.voice_id = bv.voice_id AND pa.status = 'ready' WHERE c.book_id = bv.book_id),
-				(SELECT COALESCE(SUM(pa.duration_seconds), 0) FROM chapters c JOIN paragraph_audio pa
-					ON pa.chapter_id = c.id AND pa.voice_id = bv.voice_id AND pa.status = 'ready' WHERE c.book_id = bv.book_id)
-			FROM book_voice bv
-			WHERE EXISTS (SELECT 1 FROM chapters c JOIN paragraphs p ON p.chapter_id = c.id WHERE c.book_id = bv.book_id)`, bvArgs...)
-	} else {
-		svFragment, svArgs := bookSpeakerVoiceValues(overrides)
-		args := append(append([]any{}, bvArgs...), svArgs...)
-		rows, err = s.db.Query(`
-			WITH book_voice(book_id, voice_id) AS (VALUES `+bvFragment+`),
-				speaker_voice(book_id, speaker, speaker_index, voice_id) AS (VALUES `+svFragment+`)
-			SELECT c.book_id,
-				COALESCE(SUM(LENGTH(p.content)), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
-			FROM chapters c
-			JOIN book_voice bv ON bv.book_id = c.book_id
-			JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN speaker_voice sv ON sv.book_id = c.book_id AND sv.speaker = p.speaker AND sv.speaker_index = 0
-			LEFT JOIN speaker_voice svm ON svm.book_id = c.book_id AND svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, bv.voice_id)
-			GROUP BY c.book_id`, args...)
-	}
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var bookID string
-		var stats NarrationStats
-		if err := rows.Scan(&bookID, &stats.TotalChars, &stats.ReadyChars, &stats.ReadySeconds); err != nil {
-			return nil, err
-		}
-		out[bookID] = stats
-	}
-	return out, rows.Err()
-}
-
 // AudioState is one (paragraph, voice) pair's generation status, as looked
 // up by ParagraphAudioStatuses.
 type AudioState struct {
@@ -639,48 +580,4 @@ type NarrationStats struct {
 	TotalChars   int64
 	ReadyChars   int64
 	ReadySeconds float64
-}
-
-// BookNarrationStats is scoped to voiceID because narration pace is
-// voice-specific (different presets/instructs speak at different speeds) -
-// mixing another voice's generated seconds in would miscalibrate the
-// estimate for the one currently selected. overrides is ListChapterSummaries'
-// own SpeakerVoice mechanism, for the same per-character-voice reason.
-func (s *SQLiteStore) BookNarrationStats(bookID, voiceID string, overrides []SpeakerVoice) (NarrationStats, error) {
-	var stats NarrationStats
-	var err error
-	if len(overrides) == 0 {
-		// One voice for the whole book: ready audio is summed straight off
-		// paragraph_audio's own chapter_id/chars (idx_paragraph_audio_chapter)
-		// without visiting each paragraph.
-		err = s.db.QueryRow(`
-			SELECT
-				(SELECT COALESCE(SUM(LENGTH(p.content)), 0) FROM chapters c JOIN paragraphs p ON p.chapter_id = c.id WHERE c.book_id = ?),
-				COALESCE(SUM(pa.chars), 0),
-				COALESCE(SUM(pa.duration_seconds), 0)
-			FROM chapters c
-			JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready'
-			WHERE c.book_id = ?`, bookID, voiceID, bookID).
-			Scan(&stats.TotalChars, &stats.ReadyChars, &stats.ReadySeconds)
-	} else {
-		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
-		args := append(append([]any{}, valuesArgs...), voiceID, bookID)
-		err = s.db.QueryRow(`
-			WITH speaker_voice(speaker, speaker_index, voice_id) AS (VALUES `+valuesFragment+`)
-			SELECT
-				COALESCE(SUM(LENGTH(p.content)), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
-			FROM paragraphs p
-			JOIN chapters c ON c.id = p.chapter_id
-			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0
-			LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
-			WHERE c.book_id = ?`, args...).
-			Scan(&stats.TotalChars, &stats.ReadyChars, &stats.ReadySeconds)
-	}
-	if err != nil {
-		return NarrationStats{}, err
-	}
-	return stats, nil
 }

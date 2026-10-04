@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestCachedServesRepeatReadsFromMemory(t *testing.T) {
 	c := NewCached(openTestStore(t))
@@ -131,4 +134,61 @@ func TestCachedAllTablesClearsEverything(t *testing.T) {
 	if _, misses := c.Stats(); misses != 2 {
 		t.Fatalf("misses = %d, want 2", misses)
 	}
+}
+
+// ChapterNarration's cached form re-reads only what a write changed, and
+// always agrees with the uncached query.
+func TestCachedChapterNarrationFollowsWrites(t *testing.T) {
+	inner := openTestStore(t)
+	c := NewCached(inner)
+	bookID, chapterID := oneChapterBook(t, inner, "", 0, "One.", `"Two," said Alice.`, "Three.")
+	paras, err := inner.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overrides := []SpeakerVoice{{Speaker: "Alice", VoiceID: "alice-voice"}}
+
+	check := func(step, voiceID string, overrides []SpeakerVoice) {
+		t.Helper()
+		got, err := c.ChapterNarration(bookID, voiceID, overrides, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		want, err := inner.ChapterNarration(bookID, voiceID, overrides, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: cached %+v, want %+v", step, got, want)
+		}
+	}
+
+	check("empty", "book-voice", overrides)
+	if err := inner.SetParagraphReady(paras[0].ID, "book-voice", 1.5); err != nil {
+		t.Fatal(err)
+	}
+	check("one ready", "book-voice", overrides)
+	hits, _ := c.Stats()
+	check("unchanged", "book-voice", overrides)
+	if after, _ := c.Stats(); after != hits+1 {
+		t.Fatalf("an unchanged book wasn't served from the cache (hits %d -> %d)", hits, after)
+	}
+
+	if err := inner.SetParagraphReady(paras[2].ID, "book-voice", 1.5); err != nil {
+		t.Fatal(err)
+	}
+	check("two ready", "book-voice", overrides)
+	if err := inner.SetParagraphSpeakers(chapterID, map[int]string{1: "Alice"}); err != nil {
+		t.Fatal(err)
+	}
+	check("attributed", "book-voice", overrides)
+	if err := inner.SetParagraphReady(paras[1].ID, "alice-voice", 2); err != nil {
+		t.Fatal(err)
+	}
+	check("character voice ready", "book-voice", overrides)
+	check("other voices", "other-voice", nil)
+	if err := inner.ResetParagraphAudio(paras[0].ID, "book-voice"); err != nil {
+		t.Fatal(err)
+	}
+	check("reset", "book-voice", overrides)
 }

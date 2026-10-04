@@ -172,21 +172,18 @@ func (s *Server) buildBookSummary(b store.Book) (bookSummaryDTO, []store.Chapter
 		return bookSummaryDTO{}, nil, err
 	}
 
-	chapters, err := s.Store.ListChapterSummaries(b.ID, voiceID, overrides)
+	narration, err := s.Store.ChapterNarration(b.ID, voiceID, overrides, nil)
 	if err != nil {
 		return bookSummaryDTO{}, nil, err
 	}
-	stats, err := s.Store.BookNarrationStats(b.ID, voiceID, overrides)
-	if err != nil {
-		return bookSummaryDTO{}, nil, err
-	}
+	chapters, stats := store.SumNarration(narration)
 	dto := toBookSummary(b, chapters, stats)
 	dto.Preprocessing = s.isPreprocessing(b.ID)
 	return dto, chapters, nil
 }
 
 // characterVoiceOverrides resolves book's own character roster into
-// ListChapterSummaries/BookNarrationStats' SpeakerVoice form - one entry
+// ListChapterSummaries/ChapterNarration's SpeakerVoice form - one entry
 // per character, each mapping their name (exactly what paragraphs.speaker
 // stores for their dialogue) to their own fully-resolved voice_id, the
 // same resolution internal/narration.Resolver.ForParagraph/handleGetChapter
@@ -568,12 +565,10 @@ func extensionForMediaType(mt string) string {
 	}
 }
 
-// handleListBooks batch-fetches every book's chapter summaries and
-// narration stats in two queries total (one per store.ListChapterSummariesForBooks/
-// BookNarrationStatsForBooks call), not two queries per book -
-// buildBookSummary's own per-book pair of queries is fine for the
-// single-book callers (upload, get-book), but looping it once per book
-// here meant 2*N whole-book scans every time the library page loaded.
+// handleListBooks builds every book's summary. Each costs a whole-book
+// read the first time; after that store.Cached.ChapterNarration re-reads
+// only the chapters whose audio changed, which is what keeps the "books"
+// live topic cheap while narration generates.
 func (s *Server) handleListBooks(w http.ResponseWriter, r *http.Request) {
 	v, err := s.buildBooks()
 	writeBuilt(w, v, err)
@@ -584,41 +579,12 @@ func (s *Server) buildBooks() ([]bookSummaryDTO, error) {
 	if err != nil {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
-
-	bookVoices := make([]store.BookVoice, len(books))
-	var overrides []store.BookSpeakerVoice
-	for i, b := range books {
-		resolved, err := s.Narration.BookVoice(&b)
-		if err != nil {
-			return nil, httpError(http.StatusInternalServerError, err.Error())
-		}
-		bookVoices[i] = store.BookVoice{BookID: b.ID, VoiceID: resolved.VoiceID()}
-
-		// Only a MultiVoice book with an actual character roster pays for
-		// this - characterVoiceOverrides short-circuits to nil otherwise,
-		// so most libraries never issue these extra (small, character-table-
-		// scoped, not paragraph-scoped) queries at all.
-		bookOverrides, err := s.characterVoiceOverrides(&b, resolved)
-		if err != nil {
-			return nil, httpError(http.StatusInternalServerError, err.Error())
-		}
-		for _, ov := range bookOverrides {
-			overrides = append(overrides, store.BookSpeakerVoice{BookID: b.ID, Speaker: ov.Speaker, SpeakerIndex: ov.SpeakerIndex, VoiceID: ov.VoiceID})
-		}
-	}
-	chaptersByBook, err := s.Store.ListChapterSummariesForBooks(bookVoices, overrides)
-	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
-	}
-	statsByBook, err := s.Store.BookNarrationStatsForBooks(bookVoices, overrides)
-	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
-	}
-
 	out := make([]bookSummaryDTO, 0, len(books))
 	for _, b := range books {
-		dto := toBookSummary(b, chaptersByBook[b.ID], statsByBook[b.ID])
-		dto.Preprocessing = s.isPreprocessing(b.ID)
+		dto, _, err := s.buildBookSummary(b)
+		if err != nil {
+			return nil, httpError(http.StatusInternalServerError, err.Error())
+		}
 		out = append(out, dto)
 	}
 	return out, nil
