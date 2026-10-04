@@ -1814,28 +1814,53 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 			fmt.Fprintf(&user, "- %s\n", oneLine(o))
 		}
 	}
-	if len(costars) > 0 {
-		user.WriteString("\nAlready cast:\n")
-		for _, cv := range costars {
-			fmt.Fprintf(&user, "- %s: %s\n", cv.Name, oneLine(cv.Instruct))
+	// A casting that copies a co-star is retried without that co-star in
+	// "Already cast", and the last attempt shows none: the model can't
+	// copy wording it isn't shown, where re-asking with the same prompt
+	// usually copied again (the closer the two characters, the more
+	// reliably) until the characterization failed for good. A
+	// casting written without a co-star in view is the character's own
+	// even when it comes out close to theirs, so only the co-stars shown
+	// are checked.
+	shown := costars
+	copied := map[string]bool{}
+	result, err := retryParse(func(attempt int) (string, error) {
+		if len(copied) > 0 {
+			shown = nil
+			if attempt < maxGenerateRetries {
+				for _, cv := range costars {
+					if !copied[cv.Name] {
+						shown = append(shown, cv)
+					}
+				}
+			}
 		}
-	}
-
-	// generateAndParse's retry covers this validation step too, not just
-	// JSON parsing elsewhere in this package - a too-short instruct or
-	// refLine is the same kind of one-off model hiccup (see
-	// parseCharacterization's own comment), and a fresh generation attempt
-	// often just doesn't hit it a second time.
-	result, err := generateAndParse(ctx, c, characterizeSystemPrompt, user.String(), 0.3, characterizeMaxTokens, func(content string) (characterization, error) {
+		prompt := user.String()
+		if len(shown) > 0 {
+			var cast strings.Builder
+			cast.WriteString("\nAlready cast:\n")
+			for _, cv := range shown {
+				fmt.Fprintf(&cast, "- %s: %s\n", cv.Name, oneLine(cv.Instruct))
+			}
+			prompt += cast.String()
+		}
+		return c.generate(ctx, characterizeSystemPrompt, prompt, 0.3, characterizeMaxTokens)
+	}, func(content string) (characterization, error) {
+		// The retry covers this validation too, not just JSON parsing - a
+		// too-short instruct or refLine is the same kind of one-off model
+		// hiccup (see parseCharacterization's own comment), and a fresh
+		// generation often just doesn't hit it a second time.
 		result, err := parseCharacterization(content)
 		if err != nil {
 			return result, err
 		}
-		for _, cv := range costars {
+		for _, cv := range shown {
 			if wordOverlap(result.Instruct, cv.Instruct) > maxCostarOverlap {
+				copied[cv.Name] = true
 				return characterization{}, fmt.Errorf("llm copied %s's casting: %q", cv.Name, result.Instruct)
 			}
 			if mentionsName(result.Instruct, cv.Name) {
+				copied[cv.Name] = true
 				return characterization{}, fmt.Errorf("llm named co-star %s in the casting: %q", cv.Name, result.Instruct)
 			}
 		}
@@ -1894,7 +1919,8 @@ func parseCharacterization(content string) (characterization, error) {
 }
 
 // maxCostarOverlap is the most of its words a characterization may share
-// with a co-star's (wordOverlap) before it counts as a copy and is retried:
+// with a co-star's (wordOverlap) before it counts as a copy and is retried
+// (without that co-star in view - see CharacterizeVoice):
 // shown "Already cast" voices, the model once returned Mizhu's casting word
 // for word for Sessi, a god ("a young male swampkin... prominent ears").
 // Honest castings in one prompt style share less than half their words

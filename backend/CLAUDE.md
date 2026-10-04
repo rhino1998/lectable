@@ -980,7 +980,12 @@ building/running `ttsworker` does, since both now link into that binary.
        cast as "a young male swampkin"), so a reply sharing more than 0.6
        of its words with a co-star's (`wordOverlap`, Jaccard;
        `maxCostarOverlap`) is retried - honest castings topped out at 0.44
-       over 276 pairs. Still weak for leads whose sampled lines don't show
+       over 276 pairs. The retry drops the copied co-star from "Already
+       cast" and the last attempt shows none, checking only the co-stars
+       shown: re-asked with the same prompt the model copied again
+       (in one bulk run Underverse's Captain/Doctor/Dwarf/Heph each failed
+       permanently, at 0.8-1.0 overlap with Captain West/Mick/Bob/Oren),
+       and it can't copy wording it isn't shown. Still weak for leads whose sampled lines don't show
        who they are (a per-character dossier, e.g. per-cast-member notes
        from the summary pass merged once per character, is the next step).
 

@@ -48,6 +48,40 @@ func TestCharacterizeVoiceRetriesCostarCopy(t *testing.T) {
 	}
 }
 
+// A model that keeps copying whichever co-stars it is shown still ends up
+// with a casting: each retry hides the co-star it copied, and the last
+// attempt shows none, so nothing it writes there can count as a copy.
+func TestCharacterizeVoiceHidesCopiedCostars(t *testing.T) {
+	bob := "Speak as a middle-aged dwarf with a Scottish accent. Use a lower pitch with a rough, gravelly timbre to convey a sturdy, earthy presence."
+	oren := "Speak as an elderly dwarf man. Use a deep, resonant pitch with a broad Scottish accent. Keep the pace moderate and rhythmic, warm and paternal."
+	ref := "The morning light always feels like a gift to me. I try to thank everyone who makes the day possible. It is good to be among friends who listen."
+	reply := func(instruct string) string {
+		return `{"evidence": "none", "instruct": "` + instruct + `", "refLine": "` + ref + `"}`
+	}
+	llm := &replyLLM{replies: []string{reply(bob), reply(oren), reply(bob)}}
+	c := NewClient(Config{}, llm)
+	costars := []CastVoice{{Name: "Bob", Instruct: bob}, {Name: "Oren", Instruct: oren}}
+	instruct, _, err := c.CharacterizeVoice(context.Background(), "Dwarf", true, "he/him", nil, nil, nil, nil, costars)
+	if err != nil {
+		t.Fatalf("CharacterizeVoice: %v", err)
+	}
+	if instruct != bob {
+		t.Fatalf("instruct = %q, want the last attempt's casting", instruct)
+	}
+	if len(llm.users) != 3 {
+		t.Fatalf("calls = %d, want 3", len(llm.users))
+	}
+	if !strings.Contains(llm.users[0], "- Bob: ") || !strings.Contains(llm.users[0], "- Oren: ") {
+		t.Fatalf("first attempt lacks a co-star:\n%s", llm.users[0])
+	}
+	if strings.Contains(llm.users[1], "- Bob: ") || !strings.Contains(llm.users[1], "- Oren: ") {
+		t.Fatalf("second attempt should show Oren only:\n%s", llm.users[1])
+	}
+	if strings.Contains(llm.users[2], "Already cast") {
+		t.Fatalf("last attempt still shows co-stars:\n%s", llm.users[2])
+	}
+}
+
 func TestWordOverlap(t *testing.T) {
 	if got := wordOverlap("Speak as a calm man.", "speak as a calm man"); got != 1 {
 		t.Fatalf("identical overlap = %v", got)
