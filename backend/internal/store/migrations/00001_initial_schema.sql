@@ -1,6 +1,11 @@
-package store
+-- The library's schema as it stood when migrations were introduced. Every
+-- statement is IF NOT EXISTS, so applying this to a library created before
+-- then changes nothing and only records it as version 1.
+--
+-- Never edit a migration once a library has applied it: add a new file.
 
-const schema = `
+-- +goose Up
+-- +goose StatementBegin
 CREATE TABLE IF NOT EXISTS books (
 	id TEXT PRIMARY KEY,
 	title TEXT NOT NULL,
@@ -499,4 +504,4 @@ CREATE TRIGGER IF NOT EXISTS paragraphs_fts_update AFTER UPDATE OF content ON pa
 	INSERT INTO paragraphs_fts(paragraphs_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
 	INSERT INTO paragraphs_fts(rowid, content) VALUES (new.rowid, new.content);
 END;
-`
+-- +goose StatementEnd

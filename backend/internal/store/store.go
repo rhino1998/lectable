@@ -51,7 +51,8 @@ func dsn(path string, readOnly bool) string {
 	return "file:" + (&url.URL{Path: path}).EscapedPath() + "?" + q.Encode()
 }
 
-// Open opens (creating if needed) the SQLite library at path: one write
+// Open opens (creating if needed) the SQLite library at path and applies
+// any migrations it hasn't had (see migrate): one write
 // connection, since SQLite allows one writer at a time, plus a pool of
 // read-only connections that Query/QueryRow outside a transaction use.
 func Open(path string) (*SQLiteStore, error) {
@@ -61,11 +62,8 @@ func Open(path string) (*SQLiteStore, error) {
 	}
 	write.SetMaxOpenConns(1)
 
-	if _, err := write.Exec(schema); err != nil {
+	if err := migrate(write); err != nil {
 		write.Close()
-		if strings.Contains(err.Error(), "no such module: fts5") {
-			return nil, fmt.Errorf("apply schema: %w (build with -tags sqlite_fts5)", err)
-		}
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
 	if _, err := write.Exec(`INSERT INTO default_voice (id) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM default_voice)`); err != nil {
@@ -89,7 +87,7 @@ func Open(path string) (*SQLiteStore, error) {
 
 func loadColumns(db *sql.DB) (map[string][]tableColumn, error) {
 	rows, err := db.Query(`SELECT m.name, p.name, p.type FROM sqlite_master m JOIN pragma_table_info(m.name) p
-		WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name NOT LIKE 'paragraphs_fts%' ORDER BY m.name, p.cid`)
+		WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name NOT LIKE 'paragraphs_fts%' AND m.name <> '` + migrationsTable + `' ORDER BY m.name, p.cid`)
 	if err != nil {
 		return nil, err
 	}
@@ -105,14 +103,6 @@ func loadColumns(db *sql.DB) (map[string][]tableColumn, error) {
 		out[table] = append(out[table], c)
 	}
 	return out, rows.Err()
-}
-
-// Analyze gathers the table statistics the query planner uses - worth
-// running after a bulk load (cmd/duck2sqlite); Close keeps them current
-// afterwards.
-func (s *SQLiteStore) Analyze() error {
-	_, err := s.db.DB.Exec(`ANALYZE`)
-	return err
 }
 
 func (s *SQLiteStore) Close() error {

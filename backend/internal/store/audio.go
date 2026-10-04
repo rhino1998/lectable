@@ -87,7 +87,7 @@ func (s *SQLiteStore) CountReadyAudioForSpeaker(bookID, speaker, voiceID string)
 // at once: speaker ("" folded into "Narrator") -> voice_id -> how many of
 // that speaker's paragraphs have ready audio in that voice. One grouped
 // query - the Speakers table used to issue one count per speaker, which on
-// a book with hundreds of characters held the single DuckDB connection for
+// a book with hundreds of characters held the database connection for
 // seconds per build.
 func (s *SQLiteStore) ReadyAudioCountsBySpeaker(bookID string) (map[string]map[string]int, error) {
 	rows, err := s.db.Query(`

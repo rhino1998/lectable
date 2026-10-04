@@ -203,59 +203,6 @@ const backfillAudioChapters = `UPDATE paragraph_audio SET
 		chars = (SELECT length(p.content) FROM paragraphs p WHERE p.id = paragraph_id)
 	WHERE chapter_id = '' AND EXISTS (SELECT 1 FROM paragraphs p WHERE p.id = paragraph_id)`
 
-// BackfillAudioChapters runs backfillAudioChapters over the whole library,
-// for cmd/duck2sqlite: the DuckDB schema had neither column.
-func (s *SQLiteStore) BackfillAudioChapters() (int64, error) {
-	res, err := s.db.Exec(backfillAudioChapters)
-	if err != nil {
-		return 0, err
-	}
-	return res.RowsAffected()
-}
-
-// Tables lists every table of the schema with its column names, for
-// cmd/duck2sqlite.
-func (s *SQLiteStore) Tables() map[string][]string {
-	out := make(map[string][]string, len(s.columns))
-	for table, cols := range s.columns {
-		for _, c := range cols {
-			out[table] = append(out[table], c.Name)
-		}
-	}
-	return out
-}
-
-// LoadTable replaces table's whole contents with rows (one value per cols
-// entry each) in one transaction - what cmd/duck2sqlite fills a migrated
-// library through.
-func (s *SQLiteStore) LoadTable(table string, cols []string, rows [][]any) error {
-	known := s.columns[table]
-	for _, c := range cols {
-		if !slices.ContainsFunc(known, func(k tableColumn) bool { return k.Name == c }) {
-			return fmt.Errorf("load %s: unknown column %q", table, c)
-		}
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
-	if _, err := tx.Exec(`DELETE FROM ` + table); err != nil {
-		return fmt.Errorf("load %s: %w", table, err)
-	}
-	st, err := tx.Prepare(`INSERT INTO ` + table + ` ("` + strings.Join(cols, `", "`) + `") VALUES (?` + strings.Repeat(", ?", len(cols)-1) + `)`)
-	if err != nil {
-		return fmt.Errorf("load %s: %w", table, err)
-	}
-	defer st.Close()
-	for i, row := range rows {
-		if _, err := st.Exec(row...); err != nil {
-			return fmt.Errorf("load %s: row %d: %w", table, i, err)
-		}
-	}
-	return tx.Commit()
-}
-
 // insertJSONRows inserts each JSON-object row into table, binding only the
 // columns that row sets and the table has.
 func (s *SQLiteStore) insertJSONRows(tx *notifyTx, table string, list []json.RawMessage, keepExisting bool) error {

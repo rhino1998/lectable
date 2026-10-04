@@ -6,7 +6,6 @@ backend/benchattr
 backend/*.prev
 backend/*.new
 backend/server.failed
-backend/*.duckdb
 backend/*.sqlite*
 backend/attreval/__pycache__/
 
