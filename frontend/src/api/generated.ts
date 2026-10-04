@@ -3703,10 +3703,12 @@ export interface Routes {
     errorCode: never
   }
   /**
-   * handleUpdateDefaultVoice sets the voice and clone model new books are
-   * created with - "selecting" a voice (or picking the default clone model)
-   * on the Voices page. Existing books are unaffected; this only changes
-   * what a freshly uploaded book starts with.
+   * handleUpdateDefaultVoice sets what new books are created with: the voice
+   * and clone model ("selecting" a voice, or picking the default clone model,
+   * on the Voices page) and the per-book switches (its "Defaults for new
+   * books"). Existing books are unaffected. cloneModel "", an empty
+   * characterVoiceMode, and an omitted strictOrder/settingRequired each leave
+   * that default as it is.
    */
   'PUT /api/voices/default': {
     path: Record<never, never>

@@ -423,16 +423,23 @@ CREATE TABLE IF NOT EXISTS voice_presets (
 	design_model TEXT NOT NULL DEFAULT 'breeze_tts'
 );
 
--- Singleton (always exactly the id=0 row - see Open) holding the voice and
--- clone model new books are created with, settable from the Voices page
--- rather than only per-book from the reader.
+-- Singleton (always exactly the id=0 row - see Open) holding what new books
+-- are created with - voice, clone model and the per-book switches -
+-- settable from the Voices page rather than only per book.
 CREATE TABLE IF NOT EXISTS default_voice (
 	id INTEGER PRIMARY KEY,
 	preset_id TEXT NOT NULL DEFAULT 'velvet-narrator',
 	instruct TEXT NOT NULL DEFAULT '',
 	language TEXT NOT NULL DEFAULT 'Auto',
 	seed INTEGER NOT NULL DEFAULT 1006,
-	clone_model TEXT NOT NULL DEFAULT 'audiocpp-higgs-4b'
+	clone_model TEXT NOT NULL DEFAULT 'audiocpp-higgs-4b',
+	-- The per-book switches a new book starts with (store.BookDefaults) -
+	-- the books columns of the same names.
+	character_voice_mode TEXT NOT NULL DEFAULT 'narrator',
+	speech_direction BOOLEAN NOT NULL DEFAULT false,
+	music_enabled BOOLEAN NOT NULL DEFAULT false,
+	strict_order BOOLEAN NOT NULL DEFAULT false,
+	setting_required BOOLEAN NOT NULL DEFAULT false
 );
 
 -- The offline-sync hash tree's stored chapter nodes (see

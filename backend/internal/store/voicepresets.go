@@ -7,6 +7,9 @@ import (
 	"time"
 )
 
+// DefaultVoice is what a newly created book starts with: its voice and
+// clone model, and the per-book switches (see the Book fields of the same
+// names). Set from the Voices page; existing books are never touched.
 type DefaultVoice struct {
 	PresetID string
 	Instruct string
@@ -15,13 +18,36 @@ type DefaultVoice struct {
 	// CloneModel is the clone model a newly created book narrates through
 	// (Book.CloneModel) - see the books.clone_model schema comment.
 	CloneModel string
+
+	BookDefaults
+}
+
+// BookDefaults is the per-book switches a newly created book starts with.
+type BookDefaults struct {
+	CharacterVoiceMode CharacterVoiceMode
+	SpeechDirection    bool
+	MusicEnabled       bool
+	StrictOrder        bool
+	SettingRequired    bool
 }
 
 func (s *SQLiteStore) GetDefaultVoice() (DefaultVoice, error) {
 	var v DefaultVoice
-	err := s.db.QueryRow(`SELECT preset_id, instruct, language, seed, clone_model FROM default_voice WHERE id = 0`).
-		Scan(&v.PresetID, &v.Instruct, &v.Language, &v.Seed, &v.CloneModel)
+	err := s.db.QueryRow(`SELECT preset_id, instruct, language, seed, clone_model,
+		character_voice_mode, speech_direction, music_enabled, strict_order, setting_required
+		FROM default_voice WHERE id = 0`).
+		Scan(&v.PresetID, &v.Instruct, &v.Language, &v.Seed, &v.CloneModel,
+			&v.CharacterVoiceMode, &v.SpeechDirection, &v.MusicEnabled, &v.StrictOrder, &v.SettingRequired)
 	return v, err
+}
+
+// SetBookDefaults sets the per-book switches new books start with.
+func (s *SQLiteStore) SetBookDefaults(d BookDefaults) error {
+	_, err := s.db.Exec(
+		`UPDATE default_voice SET character_voice_mode = ?, speech_direction = ?, music_enabled = ?, strict_order = ?, setting_required = ? WHERE id = 0`,
+		d.CharacterVoiceMode, d.SpeechDirection, d.MusicEnabled, d.StrictOrder, d.SettingRequired,
+	)
+	return err
 }
 
 func (s *SQLiteStore) SetDefaultVoice(presetID, instruct, language string, seed int, cloneModel string) error {

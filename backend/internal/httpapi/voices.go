@@ -382,15 +382,27 @@ func (s *Server) buildDefaultVoice() (voiceSettingsDTO, error) {
 		return voiceSettingsDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 	return voiceSettingsDTO{
-		voiceSettingsUpdate: voiceSettingsUpdate{PresetID: v.PresetID, Instruct: v.Instruct, Language: v.Language, CloneModel: v.CloneModel},
-		Seed:                v.Seed,
+		voiceSettingsUpdate: voiceSettingsUpdate{
+			PresetID:           v.PresetID,
+			Instruct:           v.Instruct,
+			Language:           v.Language,
+			CloneModel:         v.CloneModel,
+			CharacterVoiceMode: v.CharacterVoiceMode,
+			SpeechDirection:    v.SpeechDirection,
+			MusicEnabled:       v.MusicEnabled,
+			StrictOrder:        &v.StrictOrder,
+			SettingRequired:    &v.SettingRequired,
+		},
+		Seed: v.Seed,
 	}, nil
 }
 
-// handleUpdateDefaultVoice sets the voice and clone model new books are
-// created with - "selecting" a voice (or picking the default clone model)
-// on the Voices page. Existing books are unaffected; this only changes
-// what a freshly uploaded book starts with.
+// handleUpdateDefaultVoice sets what new books are created with: the voice
+// and clone model ("selecting" a voice, or picking the default clone model,
+// on the Voices page) and the per-book switches (its "Defaults for new
+// books"). Existing books are unaffected. cloneModel "", an empty
+// characterVoiceMode, and an omitted strictOrder/settingRequired each leave
+// that default as it is.
 func (s *Server) handleUpdateDefaultVoice(w http.ResponseWriter, r *http.Request) {
 	var req voiceSettingsUpdate
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -407,19 +419,49 @@ func (s *Server) handleUpdateDefaultVoice(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	current, err := s.Store.GetDefaultVoice()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	if req.CloneModel == "" {
-		current, err := s.Store.GetDefaultVoice()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
 		req.CloneModel = current.CloneModel
+	}
+	defaults := store.BookDefaults{
+		CharacterVoiceMode: req.CharacterVoiceMode,
+		SpeechDirection:    req.SpeechDirection,
+		MusicEnabled:       req.MusicEnabled,
+		StrictOrder:        current.StrictOrder,
+		SettingRequired:    current.SettingRequired,
+	}
+	if defaults.CharacterVoiceMode == "" {
+		defaults.CharacterVoiceMode = current.CharacterVoiceMode
+	}
+	switch defaults.CharacterVoiceMode {
+	case store.CharacterVoiceModeNarrator, store.CharacterVoiceModeAssigned, store.CharacterVoiceModeInstructUnassigned, store.CharacterVoiceModeInstructAll:
+	default:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown characterVoiceMode %q", req.CharacterVoiceMode))
+		return
+	}
+	if req.StrictOrder != nil {
+		defaults.StrictOrder = *req.StrictOrder
+	}
+	if req.SettingRequired != nil {
+		defaults.SettingRequired = *req.SettingRequired
 	}
 
 	if err := s.Store.SetDefaultVoice(req.PresetID, req.Instruct, req.Language, seed, req.CloneModel); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	if defaults != current.BookDefaults {
+		if err := s.Store.SetBookDefaults(defaults); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	req.CharacterVoiceMode = defaults.CharacterVoiceMode
+	req.StrictOrder, req.SettingRequired = &defaults.StrictOrder, &defaults.SettingRequired
 	writeJSON(w, http.StatusOK, voiceSettingsDTO{voiceSettingsUpdate: req, Seed: seed})
 }
 

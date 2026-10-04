@@ -6,15 +6,40 @@ import {
   DEFAULT_CHARACTER_VOICE_MODE,
   INSTRUCTED_CLONE_MODEL,
   type CharacterVoiceMode,
+  type VoiceSettings,
 } from '../../api/types'
 
-// The Speakers page's book-wide switches: character voice mode, waiting
-// for emotion/pronunciation before generating, and background music - all
-// fields of the book's voice settings (PUT .../voice).
+// The Speakers page's book-wide switches, bound to one book's voice
+// settings (PUT .../voice).
 export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneModel: string }) {
   const voiceQuery = useVoice(bookId)
   const updateVoice = useUpdateVoice(bookId)
+  return (
+    <BookSettingsFields
+      settings={voiceQuery.data}
+      pending={updateVoice.isPending}
+      cloneModel={cloneModel}
+      onChange={(next) => updateVoice.mutate(next)}
+    />
+  )
+}
 
+// The per-book processing switches - character voice mode, waiting for
+// emotion/pronunciation or attribution before generating, requiring the
+// book setting, and background music - as fields of a VoiceSettings value:
+// one book's (SpeakerSettings), or the defaults new books start with (the
+// Voices page).
+export function BookSettingsFields({
+  settings,
+  pending,
+  cloneModel,
+  onChange,
+}: {
+  settings: VoiceSettings | undefined
+  pending: boolean
+  cloneModel: string
+  onChange: (next: VoiceSettings) => void
+}) {
   // Gates instructCharacterVoices - only actually does anything when the book's
   // clone model is INSTRUCTED_CLONE_MODEL (the one family
   // that honors a clone-time style instruction alongside a reference
@@ -24,28 +49,28 @@ export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneM
   const instructedCloneSupported = cloneModel === INSTRUCTED_CLONE_MODEL
 
   const changeCharacterVoiceMode = (mode: CharacterVoiceMode) => {
-    if (!voiceQuery.data) return
-    updateVoice.mutate({ ...voiceQuery.data, characterVoiceMode: mode })
+    if (!settings) return
+    onChange({ ...settings, characterVoiceMode: mode })
   }
 
   const toggleSpeechDirection = (checked: boolean) => {
-    if (!voiceQuery.data) return
-    updateVoice.mutate({ ...voiceQuery.data, speechDirection: checked })
+    if (!settings) return
+    onChange({ ...settings, speechDirection: checked })
   }
 
   const toggleStrictOrder = (checked: boolean) => {
-    if (!voiceQuery.data) return
-    updateVoice.mutate({ ...voiceQuery.data, strictOrder: checked })
+    if (!settings) return
+    onChange({ ...settings, strictOrder: checked })
   }
 
   const toggleSettingRequired = (checked: boolean) => {
-    if (!voiceQuery.data) return
-    updateVoice.mutate({ ...voiceQuery.data, settingRequired: checked })
+    if (!settings) return
+    onChange({ ...settings, settingRequired: checked })
   }
 
   const toggleMusicEnabled = (checked: boolean) => {
-    if (!voiceQuery.data) return
-    updateVoice.mutate({ ...voiceQuery.data, musicEnabled: checked })
+    if (!settings) return
+    onChange({ ...settings, musicEnabled: checked })
   }
 
   return (
@@ -53,8 +78,8 @@ export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneM
       <label>
         Character voices
         <select
-          value={voiceQuery.data?.characterVoiceMode ?? DEFAULT_CHARACTER_VOICE_MODE}
-          disabled={!voiceQuery.data || updateVoice.isPending}
+          value={settings?.characterVoiceMode ?? DEFAULT_CHARACTER_VOICE_MODE}
+          disabled={!settings || pending}
           onChange={(e) => changeCharacterVoiceMode(e.target.value as CharacterVoiceMode)}
         >
           {CHARACTER_VOICE_MODES.map((mode) => (
@@ -67,7 +92,7 @@ export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneM
       <p className="muted">
         {
           CHARACTER_VOICE_MODE_DESCRIPTIONS[
-            voiceQuery.data?.characterVoiceMode ?? DEFAULT_CHARACTER_VOICE_MODE
+            settings?.characterVoiceMode ?? DEFAULT_CHARACTER_VOICE_MODE
           ]
         }
       </p>
@@ -81,8 +106,8 @@ export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneM
       <label className="checkbox-label">
         <input
           type="checkbox"
-          checked={voiceQuery.data?.speechDirection ?? false}
-          disabled={!voiceQuery.data || updateVoice.isPending}
+          checked={settings?.speechDirection ?? false}
+          disabled={!settings || pending}
           onChange={(e) => toggleSpeechDirection(e.target.checked)}
         />
         Wait for emotion labeling and pronunciation before generating audio
@@ -96,8 +121,8 @@ export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneM
       <label className="checkbox-label">
         <input
           type="checkbox"
-          checked={voiceQuery.data?.strictOrder ?? false}
-          disabled={!voiceQuery.data || updateVoice.isPending}
+          checked={settings?.strictOrder ?? false}
+          disabled={!settings || pending}
           onChange={(e) => toggleStrictOrder(e.target.checked)}
         />
         Wait for speaker attribution before generating audio
@@ -113,8 +138,8 @@ export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneM
       <label className="checkbox-label">
         <input
           type="checkbox"
-          checked={voiceQuery.data?.settingRequired ?? false}
-          disabled={!voiceQuery.data || updateVoice.isPending}
+          checked={settings?.settingRequired ?? false}
+          disabled={!settings || pending}
           onChange={(e) => toggleSettingRequired(e.target.checked)}
         />
         Require the book setting
@@ -128,8 +153,8 @@ export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneM
       <label className="checkbox-label">
         <input
           type="checkbox"
-          checked={voiceQuery.data?.musicEnabled ?? false}
-          disabled={!voiceQuery.data || updateVoice.isPending}
+          checked={settings?.musicEnabled ?? false}
+          disabled={!settings || pending}
           onChange={(e) => toggleMusicEnabled(e.target.checked)}
         />
         Background music

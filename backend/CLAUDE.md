@@ -1943,7 +1943,7 @@ build does, since both now link into that one binary.
 - `POST /api/books/{id}/characters/{characterId}/characterize` — force re-run LLM voice characterization for one character (503 if the LLM model file is missing), even if already characterized; invalidates every clone model's assigned voice preset for the character, if any
 - `GET /api/paragraphs/{id}/audio` — Ogg Opus (or a not-yet-converted legacy WAV), Range-request-capable, via `http.ServeFile`
 - `GET /api/voices/presets`, `GET /api/voices/languages` — served in-process from `internal/voices` (no worker call needed)
-- `GET|PUT /api/voices/default` — the voice *and* `cloneModel` a newly created book starts with (`default_voice`; `cloneModel` defaults to `audiocpp-pocket-100m`, `""` on PUT leaves it unchanged). Voice presets themselves have no clone model; the voice test endpoints take an optional `cloneModel` to preview through, defaulting to this one
+- `GET|PUT /api/voices/default` — what a newly created book starts with (`default_voice`, `store.DefaultVoice`): the voice, `cloneModel` (defaults to `audiocpp-pocket-100m`, `""` on PUT leaves it unchanged), and the per-book switches `characterVoiceMode`, `speechDirection`, `musicEnabled`, `strictOrder`, `settingRequired` (`store.BookDefaults`, copied onto the book by `CreateBook`; the Voices page's "Defaults for new books"). A PUT replaces all of them, except that an empty `characterVoiceMode` or an omitted `strictOrder`/`settingRequired` is left as it was. Existing books and imported exports are never touched. Voice presets themselves have no clone model; the voice test endpoints take an optional `cloneModel` to preview through, defaulting to this one
 
 ## Testing changes
 

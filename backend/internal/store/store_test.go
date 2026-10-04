@@ -138,8 +138,42 @@ func TestOpenSeedsDefaultVoice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDefaultVoice after set: %v", err)
 	}
-	if v2 != (DefaultVoice{PresetID: "custom-preset", Instruct: "speak warmly", Language: "English", Seed: 42, CloneModel: "audiocpp-higgs-4b"}) {
+	want := DefaultVoice{PresetID: "custom-preset", Instruct: "speak warmly", Language: "English", Seed: 42, CloneModel: "audiocpp-higgs-4b",
+		BookDefaults: BookDefaults{CharacterVoiceMode: CharacterVoiceModeNarrator}}
+	if v2 != want {
 		t.Fatalf("unexpected default voice after set: %+v", v2)
+	}
+}
+
+// TestNewBookStartsWithBookDefaults: the switches set as defaults are what
+// a book created afterwards has; a book that already existed keeps its own.
+func TestNewBookStartsWithBookDefaults(t *testing.T) {
+	s := openTestStore(t)
+	create := func() *Book {
+		t.Helper()
+		id, _, err := s.CreateBook("Book", "Author", "en", "", "", 0, []ChapterInput{{Title: "Ch", Blocks: []BlockInput{{Kind: BlockText, Text: "Text."}}}})
+		if err != nil {
+			t.Fatalf("CreateBook: %v", err)
+		}
+		b, err := s.GetBook(id)
+		if err != nil || b == nil {
+			t.Fatalf("GetBook: %v", err)
+		}
+		return b
+	}
+	before := create()
+
+	d := BookDefaults{CharacterVoiceMode: CharacterVoiceModeAssigned, SpeechDirection: true, MusicEnabled: true, StrictOrder: true, SettingRequired: true}
+	if err := s.SetBookDefaults(d); err != nil {
+		t.Fatalf("SetBookDefaults: %v", err)
+	}
+	after := create()
+	got := BookDefaults{after.CharacterVoiceMode, after.SpeechDirection, after.MusicEnabled, after.StrictOrder, after.SettingRequired}
+	if got != d {
+		t.Fatalf("new book has %+v, want the defaults %+v", got, d)
+	}
+	if b, _ := s.GetBook(before.ID); b.SpeechDirection || b.StrictOrder || b.CharacterVoiceMode != CharacterVoiceModeNarrator {
+		t.Fatalf("an existing book changed with the defaults: %+v", b)
 	}
 }
 

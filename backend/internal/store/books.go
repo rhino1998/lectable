@@ -66,10 +66,12 @@ func (s *SQLiteStore) CreateBook(title, author, language string, coverExt string
 
 	bookID = NewID()
 	_, err = tx.Exec(
-		`INSERT INTO books (id, title, author, language, cover_ext, series_name, series_index, added_at, voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO books (id, title, author, language, cover_ext, series_name, series_index, added_at, voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model,
+			character_voice_mode, speech_direction, music_enabled, strict_order, setting_required)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		bookID, title, author, language, coverExt, seriesName, seriesIndex, time.Now().Unix(),
 		defaultVoice.PresetID, defaultVoice.Instruct, defaultVoice.Language, defaultVoice.Seed, defaultVoice.CloneModel,
+		defaultVoice.CharacterVoiceMode, defaultVoice.SpeechDirection, defaultVoice.MusicEnabled, defaultVoice.StrictOrder, defaultVoice.SettingRequired,
 	)
 	if err != nil {
 		return "", nil, fmt.Errorf("insert book: %w", err)

@@ -147,6 +147,7 @@ type Store interface {
 	UpdatePosition(bookID string, chapterIdx, paragraphIdx int, seconds float64) error
 	SyncCharacterSummariesFromPreset(presetID, instruct, refText string, instructChanged, refTextChanged bool) error
 	SetBookProcessing(bookID string, strictOrder, settingRequired bool) error
+	SetBookDefaults(d BookDefaults) error
 	UpdateVoice(bookID, presetID, instruct, language string, seed int, cloneModel string, characterVoiceMode CharacterVoiceMode, speechDirection, musicEnabled bool) error
 	UpdateVoicePreset(id, name, instruct, refText string, seed int, speedMultiplier float64, designModel string) error
 	UpdateVoicePresetSeed(id string, seed int) error

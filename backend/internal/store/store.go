@@ -86,19 +86,26 @@ func Open(path string) (*SQLiteStore, error) {
 			return nil, fmt.Errorf("add books.last_read_at: %w", err)
 		}
 	}
-	// Temporary: adds books.strict_order and books.setting_required to the
-	// live library. Delete once the running server has applied it (see
+	// Temporary: adds the book-default columns to the live library's
+	// default_voice row. Delete once the running server has applied it (see
 	// CLAUDE.md, "No migrations in code").
-	for _, col := range []string{"strict_order", "setting_required"} {
+	for _, col := range []string{
+		"character_voice_mode TEXT NOT NULL DEFAULT 'narrator'",
+		"speech_direction BOOLEAN NOT NULL DEFAULT false",
+		"music_enabled BOOLEAN NOT NULL DEFAULT false",
+		"strict_order BOOLEAN NOT NULL DEFAULT false",
+		"setting_required BOOLEAN NOT NULL DEFAULT false",
+	} {
+		name, _, _ := strings.Cut(col, " ")
 		var has int
-		if err := write.QueryRow(`SELECT count(*) FROM pragma_table_info('books') WHERE name = ?`, col).Scan(&has); err != nil {
+		if err := write.QueryRow(`SELECT count(*) FROM pragma_table_info('default_voice') WHERE name = ?`, name).Scan(&has); err != nil {
 			write.Close()
 			return nil, fmt.Errorf("read schema: %w", err)
 		}
 		if has == 0 {
-			if _, err := write.Exec(`ALTER TABLE books ADD COLUMN ` + col + ` BOOLEAN NOT NULL DEFAULT false`); err != nil {
+			if _, err := write.Exec(`ALTER TABLE default_voice ADD COLUMN ` + col); err != nil {
 				write.Close()
-				return nil, fmt.Errorf("add books.%s: %w", col, err)
+				return nil, fmt.Errorf("add default_voice.%s: %w", name, err)
 			}
 		}
 	}
