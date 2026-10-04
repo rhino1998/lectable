@@ -70,8 +70,32 @@ type Block struct {
 	// no emphasized span (the common case).
 	Emphasis []pronounce.Substitution
 
+	// Speaker is who the source itself says speaks this block - a play's
+	// speaker label ("THESEUS." before the speech), set only by the play
+	// pass (play.go) and only on its IsQuote blocks. "" everywhere else:
+	// in prose, who speaks a quote is left to internal/speakerattr.
+	Speaker string
+
+	// Label is text shown before this block but never spoken: a play's
+	// speaker label as the source sets it ("THESEUS.", "CYRANO
+	// (delighted):"), with any direction on how the line is delivered
+	// ("[Calling.]"). "" outside a play.
+	Label string
+
 	ImageData []byte // BlockImage
 	ImageExt  string // BlockImage, e.g. ".jpg" (lowercase, includes the dot)
+
+	// src is the source paragraph this block starts, as collectText
+	// marked it up - what the play pass re-reads. Nil on a later segment
+	// of the same paragraph (Inline) and once Parse returns.
+	src *blockSource
+}
+
+// blockSource is one source paragraph before quote splitting.
+type blockSource struct {
+	raw     string // collectText's output: line breaks and label/bold/italic spans still marked
+	heading bool   // an <h1>-<h6>
+	hint    classHint
 }
 
 type Chapter struct {
@@ -87,8 +111,20 @@ type Book struct {
 	CoverMediaType string
 	SeriesName     string  // "" if the epub isn't part of a series
 	SeriesIndex    float64 // 0 if unknown; can be fractional (e.g. a 2.5 novella)
-	Chapters       []Chapter
+	// Play is set when the book was read as a play: speeches are IsQuote
+	// blocks carrying their Speaker (see play.go).
+	Play     bool
+	Chapters []Chapter
 }
+
+// PlayMode says whether Parse reads a book as a play.
+type PlayMode string
+
+const (
+	PlayAuto PlayMode = ""    // when most of it is labelled speeches
+	PlayOn   PlayMode = "on"  // always
+	PlayOff  PlayMode = "off" // never
+)
 
 type manifestItem struct {
 	Href       string
@@ -98,8 +134,13 @@ type manifestItem struct {
 
 // Parse reads an .epub file from r (of the given size) and extracts
 // metadata, chapter content (text and inline images), and a cover image if
-// present.
+// present. A book that is mostly labelled speeches is read as a play.
 func Parse(r io.ReaderAt, size int64) (*Book, error) {
+	return ParseAs(r, size, PlayAuto)
+}
+
+// ParseAs is Parse with the play detection overridden.
+func ParseAs(r io.ReaderAt, size int64, play PlayMode) (*Book, error) {
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
 		return nil, fmt.Errorf("open epub as zip: %w", err)
@@ -291,6 +332,7 @@ func Parse(r io.ReaderAt, size int64) (*Book, error) {
 		return nil, fmt.Errorf("no readable chapters found in epub")
 	}
 
+	book.Play = applyPlay(book.Chapters, play)
 	return book, nil
 }
 

@@ -34,4 +34,6 @@ fun VoiceSettingsDto.toUpdate() = VoiceSettingsUpdateDto(
     characterVoiceMode = characterVoiceMode,
     speechDirection = speechDirection,
     musicEnabled = musicEnabled,
+    strictOrder = strictOrder,
+    settingRequired = settingRequired,
 )

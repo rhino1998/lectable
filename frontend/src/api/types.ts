@@ -46,19 +46,18 @@ export const EXPORT_FORMAT_LABELS: Record<ExportFormat, string> = {
   epub: 'EPUB 3 with read-aloud (Media Overlays)',
 }
 
-// Which of the three broad narration roles a paragraph segment plays in
-// the annotations view - computed client-side from isQuote/
-// describesCharacters (ReaderPage's annotationKind) rather than sent by
+// Which narration role a paragraph segment plays in the annotations view -
+// computed client-side from isQuote (ReaderPage's annotationKind) rather
+// than sent by
 // the backend as its own field, mirroring how the existing speaker-hint
 // badge is already derived from raw paragraph fields.
-export type AnnotationKind = 'narrator' | 'speaker' | 'description'
+export type AnnotationKind = 'narrator' | 'speaker'
 
 // Shared between ReaderPage (per-segment title/legend) and PlayerBar (the
 // bottom-bar toggle's own legend row), so the two can't drift.
 export const ANNOTATION_LABELS: Record<AnnotationKind, string> = {
   narrator: 'Narrator',
   speaker: 'Speaker',
-  description: 'Description',
 }
 
 export type ContentItem =

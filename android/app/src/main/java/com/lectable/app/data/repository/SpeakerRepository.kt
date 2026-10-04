@@ -69,10 +69,6 @@ class SpeakerRepository @Inject constructor(
     suspend fun appearances(bookId: String, characterId: String): List<SpeakerAppearanceDto> =
         api.characterAppearances(bookId, characterId)
 
-    /** [appearances]'s own description-tagging counterpart - see [LectableApi.characterDescriptions]. */
-    suspend fun descriptions(bookId: String, characterId: String): List<SpeakerAppearanceDto> =
-        api.characterDescriptions(bookId, characterId)
-
     suspend fun characterize(bookId: String, characterId: String): CharacterizeResponseDto =
         api.characterizeSpeaker(bookId, characterId)
 

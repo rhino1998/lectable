@@ -12,15 +12,13 @@ export function sortedRoster(speakers: Speaker[]): Speaker[] {
   )
 }
 
-// Everyone who speaks or is described anywhere in chapter - the reassign
-// menu's "This chapter" section, since a misattributed line or description
-// usually belongs to someone already in the scene. Narrator/blank excluded.
+// Everyone who speaks anywhere in chapter - the reassign menu's "This
+// chapter" section, since a misattributed line usually belongs to someone already in the scene. Narrator/blank excluded.
 // Mirrors android's chapterCharacterNames.
 export function chapterCharacterNames(chapter: ChapterDetail | undefined): Set<string> {
   const out = new Set<string>()
   for (const p of chapter?.paragraphs ?? []) {
     if (p.speaker && p.speaker !== 'Narrator') out.add(p.speaker)
-    for (const name of p.describesCharacters ?? []) out.add(name)
   }
   return out
 }

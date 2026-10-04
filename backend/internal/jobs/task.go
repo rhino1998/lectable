@@ -227,19 +227,10 @@ const (
 	// httpapi.scareQuoteChapterForJob) - see EnqueueScareQuote.
 	// KindSpeechDirection's exact shape (fire-and-forget, poolLLM,
 	// defaultAttributionTier, caller-supplied ScareQuoteFunc). Every
-	// KindSpeakerAttribution/KindDescription task for a chapter depends on
-	// this one (scareQuoteDependency): attribution needs to know which
-	// quoted spans aren't dialogue before judging speakers, and a scare
-	// quote is narration a description can be read from.
+	// KindSpeakerAttribution task for a chapter depends on this one
+	// (scareQuoteDependency): attribution needs to know which quoted spans
+	// aren't dialogue before judging speakers.
 	KindScareQuote Kind = "scare_quote_tagging"
-	// KindDescription is an LLM description-tagging run for one chapter
-	// (internal/speakerattr.Client.DescribeChapter, via
-	// httpapi.describeChapterForJob) - see EnqueueDescription. Split out of
-	// KindSpeakerAttribution (which used to run it inline after a full
-	// attribution pass) so it's independently visible/retryable on the
-	// Jobs dashboard. Same shape as KindScareQuote, and depends on it the
-	// same way attribution does - but not on attribution itself.
-	KindDescription Kind = "description_tagging"
 	// KindPronunciation is an LLM pronunciation-resolution run for one
 	// chapter (internal/speakerattr.Client.ResolvePronunciation, via
 	// httpapi.pronounceChapter) - see EnqueuePronunciation. Split out of
@@ -620,8 +611,6 @@ func (t *task) dedupKey() string {
 		return "music_live:" + t.llmKey
 	case KindScareQuote:
 		return "scare_quote:" + t.llmKey
-	case KindDescription:
-		return "describe:" + t.llmKey
 	case KindPronunciation:
 		return "pronunciation:" + t.llmKey
 	case KindSummary:
@@ -680,7 +669,6 @@ var kindCompare = map[Kind]func(a, b *task, priority int) int{
 	KindSpeechDirection:         comparePosition,
 	KindSpeakerReattribution:    comparePosition,
 	KindScareQuote:              comparePosition,
-	KindDescription:             comparePosition,
 	KindPronunciation:           comparePosition,
 	KindSummary:                 comparePosition,
 	KindBookSetting:             comparePosition,

@@ -812,13 +812,12 @@ func TestAttributionOrderDependencyBlocksThenClearsOncePreviousChapterAttributed
 	}
 }
 
-// TestScareQuoteDependencyBlocksAttributionAndDescription covers
-// scareQuoteDependency: a chapter's attribution and description tasks both
-// wait on one lazily-created KindScareQuote task for that chapter (shared,
-// not one each), a failed run gets recreated rather than letting them
-// through, and once Passes.ScareQuote is persisted both dispatch without
+// TestScareQuoteDependencyBlocksAttribution covers scareQuoteDependency: a
+// chapter's attribution task waits on a lazily-created KindScareQuote task
+// for that chapter, a failed run gets recreated rather than letting it
+// through, and once Passes.ScareQuote is persisted it dispatches without
 // another scare-quote run.
-func TestScareQuoteDependencyBlocksAttributionAndDescription(t *testing.T) {
+func TestScareQuoteDependencyBlocksAttribution(t *testing.T) {
 	s := openTestStore(t)
 	book, chapterID := createBookAndChapter(t, s, "", 0, "Some narration.")
 
@@ -834,9 +833,7 @@ func TestScareQuoteDependencyBlocksAttributionAndDescription(t *testing.T) {
 	}
 
 	attrTask := &task{kind: KindSpeakerAttribution, bookID: book.ID, chapterID: chapterID, tier: TierBackground, llmKey: chapterID}
-	descTask := &task{kind: KindDescription, bookID: book.ID, chapterID: chapterID, tier: TierBackground, llmKey: chapterID}
 	mgr.pushTask(attrTask)
-	mgr.pushTask(descTask)
 
 	runBlocker := func() {
 		t.Helper()
@@ -849,7 +846,7 @@ func TestScareQuoteDependencyBlocksAttributionAndDescription(t *testing.T) {
 			t.Fatalf("expected a KindScareQuote task for chapter %q, got kind=%v chapterID=%q", chapterID, blocker.kind, blocker.chapterID)
 		}
 		if _, ok := mgr.sched.Pop(); ok {
-			t.Fatalf("expected attribution/description to stay blocked while scare-quote tagging is in flight")
+			t.Fatalf("expected attribution to stay blocked while scare-quote tagging is in flight")
 		}
 		n, requeue, err := blocker.runLLM(t.Context())
 		complete(mgr, blocker, taskResult{attributed: n, requeue: requeue, err: err})
@@ -862,16 +859,8 @@ func TestScareQuoteDependencyBlocksAttributionAndDescription(t *testing.T) {
 		t.Fatalf("expected exactly two scare-quote runs (one failed, one retried), got %d", calls)
 	}
 
-	dispatched := map[*task]bool{}
-	for range 2 {
-		got, ok := mgr.sched.Pop()
-		if !ok {
-			t.Fatalf("expected attribution and description to dispatch once scare quotes are tagged")
-		}
-		dispatched[got.(*task)] = true
-	}
-	if !dispatched[attrTask] || !dispatched[descTask] {
-		t.Fatalf("expected both the attribution and description tasks to dispatch, got %v", dispatched)
+	if got, ok := mgr.sched.Pop(); !ok || got.(*task) != attrTask {
+		t.Fatalf("expected attribution to dispatch once scare quotes are tagged, got %v", got)
 	}
 	if calls != 2 {
 		t.Fatalf("expected no further scare-quote run once the chapter is tagged, got %d", calls)

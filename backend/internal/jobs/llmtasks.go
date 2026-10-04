@@ -311,19 +311,6 @@ func (m *Manager) RunScareQuote(ctx context.Context, bookID, chapterID string, c
 	return m.runLLMTaskDirect(ctx, KindScareQuote, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
 }
 
-// EnqueueDescription queues fn as a KindDescription task - same shape as
-// EnqueueScareQuote. Blocked on the chapter's scare-quote tagging via
-// scareQuoteDependency.
-func (m *Manager) EnqueueDescription(bookID, chapterID string, chapterIdx int, fn DescriptionFunc) {
-	m.enqueueChapterLLM(KindDescription, bookID, chapterID, chapterIdx, fn)
-}
-
-// RunDescription is EnqueueDescription's blocking sibling, for
-// httpapi.preprocessDescriptionPhase.
-func (m *Manager) RunDescription(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, fn DescriptionFunc) (int, error) {
-	return m.runLLMTaskDirect(ctx, KindDescription, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
-}
-
 // EnqueueSummary queues fn as a KindSummary task - EnqueueScareQuote's
 // shape.
 func (m *Manager) EnqueueSummary(bookID, chapterID string, chapterIdx int, fn SummaryFunc) {
@@ -348,8 +335,7 @@ func (m *Manager) RunPronunciation(ctx context.Context, bookID, chapterID string
 	return m.runLLMTaskDirect(ctx, KindPronunciation, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
 }
 
-// enqueueChapterLLM is EnqueueScareQuote/EnqueueDescription/
-// EnqueuePronunciation's shared
+// enqueueChapterLLM is EnqueueScareQuote/EnqueuePronunciation's shared
 // fire-and-forget push - a chapter-keyed poolLLM task at
 // defaultAttributionTier.
 func (m *Manager) enqueueChapterLLM(kind Kind, bookID, chapterID string, chapterIdx int, fn func(ctx context.Context) (int, func(), error)) {

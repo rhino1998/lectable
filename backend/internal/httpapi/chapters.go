@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -140,6 +139,10 @@ type paragraphDTO struct {
 	// role label in one conversation ("Guard 2") - see
 	// store.Paragraph.SpeakerIndex. Omitted (0) for a line with no number.
 	SpeakerIndex int `json:"speakerIndex,omitempty"`
+	// Label is text to show before this paragraph that is never spoken: a
+	// play's speaker label ("THESEUS.") and any direction on how the line
+	// is delivered - see store.Paragraph.Label. Omitted outside a play.
+	Label string `json:"label,omitempty"`
 	// Inline marks this paragraph as a split-out continuation of the
 	// previous one, not the start of a new visual paragraph - see
 	// store.Paragraph.Inline. The frontend should render consecutive
@@ -157,10 +160,6 @@ type paragraphDTO struct {
 	// despite looking like it structurally - see store.Paragraph.ScareQuote.
 	// Always false for a non-IsQuote paragraph.
 	ScareQuote bool `json:"scareQuote,omitempty"`
-	// DescribesCharacters is which characters (if any) this paragraph's
-	// narration describes - see store.Paragraph.DescribesCharacters.
-	// Always empty when IsQuote is true.
-	DescribesCharacters []string `json:"describesCharacters,omitempty"`
 	// Emotion is this paragraph's effective delivery emotion (an
 	// internal/emotions id - see store.Paragraph.EffectiveEmotion), omitted
 	// for neutral. Only ever set on real dialogue.
@@ -404,26 +403,26 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 		// to the zero SFXState{} - see ParagraphSFXStates' own doc comment.
 		sfxState := sfxStates[p.ID]
 		pd := paragraphDTO{
-			Idx:                 p.Idx,
-			Text:                p.Text,
-			Speaker:             p.Speaker,
-			SpeakerIndex:        p.SpeakerIndex,
-			Inline:              p.Inline,
-			IsQuote:             p.IsQuote,
-			ScareQuote:          p.ScareQuote,
-			DescribesCharacters: p.DescribesCharacters,
-			Emotion:             p.EffectiveEmotion(),
-			DirectionMarks:      directionMarksFor(p, cloneModelByParagraph[p.ID]),
-			PronunciationMarks:  pronunciationMarksFor(p, lexicon),
-			AudioStatus:         audioStatus(state.Status),
-			AudioError:          state.Error,
-			DurationSeconds:     state.DurationSeconds,
-			Words:               json.RawMessage(state.WordTimings),
-			SFXPrompt:           sfxState.Prompt,
-			SFXStatus:           sfxState.Status,
-			SFXError:            sfxState.Error,
-			SFXDurationSeconds:  sfxState.DurationSeconds,
-			SFXTriggerWord:      sfxState.TriggerWord,
+			Idx:                p.Idx,
+			Text:               p.Text,
+			Speaker:            p.Speaker,
+			SpeakerIndex:       p.SpeakerIndex,
+			Label:              p.Label,
+			Inline:             p.Inline,
+			IsQuote:            p.IsQuote,
+			ScareQuote:         p.ScareQuote,
+			Emotion:            p.EffectiveEmotion(),
+			DirectionMarks:     directionMarksFor(p, cloneModelByParagraph[p.ID]),
+			PronunciationMarks: pronunciationMarksFor(p, lexicon),
+			AudioStatus:        audioStatus(state.Status),
+			AudioError:         state.Error,
+			DurationSeconds:    state.DurationSeconds,
+			Words:              json.RawMessage(state.WordTimings),
+			SFXPrompt:          sfxState.Prompt,
+			SFXStatus:          sfxState.Status,
+			SFXError:           sfxState.Error,
+			SFXDurationSeconds: sfxState.DurationSeconds,
+			SFXTriggerWord:     sfxState.TriggerWord,
 		}
 		if sfxState.Status == store.AudioReady {
 			pd.SFXAudioURL = "/api/paragraphs/" + p.ID + "/sfx-audio"
@@ -880,120 +879,6 @@ func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Reques
 	// Kept with the machine's original, so a later attribution run can be
 	// scored against it and leaves the line alone (store.ParagraphEdit).
 	if err := s.Store.RecordParagraphEdit(paragraphID, store.EditSpeaker, p.Speaker, speaker); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeNoContent(w)
-}
-
-type setParagraphDescriptionRequest struct {
-	From string `json:"from"`
-	To   string `json:"to"`
-}
-
-// handleSetParagraphDescription reassigns one paragraph's description
-// attribution from one character to another - the Speakers page's
-// per-character "descriptions" list's own counterpart to
-// handleSetParagraphSpeaker for actual dialogue lines. A narration
-// paragraph the Describe pass (internal/speakerattr.Client.DescribeChapter)
-// tagged as describing From gets From removed from its
-// describes_characters list and To added instead - any *other* character
-// this same paragraph also describes (DescribesCharacters is a list, not a
-// single value - a paragraph can describe more than one person) is left
-// untouched. "" and "Narrator" for To both mean "remove this description
-// entirely, describing no one now" (mirrors handleSetParagraphSpeaker's own
-// Narrator-means-empty convention) - there's no "To must be non-Narrator"
-// restriction the way speaker attribution requires IsQuote, since narration
-// describing a character is exactly what this feature already is. A
-// non-empty, non-Narrator To is registered as a real character first if it
-// wasn't one already (UpsertCharacter is idempotent), same as
-// handleSetParagraphSpeaker. Refuses to attach a description to a quoted
-// paragraph (mirrors DescribesCharacters' own doc comment: only narration
-// is ever tagged as a description, never a quoted line).
-func (s *Server) handleSetParagraphDescription(w http.ResponseWriter, r *http.Request) {
-	bookID := r.PathValue("id")
-	chapterIdx, err := strconv.Atoi(r.PathValue("idx"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid chapter index")
-		return
-	}
-	paragraphIdx, err := strconv.Atoi(r.PathValue("pidx"))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid paragraph index")
-		return
-	}
-	var req setParagraphDescriptionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	from := strings.TrimSpace(req.From)
-	to := strings.TrimSpace(req.To)
-	if to == "Narrator" {
-		to = ""
-	}
-
-	book, err := s.Store.GetBook(bookID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if book == nil {
-		writeError(w, http.StatusNotFound, "book not found")
-		return
-	}
-	ch, err := s.Store.GetChapterByIdx(bookID, chapterIdx)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if ch == nil {
-		writeError(w, http.StatusNotFound, "chapter not found")
-		return
-	}
-	paragraphID, err := s.Store.GetParagraphIDByIdx(ch.ID, paragraphIdx)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if paragraphID == "" {
-		writeError(w, http.StatusNotFound, "paragraph not found")
-		return
-	}
-	p, err := s.Store.GetParagraph(paragraphID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	if p == nil {
-		writeError(w, http.StatusNotFound, "paragraph not found")
-		return
-	}
-	if to != "" && p.IsQuote {
-		writeError(w, http.StatusBadRequest, "only narration paragraphs can describe a character")
-		return
-	}
-	if to != "" {
-		char, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), to, false)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		to = char.Name // the row's own spelling (the lookup ignores case)
-	}
-
-	names := make([]string, 0, len(p.DescribesCharacters)+1)
-	for _, name := range p.DescribesCharacters {
-		if name == from {
-			continue
-		}
-		names = append(names, name)
-	}
-	if to != "" && !slices.Contains(names, to) {
-		names = append(names, to)
-	}
-
-	if err := s.Store.SetParagraphDescriptions(ch.ID, map[int][]string{paragraphIdx: names}); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

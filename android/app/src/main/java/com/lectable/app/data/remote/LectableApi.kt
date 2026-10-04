@@ -36,6 +36,7 @@ interface LectableApi {
     @Multipart
     @POST("api/books")
     suspend fun uploadBook(
+        @Query("play") play: String? = null,
         @Part file: MultipartBody.Part? = null,
     ): BookSummaryDto
 
@@ -260,35 +261,6 @@ interface LectableApi {
     ): Unit
 
     /**
-     * handleSetParagraphDescription reassigns one paragraph's description
-     * attribution from one character to another - the Speakers page's
-     * per-character "descriptions" list's own counterpart to
-     * handleSetParagraphSpeaker for actual dialogue lines. A narration
-     * paragraph the Describe pass (internal/speakerattr.Client.DescribeChapter)
-     * tagged as describing From gets From removed from its
-     * describes_characters list and To added instead - any *other* character
-     * this same paragraph also describes (DescribesCharacters is a list, not a
-     * single value - a paragraph can describe more than one person) is left
-     * untouched. "" and "Narrator" for To both mean "remove this description
-     * entirely, describing no one now" (mirrors handleSetParagraphSpeaker's own
-     * Narrator-means-empty convention) - there's no "To must be non-Narrator"
-     * restriction the way speaker attribution requires IsQuote, since narration
-     * describing a character is exactly what this feature already is. A
-     * non-empty, non-Narrator To is registered as a real character first if it
-     * wasn't one already (UpsertCharacter is idempotent), same as
-     * handleSetParagraphSpeaker. Refuses to attach a description to a quoted
-     * paragraph (mirrors DescribesCharacters' own doc comment: only narration
-     * is ever tagged as a description, never a quoted line).
-     */
-    @PUT("api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description")
-    suspend fun setParagraphDescription(
-        @Path("id") id: String,
-        @Path("idx") idx: Int,
-        @Path("pidx") pidx: Int,
-        @Body body: SetParagraphDescriptionRequestDto,
-    ): Unit
-
-    /**
      * handleSetParagraphEmotion is a reader's manual override of one dialogue
      * line's emotion (an internal/emotions id, or "" for neutral) - the
      * annotations view's right-click menu. Like handleSetParagraphScareQuote,
@@ -480,6 +452,7 @@ interface LectableApi {
     suspend fun reimportChapter(
         @Path("id") id: String,
         @Path("idx") idx: Int,
+        @Query("play") play: String? = null,
         @Query("force") force: String? = null,
         @Part file: MultipartBody.Part? = null,
     ): ReimportChapterResponseDto
@@ -491,20 +464,6 @@ interface LectableApi {
      */
     @POST("api/books/{id}/chapters/{idx}/resolve-pronunciation")
     suspend fun resolvePronunciation(
-        @Path("id") id: String,
-        @Path("idx") idx: Int,
-    ): QueuedResponseDto
-
-    /**
-     * handleRetagDescriptions queues a KindDescription task for one chapter -
-     * the Speakers page's own "Retag descriptions" button. Always re-runs, even
-     * if the chapter was already described. Fire-and-forget (202), the same
-     * shape as handleAttributeSpeakers; the task waits on the chapter's
-     * scare-quote tagging first (jobs.Manager.scareQuoteDependency), and
-     * progress shows up on the Jobs dashboard.
-     */
-    @POST("api/books/{id}/chapters/{idx}/retag-descriptions")
-    suspend fun retagDescriptions(
         @Path("id") id: String,
         @Path("idx") idx: Int,
     ): QueuedResponseDto
@@ -575,8 +534,8 @@ interface LectableApi {
     /**
      * handleTagDirections enqueues speech-direction tagging for one chapter,
      * explicitly triggered by the reader - see directChapter's own doc comment
-     * for why this isn't chained after attribution automatically the way
-     * describeChapter is. Fire-and-forget (202 Accepted, no result body),
+     * for why this isn't chained after attribution automatically.
+     * Fire-and-forget (202 Accepted, no result body),
      * mirroring handleAttributeSpeakers exactly: tagging runs the LLM over a
      * whole chapter in batches and can take a while, so this shouldn't hold a
      * request open for it - see jobs.Manager.EnqueueAttribution's own doc
@@ -772,24 +731,20 @@ interface LectableApi {
     ): CharacterizeResponseDto
 
     /**
-     * handleCharacterDescriptions lists every paragraph that describes a
-     * character's physical appearance or personality (see
-     * internal/speakerattr's DescribeChapter and Store.SetParagraphDescriptions),
-     * across every book in their series (see store.SeriesScope) -
-     * handleCharacterAppearances' own description-tagging counterpart, same DTO
-     * shape and the same "bookID in the path is just how the character is
-     * reached" rationale. A description paragraph's own attributed speaker is
-     * always "Narrator" (or "", pre-attribution) - see
-     * Store.ParagraphsDescribing's own doc comment - so audio resolution here
-     * always goes through the "Narrator" name, unlike handleCharacterAppearances'
-     * own char.Name: it's previewing the narration itself, not this character's
-     * own (nonexistent, for a paragraph they don't speak) dialogue.
+     * handlePreviewCharacterization runs a character's characterization
+     * (castCharacter) and returns the casting without storing it, so a change
+     * to the prompts or the retrieval can be judged against the stored casting
+     * without discarding anyone's voice or audio. ?temp= sets the casting
+     * call's sampling temperature and ?lookup=0 casts without the
+     * book lookups.
      */
-    @GET("api/books/{id}/characters/{characterId}/descriptions")
-    suspend fun characterDescriptions(
+    @POST("api/books/{id}/characters/{characterId}/characterize/preview")
+    suspend fun previewCharacterization(
         @Path("id") id: String,
         @Path("characterId") characterId: String,
-    ): List<SpeakerAppearanceDto>
+        @Query("lookup") lookup: String? = null,
+        @Query("temp") temp: String? = null,
+    ): CharacterizePreviewResponseDto
 
     /**
      * handleGenerateCharacterVoice force-provisions a voice for one character
@@ -827,7 +782,7 @@ interface LectableApi {
 
     /**
      * handleMergeCharacter folds one character into another: every paragraph
-     * in this book currently attributed to them is reattributed to
+     * in their series currently attributed to them is reattributed to
      * req.TargetName instead of reverting to blank, and their own identity/
      * voice/presets are deleted for their whole series scope (see
      * deleteCharacterIdentity) - for when attribution split one person into
@@ -1148,7 +1103,7 @@ interface LectableApi {
      * page's per-column reset buttons: clears one pass across the whole book as
      * though it had never run, and deletes whatever generated audio it made
      * stale. pass is a bulk action name:
-     *   - "attribution"/"description"/"scare_quote"/"direction"/"pronunciation":
+     *   - "attribution"/"scare_quote"/"direction"/"pronunciation":
      *     the paragraph data that pass wrote plus its chapters.passes flag (see
      *     store.PassResets), invalidating audio for just the paragraphs whose
      *     narration it changed (and their scare-quote merge groups). The
@@ -1626,9 +1581,9 @@ interface LectableApi {
 
     /**
      * handleUpdateDefaultVoice sets what new books are created with: the voice
-     * and clone model ("selecting" a voice, or picking the default clone model,
-     * on the Voices page) and the per-book switches (its "Defaults for new
-     * books"). Existing books are unaffected. cloneModel "", an empty
+     * ("selecting" one on the Voices page), and the clone model and per-book
+     * switches (the Settings page's "Defaults for new books"). Existing books
+     * are unaffected. cloneModel "", an empty
      * characterVoiceMode, and an omitted strictOrder/settingRequired each leave
      * that default as it is.
      */
@@ -1705,6 +1660,18 @@ interface LectableApi {
     suspend fun testPreset(
         @Path("id") id: String,
         @Body body: TestVoiceRequestDto,
+    ): ResponseBody
+
+    /**
+     * handleRoleVariantAudio serves the reference clip of a role voice's
+     * numbered sibling (narration.MemberVoice - a derived preset id, with no
+     * stored preset to look up) - the Speakers page's per-number preview. 404
+     * until it's been rendered.
+     */
+    @Streaming
+    @GET("api/voices/role-variants/{presetId}/audio")
+    suspend fun roleVariantAudio(
+        @Path("presetId") presetId: String,
     ): ResponseBody
 
     /**

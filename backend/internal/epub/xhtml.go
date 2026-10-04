@@ -99,34 +99,17 @@ func extractChapter(
 			for _, src := range findImageSrcs(n) {
 				addImage(src)
 			}
-			text := collectText(n)
-			pieces := strings.Split(text, string(paragraphBreak))
-			if len(pieces) > 1 {
-				for _, piece := range pieces {
-					piece = strings.TrimSpace(piece)
-					if piece == "" {
-						continue
-					}
-					if isSceneBreakText(piece) {
-						blocks = append(blocks, Block{Kind: BlockBreak})
-						continue
-					}
-					blockIdx := 0
-					for _, seg := range splitQuoteSegments(piece) {
-						cleanText, emphasis := extractEmphasis(seg.Text)
-						blocks = append(blocks, Block{Kind: BlockText, Text: cleanText, Inline: blockIdx > 0, IsQuote: seg.IsQuote, Emphasis: emphasis})
-						blockIdx++
-					}
+			raw := collectText(n)
+			src := blockSource{heading: isHeadingTag(n.Data), hint: classHintOf(attr(n, "class"))}
+			// Two <br>s in a row split the block into separate paragraphs (see
+			// paragraphBreak); each piece is then split into its narration/
+			// dialogue segments.
+			pieces := strings.Split(raw, string(paragraphBreak))
+			for _, piece := range pieces {
+				text := plainText(piece)
+				if text == "" {
+					continue
 				}
-				text = strings.Join(strings.Fields(strings.ReplaceAll(text, string(paragraphBreak), " ")), " ")
-				if title == "" && headingTags[n.Data] && text != "" {
-					cleanTitle, _ := extractEmphasis(text)
-					title = cleanTitle
-					titleFromHeading = true
-				}
-				return
-			}
-			if text != "" {
 				if isSceneBreakText(text) {
 					// A scene break spelled out as text rather than a real
 					// <hr/> - "* * *", "***", a lone "⁂" asterism, and so
@@ -134,15 +117,20 @@ func extractChapter(
 					// BlockText paragraph, so the TTS worker read it
 					// literally aloud ("star star star" for "* * *").
 					blocks = append(blocks, Block{Kind: BlockBreak})
-					return
+					continue
 				}
-				blockIdx := 0
-				for _, seg := range splitQuoteSegments(text) {
+				first := len(blocks)
+				for i, seg := range splitQuoteSegments(text) {
 					cleanText, emphasis := extractEmphasis(seg.Text)
-					blocks = append(blocks, Block{Kind: BlockText, Text: cleanText, Inline: blockIdx > 0, IsQuote: seg.IsQuote, Emphasis: emphasis})
-					blockIdx++
+					blocks = append(blocks, Block{Kind: BlockText, Text: cleanText, Inline: i > 0, IsQuote: seg.IsQuote, Emphasis: emphasis})
 				}
-				if title == "" && headingTags[n.Data] {
+				pieceSrc := src
+				pieceSrc.raw = piece
+				blocks[first].src = &pieceSrc
+			}
+			if title == "" && headingTags[n.Data] {
+				text := plainText(strings.ReplaceAll(raw, string(paragraphBreak), " "))
+				if text != "" && (len(pieces) > 1 || !isSceneBreakText(text)) {
 					// Discard any emphasis spans here - a heading used as
 					// a chapter title has nothing to apply them to.
 					cleanTitle, _ := extractEmphasis(text)
@@ -276,8 +264,16 @@ func collectText(n *html.Node) string {
 					lastBr = -1
 					return
 				}
-				b.WriteByte(' ')
+				b.WriteRune(lineBreak)
 				lastBr = b.Len()
+				return
+			}
+			if isLabelClass(attr(n, "class")) {
+				b.WriteRune(labelStart)
+				for c := n.FirstChild; c != nil; c = c.NextSibling {
+					walk(c)
+				}
+				b.WriteRune(labelEnd)
 				return
 			}
 			if boldTags[n.Data] || italicTags[n.Data] {
@@ -313,7 +309,42 @@ func collectText(n *html.Node) string {
 		}
 	}
 	walk(n)
-	return normalizeWhitespace(b.String())
+	return b.String()
+}
+
+// lineBreak marks a single <br> in collectText's output, and labelStart/
+// labelEnd wrap a span styled the way plays set a speaker's name (see
+// isLabelClass) - Private Use Area sentinels like the ones above. Only the
+// play pass (play.go) reads them, off Block.src; plainText turns them back
+// into what every other reader of the text expects.
+var (
+	lineBreak  = rune(0xE005)
+	labelStart = rune(0xE006)
+	labelEnd   = rune(0xE007)
+)
+
+var playMarks = strings.NewReplacer(string(lineBreak), " ", string(labelStart), "", string(labelEnd), "")
+
+// plainText is collectText's output as prose: a <br> is a space, label
+// spans are unmarked, whitespace is normalized. Bold/italic sentinels stay
+// for extractEmphasis.
+func plainText(raw string) string {
+	return normalizeWhitespace(playMarks.Replace(raw))
+}
+
+// isLabelClass reports whether class is one plays set a speaker's name in:
+// small caps (Gutenberg's "smcap") or a dedicated "charname".
+func isLabelClass(class string) bool {
+	for _, c := range strings.Fields(class) {
+		if c == "smcap" || c == "charname" {
+			return true
+		}
+	}
+	return false
+}
+
+func isHeadingTag(tag string) bool {
+	return len(tag) == 2 && tag[0] == 'h' && tag[1] >= '1' && tag[1] <= '6'
 }
 
 // emphasisSpan is one bold and/or italic range found by extractEmphasis's

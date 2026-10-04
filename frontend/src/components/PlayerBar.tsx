@@ -670,7 +670,7 @@ export function PlayerBar({
         <button
           className={'text-button-icon' + (annotationsView ? ' text-button-icon-active' : '')}
           onClick={onToggleAnnotationsView}
-          title="Highlight each paragraph as narrator, speaker, or description"
+          title="Highlight each paragraph as narrator or speaker"
         >
           <RiPaletteLine /> Annotations
         </button>

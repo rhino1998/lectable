@@ -199,6 +199,11 @@ func TestNumberTerms(t *testing.T) {
 		{"Her 21st birthday.", "21st", []string{"twenty first"}},
 		{"The 100th floor.", "100th", []string{"one hundredth"}},
 		{"Floor 12, then 13.", "12", []string{"twelve"}},
+		{"It dealt 2x damage.", "2x", []string{"two times"}},
+		{"Experience gain: 10X", "10X", []string{"ten times"}},
+		{"Played back at 1.5x speed.", "1.5x", []string{"one point five times"}},
+		{"A 3× multiplier.", "3×", []string{"three times"}},
+		{"“1x, 2x, 3x.”", "3x", []string{"three times"}},
 		{"Released November 1, 1998 at last.", "1998", []string{"nineteen ninety eight"}},
 		{"In 2001, the project began.", "2001", []string{"two thousand and one"}},
 		{"Updated in 2025.", "2025", []string{"twenty twenty five"}},
@@ -253,6 +258,9 @@ func TestNumberTerms(t *testing.T) {
 		"An A4 page.",              // glued to a letter
 		"A 3D model.",              // glued to a letter
 		"It cost $5.",              // currency
+		"A 2x4 plank.",             // dimensions, not a multiplier
+		"A 2xl shirt.",             // glued to more letters
+		"Address 0x1F.",            // hex literal
 	}
 	for _, text := range skipped {
 		if terms := findPronunciationTerms([]ParagraphInput{{Idx: 0, Text: text}}); len(terms) != 0 {

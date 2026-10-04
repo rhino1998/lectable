@@ -61,7 +61,6 @@ typealias BulkAction = String
  */
 object BulkActions {
     const val ATTRIBUTION: BulkAction = "attribution"
-    const val DESCRIPTION: BulkAction = "description"
     const val SCARE_QUOTE: BulkAction = "scare_quote"
     const val DIRECTION: BulkAction = "direction"
     const val PRONUNCIATION: BulkAction = "pronunciation"
@@ -72,7 +71,7 @@ object BulkActions {
     const val CHARACTERIZATION: BulkAction = "characterization"
     const val VOICES: BulkAction = "voices"
     const val USED_VOICES: BulkAction = "used_voices"
-    val VALUES: List<BulkAction> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, SUMMARY, AMBIENCE, MUSIC_GENERATION, GENERATE, CHARACTERIZATION, VOICES, USED_VOICES)
+    val VALUES: List<BulkAction> = listOf(ATTRIBUTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, SUMMARY, AMBIENCE, MUSIC_GENERATION, GENERATE, CHARACTERIZATION, VOICES, USED_VOICES)
 }
 
 /**
@@ -228,7 +227,6 @@ typealias ResetPass = String
  */
 object ResetPasses {
     const val ATTRIBUTION: ResetPass = "attribution"
-    const val DESCRIPTION: ResetPass = "description"
     const val SCARE_QUOTE: ResetPass = "scare_quote"
     const val DIRECTION: ResetPass = "direction"
     const val PRONUNCIATION: ResetPass = "pronunciation"
@@ -237,7 +235,7 @@ object ResetPasses {
     const val MUSIC_GENERATION: ResetPass = "music_generation"
     const val GENERATE: ResetPass = "generate"
     const val LIGHTING: ResetPass = "lighting"
-    val VALUES: List<ResetPass> = listOf(ATTRIBUTION, DESCRIPTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, SUMMARY, AMBIENCE, MUSIC_GENERATION, GENERATE, LIGHTING)
+    val VALUES: List<ResetPass> = listOf(ATTRIBUTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, SUMMARY, AMBIENCE, MUSIC_GENERATION, GENERATE, LIGHTING)
 }
 
 /**
@@ -747,6 +745,25 @@ data class CharacterNameDto(
     val id: String = "",
     val name: String = "",
     val invalid: Boolean = false,
+)
+
+/**
+ * characterizePreviewResponse is a characterization that was run but not
+ * stored.
+ */
+@Serializable
+data class CharacterizePreviewResponseDto(
+    val summary: String = "",
+    val refLine: String = "",
+    /**
+     * Lookups are the book searches the casting call made, each with how
+     * many sentences it found.
+     */
+    val lookups: List<String> = emptyList(),
+    /**
+     * CurrentSummary is the character's stored casting, for comparison.
+     */
+    val currentSummary: String = "",
 )
 
 @Serializable
@@ -1267,7 +1284,7 @@ data class LookaheadRequestDto(
 @Serializable
 data class MergeCharacterRequestDto(
     /**
-     * TargetName is who every one of this book's paragraphs currently
+     * TargetName is who every one of the series' paragraphs currently
      * attributed to this character should be reattributed to instead -
      * "Narrator" (a sentinel, not a real character row) or another
      * character's exact name.
@@ -1363,6 +1380,12 @@ data class ParagraphDto(
      */
     val speakerIndex: Int? = null,
     /**
+     * Label is text to show before this paragraph that is never spoken: a
+     * play's speaker label ("THESEUS.") and any direction on how the line
+     * is delivered - see store.Paragraph.Label. Omitted outside a play.
+     */
+    val label: String? = null,
+    /**
      * Inline marks this paragraph as a split-out continuation of the
      * previous one, not the start of a new visual paragraph - see
      * store.Paragraph.Inline. The frontend should render consecutive
@@ -1385,12 +1408,6 @@ data class ParagraphDto(
      * Always false for a non-IsQuote paragraph.
      */
     val scareQuote: Boolean = false,
-    /**
-     * DescribesCharacters is which characters (if any) this paragraph's
-     * narration describes - see store.Paragraph.DescribesCharacters.
-     * Always empty when IsQuote is true.
-     */
-    val describesCharacters: List<String> = emptyList(),
     /**
      * Emotion is this paragraph's effective delivery emotion (an
      * internal/emotions id - see store.Paragraph.EffectiveEmotion), omitted
@@ -1477,7 +1494,7 @@ data class ParagraphEditsResponseDto(
 /**
  * Passes is a chapter's own book-preprocess pipeline progress
  * (chapters.passes, stored as a JSON object - the same "flexible,
- * independent facts" shape tts_tags/describes_characters/pronunciation
+ * independent facts" shape tts_tags/pronunciation
  * already use their own JSON columns for, rather than one forward-only
  * ChapterState enum this replaced). A struct, not a map, on the Go side so
  * call sites get a typed field (ch.Passes.Direction) instead of a
@@ -1497,20 +1514,11 @@ data class PassesDto(
      */
     val attribution: Boolean = false,
     /**
-     * Description is set once description tagging
-     * (internal/speakerattr.Client.DescribeChapter, a jobs.KindDescription
-     * task - see httpapi.describeChapterForJob) has completed over the
-     * whole chapter, persisting which characters each narration paragraph
-     * describes (Store.SetParagraphDescriptions). Its own task, dependent
-     * on ScareQuote but not on Attribution.
-     */
-    val description: Boolean = false,
-    /**
      * ScareQuote is set once scare-quote tagging
      * (internal/speakerattr.Client.ScareQuoteChapter, a jobs.KindScareQuote
      * task - see httpapi.scareQuoteChapterForJob) has completed over the
      * whole chapter, persisting Store.SetParagraphScareQuotes. Both
-     * attribution and description tagging wait on this
+     * attribution waits on this
      * (jobs.Manager.scareQuoteDependency).
      */
     val scareQuote: Boolean = false,
@@ -1519,7 +1527,7 @@ data class PassesDto(
      * (internal/speakerattr.Client.EmotionChapter, via
      * httpapi.directChapter - any clone model) has completed over the whole
      * chapter at least once, the same "full pass, not a pause/failure" contract as
-     * Attribution. Fully independent of Attribution/Description - a
+     * Attribution. Fully independent of Attribution - a
      * reader can trigger "Tag directions" directly on a chapter that was
      * never attributed via the per-chapter button, bypassing
      * runBookPipeline's own attribute-then-tag ordering entirely, and this
@@ -1541,7 +1549,7 @@ data class PassesDto(
      * has completed a full, uninterrupted pass over this chapter (never on
      * a pause or a genuine failure partway through) - Direction's own
      * "full pass, not a pause/failure" contract, and just as independent of
-     * Attribution/Description/Direction as Direction itself is: a reader
+     * Attribution/Direction as Direction itself is: a reader
      * can trigger the ambience pass for a chapter regardless of whether
      * it's ever been attributed/direction-tagged. Triggered by
      * httpapi.handleRunChapterAmbience (the Speakers page's per-chapter
@@ -1641,10 +1649,10 @@ data class QueueTaskDto(
      * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
      * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
      * | "speech_direction" | "ambience" | "scare_quote_tagging" |
-     * "description_tagging" | "chapter_summary" | "book_setting" (per-item work, see
+     * "chapter_summary" | "book_setting" (per-item work, see
      * jobs.Kind) or
      * "pipeline_scare_quote" | "pipeline_attribution" |
-     * "pipeline_description" | "pipeline_characterization" |
+     * "pipeline_characterization" |
      * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
      * | "pipeline_summary"
      * (one of a book's own preprocessing phases - see
@@ -1743,6 +1751,12 @@ data class ReattributeSpeakerRequestDto(
 data class RegenerateVariantRequestDto(
     val speaker: String = "",
     val emotion: String = "",
+    /**
+     * SpeakerIndex picks one numbered member of a role
+     * (store.Paragraph.SpeakerIndex) - its sibling voice's variant, and
+     * only its lines. 0 for the speaker's own voice.
+     */
+    val speakerIndex: Int? = null,
 )
 
 @Serializable
@@ -1816,12 +1830,6 @@ data class SetCharacterRoleRequestDto(
 @Serializable
 data class SetCharacterVoiceRequestDto(
     val voicePresetId: String = "",
-)
-
-@Serializable
-data class SetParagraphDescriptionRequestDto(
-    val from: String = "",
-    val to: String = "",
 )
 
 @Serializable
@@ -1950,6 +1958,15 @@ data class SpeakerDto(
      * no emotional lines, or their voice has no preset to vary.
      */
     val emotions: List<SpeakerEmotionDto> = emptyList(),
+    /**
+     * Variants is every numbered member of this role in this book
+     * (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), in order - the
+     * Speakers page lists each as a speaker of its own. Emotions above then
+     * covers the role's unnumbered lines only. Omitted for a speaker that
+     * isn't a role, or has no numbered lines, and when the book narrates in
+     * one voice.
+     */
+    val variants: List<SpeakerVariantDto> = emptyList(),
 )
 
 @Serializable
@@ -1987,6 +2004,28 @@ data class SpeakerEmotionDto(
      */
     val status: String = "",
     val audioUrl: String? = null,
+)
+
+/**
+ * speakerVariantDTO is one numbered member of a role - see
+ * speakerDTO.Variants. Every number reads the same way, whichever voice
+ * narration.MemberVoice gives it (number 1 shares the role's own; a later
+ * one has a sibling of it).
+ */
+@Serializable
+data class SpeakerVariantDto(
+    val number: Int = 0,
+    val paragraphCount: Int = 0,
+    /**
+     * RefAudioURL is the reference clip this number's lines clone from,
+     * omitted until it's been rendered (it renders the first time one of
+     * these lines generates) or when the voice has no clip at all.
+     */
+    val refAudioUrl: String? = null,
+    /**
+     * Emotions is speakerDTO.Emotions for this number's lines alone.
+     */
+    val emotions: List<SpeakerEmotionDto> = emptyList(),
 )
 
 /**

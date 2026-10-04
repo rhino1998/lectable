@@ -38,7 +38,6 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   'speaker-reattribute': 'Auto Split',
   speech_direction: 'Direction Tagging',
   scare_quote_tagging: 'Scare Quote Tagging',
-  description_tagging: 'Description Tagging',
   pronunciation: 'Pronunciation',
   chapter_summary: 'Summary',
   book_setting: 'Book Setting',
@@ -48,7 +47,6 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   // meta-task, not itself an LLM call) - see backend jobs.EnqueuePipeline.
   pipeline_scare_quote: 'Preprocess: Scare Quote Tagging',
   pipeline_attribution: 'Preprocess: Attribution',
-  pipeline_description: 'Preprocess: Description Tagging',
   pipeline_characterization: 'Preprocess: Characterization',
   pipeline_voice_provision: 'Preprocess: Voice Provision',
   pipeline_direction: 'Preprocess: Direction Tagging',
@@ -67,7 +65,6 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   // Speakers-page whole-book actions (see api.bulkAction) - label carries
   // the scope ("Unfinished chapters", "All characters", ...).
   pipeline_bulk_attribution: 'Bulk: Attribution',
-  pipeline_bulk_description: 'Bulk: Description Tagging',
   pipeline_bulk_scare_quote: 'Bulk: Scare Quote Tagging',
   pipeline_bulk_direction: 'Bulk: Emotion Labeling',
   pipeline_bulk_pronunciation: 'Bulk: Pronunciation',
@@ -230,7 +227,6 @@ function cancelTitle(t: QueueTask, inFlight: boolean): string {
     t.kind === 'speaker_characterization' ||
     t.kind === 'speech_direction' ||
     t.kind === 'scare_quote_tagging' ||
-    t.kind === 'description_tagging' ||
     t.kind === 'pronunciation' ||
     t.kind === 'chapter_summary' ||
     t.kind === 'book_setting'

@@ -13,7 +13,6 @@ import {
   useBulkActionsRunning,
   useBook,
   useCharacterAppearances,
-  useCharacterDescriptions,
   useCharacterizeSpeaker,
   useCharacterizingCharacters,
   useCustomVoicePresets,
@@ -105,7 +104,6 @@ export function SpeakersPage() {
   const [generatingVoiceId, setGeneratingVoiceId] = useState<string | null>(null)
   const [generateVoiceError, setGenerateVoiceError] = useState<string | null>(null)
   const [appearancesFor, setAppearancesFor] = useState<string | null>(null)
-  const [descriptionsFor, setDescriptionsFor] = useState<string | null>(null)
   const [customizingId, setCustomizingId] = useState<string | null>(null)
   // Bumped per character id after a successful recharacterize that
   // actually invalidated their voice, so its <audio> preview re-fetches
@@ -114,7 +112,6 @@ export function SpeakersPage() {
   const [audioVersion, setAudioVersion] = useState<Record<string, number>>({})
 
   const appearancesQuery = useCharacterAppearances(bookId, appearancesFor)
-  const descriptionsQuery = useCharacterDescriptions(bookId, descriptionsFor)
 
   const builtins = builtinsQuery.data?.presets ?? []
   const customs = customPresetsQuery.data ?? []
@@ -590,12 +587,6 @@ export function SpeakersPage() {
                 appearances={appearancesQuery.data}
                 appearancesLoading={appearancesQuery.isLoading}
                 reassignTargets={otherTargets}
-                descriptionsExpanded={descriptionsFor === s.id && s.id !== ''}
-                onToggleDescriptions={() =>
-                  setDescriptionsFor((cur) => (cur === s.id ? null : s.id))
-                }
-                descriptions={descriptionsQuery.data}
-                descriptionsLoading={descriptionsQuery.isLoading}
               />
             )
           })}

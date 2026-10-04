@@ -383,8 +383,8 @@ compiled-in default in place if nothing answers in time.
   settings a reader dips into, unlike Play/Pause which stays in the bottom
   `PlaybackBar` (annotations/music/lighting left of Play, bookmarks/chapter/
   speed right; annotations mode is persisted in `ReadingSettingsRepository`).
-  The set-speaker/description pickers list "This chapter" (everyone who
-  speaks or is described in the chapter) then "All characters", both
+  The set-speaker picker lists "This chapter" (everyone who
+  speaks in the chapter) then "All characters", both
   alphabetical (`pickerSections`); the Speakers roster is Narrator-first,
   then alphabetical (`sortedRoster`). `ReaderViewModel` subscribes to the book, voice,
   bookmarks, every loaded chapter (`subscribeChapter`/`awaitChapter` -
@@ -400,7 +400,15 @@ compiled-in default in place if nothing answers in time.
   (`DownloadRepository`, walked off the filesystem rather than summed from
   `DownloadedChapter.totalBytes` alone, since that column only ever
   tracked audio, not the cover images `downloadChapter` also saves), and
-  links to Voices and Jobs.
+  links to Voices, Jobs and `BookDefaultsScreen` (what a newly added book
+  starts with - clone model and the per-book switches, the `defaultVoice`
+  live topic; the web's `SettingsPage`. The default voice itself is still
+  picked on `VoicesScreen`). Also links to `ui/llm/`'s `LlmTestScreen`/
+  `LlmTestViewModel`, the web's `LLMPage`: a system and user prompt (plus
+  optional temperature and max tokens) sent to `POST /api/llm/test`, the
+  generated text shown with how long it took. Nothing is saved. The call
+  only answers once the whole response is generated, so `NetworkModule`
+  gives that one path a 10-minute read timeout.
 - `ui/jobs/` - `JobsScreen`/`JobsViewModel`, the Android analogue of
   `../frontend/src/pages/JobsPage.tsx`: a live view of the backend's
   shared job queue (`backend/internal/jobs.Manager`), live via the `jobs`
@@ -431,18 +439,11 @@ compiled-in default in place if nothing answers in time.
   `used_voices` bulk action: readies every voice this book's lines use -
   a `⋮` menu for
   Characterize/Generate-voice/Assign-voice/Merge/Delete). Tapping a row
-  expands its appearances list for regenerate/reassign; the `⋮` menu's own
-  "View descriptions" independently expands that same character's
-  descriptions list (paragraphs whose narration describes them, not lines
-  they speak) with its own "Reassign to…" (`SpeakerViewModel
-  .reassignDescription`, `PUT .../paragraphs/{pidx}/description`) - moves
-  the paragraph off this character's describes-list onto another's, same
-  per-line correction shape as appearances' own reassign, mirroring
-  frontend's own `DescriptionRow`. "Assign voice" opens a picker over
+  expands its appearances list for regenerate/reassign. "Assign voice" opens a picker over
   built-in + custom presets with a hand-off into `VoicesScreen` to create a
   new one first - no separate voice-editor form was built here, since
   `VoicesScreen` already has one. Still web-only: per-chapter attribution/
-  description/direction-tag status and individual buttons from
+  direction-tag status and individual buttons from
   `SpeakersPage.tsx` itself (the single "Preprocess" call covers the
   common path here instead, and the reader's own chapter picker long-press
   menu - see below - covers attribution/tagging one chapter directly), and
@@ -492,7 +493,7 @@ compiled-in default in place if nothing answers in time.
   reader's own chapter picker ("Jump to chapter" sheet) has a long-press
   menu per chapter with "Generate chapter audio" and one item per LLM pass
   (`ReaderViewModel.runChapterPass`, each queuing its own backend job -
-  the backend orders attribution/description tagging after scare-quote
+  the backend orders attribution after scare-quote
   tagging itself) - see
   `ui/reader/` below. All three survive offline downloads
   (`OfflineParagraph.emotion`/`.directionMarks`/`.pronunciationMarks`).
@@ -500,9 +501,8 @@ compiled-in default in place if nothing answers in time.
   (local Compose state, not persisted) drawing three independent kinds of
   marks via `drawBehind`/`wordLineBounds`, generalized from the active-word
   highlight box to a whole segment/offset/word's position:
-    - An **underline** under dialogue/descriptive-narration segments
-      (`isQuote`/`describesCharacters`), colored blue/yellow matching
-      frontend's `--annotation-speaker`/`--annotation-description`.
+    - An **underline** under dialogue segments (`isQuote`), colored
+      blue matching frontend's `--annotation-speaker`.
     - A small open-caret ("^") below the line at each delivery tag's
       insertion point (today only pauses), colored per category matching
       frontend's `--direction-*` variables - composable with the
@@ -514,15 +514,8 @@ compiled-in default in place if nothing answers in time.
   background color wash per kind, no legend, no "select a speaker to
   highlight their lines." Not purely read-only, though: a block's
   long-press menu (available with or without annotations mode on) lists
-  each distinct `Speaker`/`describesCharacters` name as its own tappable
-  row - "Speaker: X" opens `SpeakerPickerSheet` (unchanged), and each
-  "Describes: X" opens `DescriptionPickerSheet`, reassigning just that
-  block's own segment(s) actually carrying that name to a different
-  character (or "Remove", describing no one) via `ReaderViewModel
-  .reassignDescription` - the reader's own inline counterpart to
-  `ui/speakers/`'s per-character "descriptions" list, and to frontend
-  ReaderPage's own annotations-view right-click "Reassign description"
-  menu (see `frontend/CLAUDE.md`).
+  each distinct `Speaker` name as its own tappable
+  row - "Speaker: X" opens `SpeakerPickerSheet`.
 
   A fourth kind of mark, background-music region boundaries, is a labeled
   divider row (`MusicRegionBoundaryRow`) rather than an inline mark like

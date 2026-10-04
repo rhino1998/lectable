@@ -23,7 +23,7 @@ export type BookSettingSource = (typeof BOOK_SETTING_SOURCES)[number]
  * queues the same "pipeline_generate_book" row as the library page's
  * Generate: All.
  */
-export const BULK_ACTIONS = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'summary', 'ambience', 'music_generation', 'generate', 'characterization', 'voices', 'used_voices'] as const
+export const BULK_ACTIONS = ['attribution', 'scare_quote', 'direction', 'pronunciation', 'summary', 'ambience', 'music_generation', 'generate', 'characterization', 'voices', 'used_voices'] as const
 export type BulkAction = (typeof BULK_ACTIONS)[number]
 
 /**
@@ -82,7 +82,7 @@ export type ParagraphEditField = (typeof PARAGRAPH_EDIT_FIELDS)[number]
  * (POST /api/books/{id}/reset/{pass}) - every bulkAction except the
  * character-scoped ones.
  */
-export const RESET_PASSES = ['attribution', 'description', 'scare_quote', 'direction', 'pronunciation', 'summary', 'ambience', 'music_generation', 'generate', 'lighting'] as const
+export const RESET_PASSES = ['attribution', 'scare_quote', 'direction', 'pronunciation', 'summary', 'ambience', 'music_generation', 'generate', 'lighting'] as const
 export type ResetPass = (typeof RESET_PASSES)[number]
 
 /**
@@ -518,6 +518,24 @@ export interface CharacterName {
   id: string
   name: string
   invalid: boolean
+}
+
+/**
+ * characterizePreviewResponse is a characterization that was run but not
+ * stored.
+ */
+export interface CharacterizePreviewResponse {
+  summary: string
+  refLine: string
+  /**
+   * Lookups are the book searches the casting call made, each with how
+   * many sentences it found.
+   */
+  lookups: string[]
+  /**
+   * CurrentSummary is the character's stored casting, for comparison.
+   */
+  currentSummary: string
 }
 
 export interface CharacterizeResponse {
@@ -979,7 +997,7 @@ export interface LookaheadRequest {
 
 export interface MergeCharacterRequest {
   /**
-   * TargetName is who every one of this book's paragraphs currently
+   * TargetName is who every one of the series' paragraphs currently
    * attributed to this character should be reattributed to instead -
    * "Narrator" (a sentinel, not a real character row) or another
    * character's exact name.
@@ -1073,6 +1091,12 @@ export interface Paragraph {
    */
   speakerIndex?: number
   /**
+   * Label is text to show before this paragraph that is never spoken: a
+   * play's speaker label ("THESEUS.") and any direction on how the line
+   * is delivered - see store.Paragraph.Label. Omitted outside a play.
+   */
+  label?: string
+  /**
    * Inline marks this paragraph as a split-out continuation of the
    * previous one, not the start of a new visual paragraph - see
    * store.Paragraph.Inline. The frontend should render consecutive
@@ -1095,12 +1119,6 @@ export interface Paragraph {
    * Always false for a non-IsQuote paragraph.
    */
   scareQuote?: boolean
-  /**
-   * DescribesCharacters is which characters (if any) this paragraph's
-   * narration describes - see store.Paragraph.DescribesCharacters.
-   * Always empty when IsQuote is true.
-   */
-  describesCharacters?: string[]
   /**
    * Emotion is this paragraph's effective delivery emotion (an
    * internal/emotions id - see store.Paragraph.EffectiveEmotion), omitted
@@ -1185,7 +1203,7 @@ export interface ParagraphEditsResponse {
 /**
  * Passes is a chapter's own book-preprocess pipeline progress
  * (chapters.passes, stored as a JSON object - the same "flexible,
- * independent facts" shape tts_tags/describes_characters/pronunciation
+ * independent facts" shape tts_tags/pronunciation
  * already use their own JSON columns for, rather than one forward-only
  * ChapterState enum this replaced). A struct, not a map, on the Go side so
  * call sites get a typed field (ch.Passes.Direction) instead of a
@@ -1204,20 +1222,11 @@ export interface Passes {
    */
   attribution: boolean
   /**
-   * Description is set once description tagging
-   * (internal/speakerattr.Client.DescribeChapter, a jobs.KindDescription
-   * task - see httpapi.describeChapterForJob) has completed over the
-   * whole chapter, persisting which characters each narration paragraph
-   * describes (Store.SetParagraphDescriptions). Its own task, dependent
-   * on ScareQuote but not on Attribution.
-   */
-  description: boolean
-  /**
    * ScareQuote is set once scare-quote tagging
    * (internal/speakerattr.Client.ScareQuoteChapter, a jobs.KindScareQuote
    * task - see httpapi.scareQuoteChapterForJob) has completed over the
    * whole chapter, persisting Store.SetParagraphScareQuotes. Both
-   * attribution and description tagging wait on this
+   * attribution waits on this
    * (jobs.Manager.scareQuoteDependency).
    */
   scareQuote: boolean
@@ -1226,7 +1235,7 @@ export interface Passes {
    * (internal/speakerattr.Client.EmotionChapter, via
    * httpapi.directChapter - any clone model) has completed over the whole
    * chapter at least once, the same "full pass, not a pause/failure" contract as
-   * Attribution. Fully independent of Attribution/Description - a
+   * Attribution. Fully independent of Attribution - a
    * reader can trigger "Tag directions" directly on a chapter that was
    * never attributed via the per-chapter button, bypassing
    * runBookPipeline's own attribute-then-tag ordering entirely, and this
@@ -1248,7 +1257,7 @@ export interface Passes {
    * has completed a full, uninterrupted pass over this chapter (never on
    * a pause or a genuine failure partway through) - Direction's own
    * "full pass, not a pause/failure" contract, and just as independent of
-   * Attribution/Description/Direction as Direction itself is: a reader
+   * Attribution/Direction as Direction itself is: a reader
    * can trigger the ambience pass for a chapter regardless of whether
    * it's ever been attributed/direction-tagged. Triggered by
    * httpapi.handleRunChapterAmbience (the Speakers page's per-chapter
@@ -1343,10 +1352,10 @@ export interface QueueTask {
    * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
    * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
    * | "speech_direction" | "ambience" | "scare_quote_tagging" |
-   * "description_tagging" | "chapter_summary" | "book_setting" (per-item work, see
+   * "chapter_summary" | "book_setting" (per-item work, see
    * jobs.Kind) or
    * "pipeline_scare_quote" | "pipeline_attribution" |
-   * "pipeline_description" | "pipeline_characterization" |
+   * "pipeline_characterization" |
    * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
    * | "pipeline_summary"
    * (one of a book's own preprocessing phases - see
@@ -1442,6 +1451,12 @@ export interface ReattributeSpeakerRequest {
 export interface RegenerateVariantRequest {
   speaker: string
   emotion: string
+  /**
+   * SpeakerIndex picks one numbered member of a role
+   * (store.Paragraph.SpeakerIndex) - its sibling voice's variant, and
+   * only its lines. 0 for the speaker's own voice.
+   */
+  speakerIndex?: number
 }
 
 export interface ReimportChapterResponse {
@@ -1505,11 +1520,6 @@ export interface SetCharacterRoleRequest {
 
 export interface SetCharacterVoiceRequest {
   voicePresetId: string
-}
-
-export interface SetParagraphDescriptionRequest {
-  from: string
-  to: string
 }
 
 export interface SetParagraphEmotionRequest {
@@ -1631,6 +1641,15 @@ export interface Speaker {
    * no emotional lines, or their voice has no preset to vary.
    */
   emotions?: SpeakerEmotion[]
+  /**
+   * Variants is every numbered member of this role in this book
+   * (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), in order - the
+   * Speakers page lists each as a speaker of its own. Emotions above then
+   * covers the role's unnumbered lines only. Omitted for a speaker that
+   * isn't a role, or has no numbered lines, and when the book narrates in
+   * one voice.
+   */
+  variants?: SpeakerVariant[]
 }
 
 export interface SpeakerAppearance {
@@ -1666,6 +1685,27 @@ export interface SpeakerEmotion {
    */
   status: 'ready' | 'pending' | 'failed'
   audioUrl?: string
+}
+
+/**
+ * speakerVariantDTO is one numbered member of a role - see
+ * speakerDTO.Variants. Every number reads the same way, whichever voice
+ * narration.MemberVoice gives it (number 1 shares the role's own; a later
+ * one has a sibling of it).
+ */
+export interface SpeakerVariant {
+  number: number
+  paragraphCount: number
+  /**
+   * RefAudioURL is the reference clip this number's lines clone from,
+   * omitted until it's been rendered (it renders the first time one of
+   * these lines generates) or when the voice has no clip at all.
+   */
+  refAudioUrl?: string
+  /**
+   * Emotions is speakerDTO.Emotions for this number's lines alone.
+   */
+  emotions?: SpeakerEmotion[]
 }
 
 /**
@@ -1934,7 +1974,6 @@ export interface LiveTopics {
   voice: { params: { bookId: string }; data: VoiceSettings }
   speakers: { params: { bookId: string }; data: Speaker[] }
   characterAppearances: { params: { bookId: string; characterId: string }; data: SpeakerAppearance[] }
-  characterDescriptions: { params: { bookId: string; characterId: string }; data: SpeakerAppearance[] }
   bookmarks: { params: { bookId: string }; data: Bookmark[] }
   /**
    * buildCharacterNames lists bookID's series roster (store.ListCharacters -
@@ -1993,7 +2032,7 @@ export interface Routes {
   }
   'POST /api/books': {
     path: Record<never, never>
-    query: Record<never, never>
+    query: { play?: string | number | boolean }
     body: FormData
     response: BookSummary
     errorCode: 'book_exists'
@@ -2237,34 +2276,6 @@ export interface Routes {
     errorCode: never
   }
   /**
-   * handleSetParagraphDescription reassigns one paragraph's description
-   * attribution from one character to another - the Speakers page's
-   * per-character "descriptions" list's own counterpart to
-   * handleSetParagraphSpeaker for actual dialogue lines. A narration
-   * paragraph the Describe pass (internal/speakerattr.Client.DescribeChapter)
-   * tagged as describing From gets From removed from its
-   * describes_characters list and To added instead - any *other* character
-   * this same paragraph also describes (DescribesCharacters is a list, not a
-   * single value - a paragraph can describe more than one person) is left
-   * untouched. "" and "Narrator" for To both mean "remove this description
-   * entirely, describing no one now" (mirrors handleSetParagraphSpeaker's own
-   * Narrator-means-empty convention) - there's no "To must be non-Narrator"
-   * restriction the way speaker attribution requires IsQuote, since narration
-   * describing a character is exactly what this feature already is. A
-   * non-empty, non-Narrator To is registered as a real character first if it
-   * wasn't one already (UpsertCharacter is idempotent), same as
-   * handleSetParagraphSpeaker. Refuses to attach a description to a quoted
-   * paragraph (mirrors DescribesCharacters' own doc comment: only narration
-   * is ever tagged as a description, never a quoted line).
-   */
-  'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description': {
-    path: { id: string; idx: number; pidx: number }
-    query: Record<never, never>
-    body: SetParagraphDescriptionRequest
-    response: void
-    errorCode: never
-  }
-  /**
    * handleSetParagraphEmotion is a reader's manual override of one dialogue
    * line's emotion (an internal/emotions id, or "" for neutral) - the
    * annotations view's right-click menu. Like handleSetParagraphScareQuote,
@@ -2447,7 +2458,7 @@ export interface Routes {
    */
   'POST /api/books/{id}/chapters/{idx}/reimport': {
     path: { id: string; idx: number }
-    query: { force?: string | number | boolean }
+    query: { play?: string | number | boolean; force?: string | number | boolean }
     body: FormData
     response: ReimportChapterResponse
     errorCode: 'no_source_epub' | 'title_mismatch'
@@ -2458,21 +2469,6 @@ export interface Routes {
    * Always re-runs, even if the chapter was already resolved.
    */
   'POST /api/books/{id}/chapters/{idx}/resolve-pronunciation': {
-    path: { id: string; idx: number }
-    query: Record<never, never>
-    body: never
-    response: QueuedResponse
-    errorCode: never
-  }
-  /**
-   * handleRetagDescriptions queues a KindDescription task for one chapter -
-   * the Speakers page's own "Retag descriptions" button. Always re-runs, even
-   * if the chapter was already described. Fire-and-forget (202), the same
-   * shape as handleAttributeSpeakers; the task waits on the chapter's
-   * scare-quote tagging first (jobs.Manager.scareQuoteDependency), and
-   * progress shows up on the Jobs dashboard.
-   */
-  'POST /api/books/{id}/chapters/{idx}/retag-descriptions': {
     path: { id: string; idx: number }
     query: Record<never, never>
     body: never
@@ -2548,8 +2544,8 @@ export interface Routes {
   /**
    * handleTagDirections enqueues speech-direction tagging for one chapter,
    * explicitly triggered by the reader - see directChapter's own doc comment
-   * for why this isn't chained after attribution automatically the way
-   * describeChapter is. Fire-and-forget (202 Accepted, no result body),
+   * for why this isn't chained after attribution automatically.
+   * Fire-and-forget (202 Accepted, no result body),
    * mirroring handleAttributeSpeakers exactly: tagging runs the LLM over a
    * whole chapter in batches and can take a while, so this shouldn't hold a
    * request open for it - see jobs.Manager.EnqueueAttribution's own doc
@@ -2756,24 +2752,18 @@ export interface Routes {
     errorCode: never
   }
   /**
-   * handleCharacterDescriptions lists every paragraph that describes a
-   * character's physical appearance or personality (see
-   * internal/speakerattr's DescribeChapter and Store.SetParagraphDescriptions),
-   * across every book in their series (see store.SeriesScope) -
-   * handleCharacterAppearances' own description-tagging counterpart, same DTO
-   * shape and the same "bookID in the path is just how the character is
-   * reached" rationale. A description paragraph's own attributed speaker is
-   * always "Narrator" (or "", pre-attribution) - see
-   * Store.ParagraphsDescribing's own doc comment - so audio resolution here
-   * always goes through the "Narrator" name, unlike handleCharacterAppearances'
-   * own char.Name: it's previewing the narration itself, not this character's
-   * own (nonexistent, for a paragraph they don't speak) dialogue.
+   * handlePreviewCharacterization runs a character's characterization
+   * (castCharacter) and returns the casting without storing it, so a change
+   * to the prompts or the retrieval can be judged against the stored casting
+   * without discarding anyone's voice or audio. ?temp= sets the casting
+   * call's sampling temperature and ?lookup=0 casts without the
+   * book lookups.
    */
-  'GET /api/books/{id}/characters/{characterId}/descriptions': {
+  'POST /api/books/{id}/characters/{characterId}/characterize/preview': {
     path: { id: string; characterId: string }
-    query: Record<never, never>
+    query: { lookup?: string | number | boolean; temp?: string | number | boolean }
     body: never
-    response: SpeakerAppearance[]
+    response: CharacterizePreviewResponse
     errorCode: never
   }
   /**
@@ -2813,7 +2803,7 @@ export interface Routes {
   }
   /**
    * handleMergeCharacter folds one character into another: every paragraph
-   * in this book currently attributed to them is reattributed to
+   * in their series currently attributed to them is reattributed to
    * req.TargetName instead of reverting to blank, and their own identity/
    * voice/presets are deleted for their whole series scope (see
    * deleteCharacterIdentity) - for when attribution split one person into
@@ -3158,7 +3148,7 @@ export interface Routes {
    * page's per-column reset buttons: clears one pass across the whole book as
    * though it had never run, and deletes whatever generated audio it made
    * stale. pass is a bulk action name:
-   *   - "attribution"/"description"/"scare_quote"/"direction"/"pronunciation":
+   *   - "attribution"/"scare_quote"/"direction"/"pronunciation":
    *     the paragraph data that pass wrote plus its chapters.passes flag (see
    *     store.PassResets), invalidating audio for just the paragraphs whose
    *     narration it changed (and their scare-quote merge groups). The
@@ -3702,9 +3692,9 @@ export interface Routes {
   }
   /**
    * handleUpdateDefaultVoice sets what new books are created with: the voice
-   * and clone model ("selecting" a voice, or picking the default clone model,
-   * on the Voices page) and the per-book switches (its "Defaults for new
-   * books"). Existing books are unaffected. cloneModel "", an empty
+   * ("selecting" one on the Voices page), and the clone model and per-book
+   * switches (the Settings page's "Defaults for new books"). Existing books
+   * are unaffected. cloneModel "", an empty
    * characterVoiceMode, and an omitted strictOrder/settingRequired each leave
    * that default as it is.
    */
@@ -3798,6 +3788,19 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleRoleVariantAudio serves the reference clip of a role voice's
+   * numbered sibling (narration.MemberVoice - a derived preset id, with no
+   * stored preset to look up) - the Speakers page's per-number preview. 404
+   * until it's been rendered.
+   */
+  'GET /api/voices/role-variants/{presetId}/audio': {
+    path: { presetId: string }
+    query: Record<never, never>
+    body: never
+    response: Blob
+    errorCode: never
+  }
+  /**
    * handleVariantAudio serves one emotion variant of a voice preset's
    * reference clip (see voicerefs.EnsureVariantFile) - the Speakers page's
    * per-emotion preview. 404 until it's been rendered.
@@ -3834,7 +3837,6 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/chapters/{idx}/music': 'json',
   'GET /api/books/{id}/chapters/{idx}/notes': 'json',
   'PUT /api/books/{id}/chapters/{idx}/notes': 'none',
-  'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description': 'none',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion': 'none',
   'POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/generate-sfx': 'json',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote': 'none',
@@ -3844,7 +3846,6 @@ export const ROUTE_RESPONSE_KINDS = {
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker': 'none',
   'POST /api/books/{id}/chapters/{idx}/reimport': 'json',
   'POST /api/books/{id}/chapters/{idx}/resolve-pronunciation': 'json',
-  'POST /api/books/{id}/chapters/{idx}/retag-descriptions': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes': 'json',
   'POST /api/books/{id}/chapters/{idx}/retag-scare-quotes/preview': 'json',
   'POST /api/books/{id}/chapters/{idx}/run-ambience': 'json',
@@ -3859,7 +3860,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'PUT /api/books/{id}/characters/{characterId}/aliases': 'json',
   'GET /api/books/{id}/characters/{characterId}/appearances': 'json',
   'POST /api/books/{id}/characters/{characterId}/characterize': 'json',
-  'GET /api/books/{id}/characters/{characterId}/descriptions': 'json',
+  'POST /api/books/{id}/characters/{characterId}/characterize/preview': 'json',
   'POST /api/books/{id}/characters/{characterId}/generate-voice': 'json',
   'PUT /api/books/{id}/characters/{characterId}/invalid': 'none',
   'POST /api/books/{id}/characters/{characterId}/merge': 'none',
@@ -3928,5 +3929,6 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/voices/presets/{id}/audio': 'binary',
   'POST /api/voices/presets/{id}/regenerate': 'json',
   'POST /api/voices/presets/{id}/test': 'binary',
+  'GET /api/voices/role-variants/{presetId}/audio': 'binary',
   'GET /api/voices/variants/{presetId}/{emotion}/audio': 'binary',
 } as const satisfies Record<keyof Routes, 'json' | 'none' | 'binary'>

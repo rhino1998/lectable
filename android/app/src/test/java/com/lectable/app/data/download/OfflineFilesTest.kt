@@ -185,12 +185,11 @@ class OfflineFilesTest {
     fun `cached paragraphs keep what the reader shows`() {
         val p = OfflineParagraph(
             idx = 0, text = "\"Go,\" she said.", durationSeconds = 1.0, speaker = "Ada", isQuote = true,
-            scareQuote = true, emotion = "angry", inline = true, describesCharacters = listOf("Bo"),
+            scareQuote = true, emotion = "angry", inline = true,
         )
         val dto = listOf(p).toCachedParagraphs { "u" }.single()
         assertEquals("Ada", dto.speaker)
         assertEquals("angry", dto.emotion)
         assertTrue(dto.isQuote && dto.scareQuote && dto.inline)
-        assertEquals(listOf("Bo"), dto.describesCharacters)
     }
 }

@@ -533,8 +533,8 @@ const musicDescribeMaxTokens = 1024
 // worked), describe that region's own background bed - a music cue and,
 // where the scene has a clear physical setting, an ambience layer mixed
 // under it (see musicgen.MixAmbience). Splitting this out from the
-// boundary judgment is the same lesson DescribeChapter was already split
-// from AttributeChapter over (backend/CLAUDE.md) - asking one call to both
+// boundary judgment is the lesson a folded attribute-and-describe call
+// already taught (two judgments per line hurt both) - asking one call to both
 // place a boundary and justify a full composer brief for it in the same
 // breath left the single-pass version measurably worse on real chapters
 // (ad hoc comparison against two real book chapters: the combined pass

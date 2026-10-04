@@ -5,7 +5,6 @@ import {
   useAttributeSpeakers,
   useAttributingChapters,
   useDeleteChapterAudio,
-  useDescribingChapters,
   useDirectingChapters,
   useGenerateChapter,
   useGeneratingChapters,
@@ -13,7 +12,6 @@ import {
   useRegenerateChapterNotes,
   useRegenerateMusicRegion,
   useResolvePronunciation,
-  useRetagDescriptions,
   useRetagScareQuotes,
   useRunChapterAmbience,
   useSaveChapterNotes,
@@ -42,7 +40,6 @@ export function useChapterActions(bookId: string) {
   const saveChapterNotes = useSaveChapterNotes(bookId)
   const regenerateChapterNotes = useRegenerateChapterNotes(bookId)
   const attributingIdxs = useAttributingChapters(bookId)
-  const retagDescriptions = useRetagDescriptions(bookId)
   const retagScareQuotes = useRetagScareQuotes(bookId)
   const tagDirections = useTagDirections(bookId)
   const directingIdxs = useDirectingChapters(bookId)
@@ -54,9 +51,8 @@ export function useChapterActions(bookId: string) {
   const generatingIdxs = useGeneratingChapters(bookId)
   const regenerateMusicRegion = useRegenerateMusicRegion(bookId)
   const [error, setError] = useState<string | null>(null)
-  // Description/scare-quote tagging are queued jobs, derived from the live
+  // Scare-quote tagging is a queued job, derived from the live
   // job-queue topic like attributingIdxs/directingIdxs above.
-  const describingIdxs = useDescribingChapters(bookId)
   const scareQuotingIdxs = useScareQuotingChapters(bookId)
 
   const runClearChapterAudio = useCallback(
@@ -128,17 +124,6 @@ export function useChapterActions(bookId: string) {
       })
     },
     [regenerateChapterNotes],
-  )
-
-  const runRetagDescriptionsChapter = useCallback(
-    (idx: number) => {
-      setError(null)
-      retagDescriptions.mutate(idx, {
-        onError: (err) =>
-          setError(err instanceof ApiError ? err.message : 'Description tagging failed'),
-      })
-    },
-    [retagDescriptions],
   )
 
   const runRetagScareQuotesChapter = useCallback(
@@ -213,7 +198,6 @@ export function useChapterActions(bookId: string) {
     error,
     setError,
     attributingIdxs,
-    describingIdxs,
     scareQuotingIdxs,
     directingIdxs,
     pronouncingIdxs,
@@ -228,7 +212,6 @@ export function useChapterActions(bookId: string) {
     runAttributeAroundEdits,
     saveNotes,
     runRegenerateNotes,
-    runRetagDescriptionsChapter,
     runRetagScareQuotesChapter,
     runTagDirectionsChapter,
     runResolvePronunciationChapter,

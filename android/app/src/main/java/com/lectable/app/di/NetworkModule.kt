@@ -35,6 +35,16 @@ object NetworkModule {
             .addInterceptor(
                 HttpLoggingInterceptor().apply { level = HttpLoggingInterceptor.Level.BASIC },
             )
+            // POST /api/llm/test answers only once the model has loaded and generated the whole
+            // response (LlmTestScreen) - minutes for a cold model and a long answer, well past
+            // the read timeout below.
+            .addInterceptor { chain ->
+                if (chain.request().url.encodedPath.endsWith("/api/llm/test")) {
+                    chain.withReadTimeout(10, TimeUnit.MINUTES).proceed(chain.request())
+                } else {
+                    chain.proceed(chain.request())
+                }
+            }
             // Paragraph audio fetches and voice-preset synthesis can take a while on a
             // single-GPU box (see tts-service/CLAUDE.md) - generous timeouts avoid
             // spurious failures rather than tuning for a snappy worst case.

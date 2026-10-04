@@ -97,9 +97,6 @@ fun ReaderScreen(
     // Which displayed block's dialogue segment(s) "Set speaker" is currently targeting - null
     // when the picker sheet is closed. See SpeakerPickerSheet below.
     var speakerPickerTarget by remember { mutableStateOf<SpeakerPickerTarget?>(null) }
-    // SpeakerPickerTarget's own counterpart for the annotations-mode "Describes: X" long-press
-    // entry - null when the picker sheet is closed. See DescriptionPickerSheet below.
-    var descriptionPickerTarget by remember { mutableStateOf<DescriptionPickerTarget?>(null) }
     var showChapterPicker by remember { mutableStateOf(false) }
     // The chapter whose notes sheet is open (chapter picker long-press "Edit chapter notes").
     var notesChapterIdx by remember { mutableStateOf<Int?>(null) }
@@ -467,9 +464,6 @@ fun ReaderScreen(
                     onOpenSpeakerPicker = { chapterIdx, paragraphIndices, currentSpeaker ->
                         speakerPickerTarget = SpeakerPickerTarget(chapterIdx, paragraphIndices, currentSpeaker)
                     },
-                    onOpenDescriptionPicker = { chapterIdx, paragraphIndices, fromName ->
-                        descriptionPickerTarget = DescriptionPickerTarget(chapterIdx, paragraphIndices, fromName)
-                    },
                     onSetScareQuote = viewModel::setScareQuote,
                     onSetEmotion = viewModel::setEmotion,
                     onRegenerateMusic = viewModel::regenerateMusicRegion,
@@ -489,19 +483,6 @@ fun ReaderScreen(
             onSelect = { name ->
                 viewModel.setParagraphSpeaker(target.chapterIdx, target.paragraphIndices, name)
                 speakerPickerTarget = null
-            },
-        )
-    }
-
-    descriptionPickerTarget?.let { target ->
-        DescriptionPickerSheet(
-            onDismiss = { descriptionPickerTarget = null },
-            characters = uiState.characters,
-            fromName = target.fromName,
-            chapterNames = chapterCharacterNames(uiState.loadedChapters[target.chapterIdx]),
-            onSelect = { name ->
-                viewModel.reassignDescription(target.chapterIdx, target.paragraphIndices, target.fromName, name)
-                descriptionPickerTarget = null
             },
         )
     }
@@ -643,7 +624,7 @@ fun ReaderScreen(
  *  [paragraphIndices] is the long-pressed quote, or every isQuote segment of the displayed block
  *  when the press landed on narration (see ReaderListEntry.ParagraphItem/groupContent's Inline
  *  grouping) - isQuote segments only, since the backend rejects
- *  attributing narration/description to a character; [currentSpeaker] seeds the picker sheet's
+ *  attributing narration to a character; [currentSpeaker] seeds the picker sheet's
  *  selection so it can show what this block is already attributed to. */
 internal data class SpeakerPickerTarget(
     val chapterIdx: Int,
@@ -651,20 +632,8 @@ internal data class SpeakerPickerTarget(
     val currentSpeaker: String,
 )
 
-/** What the long-press "Describes: X" action (see ParagraphRow) is currently targeting -
- *  [paragraphIndices] is this block's own segments whose own describesCharacters already lists
- *  [fromName] (a block can have more than one, and a single description can span more than one
- *  inline segment) - mirrors [SpeakerPickerTarget]'s own paragraphIndices/currentSpeaker shape,
- *  just keyed by describes-name instead of speaker. An empty [fromName] targets plain narration
- *  segments describing no one yet ("Mark as description"). */
-private data class DescriptionPickerTarget(
-    val chapterIdx: Int,
-    val paragraphIndices: List<Int>,
-    val fromName: String,
-)
-
-/** Everyone who speaks or is described anywhere in [chapter] - the reassign pickers' "This
- *  chapter" section, since a misattributed line or description usually belongs to someone
+/** Everyone who speaks anywhere in [chapter] - the reassign picker's "This
+ *  chapter" section, since a misattributed line usually belongs to someone
  *  already in the scene. Narrator/blank excluded (Narrator always leads the speaker picker).
  *  Mirrors frontend's ParagraphContextMenu chapterNames. */
 internal fun chapterCharacterNames(chapter: ChapterDetailDto?): Set<String> {
@@ -672,7 +641,6 @@ internal fun chapterCharacterNames(chapter: ChapterDetailDto?): Set<String> {
     val out = mutableSetOf<String>()
     for (p in chapter.paragraphs) {
         p.speaker?.takeIf { it.isNotEmpty() && it != "Narrator" }?.let(out::add)
-        out.addAll(p.describesCharacters)
     }
     return out
 }

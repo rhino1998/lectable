@@ -25,6 +25,9 @@ data class VoicesUiState(
     val loading: Boolean = true,
     val presets: List<CustomVoicePresetDto> = emptyList(),
     val defaultPresetId: String? = null,
+    /** Everything a newly added book starts with (GET /api/voices/default); null until the
+     *  topic's first snapshot. Only the voice is set here - the rest is BookDefaultsScreen's. */
+    val defaults: VoiceSettingsDto? = null,
     val error: String? = null,
 )
 
@@ -65,7 +68,9 @@ class VoicesViewModel @Inject constructor(
         }
         viewModelScope.launch {
             liveStore.defaultVoice().collect { result ->
-                result.data?.let { settings -> _uiState.update { it.copy(defaultPresetId = settings.presetId) } }
+                result.data?.let { settings ->
+                    _uiState.update { it.copy(defaultPresetId = settings.presetId, defaults = settings) }
+                }
             }
         }
     }
@@ -75,8 +80,11 @@ class VoicesViewModel @Inject constructor(
      *  which only ever changes one specific book's voice. */
     fun setDefaultVoice(preset: CustomVoicePresetDto) {
         viewModelScope.launch {
-            runCatching { voiceRepository.updateDefaultVoice(VoiceSettingsDto(preset.id, preset.instruct, "Auto")) }
-                .onSuccess { _uiState.update { it.copy(defaultPresetId = preset.id) } }
+            // The PUT is a full replace of the switches too, so they ride along unchanged.
+            val current = _uiState.value.defaults ?: runCatching { voiceRepository.getDefaultVoice() }.getOrNull() ?: return@launch
+            runCatching {
+                voiceRepository.updateDefaultVoice(current.copy(presetId = preset.id, instruct = preset.instruct, language = "Auto"))
+            }.onSuccess { saved -> _uiState.update { it.copy(defaultPresetId = saved.presetId, defaults = saved) } }
         }
     }
 

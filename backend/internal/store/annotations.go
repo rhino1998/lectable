@@ -92,6 +92,46 @@ func (s *SQLiteStore) QuotesForBooks(bookIDs []string, characterName string, lim
 	return spreadSample(all, limit), nil
 }
 
+// SpeechTagsForBooks returns the narration that follows each of
+// characterName's own lines in the same source paragraph (QuoteContext's
+// Context, for every line rather than a sample) across bookIDs, in the
+// given book order - what speakerattr.VoiceClues searches for how the
+// narration says they sound. A first-person narrator's own tags ("I said,
+// a roughness to my voice") never name them, so a search by name misses
+// these.
+func (s *SQLiteStore) SpeechTagsForBooks(bookIDs []string, characterName string) ([]string, error) {
+	var out []string
+	for _, bookID := range bookIDs {
+		rows, err := s.db.Query(`
+			SELECT next.content
+			FROM paragraphs p
+			JOIN chapters c ON c.id = p.chapter_id
+			JOIN paragraphs next
+				ON next.chapter_id = p.chapter_id AND next.idx = p.idx + 1
+				AND next.inline
+				AND (next.speaker = '' OR next.speaker = 'Narrator')
+			WHERE c.book_id = ? AND p.speaker = ?
+			ORDER BY c.idx ASC, p.idx ASC`, bookID, characterName)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var text string
+			if err := rows.Scan(&text); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, text)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // CoSpeakersForBooks returns up to limit other speakers who speak in the
 // most of the chapters characterName speaks in, across bookIDs, most shared
 // chapters first - the cast characterization keeps a voice distinguishable
@@ -151,79 +191,6 @@ func spreadSample[T any](items []T, n int) []T {
 		out[i] = items[i*len(items)/n]
 	}
 	return out
-}
-
-// DescriptionContext is one paragraph of narration describing
-// characterName's physical appearance or personality (see
-// internal/speakerattr's AttributionResult.Describes and
-// speakerattr.DescriptionContext, which this mirrors) - gathered for
-// speakerattr.Client.CharacterizeVoice the same way QuotesForBooks gathers
-// their own dialogue.
-type DescriptionContext struct {
-	Text string
-}
-
-// likeEscape escapes s's own LIKE metacharacters (%, _, and the escape
-// character itself) so it can be embedded in a LIKE pattern and matched
-// literally - without this, a character name that happens to contain one of
-// these (e.g. an underscore) would silently match more than intended
-// (DescriptionsForBooks' own needle wraps the result in unescaped `%`
-// wildcards on either side, which must keep matching "anything", so only
-// the name's own characters are escaped here).
-func likeEscape(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
-	return r.Replace(s)
-}
-
-// DescriptionsForBooks returns up to limit paragraphs across bookIDs whose
-// describes_characters (see SetParagraphDescriptions) includes
-// characterName, in the given book order (then chapter/paragraph order
-// within each) - the description-narration counterpart of QuotesForBooks,
-// gathered for speakerattr.Client.CharacterizeVoice. Matching is a LIKE
-// against the JSON-quoted name rather than unmarshaling describes_characters
-// for every row in Go, the same raw-JSON-column convention
-// paragraph_audio.word_timings already uses - the quoting keeps a match from
-// crossing a name boundary (e.g. "Jo" cannot match inside "John") the way an
-// unquoted substring search could.
-func (s *SQLiteStore) DescriptionsForBooks(bookIDs []string, characterName string, limit int) ([]DescriptionContext, error) {
-	if len(bookIDs) == 0 {
-		return nil, nil
-	}
-	needle := `%"` + likeEscape(characterName) + `"%`
-	bookPlaceholders := strings.TrimSuffix(strings.Repeat("?,", len(bookIDs)), ",")
-	var orderCases strings.Builder
-	args := make([]any, 0, len(bookIDs)*2+3)
-	for _, id := range bookIDs {
-		args = append(args, id)
-	}
-	args = append(args, needle)
-	for i, id := range bookIDs {
-		fmt.Fprintf(&orderCases, "WHEN ? THEN %d ", i)
-		args = append(args, id)
-	}
-	args = append(args, limit)
-
-	rows, err := s.db.Query(`
-		SELECT p.content
-		FROM paragraphs p
-		JOIN chapters c ON c.id = p.chapter_id
-		WHERE c.book_id IN (`+bookPlaceholders+`) AND p.describes_characters LIKE ? ESCAPE '\'
-		ORDER BY CASE c.book_id `+orderCases.String()+`END, c.idx ASC, p.idx ASC
-		LIMIT ?`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []DescriptionContext
-	for rows.Next() {
-		var d DescriptionContext
-		if err := rows.Scan(&d.Text); err != nil {
-			return nil, err
-		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
 }
 
 // SpeakerAppearance is one paragraph a character (or "Narrator") speaks,
@@ -297,52 +264,6 @@ func (s *SQLiteStore) ParagraphsForSpeaker(bookIDs []string, name string) ([]Spe
 	return out, nil
 }
 
-// ParagraphsDescribing returns every paragraph whose describes_characters
-// includes name (see SetParagraphDescriptions), across bookIDs, in the
-// given book order (then chapter/paragraph order within each) - the
-// description-tagging counterpart of ParagraphsForSpeaker, backing a
-// reader-facing "where is this character described" view the same way
-// ParagraphsForSpeaker backs "where do they speak". A description
-// paragraph's own persisted speaker is always "Narrator" (or "", the
-// pre-attribution default) - httpapi.attributeChapter's is_quote gate on
-// Describes guarantees a description can only ever land on a narration
-// paragraph, never a quoted-dialogue one - so unlike ParagraphsForSpeaker,
-// there's no separate "Narrator" special case to handle here. Matching
-// uses the same JSON-quoted LIKE technique as DescriptionsForBooks, for
-// the same reason (a match can't cross a name boundary).
-func (s *SQLiteStore) ParagraphsDescribing(bookIDs []string, name string) ([]SpeakerAppearance, error) {
-	needle := `%"` + likeEscape(name) + `"%`
-	var out []SpeakerAppearance
-	for _, bookID := range bookIDs {
-		rows, err := s.db.Query(`
-			SELECT b.id, b.title, c.idx, c.title, p.idx, p.id, p.content
-			FROM paragraphs p
-			JOIN chapters c ON c.id = p.chapter_id
-			JOIN books b ON b.id = c.book_id
-			WHERE c.book_id = ? AND p.describes_characters LIKE ? ESCAPE '\'
-			ORDER BY c.idx ASC, p.idx ASC`, bookID, needle)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var a SpeakerAppearance
-			if err := rows.Scan(&a.BookID, &a.BookTitle, &a.ChapterIdx, &a.ChapterTitle, &a.ParagraphIdx, &a.ParagraphID, &a.Text); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			out = append(out, a)
-		}
-		closeErr := rows.Close()
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		if closeErr != nil {
-			return nil, closeErr
-		}
-	}
-	return out, nil
-}
-
 // SetParagraphSpeakers records speaker-attribution results for a chapter's
 // paragraphs, keyed by paragraph Idx (what internal/speakerattr's
 // input/output both use) rather than id - the caller works from the same
@@ -373,40 +294,9 @@ func (s *SQLiteStore) SetParagraphSpeakersIndexed(chapterID string, bySpeakerIdx
 	return tx.Commit()
 }
 
-// SetParagraphDescriptions records, for a chapter's paragraphs, which
-// characters (if any) each paragraph's narration describes - the
-// describes-tagging counterpart of SetParagraphSpeakers, keyed the same way
-// (by paragraph Idx, from the same ListParagraphsRaw slice the caller
-// already has). A paragraph with no entry in byDescribesIdx is left
-// untouched, not reset to '[]' - an attribution run only reports paragraphs
-// it actually found a description in; every other paragraph in the batch
-// legitimately still describes no one, and rewriting it to '[]' would
-// needlessly discard a description an earlier run (or manual edit) already
-// recorded for it.
-func (s *SQLiteStore) SetParagraphDescriptions(chapterID string, byDescribesIdx map[int][]string) error {
-	if len(byDescribesIdx) == 0 {
-		return nil
-	}
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for idx, names := range byDescribesIdx {
-		encoded, err := DescribesCharacterList(names).Value()
-		if err != nil {
-			return fmt.Errorf("encode describes for paragraph idx %d: %w", idx, err)
-		}
-		if _, err := tx.Exec(`UPDATE paragraphs SET describes_characters = ? WHERE chapter_id = ? AND idx = ?`, encoded, chapterID, idx); err != nil {
-			return fmt.Errorf("set describes for paragraph idx %d: %w", idx, err)
-		}
-	}
-	return tx.Commit()
-}
-
 // SetParagraphScareQuotes records, for a chapter's paragraphs, which ones
 // are scare quotes (see internal/speakerattr.Client.ScareQuoteChapter and
-// Paragraph.ScareQuote) - SetParagraphDescriptions' own shape, but a plain
+// Paragraph.ScareQuote) - SetParagraphSpeakers' own shape, but a plain
 // bool column rather than JSON since there's nothing to encode. A paragraph
 // present in byScareQuoteIdx with a false value explicitly clears a
 // previously-set flag (e.g. a reader's own manual "not a scare quote after
@@ -444,15 +334,15 @@ func (s *SQLiteStore) SetParagraphScareQuotes(chapterID string, byIdx map[int]bo
 // line the parser got wrong (a multi-paragraph speech's unclosed “ reads as
 // narration), without re-importing the chapter. Either way the line starts
 // over: marked dialogue is "Unknown" until attributed, marked narration has
-// no speaker; both drop the scare-quote flag, emotion and description tags,
+// no speaker; both drop the scare-quote flag and emotion,
 // which only fit the other kind. Reports whether anything changed.
 func (s *SQLiteStore) SetParagraphQuote(chapterID string, idx int, quote bool) (bool, error) {
 	speaker := ""
 	if quote {
 		speaker = "Unknown"
 	}
-	res, err := s.db.Exec(`UPDATE paragraphs SET is_quote = ?, speaker = ?, speaker_index = 0, scare_quote = false,
-		emotion = '', describes_characters = '[]'
+	res, err := s.db.Exec(`UPDATE paragraphs SET is_quote = ?, speaker = ?, source_speaker = '', speaker_index = 0, scare_quote = false,
+		emotion = ''
 		WHERE chapter_id = ? AND idx = ? AND is_quote <> ?`, quote, speaker, chapterID, idx, quote)
 	if err != nil {
 		return false, fmt.Errorf("set is_quote for paragraph idx %d: %w", idx, err)
@@ -567,7 +457,7 @@ func (s *SQLiteStore) SetParagraphSpeaker(paragraphID, speaker string) error {
 }
 
 // ClearBookSpeakers resets every paragraph's speaker attribution back to
-// "" (unattributed), and clears Passes.Attribution/Passes.Description
+// "" (unattributed), and clears Passes.Attribution
 // (chapters.passes) across every chapter of bookID - see
 // httpapi.handleDeleteBookSpeakerData. Passes.Direction is deliberately
 // left as-is rather than also cleared: this only clears attribution data
@@ -589,12 +479,12 @@ func (s *SQLiteStore) ClearBookSpeakers(bookID string) error {
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(
-		`UPDATE paragraphs SET speaker = '', speaker_index = 0 WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`,
+		`UPDATE paragraphs SET speaker = source_speaker, speaker_index = 0 WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`,
 		bookID,
 	); err != nil {
 		return err
 	}
-	// Clears PassAttribution/PassDescription/PassScareQuote for every
+	// Clears PassAttribution/PassScareQuote for every
 	// chapter of bookID, unconditionally - unlike the old state-enum
 	// version this replaced (which only reset a chapter exactly at
 	// ChapterStateAttributed, leaving ChapterStateTagged alone specifically
@@ -606,7 +496,7 @@ func (s *SQLiteStore) ClearBookSpeakers(bookID string) error {
 	// SetChapterAttributed's own doc comment for why this is a single
 	// statement rather than a Go-side read-modify-write loop.
 	if _, err := tx.Exec(
-		`UPDATE chapters SET passes = json_patch(passes, '{"attribution": null, "description": null, "scareQuote": null}') WHERE book_id = ?`,
+		`UPDATE chapters SET passes = json_patch(passes, '{"attribution": null, "scareQuote": null}') WHERE book_id = ?`,
 		bookID,
 	); err != nil {
 		return err

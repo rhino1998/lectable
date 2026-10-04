@@ -58,7 +58,6 @@ func withDeps(base []string, extra ...string) []string {
 //	voice          {bookId}               GET /api/books/{id}/voice
 //	speakers       {bookId}               GET /api/books/{id}/speakers
 //	characterAppearances  {bookId, characterId}
-//	characterDescriptions {bookId, characterId}
 //	bookmarks      {bookId}               GET /api/books/{id}/bookmarks
 //	characters     {bookId}               GET /api/books/{id}/characters
 //	lexicon        {bookId}               GET /api/books/{id}/lexicon
@@ -88,7 +87,6 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	// DB write of its own.
 	h.Register("speakers", bookTopic("speakers", withDeps(narrationDeps, DepJobs), 2*time.Second, s.buildSpeakers))
 	h.Register("characterAppearances", characterTopic("characterAppearances", narrationDeps, 2*time.Second, s.buildCharacterAppearances))
-	h.Register("characterDescriptions", characterTopic("characterDescriptions", narrationDeps, 2*time.Second, s.buildCharacterDescriptions))
 	h.Register("bookmarks", bookTopic("bookmarks", dbDeps("bookmarks", "books", "chapters", "paragraphs"), 0, s.buildBookmarks))
 	// Match counts scan the book's paragraphs, hence the interval.
 	// Names only, for reassign pickers - cheap next to "speakers".

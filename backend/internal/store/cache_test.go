@@ -87,8 +87,7 @@ func TestCachedReturnsCopies(t *testing.T) {
 
 	ps, _ := c.ListParagraphsRaw(chapterID)
 	ps[0].Text = "mutated"
-	ps[0].DescribesCharacters = append(ps[0].DescribesCharacters, "Bob")
-	if again, _ := c.ListParagraphsRaw(chapterID); again[0].Text != "One." || len(again[0].DescribesCharacters) != 0 {
+	if again, _ := c.ListParagraphsRaw(chapterID); again[0].Text != "One." {
 		t.Fatalf("cached paragraph changed by a caller's mutation: %+v", again[0])
 	}
 

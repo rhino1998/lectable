@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -66,6 +67,133 @@ func (s *SQLiteStore) SearchParagraphs(bookID, query string, limit int) ([]Searc
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// maxMatchPhrases caps one NarrationMatching query's phrases; more are
+// asked in further queries.
+const maxMatchPhrases = 200
+
+// NarrationMatching returns up to limit narration paragraphs across
+// bookIDs, in the given book order (then chapter/paragraph order), whose
+// text contains any of phrases - retrieval for characterization
+// (speakerattr.TraitPhrases, and a character's first mentions). Each
+// phrase is a substring match on the paragraphs_fts trigram index, so it
+// is case-insensitive and crosses word boundaries ("Bert was a" also finds
+// "Albert was a"): the caller checks what it gets back. Phrases under
+// three characters can't be asked and are skipped.
+func (s *SQLiteStore) NarrationMatching(bookIDs []string, phrases []string, limit int) ([]string, error) {
+	var quoted []string
+	for _, p := range phrases {
+		if utf8.RuneCountInString(p) >= ftsMinQueryRunes {
+			quoted = append(quoted, `"`+strings.ReplaceAll(p, `"`, `""`)+`"`)
+		}
+	}
+	var out []string
+	for _, bookID := range bookIDs {
+		if len(out) >= limit {
+			break
+		}
+		// A book's matches are merged across its queries by position, so
+		// the result stays in reading order.
+		type match struct {
+			chapter, idx int
+			text         string
+		}
+		var matches []match
+		for start := 0; start < len(quoted); start += maxMatchPhrases {
+			rows, err := s.db.Query(`
+				SELECT c.idx, p.idx, p.content
+				FROM paragraphs_fts f
+				JOIN paragraphs p ON p.rowid = f.rowid
+				JOIN chapters c ON c.id = p.chapter_id
+				WHERE f.paragraphs_fts MATCH ? AND c.book_id = ? AND NOT p.is_quote
+				ORDER BY c.idx ASC, p.idx ASC
+				LIMIT ?`, strings.Join(quoted[start:min(start+maxMatchPhrases, len(quoted))], " OR "), bookID, limit)
+			if err != nil {
+				return nil, err
+			}
+			for rows.Next() {
+				var m match
+				if err := rows.Scan(&m.chapter, &m.idx, &m.text); err != nil {
+					rows.Close()
+					return nil, err
+				}
+				matches = append(matches, m)
+			}
+			err = rows.Err()
+			rows.Close()
+			if err != nil {
+				return nil, err
+			}
+		}
+		sort.SliceStable(matches, func(i, j int) bool {
+			if matches[i].chapter != matches[j].chapter {
+				return matches[i].chapter < matches[j].chapter
+			}
+			return matches[i].idx < matches[j].idx
+		})
+		for i, m := range matches {
+			if len(out) >= limit {
+				break
+			}
+			if i > 0 && m.chapter == matches[i-1].chapter && m.idx == matches[i-1].idx {
+				continue
+			}
+			out = append(out, m.text)
+		}
+	}
+	return out, nil
+}
+
+// lookupPool is how many matches ParagraphsContainingAll reads per book
+// before spreading its sample.
+const lookupPool = 200
+
+// ParagraphsContainingAll returns up to limit paragraphs (narration and
+// dialogue alike) across bookIDs whose text contains every one of terms,
+// evenly spread over the matches in reading order - the search behind
+// characterization's lookups (speakerattr.CastingOptions.Lookup). Each
+// term is a substring match on the paragraphs_fts trigram index, in any
+// case; terms under three characters can't be asked and are skipped, and
+// with none left nothing is returned.
+func (s *SQLiteStore) ParagraphsContainingAll(bookIDs []string, terms []string, limit int) ([]string, error) {
+	var quoted []string
+	for _, t := range terms {
+		if utf8.RuneCountInString(t) >= ftsMinQueryRunes {
+			quoted = append(quoted, `"`+strings.ReplaceAll(t, `"`, `""`)+`"`)
+		}
+	}
+	if len(quoted) == 0 {
+		return nil, nil
+	}
+	var all []string
+	for _, bookID := range bookIDs {
+		rows, err := s.db.Query(`
+			SELECT p.content
+			FROM paragraphs_fts f
+			JOIN paragraphs p ON p.rowid = f.rowid
+			JOIN chapters c ON c.id = p.chapter_id
+			WHERE f.paragraphs_fts MATCH ? AND c.book_id = ?
+			ORDER BY c.idx ASC, p.idx ASC
+			LIMIT ?`, strings.Join(quoted, " AND "), bookID, lookupPool)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var text string
+			if err := rows.Scan(&text); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			all = append(all, text)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return spreadSample(all, limit), nil
 }
 
 // Bookmark is one flagged paragraph, with just enough chapter/paragraph

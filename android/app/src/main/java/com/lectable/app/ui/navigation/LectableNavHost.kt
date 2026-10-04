@@ -10,7 +10,9 @@ import androidx.navigation.navArgument
 import com.lectable.app.ui.jobs.JobsScreen
 import com.lectable.app.ui.lexicon.LexiconScreen
 import com.lectable.app.ui.library.LibraryScreen
+import com.lectable.app.ui.llm.LlmTestScreen
 import com.lectable.app.ui.reader.ReaderScreen
+import com.lectable.app.ui.settings.BookDefaultsScreen
 import com.lectable.app.ui.settings.LightingScreen
 import com.lectable.app.ui.settings.SettingsScreen
 import com.lectable.app.ui.speakers.SpeakersScreen
@@ -60,9 +62,17 @@ fun LectableNavHost(navController: NavHostController = rememberNavController()) 
             SettingsScreen(
                 onBack = { navController.popBackStack() },
                 onOpenVoices = { navController.navigate(Routes.Voices.route) },
+                onOpenBookDefaults = { navController.navigate(Routes.BookDefaults.route) },
+                onOpenLlmTest = { navController.navigate(Routes.LlmTest.route) },
                 onOpenJobs = { navController.navigate(Routes.Jobs.route) },
                 onOpenLighting = { navController.navigate(Routes.Lighting.route) },
             )
+        }
+        composable(Routes.BookDefaults.route) {
+            BookDefaultsScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.LlmTest.route) {
+            LlmTestScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.Lighting.route) {
             LightingScreen(onBack = { navController.popBackStack() })

@@ -11,9 +11,9 @@ import (
 )
 
 // TestPipelinePhasesRunInDependencyOrder is EnqueuePipeline's own core
-// contract for its chained phases: scare-quote tagging before attribution
-// and description tagging, both of those before characterization, and
-// characterization before voice provisioning - see pipelinePhaseDeps. Direction (like
+// contract for its chained phases: scare-quote tagging before attribution,
+// attribution before characterization, and characterization before voice
+// provisioning - see pipelinePhaseDeps. Direction (like
 // pronunciation resolution) carries no such
 // dependency at all (see TestDirectionPhaseRunsWithoutWaitingOnEarlierPhases
 // below for that half of the contract), so it's deliberately left out of
@@ -37,7 +37,7 @@ func TestPipelinePhasesRunInDependencyOrder(t *testing.T) {
 
 	if err := mgr.EnqueuePipeline("book-1", [pipelinePhaseCount]PipelinePhaseFunc{
 		phase(pipelinePhaseAttribution), phase(pipelinePhaseCharacterization), phase(pipelinePhaseVoiceProvision), phase(pipelinePhaseDirection), phase(pipelinePhaseAmbience),
-		phase(pipelinePhaseScareQuote), phase(pipelinePhaseDescription), phase(pipelinePhasePronunciation), phase(pipelinePhaseSummary),
+		phase(pipelinePhaseScareQuote), phase(pipelinePhasePronunciation), phase(pipelinePhaseSummary),
 	}); err != nil {
 		t.Fatalf("EnqueuePipeline: %v", err)
 	}
@@ -65,12 +65,6 @@ func TestPipelinePhasesRunInDependencyOrder(t *testing.T) {
 	}
 	if pos[pipelinePhaseScareQuote] >= pos[pipelinePhaseAttribution] {
 		t.Fatalf("expected scare-quote tagging to run before attribution, got order %v", order)
-	}
-	if pos[pipelinePhaseScareQuote] >= pos[pipelinePhaseDescription] {
-		t.Fatalf("expected scare-quote tagging to run before description tagging, got order %v", order)
-	}
-	if pos[pipelinePhaseDescription] >= pos[pipelinePhaseCharacterization] {
-		t.Fatalf("expected description tagging to run before characterization, got order %v", order)
 	}
 }
 

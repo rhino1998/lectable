@@ -90,11 +90,6 @@ func main() {
 		log.Fatalf("open database: %v", err)
 	}
 	defer lib.Close()
-	if n, err := lib.RepairDescribedNames(); err != nil {
-		log.Printf("repair description tags: %v", err)
-	} else if n > 0 {
-		log.Printf("repair description tags: re-pointed %d paragraphs from merged-away names", n)
-	}
 	// Everything reads through the cache (invalidated by lib's own write
 	// notifications), sparing the hot lookups a query each.
 	cached := store.NewCached(lib)

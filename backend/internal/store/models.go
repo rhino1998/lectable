@@ -190,7 +190,7 @@ type VoicePreset struct {
 
 // Passes is a chapter's own book-preprocess pipeline progress
 // (chapters.passes, stored as a JSON object - the same "flexible,
-// independent facts" shape tts_tags/describes_characters/pronunciation
+// independent facts" shape tts_tags/pronunciation
 // already use their own JSON columns for, rather than one forward-only
 // ChapterState enum this replaced). A struct, not a map, on the Go side so
 // call sites get a typed field (ch.Passes.Direction) instead of a
@@ -205,25 +205,18 @@ type Passes struct {
 	// paused/resumed continuations - never set on a pause or a genuine
 	// failure partway through, only a full completion).
 	Attribution bool `json:"attribution"`
-	// Description is set once description tagging
-	// (internal/speakerattr.Client.DescribeChapter, a jobs.KindDescription
-	// task - see httpapi.describeChapterForJob) has completed over the
-	// whole chapter, persisting which characters each narration paragraph
-	// describes (Store.SetParagraphDescriptions). Its own task, dependent
-	// on ScareQuote but not on Attribution.
-	Description bool `json:"description"`
 	// ScareQuote is set once scare-quote tagging
 	// (internal/speakerattr.Client.ScareQuoteChapter, a jobs.KindScareQuote
 	// task - see httpapi.scareQuoteChapterForJob) has completed over the
 	// whole chapter, persisting Store.SetParagraphScareQuotes. Both
-	// attribution and description tagging wait on this
+	// attribution waits on this
 	// (jobs.Manager.scareQuoteDependency).
 	ScareQuote bool `json:"scareQuote"`
 	// Direction is set once emotion labeling
 	// (internal/speakerattr.Client.EmotionChapter, via
 	// httpapi.directChapter - any clone model) has completed over the whole
 	// chapter at least once, the same "full pass, not a pause/failure" contract as
-	// Attribution. Fully independent of Attribution/Description - a
+	// Attribution. Fully independent of Attribution - a
 	// reader can trigger "Tag directions" directly on a chapter that was
 	// never attributed via the per-chapter button, bypassing
 	// runBookPipeline's own attribute-then-tag ordering entirely, and this
@@ -241,7 +234,7 @@ type Passes struct {
 	// has completed a full, uninterrupted pass over this chapter (never on
 	// a pause or a genuine failure partway through) - Direction's own
 	// "full pass, not a pause/failure" contract, and just as independent of
-	// Attribution/Description/Direction as Direction itself is: a reader
+	// Attribution/Direction as Direction itself is: a reader
 	// can trigger the ambience pass for a chapter regardless of whether
 	// it's ever been attributed/direction-tagged. Triggered by
 	// httpapi.handleRunChapterAmbience (the Speakers page's per-chapter
@@ -275,7 +268,7 @@ type Passes struct {
 func (p Passes) AmbienceDone() bool { return p.Ambience && p.Lighting }
 
 // scanJSON is the shared implementation behind every JSON column's own
-// Scan method in this package (Passes, Lighting, DescribesCharacterList,
+// Scan method in this package (Passes, Lighting,
 // AliasList, PronunciationList): the column holds JSON text, decoded into
 // dst. SQL NULL leaves dst at its zero value.
 func scanJSON(v any, dst any) error {
@@ -490,27 +483,15 @@ type ChapterSummary struct {
 	ReadyCount     int
 }
 
-// DescribesCharacterList implements sql.Scanner/driver.Valuer over
-// paragraphs.describes_characters (a native JSON column) - see scanJSON's
-// own doc comment for why. A named type only because Go requires one to
-// attach methods to at all; assignable to/from a plain []string anywhere
-// in this codebase with no explicit conversion needed, since both share
-// the same underlying (unnamed) type - see the Go spec's assignability
-// rule for why that's enough.
-type DescribesCharacterList []string
-
-func (d *DescribesCharacterList) Scan(v any) error            { return scanJSON(v, d) }
-func (d DescribesCharacterList) Value() (driver.Value, error) { return jsonValue(d) }
-
 // AliasList implements sql.Scanner/driver.Valuer over characters.aliases -
-// see DescribesCharacterList's own doc comment.
+// see scanJSON's own doc comment.
 type AliasList []string
 
 func (a *AliasList) Scan(v any) error            { return scanJSON(v, a) }
 func (a AliasList) Value() (driver.Value, error) { return jsonValue(a) }
 
 // PronunciationList implements sql.Scanner/driver.Valuer over
-// paragraphs.pronunciation - see DescribesCharacterList's own doc comment.
+// paragraphs.pronunciation - see scanJSON's own doc comment.
 type PronunciationList []pronounce.Substitution
 
 func (p *PronunciationList) Scan(v any) error            { return scanJSON(v, p) }
@@ -546,6 +527,16 @@ type Paragraph struct {
 	// 2" in the next scene is someone else - and mean nothing on a line
 	// whose Speaker isn't a role. Every write of Speaker sets it too.
 	SpeakerIndex int
+	// SourceSpeaker is who the book itself says speaks this line - a
+	// play's speaker label, read at import (internal/epub's play pass).
+	// Speaker starts as it; attribution takes it as given rather than
+	// asking (httpapi's runAttribution) and resetting attribution puts
+	// it back. "" in prose, and on a play's narration.
+	SourceSpeaker string
+	// Label is text shown before the paragraph but never spoken or
+	// aligned: a play's speaker label as the book sets it ("THESEUS.")
+	// with any direction on how the line is delivered ("[Calling.]").
+	Label string
 	// Inline marks this paragraph as a split-out continuation of the
 	// immediately preceding paragraph, rather than the start of a new
 	// visual one - set at import time when a source paragraph mixing
@@ -573,7 +564,7 @@ type Paragraph struct {
 	// this is decoded from) - set either by that pass or by a reader's own
 	// manual annotation. Always false for a non-IsQuote paragraph -
 	// httpapi enforces this the same deterministic way it already does for
-	// Speaker/DescribesCharacters. jobs.Manager's generation dispatch
+	// Speaker. jobs.Manager's generation dispatch
 	// treats a flagged paragraph, and every paragraph reachable from it by
 	// following Inline in either direction (the same run
 	// internal/epub.splitQuoteSegments originally split out of one source
@@ -582,14 +573,6 @@ type Paragraph struct {
 	// is voiced in the same breath as the narration around it instead of
 	// landing as its own oddly-isolated clip.
 	ScareQuote bool
-	// DescribesCharacters is which characters (if any) this paragraph's
-	// narration physically/personality-describes - decoded from the
-	// paragraphs.describes_characters column (see
-	// Store.SetParagraphDescriptions/internal/speakerattr's "Describe"
-	// stage). Always IsQuote == false when non-empty: only narration is
-	// ever tagged as a description, never a quoted line. nil until a
-	// Describe run has tagged this paragraph.
-	DescribesCharacters DescribesCharacterList
 	// Emotion is this paragraph's delivery emotion (an internal/emotions
 	// id), or emotions.Neutral ("") - set by the emotion pass
 	// (internal/speakerattr.Client.EmotionChapter, via

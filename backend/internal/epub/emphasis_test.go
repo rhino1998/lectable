@@ -79,7 +79,7 @@ func TestCollectTextAndExtractEmphasis(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := collectText(bodyNode(t, tc.html))
+			raw := plainText(collectText(bodyNode(t, tc.html)))
 			clean, subs := extractEmphasis(raw)
 			if clean != tc.wantText {
 				t.Errorf("clean text = %q, want %q", clean, tc.wantText)

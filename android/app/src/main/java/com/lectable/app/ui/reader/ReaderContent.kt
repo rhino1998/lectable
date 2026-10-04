@@ -161,7 +161,6 @@ internal fun InfiniteChapterContent(
     onRegenerateParagraph: (chapterIdx: Int, paragraphIdx: Int) -> Unit,
     onToggleBookmark: (chapterIdx: Int, paragraphIdx: Int) -> Unit,
     onOpenSpeakerPicker: (chapterIdx: Int, paragraphIndices: List<Int>, currentSpeaker: String) -> Unit,
-    onOpenDescriptionPicker: (chapterIdx: Int, paragraphIndices: List<Int>, fromName: String) -> Unit,
     onSetScareQuote: (chapterIdx: Int, paragraphIndices: List<Int>, scareQuote: Boolean) -> Unit,
     onSetEmotion: (chapterIdx: Int, paragraphIndices: List<Int>, emotion: String) -> Unit,
     onRegenerateMusic: (chapterIdx: Int, regionId: String) -> Unit,
@@ -270,9 +269,6 @@ internal fun InfiniteChapterContent(
                         onActiveLine = { fraction -> activeLine = Triple(entry.chapterIdx, firstIdx, fraction) },
                         onOpenSpeakerPicker = { paragraphIndices, currentSpeaker ->
                             onOpenSpeakerPicker(entry.chapterIdx, paragraphIndices, currentSpeaker)
-                        },
-                        onOpenDescriptionPicker = { fromName, paragraphIndices ->
-                            onOpenDescriptionPicker(entry.chapterIdx, paragraphIndices, fromName)
                         },
                         onToggleScareQuote = { paragraphIndices, scareQuote ->
                             onSetScareQuote(entry.chapterIdx, paragraphIndices, scareQuote)

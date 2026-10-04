@@ -230,24 +230,6 @@ export function useSetParagraphSpeaker(bookId: string) {
   })
 }
 
-// setParagraphSpeaker's own counterpart for a description line - reassigns
-// one paragraph's description from one character to another.
-export function useSetParagraphDescription(bookId: string) {
-  return useMutation({
-    mutationFn: ({
-      chapterIdx,
-      paragraphIdx,
-      from,
-      to,
-    }: {
-      chapterIdx: number
-      paragraphIdx: number
-      from: string
-      to: string
-    }) => api.setParagraphDescription(bookId, chapterIdx, paragraphIdx, from, to),
-  })
-}
-
 // Marks/unmarks one paragraph as a scare quote live - the backend call
 // itself also invalidates that paragraph's already-generated audio (see
 // api.setParagraphScareQuote's own doc comment), which the chapter topic
@@ -299,8 +281,16 @@ export function useSetParagraphEmotion(bookId: string) {
 // Re-renders one speaker's emotion variant - see api.regenerateVariant.
 export function useRegenerateVariant(bookId: string) {
   return useMutation({
-    mutationFn: ({ speaker, emotion }: { speaker: string; emotion: string }) =>
-      api.regenerateVariant(bookId, speaker, emotion),
+    mutationFn: ({
+      speaker,
+      emotion,
+      speakerIndex,
+    }: {
+      speaker: string
+      emotion: string
+      // A role's numbered member (SpeakerVariant.number), for its own voice.
+      speakerIndex?: number
+    }) => api.regenerateVariant(bookId, speaker, emotion, speakerIndex),
   })
 }
 
@@ -545,11 +535,6 @@ export function useScareQuotingChapters(bookId: string): Set<number> {
   return useChapterIdxSet(bookId, 'scare_quote_tagging')
 }
 
-// useAttributingChapters' own counterpart for description tagging.
-export function useDescribingChapters(bookId: string): Set<number> {
-  return useChapterIdxSet(bookId, 'description_tagging')
-}
-
 // useAttributingChapters' own counterpart for the ambience pass (music
 // scoring plus lighting). Doesn't track "music_generation" - that's region-scoped, not
 // chapter-scoped, and its progress is already visible on the chapterMusic
@@ -719,21 +704,6 @@ export function useCharacterAppearances(
   characterId: string | null,
 ): LiveResult<SpeakerAppearance[]> {
   return useLive('characterAppearances', characterId !== null ? { bookId, characterId } : null)
-}
-
-export function useCharacterDescriptions(
-  bookId: string,
-  characterId: string | null,
-): LiveResult<SpeakerAppearance[]> {
-  return useLive('characterDescriptions', characterId !== null ? { bookId, characterId } : null)
-}
-
-// Fire-and-forget (see api.retagDescriptions's own doc comment) - progress
-// comes from useDescribingChapters.
-export function useRetagDescriptions(bookId: string) {
-  return useMutation({
-    mutationFn: (chapterIdx: number) => api.retagDescriptions(bookId, chapterIdx),
-  })
 }
 
 export function useUpdatePosition(bookId: string) {

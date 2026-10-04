@@ -216,6 +216,38 @@ building/running `ttsworker` does, since both now link into that binary.
   some epubs put a whole scene in one `<p>` with `<br/><br/>` between its
   real paragraphs, which merged every turn of dialogue into one paragraph
   and threw off speaker attribution. `readZipFile` caps each entry at 64 MiB decompressed (`maxEntrySize`), so a malformed epub or zip bomb fails the upload instead of exhausting memory.
+  **Plays** (`play.go`): a play names the speaker before each speech
+  instead of quoting it, so as prose it had no dialogue at all and the
+  narrator read every label (A Midsummer Night's Dream: 0 quotes).
+  `applyPlay` runs once over the parsed book, re-reading each source
+  paragraph as `collectText` marked it up (`Block.src`: `<br>`s and
+  small-caps/`charname` spans kept as sentinels, dropped again before
+  `Parse` returns). It recognizes four label shapes - on its own line
+  (`THESEUS.<br/>`), inline capitals (`FREDDY. There's...`, honorifics
+  like `MRS. HIGGINS.` kept whole), a marked span (`<span
+  class="smcap">Domin.</span>`), and alone in its paragraph with the
+  speech in the ones after (Faust) - and reads the book as a play when
+  at least 40 paragraphs and 15% of all of them start with a label
+  recurring 3+ times (12 Gutenberg plays: all detected; 13 novels incl.
+  LitRPG stat blocks: none, at most 1.5%). `?play=on|off` on upload and
+  reimport overrides it (`ParseAs`). A speech becomes `IsQuote` blocks
+  with `Block.Speaker` (the label's name in title case) and `Block.Label`
+  (the label as set, shown by the clients, never spoken or aligned). A
+  one-off speaker counts when its label looks like the others' and sits
+  beside a recurring speaker's speech. An unlabelled paragraph continues
+  the last speaker's speech when its class says speech (`drama`/
+  `dialog`), or, in a book with no such classes whose labels stand apart
+  from the speech, whenever it isn't a direction; a heading, the chapter
+  title or "THE END"/`***` ends that. Directions inside a speech
+  (`[...]`, and `(...)` when italic or when the book's whole-paragraph
+  directions are parenthesized - Shakespeare's parentheses are spoken)
+  split it: one saying what happens is an inline narration block, one
+  saying how the line is delivered (opening the speech, or "aside"/"to
+  X"/"-ing"/"-ly") joins the next speech block's `Label` and isn't
+  narrated. Whole-paragraph directions, scene descriptions and front
+  matter stay narration as parsed. Not handled: Standard Ebooks'
+  table-based plays, merging name variants ("Rank"/"Doctor Rank"), and
+  group labels ("All", "Both") are ordinary characters.
 - `internal/store/` — SQLite persistence (`books` → `chapters` →
   `paragraphs`, plus `characters`/`character_voices`, book-scoped), through
   `mattn/go-sqlite3` (cgo, SQLite bundled). WAL mode with **one write
@@ -312,7 +344,7 @@ building/running `ttsworker` does, since both now link into that binary.
   (batching, prompt-building, reply parsing, malformed-response retry) over
   a GGUF model that actually runs in `ttsworker` (`internal/llmworker`):
   speaker attribution, scare quotes, chapter summaries and cast, the
-  per-book setting profile, characterization, description tagging,
+  per-book setting profile, characterization,
   emotions, pronunciation, ambience (music and lighting) and SFX. Disabled
   as a whole when the model file (`LECTABLE_SPEAKER_LLM_MODEL_PATH`,
   default `Qwen3.6-35B-A3B`) is missing. The prompts, the rules each pass

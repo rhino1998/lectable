@@ -48,11 +48,43 @@ var originTitleWords = map[string]bool{"mr": true, "mrs": true, "ms": true, "mis
 // plus a multi-word name's first word ("Lars" for "Lars Machmüller") -
 // sits within originClueDistance characters of a nationality, language or
 // accent word, closest first. CharacterizeVoice shows them as "Origin
-// clues": the description tagger only marks appearance/personality
-// narration, so "Ingrid, a Danish archeologist" and "Lars whispered in
-// Danish" never reached characterization, which cast them as a British
-// woman and a German man.
+// clues": a sample of their lines rarely holds them, so "Ingrid, a Danish
+// archeologist" and "Lars whispered in Danish" never reached
+// characterization, which cast them as a British woman and a German man.
 func OriginClues(paragraphs, names []string, limit int) []string {
+	nameRes := clueNames(names)
+	if len(nameRes) == 0 {
+		return nil
+	}
+	type clue struct {
+		text string
+		dist int
+	}
+	var clues []clue
+	for _, p := range paragraphs {
+		if dist, span := nearestToName(p, nameRes, originWord.FindAllStringIndex(p, -1), false); dist <= originClueDistance {
+			clues = append(clues, clue{sentencesAround(p, span[0], span[1]), dist})
+		}
+	}
+	sort.SliceStable(clues, func(i, j int) bool { return clues[i].dist < clues[j].dist })
+	var out []string
+	dup := map[string]bool{}
+	for _, c := range clues {
+		if len(out) == limit {
+			break
+		}
+		if !dup[c.text] {
+			dup[c.text] = true
+			out = append(out, c.text)
+		}
+	}
+	return out
+}
+
+// clueNames compiles a whole-word matcher for each of names - a
+// character's name and aliases, plus a multi-word name's first word -
+// skipping ones under 3 letters and bare title words.
+func clueNames(names []string) []*regexp.Regexp {
 	var nameRes []*regexp.Regexp
 	seen := map[string]bool{}
 	addName := func(n string) {
@@ -69,42 +101,50 @@ func OriginClues(paragraphs, names []string, limit int) []string {
 			addName(words[0])
 		}
 	}
-	if len(nameRes) == 0 {
-		return nil
+	return nameRes
+}
+
+// nearestToName returns the smallest distance in characters between a
+// match of nameRes in p and one of hits (match index pairs), and the span
+// covering both; the distance is originClueDistance+1 when there is no
+// pair. With nameFirst only a hit after the name counts. A pair with a
+// sentence end between the two never counts: "West stood in the middle,
+// grinning widely. The huge Nigerian..." is two people, and cast Captain
+// West, a Scot, with a Nigerian accent and the other man's size.
+func nearestToName(p string, nameRes []*regexp.Regexp, hits [][]int, nameFirst bool) (dist int, span [2]int) {
+	dist = originClueDistance + 1
+	if len(hits) == 0 {
+		return dist, span
 	}
-	type clue struct {
-		text string
-		dist int
-	}
-	var clues []clue
-	for _, p := range paragraphs {
-		origins := originWord.FindAllStringIndex(p, -1)
-		best, bestSpan := originClueDistance+1, [2]int{}
-		for _, re := range nameRes {
-			for _, nm := range re.FindAllStringIndex(p, -1) {
-				for _, o := range origins {
-					d := max(o[0]-nm[1], nm[0]-o[1], 0)
-					if d < best {
-						best, bestSpan = d, [2]int{min(nm[0], o[0]), max(nm[1], o[1])}
-					}
+	for _, re := range nameRes {
+		for _, nm := range re.FindAllStringIndex(p, -1) {
+			for _, h := range hits {
+				if nameFirst && h[0] < nm[1] {
+					continue
+				}
+				if lo, hi := min(nm[1], h[1]), max(nm[0], h[0]); lo < hi && sentenceSplit.MatchString(p[lo:hi]) {
+					continue
+				}
+				if d := max(h[0]-nm[1], nm[0]-h[1], 0); d < dist {
+					dist, span = d, [2]int{min(nm[0], h[0]), max(nm[1], h[1])}
 				}
 			}
 		}
-		if best <= originClueDistance {
-			clues = append(clues, clue{sentencesAround(p, bestSpan[0], bestSpan[1]), best})
-		}
 	}
-	sort.SliceStable(clues, func(i, j int) bool { return clues[i].dist < clues[j].dist })
-	var out []string
-	dup := map[string]bool{}
-	for _, c := range clues {
-		if len(out) == limit {
-			break
-		}
-		if !dup[c.text] {
-			dup[c.text] = true
-			out = append(out, c.text)
-		}
+	return dist, span
+}
+
+// Excerpt returns the sentences of text around the first occurrence of
+// term (in any case), or its start when term isn't found, at most maxChars
+// long - what a lookup shows of a matching paragraph.
+func Excerpt(text, term string, maxChars int) string {
+	start, end := 0, 0
+	if i := strings.Index(strings.ToLower(text), strings.ToLower(term)); i >= 0 {
+		start, end = i, i+len(term)
+	}
+	out := sentencesAround(text, start, min(end, len(text)))
+	if len(out) > maxChars {
+		out = out[:maxChars] + "..."
 	}
 	return out
 }

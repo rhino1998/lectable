@@ -178,7 +178,6 @@ func clonePtr[T any](p *T) *T {
 }
 
 func cloneParagraph(p Paragraph) Paragraph {
-	p.DescribesCharacters = slices.Clone(p.DescribesCharacters)
 	p.Pronunciation = slices.Clone(p.Pronunciation)
 	p.Emphasis = slices.Clone(p.Emphasis)
 	return p

@@ -47,7 +47,7 @@ byte-for-byte.
 - `src/api/live.ts` — the client for the backend's live-state WebSocket
   (`GET /api/events`, backend `internal/live`). All displayed server state
   (books, a book, each chapter, chapter music, voice settings, speakers,
-  character appearances/descriptions, bookmarks, the job queue, voice
+  character appearances, bookmarks, the job queue, voice
   presets, default voice) is a *topic*: subscribing yields a full
   `snapshot`, then a `patch` (JSON ops, applied with structural sharing -
   unchanged paragraphs keep object identity, so memoized components don't
@@ -138,6 +138,10 @@ byte-for-byte.
 - `src/routes.tsx` — code-based TanStack Router route tree (not
   file-based routing / no router-plugin codegen — deliberate, to keep
   the build simple for a two-page app). Add new routes here directly.
+- `src/pages/SettingsPage.tsx` (`/settings`, in the sidebar) — app-wide
+  settings: "Defaults for new books" (clone model + the per-book switches,
+  `BookSettingsFields` shared with the Speakers page; the default voice is
+  the star on the Voices page). All one value, `GET|PUT /api/voices/default`.
 - `src/pages/LibraryPage.tsx`, `src/pages/ReaderPage.tsx` — the two
   screens. `ReaderPage` is an infinite-scroll reader: it keeps a `{start,
   end}` chapter-index window in state, renders every loaded chapter's
@@ -178,8 +182,8 @@ byte-for-byte.
   summary notes - `chapterNotes` live topic - and its Ambience column's
   eye icon a per-region ambience preview, `AmbiencePreview`: mood,
   lighting swatch, soundscape, music prompt and a play button for
-  generated regions), `SpeakerRow` (+ aliases/pronouns/emotions/merge),
-  `SpeakerEvidence` (appearance/description rows), `CharacterVoiceEditor`,
+  generated regions), `SpeakerRow` (+ aliases/pronouns/emotions/role variants/merge),
+  `SpeakerEvidence` (appearance rows), `CharacterVoiceEditor`,
   `PassStatus` (status cells, bulk button), `SettingPanel` (the book's
   setting profile - `bookSetting` live topic, editable, with a re-read
   button; see backend `httpapi/setting.go`), `LexiconPanel` (the series

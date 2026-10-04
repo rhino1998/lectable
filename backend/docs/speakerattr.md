@@ -3,7 +3,7 @@
 Moved out of `../CLAUDE.md`. Every LLM pass and what was learned tuning
 it: the model and its benchmarks, speaker attribution, scare quotes,
 chapter summaries and the cast, the setting profile, characterization,
-description tagging, emotions, pauses, pronunciation, ambience (music and
+emotions, pauses, pronunciation, ambience (music and
 lighting) and SFX.
 
 `internal/speakerattr/` is an LLM-driven pipeline, both stages prompting
@@ -297,28 +297,17 @@ LLM-prompted attribution, and recent literary-NLP research agrees
      coarse, not a wrong one - Kev is on the phone for its first half. Group names are also refused outright by the
      manual speaker PUT and merge, and forced to `"Unknown"` before any
      attribution result is persisted.
-  2. **Describe** (`Client.DescribeChapter`) - a separate, single-purpose
-     call (own system prompt, own smaller batch size - `5` vs.
-     attribution's `40`) tagging which *narration* paragraphs describe a
-     character's appearance/personality
-     (`Store.SetParagraphDescriptions`), gathered later for
-     characterization alongside a character's own dialogue. Deliberately
-     its own call rather than a `"describes"` field folded into
-     `AttributeChapter`: a folded version measurably hurt precision -
-     judging two things per line across a 40-paragraph batch made the
-     model lapse into blanket-tagging nearly every line touching a
-     salient character (Qwen3-4B-Instruct-2507 tagged 30-52% of
-     paragraphs, overwhelmingly mere mentions, not descriptions), even
-     after tightening the prompt with explicit negative examples.
-     Isolating the judgment and shrinking the batch fixed it - precision
-     rose from ~6% (batch 40) to ~25-37% (batch 10) to ~80% (batch 5),
-     since a smaller batch gives "streak" bias far less room before a
-     fresh batch boundary forces independent judgment again. Its own
-     `jobs.KindDescription` task (sets `Passes.Description`), fully separate
-     from attribution - only "Retag descriptions" or the preprocess
-     pipeline's description phase queue it.
-     Can discover a brand-new character (one described before they ever
-     speak).
+  2. **Describe** - retired 2026-10-04, with its job kind, routes, UI
+     and the `describes_characters` column (migration 00005). It was a
+     separate call tagging which narration paragraphs describe a
+     character, 5 paragraphs at a time (a folded `"describes"` field in
+     `AttributeChapter` had the model blanket-tagging every line touching
+     a salient character; precision rose from ~6% at batch 40 to ~80% at
+     batch 5). At that size a 60K-paragraph book took ~12,000 calls, 159
+     of 254 speakers with 20+ lines got two tags or fewer, and many tags
+     named whoever the line mentioned rather than who it described. See
+     "Does anything still need the description pass?" below for what
+     removing it cost.
 
 **Scare-quote tagging** (`Client.ScareQuoteChapter`) marks each candidate
 "(?)" in the batch and asks for a "spoken"/"not spoken" verdict on every
@@ -354,23 +343,21 @@ re-run never hands a scare quote it happens to miss back to attribution;
 a manual edit or the pass's Reset clears.
 It is its own
 `jobs.KindScareQuote` task per chapter (sets `Passes.ScareQuote`), and
-both attribution and description tagging for a chapter depend on it
+attribution for a chapter depends on it
 (`jobs.Manager.scareQuoteDependency`, which lazily creates one if the
 chapter isn't tagged yet). A failed scare-quote run keeps blocking them -
 it's recreated on the next dependency check rather than letting
 attribution run against unflagged scare quotes; the pass is sampled, so a
 retry is expected to succeed.
   3. **Characterize** (`Client.CharacterizeVoice`) - given a sample of
-     *only* a character's own attributed dialogue (not narration about
-     them, except what Describe tagged) plus their description
-     paragraphs, asks the LLM for a short "Speak as a..." voice-casting
+     a character's own attributed dialogue plus narration about them
+     found by search (see "Retrieved evidence" below), asks the LLM for a short "Speak as a..." voice-casting
      instruction (gender, age, tone, speaking style), taking the
      character's `Pronouns` as the authoritative gender signal
      (they/them and it/its commit to no gender word) - saved as
      `store.Character.Summary`, shared across every clone model's own
      voice preset for this character (see "Per-clone-model voice
-     assignment" below). Can characterize from descriptions alone, with
-     no dialogue yet. The prompt (rewritten 2026-09-30) casts the
+     assignment" below). The prompt (rewritten 2026-09-30) casts the
      character's *resting* voice in audible terms only (gender + age
      group, pitch/pace/timbre, one accent, one or two usual traits) -
      never their emotional range, since every line clones from the one
@@ -409,9 +396,117 @@ retry is expected to succeed.
      shown: re-asked with the same prompt the model copied again
      (in one bulk run Underverse's Captain/Doctor/Dwarf/Heph each failed
      permanently, at 0.8-1.0 overlap with Captain West/Mick/Bob/Oren),
-     and it can't copy wording it isn't shown. Still weak for leads whose sampled lines don't show
-     who they are (a per-character dossier, e.g. per-cast-member notes
-     from the summary pass merged once per character, is the next step).
+     and it can't copy wording it isn't shown.
+     **Voice clues** (2026-10-04, `VoiceClues`, `voiceclues.go`): the user
+     turn lists up to 8 narration sentences on how the character sounds or
+     how old they are, found without the model - the narration following
+     their own lines (`Store.SpeechTagsForBooks`; a first-person narrator's
+     tags never name them) and narration naming them up to 120 characters
+     before a voice word or stated age. Scored: a statement of their usual
+     voice ("his normally steady voice") +4, a lasting quality (an
+     adjective on the voice, an accent, an age) +2, one moment's delivery
+     (lowered, "in his voice", cracked, whispered) -2; kept at 2 or more.
+     A sentence giving the voice to another name or to the other gender's
+     pronoun ("her voice", for a he/him character; "its" always) is
+     dropped. None of this reached casting from a 20-line sample: of 163 narration paragraphs naming Sid
+     beside a voice word, 0 were tagged, and the same held for Bert (73) and
+     Fritz (268, 2 tagged). Found on the live library: Sid's "gruff, manly voice" put on
+     as a disguise, Fritz's "slight noble-born accent" (he was cast
+     working-class), Steve's "English accent... push my northern". It finds
+     nothing for characters the text never describes by ear (Bert, Jake).
+     A casting that uses the other gender's words than `Pronouns`, or
+     none of its own (`genderContradicts`), is retried with a reminder;
+     the last attempt is kept either way, since the pronouns can be
+     what's wrong. A mixed setting accent is shown as its first with the
+     rest aside (`castingLines`): shown "mixed: British, General
+     American", Jax came back with "a mixed British-General American
+     accent".
+     **Retrieved evidence** (2026-10-04, `httpapi.castCharacter`): the
+     material is found by search, not only sampled.
+     - *First mentions*: the first 3 narration paragraphs naming the
+       character, and *statements about them*: narration where the name is
+       followed by a trait phrase ("Bert was a", "Zac, a", "Sid's voice" -
+       `TraitPhrases`/`TraitStatements`), 14 spread over up to 400 matches.
+       Both come from the `paragraphs_fts` trigram index
+       (`Store.NarrationMatching`); it matches substrings in any case
+       ("Albert was a"), so `TraitStatements` re-checks each hit. Looser
+       phrases ("was the", "wasn't", "had a") mostly found plot and were
+       dropped.
+     - *Idiom words across all their lines* (`IdiomCounts` over every line
+       they speak): of Jax's 3786 lines 99 say "mate" and 7 "aye", and a
+       sample that happened to hold an "aye" cast him Scottish.
+     Previewed on 12 characters (`attreval/casteval.py`, `POST
+     .../characterize/preview`, which stores nothing): Fritz "young man,
+     refined upper-class British" (was middle-aged, working-class), Sid a
+     high, bright voice with the gruff one named as affected, Bert young
+     and stocky, Steve Northern British, Jax an ordinary young British man,
+     Zac Australian, Jonas Southern, Ingrid Danish. Still wrong: Scylla (a
+     "Greek demigoddess" only in someone's dialogue) and Anders (Danish
+     only by his family) come out British, and Hans, centuries old but
+     young-looking, "elderly".
+     **Dossier - tried, removed.** A first call distilled the same
+     evidence into a profile (gender, age, origin, kind, build, voice,
+     manner, temporary - each of the middle five a value with a quote that
+     had to be found in the material), and casting then read only the
+     profile and the lines. On the same 12 it fixed two (Jax, Steve - both
+     since fixed in the single call) and broke four: Bert got Fritz's
+     accent from "Bert said, copying Fritz's slightly aristocratic
+     accent" (with a prompt rule naming that exact case), Fritz's age came
+     from "thirty feet from the front door", Anders lost his accent and
+     Hans turned elderly. A second call told to trust the first compounds
+     its misreadings, where the single call's `evidence` field does the
+     same job in view of the material. Migrations 00004 and 00006 add and
+     drop its column.
+
+**Temperature** (2026-10-04): casting is greedy (`characterizeTemp` 0,
+was 0.3; a retry still samples, `retryTempBump`). The same 12 characters
+cast three times each from identical material (`casteval.py --temp`):
+at 0.3 the age group, accent or pitch changed between runs for 10 of 12
+(Bert Southern American once, Ingrid British once, Hans's accent three
+ways) and castings shared 0.48 of their words; at 0, 4 of 12 and 0.75,
+with Scylla's Greek accent and Fritz's aristocratic one in every run. Not
+fully repeatable: Sid still came out once with the gruff voice she puts
+on.
+
+**Lookups** (2026-10-04, `Client.lookupSection`; every characterization
+runs them, `.../characterize/preview?lookup=0` / `casteval.py --no-lookup`
+cast without): the model searches the book for what the
+gathered material doesn't state, then casts with what it found added to
+the turn. Three designs, each on the same 12 characters at temperature 0:
+- *Lookups offered inside the casting call* (reply `{"lookup": ...}` or
+  the casting, 2 rounds, re-sending the growing turn): it searched
+  categories - "age", "origin", "size" - which the substring index
+  answered with "page" and "original"; fixed nothing and broke two
+  (Scylla searched "Greek", got 5 hits, and was cast British).
+- *The same with whole-word matching and a prompt demanding concrete
+  words*: across 60 castings it never searched once. The casting
+  instructions outweigh an optional detour.
+- *Plan, then cast* (adopted): one call whose whole job is the search
+  list (`lookupPlanSystemPrompt`: the character's name plus one concrete
+  word the book would print - "lad", "accent", "Danish", "rumbled" - up
+  to 6), each answered with up to 6 excerpts where both appear as whole
+  words in one paragraph (`httpapi.lookupExcerpts` over
+  `Store.ParagraphsContainingAll`; the index matches substrings, so hits
+  are re-checked), then the ordinary casting call with a "Searched in the
+  book" section. Two runs: Anders Danish in both (British in every run
+  without lookups), Scylla Greek, Steve Northern, Jonas, Fritz, Bert,
+  Ingrid and Zac as without; 2 of 12 changed between runs (4 of 12
+  without). Jax came out General American in one of the two, and Hans
+  still "elderly". One extra LLM call per character.
+
+**Does anything still need the description pass?** (measured
+2026-10-04, before removing it) Casting: 15 characters previewed with and
+without the tags differed no more than two runs of the same prompt do -
+one real loss (Dave's "barrel-chested"), one gain (Scylla's Greek accent).
+Attribution, whose "Known characters" list carried each one's first tagged
+description as a blurb: Arise 1107 -> 1102 of 1157, Spire's Spite 198 ->
+197 of 201, hand-corrected lines 79 -> 79 of 114, against a re-run of the
+baseline at 1106/197/79. Blurbs taken from search instead (each
+character's first trait statement) were worse than none - 1092, and 74
+hand-corrected: "Shotgun Man" took six of Mikhail Fedorov's lines - and
+cost ~90s a chapter in Arise (one index search per known character). So
+the pass was removed outright and attribution's roster carries no blurbs
+beyond the summary notes' own.
 
 **Characterization and voice provisioning happen lazily, not during
 attribution.** An earlier version ran both eagerly, inline, as part of
@@ -461,7 +556,7 @@ regardless. Attribution is explicitly triggered per chapter (`POST
 the first time it's needed, or explicitly via the Speakers page's
 "Regenerate" button. Every distinct system prompt this package generates
 against (`speakerattr.SystemPrompts` - attribution's, characterization's,
-and the emotion/pronunciation/describe ones below, all fixed
+and the emotion/pronunciation ones below, all fixed
 constants, byte-identical across every call) is decoded once, at
 model-load time, into its own permanently-resident sequence in
 `llmworker.Worker`'s shared `Context` (see above) - priming every known
@@ -649,7 +744,10 @@ regex, no LLM call) - today:
     thirds", "1/2" → "one half", "3/4" → "three quarters") - or a count
     ("six of six", "one of three") when the top is >= the bottom, after
     a "Label:", or ending a short label line ("Technique 1/3"), decimals
-    ("three point five"), ordinals ("21st" → "twenty first"), and years
+    ("three point five"), ordinals ("21st" → "twenty first"),
+    multipliers ("2x"/"1.5x"/"3×" → "two times", "one point five
+    times" - only when the mark ends the word, so "2x4" and "0x1F" are
+    left alone), and years
     ("1782" → "seventeen eighty two") - a plain four-digit 1100-2099 in a
     year context (`yearContext`): before an era marker ("1614 AD"), after
     a month ("June 1922", "Month D,") or "the summer/War of", or after a

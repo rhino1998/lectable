@@ -258,7 +258,8 @@ const maxSpelledNumber = 999_999_999_999
 // calendar date, which carries the date as a second candidate (see
 // dateReading), and an uncued four-digit number that could be a year (see
 // possibleYearReading). Offsets are byte offsets into text, like every other
-// pronunciationTerm. A token glued to a letter ("A4", "3D", "5km") or to a
+// pronunciationTerm. A number with a multiplier mark ("2x", "1.5x", "3×")
+// reads as "two times". A token glued to any other letter ("A4", "3D", "5km") or to a
 // currency sign is skipped rather than guessed at - "$5" read as "dollar
 // five" would be worse than leaving it to the TTS front-end.
 func findNumberTerms(text string) []pronunciationTerm {
@@ -285,6 +286,17 @@ func findNumberTerms(text string) []pronunciationTerm {
 				break
 			}
 		}
+		// A multiplier mark ("2x", "1.5x", "3×") is read as "times" - see
+		// multiplierReading.
+		multiplier := false
+		if suffixLen == 0 {
+			for _, suf := range []string{"x", "X", "×"} {
+				if strings.HasPrefix(rest, suf) {
+					suffixLen, multiplier = len(suf), true
+					break
+				}
+			}
+		}
 		after := rest[suffixLen:]
 		if r, _ := utf8.DecodeRuneInString(after); after != "" && (unicode.IsLetter(r) || unicode.IsDigit(r)) {
 			continue
@@ -296,7 +308,14 @@ func findNumberTerms(text string) []pronunciationTerm {
 		}
 
 		var readings, senses []string
-		if suffixLen > 0 {
+		if multiplier {
+			r := multiplierReading(tok)
+			if r == "" {
+				continue
+			}
+			readings = []string{r}
+			end += suffixLen
+		} else if suffixLen > 0 {
 			if !plainIntRE.MatchString(tok) {
 				continue
 			}
@@ -345,6 +364,20 @@ func findNumberTerms(text string) []pronunciationTerm {
 		})
 	}
 	return out
+}
+
+// multiplierReading reads the number before a multiplier mark - "2x" ->
+// "two times", "1.5x" -> "one point five times" - or returns "" for a
+// token that isn't a plain, comma-grouped, or decimal number ("1/2x").
+func multiplierReading(tok string) string {
+	if fractionRE.MatchString(tok) {
+		return ""
+	}
+	r := numberCandidate(tok)
+	if r == "" {
+		return ""
+	}
+	return r + " times"
 }
 
 // numberCandidate spells out one numeric token, or returns "" for a shape it

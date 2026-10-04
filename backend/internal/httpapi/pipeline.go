@@ -126,7 +126,6 @@ func (s *Server) handlePreprocessBook(w http.ResponseWriter, r *http.Request) {
 	phases := jobs.PipelinePhases{
 		jobs.PhaseScareQuote:       s.preprocessScareQuotePhase(book, chapters),
 		jobs.PhaseAttribution:      s.preprocessAttributionPhase(book, chapters),
-		jobs.PhaseDescription:      s.preprocessDescriptionPhase(book, chapters),
 		jobs.PhaseCharacterization: s.preprocessCharacterizationPhase(book),
 		jobs.PhaseVoiceProvision:   s.preprocessVoiceProvisionPhase(book),
 		jobs.PhaseDirection:        s.preprocessDirectionPhase(book, chapters),
@@ -184,21 +183,6 @@ func (s *Server) preprocessPronunciationPhase(book *store.Book, chapters []store
 		func(ctx context.Context, tier int, ch *store.Chapter) error {
 			_, err := s.Jobs.RunPronunciation(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
 				return s.pronounceChapter(ctx, book, ch, nil)
-			})
-			return err
-		})
-}
-
-// preprocessDescriptionPhase is the description tagging phase - waits on
-// scare-quote tagging, runs alongside attribution, and characterization
-// waits on it (jobs.pipelinePhaseDeps). Same skip reasoning as
-// preprocessScareQuotePhase, for Passes.Description.
-func (s *Server) preprocessDescriptionPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
-	return s.chapterPhase(book, chapters, "description tagging",
-		func(p store.Passes) bool { return p.Description },
-		func(ctx context.Context, tier int, ch *store.Chapter) error {
-			_, err := s.Jobs.RunDescription(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
-				return s.describeChapterForJob(ctx, book, ch)
 			})
 			return err
 		})

@@ -73,17 +73,25 @@ func hashJSON(v any) string {
 // audio status, which either aren't stored offline or belong to
 // paragraphAudioHash.
 func paragraphContentHash(p paragraphDTO) string {
+	if p.Label != "" {
+		// Only a play's paragraphs have one: hashed apart so every other
+		// paragraph's hash stays what clients already hold.
+		p.Label, p.Text = "", p.Label+"\x00"+p.Text
+	}
 	return hashJSON(struct {
-		Text                string
-		Speaker             string
-		Inline              bool
-		IsQuote             bool
-		ScareQuote          bool
+		Text       string
+		Speaker    string
+		Inline     bool
+		IsQuote    bool
+		ScareQuote bool
+		// DescribesCharacters is always empty: the field went with
+		// description tagging, and stays in the hash so every paragraph
+		// that never had a tag keeps the hash clients already hold.
 		DescribesCharacters []string
 		Emotion             string
 		DirectionMarks      []directionMarkDTO
 		PronunciationMarks  []pronunciationMarkDTO
-	}{p.Text, p.Speaker, p.Inline, p.IsQuote, p.ScareQuote, p.DescribesCharacters, p.Emotion, p.DirectionMarks, p.PronunciationMarks})
+	}{p.Text, p.Speaker, p.Inline, p.IsQuote, p.ScareQuote, []string{}, p.Emotion, p.DirectionMarks, p.PronunciationMarks})
 }
 
 // paragraphAudioHash identifies the audio a client would download for p:

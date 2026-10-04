@@ -278,7 +278,7 @@ func (s *SQLiteStore) GetChapterByIdx(bookID string, idx int) (*Chapter, error) 
 // applicable voice_id themselves and batch-fetch status via
 // ParagraphAudioStatuses.
 func (s *SQLiteStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
-	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
+	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, emotion, pronunciation, emphasis, source_speaker, label FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +287,7 @@ func (s *SQLiteStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 	var out []Paragraph
 	for rows.Next() {
 		var p Paragraph
-		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis); err != nil {
+		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.Emotion, &p.Pronunciation, &p.Emphasis, &p.SourceSpeaker, &p.Label); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -329,8 +329,8 @@ func (s *SQLiteStore) ListParagraphsRawForBook(bookID string) ([]Paragraph, erro
 // paragraph belongs to before it can even determine which voice applies.
 func (s *SQLiteStore) GetParagraph(id string) (*Paragraph, error) {
 	var p Paragraph
-	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, describes_characters, emotion, pronunciation, emphasis FROM paragraphs WHERE id = ?`, id).
-		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.DescribesCharacters, &p.Emotion, &p.Pronunciation, &p.Emphasis)
+	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, emotion, pronunciation, emphasis, source_speaker, label FROM paragraphs WHERE id = ?`, id).
+		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.Emotion, &p.Pronunciation, &p.Emphasis, &p.SourceSpeaker, &p.Label)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

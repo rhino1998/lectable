@@ -31,8 +31,8 @@ type dedupeResponse struct {
 // become to's aliases when alias (a real alternative name - "Lars" for
 // "Lars Machmüller" - not a mislabel like "Protagonist"), to inherits
 // from's pronouns if it has none, and from's identity (voice presets
-// included) is deleted. The whole-series counterpart of
-// handleMergeCharacter's per-book reassignment.
+// included) is deleted. What dedupe and absorbShortNames merge with;
+// handleMergeCharacter is the reader's own.
 func (s *Server) mergeCharacterInto(book *store.Book, from, to store.Character, alias bool) error {
 	if from.ID == to.ID {
 		return nil
@@ -105,15 +105,11 @@ func (s *Server) renameCharacter(book *store.Book, c store.Character, name strin
 }
 
 // renameSpeakerEverywhere re-points every record of the speaker name from
-// at to, across books: paragraph speakers, description tags, speaker
-// corrections, the summary notes' cast and scenes, and the book setting's
+// at to, across books: paragraph speakers, speaker corrections, the summary notes' cast and scenes, and the book setting's
 // narrator (store.RenameSpeakerRecords) - shared by rename and merge.
 func (s *Server) renameSpeakerEverywhere(books []store.Book, from, to string) error {
 	for _, b := range books {
 		if err := s.Store.ReassignCharacterSpeaker(b.ID, from, to); err != nil {
-			return err
-		}
-		if err := s.Store.ReassignCharacterDescriptions(b.ID, from, to); err != nil {
 			return err
 		}
 		if err := s.Store.RenameSpeakerRecords(b.ID, from, to); err != nil {

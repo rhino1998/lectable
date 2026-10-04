@@ -12,9 +12,8 @@ describe('annotationKind', () => {
     expect(annotationKind(para({ isQuote: true }))).toBe('speaker')
     expect(annotationKind(para({ isQuote: true, scareQuote: true }))).toBe('narrator')
   })
-  it('marks description paragraphs, else narrator', () => {
-    expect(annotationKind(para({ describesCharacters: ['Jake'] }))).toBe('description')
-    expect(annotationKind(para({ describesCharacters: [] }))).toBe('narrator')
+  it('treats everything else as narrator', () => {
+    expect(annotationKind(para({}))).toBe('narrator')
   })
 })
 

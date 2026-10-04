@@ -83,6 +83,60 @@ type speakerDTO struct {
 	// right now (their own preset, or the book's). Omitted when they have
 	// no emotional lines, or their voice has no preset to vary.
 	Emotions []speakerEmotionDTO `json:"emotions,omitempty"`
+	// Variants is every numbered member of this role in this book
+	// (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), in order - the
+	// Speakers page lists each as a speaker of its own. Emotions above then
+	// covers the role's unnumbered lines only. Omitted for a speaker that
+	// isn't a role, or has no numbered lines, and when the book narrates in
+	// one voice.
+	Variants []speakerVariantDTO `json:"variants,omitempty"`
+}
+
+// speakerVariantDTO is one numbered member of a role - see
+// speakerDTO.Variants. Every number reads the same way, whichever voice
+// narration.MemberVoice gives it (number 1 shares the role's own; a later
+// one has a sibling of it).
+type speakerVariantDTO struct {
+	Number         int `json:"number"`
+	ParagraphCount int `json:"paragraphCount"`
+	// RefAudioURL is the reference clip this number's lines clone from,
+	// omitted until it's been rendered (it renders the first time one of
+	// these lines generates) or when the voice has no clip at all.
+	RefAudioURL string `json:"refAudioUrl,omitempty"`
+	// Emotions is speakerDTO.Emotions for this number's lines alone.
+	Emotions []speakerEmotionDTO `json:"emotions,omitempty"`
+}
+
+// speakerVariants builds a speakerDTO.Variants list from counts (speaker
+// number -> line count) for the role char, whose own voice is resolved.
+// emotionCounts is each number's emotional lines (number -> emotion id ->
+// line count).
+func (s *Server) speakerVariants(resolved narration.ResolvedVoice, char store.Character, counts map[int]int, emotionCounts map[int]map[string]int) []speakerVariantDTO {
+	if !char.IsRole {
+		return nil
+	}
+	var out []speakerVariantDTO
+	for n := 1; n <= store.MaxSpeakerIndex; n++ {
+		if counts[n] == 0 {
+			continue
+		}
+		member := narration.MemberVoice(resolved, char, n)
+		dto := speakerVariantDTO{Number: n, ParagraphCount: counts[n], Emotions: s.speakerEmotions(member.PresetID, emotionCounts[n])}
+		if path := audiopath.VoicePresetRefFile(s.DataDir, member.PresetID); member.PresetID != "" && fileExists(path) {
+			if member.PresetID == resolved.PresetID {
+				dto.RefAudioURL = s.versionedPresetAudioURL(member.PresetID)
+			} else {
+				dto.RefAudioURL = withClipVersion("/api/voices/role-variants/"+member.PresetID+"/audio", path)
+			}
+		}
+		out = append(out, dto)
+	}
+	return out
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // speakerEmotionDTO is one emotion a speaker uses - see
@@ -210,18 +264,30 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 	}
 
 	idsBySpeaker := map[string][]string{}
-	emotionsBySpeaker := map[string]map[string]int{}
+	// Emotional lines per speaker and speaker number (0 for a line with
+	// none): a role's numbered lines clone from their own voice's variants.
+	emotionsBySpeaker := map[string]map[int]map[string]int{}
+	numbersBySpeaker := map[string]map[int]int{}
 	for _, p := range paragraphs {
 		name := p.Speaker
 		if name == "" {
 			name = "Narrator"
 		}
 		idsBySpeaker[name] = append(idsBySpeaker[name], p.ID)
+		if p.SpeakerIndex > 0 {
+			if numbersBySpeaker[name] == nil {
+				numbersBySpeaker[name] = map[int]int{}
+			}
+			numbersBySpeaker[name][p.SpeakerIndex]++
+		}
 		if e := p.EffectiveEmotion(); e != emotions.Neutral {
 			if emotionsBySpeaker[name] == nil {
-				emotionsBySpeaker[name] = map[string]int{}
+				emotionsBySpeaker[name] = map[int]map[string]int{}
 			}
-			emotionsBySpeaker[name][e]++
+			if emotionsBySpeaker[name][p.SpeakerIndex] == nil {
+				emotionsBySpeaker[name][p.SpeakerIndex] = map[string]int{}
+			}
+			emotionsBySpeaker[name][p.SpeakerIndex][e]++
 		}
 	}
 
@@ -299,6 +365,7 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 					row.ReadyCount += readyCounts[name][member.VoiceID()]
 				}
 			}
+			row.Variants = s.speakerVariants(resolved, c, numbersBySpeaker[name], emotionsBySpeaker[name])
 		}
 		// RefAudioURL previews this speaker's *own* voice specifically -
 		// the Narrator row's own voice genuinely is the book's (that's
@@ -317,7 +384,17 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		}
 		// Unlike RefAudioURL, emotion variants follow `resolved`: they're
 		// cloned from whichever preset these lines actually generate under.
-		row.Emotions = s.speakerEmotions(resolved.PresetID, emotionsBySpeaker[name])
+		// A role's numbered members list their own (speakerVariants).
+		ownEmotions := map[string]int{}
+		for n, counts := range emotionsBySpeaker[name] {
+			if n > 0 && len(row.Variants) > 0 {
+				continue
+			}
+			for e, k := range counts {
+				ownEmotions[e] += k
+			}
+		}
+		row.Emotions = s.speakerEmotions(resolved.PresetID, ownEmotions)
 		rows = append(rows, row)
 	}
 	return rows, nil
@@ -425,10 +502,6 @@ func (s *Server) handleDeleteCharacter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.Store.ReassignCharacterDescriptions(bookID, char.Name, ""); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
 	if err := s.deleteCharacterIdentity(r, *char); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -461,7 +534,7 @@ func (s *Server) deleteCharacterIdentity(r *http.Request, char store.Character) 
 }
 
 type mergeCharacterRequest struct {
-	// TargetName is who every one of this book's paragraphs currently
+	// TargetName is who every one of the series' paragraphs currently
 	// attributed to this character should be reattributed to instead -
 	// "Narrator" (a sentinel, not a real character row) or another
 	// character's exact name.
@@ -475,7 +548,7 @@ type mergeCharacterRequest struct {
 }
 
 // handleMergeCharacter folds one character into another: every paragraph
-// in this book currently attributed to them is reattributed to
+// in their series currently attributed to them is reattributed to
 // req.TargetName instead of reverting to blank, and their own identity/
 // voice/presets are deleted for their whole series scope (see
 // deleteCharacterIdentity) - for when attribution split one person into
@@ -572,17 +645,22 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := s.Store.ReassignCharacterSpeaker(bookID, char.Name, storeTargetName); err != nil {
+	// Every book of the series, not only this one: the identity below is
+	// deleted series-wide, and lines left under the old name in the other
+	// books would belong to nobody (Jax speaks in two Underverse books).
+	books, err := s.booksInScope(book)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	// Descriptions follow to a real character; Narrator/Unknown describe
-	// no one, so the tag is just dropped.
-	describedName := storeTargetName
-	if describedName == "Unknown" {
-		describedName = ""
-	}
-	if err := s.Store.ReassignCharacterDescriptions(bookID, char.Name, describedName); err != nil {
+	if storeTargetName == "" || storeTargetName == "Unknown" {
+		for _, b := range books {
+			if err := s.Store.ReassignCharacterSpeaker(b.ID, char.Name, storeTargetName); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+	} else if err := s.renameSpeakerEverywhere(books, char.Name, storeTargetName); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1159,15 +1237,15 @@ func (s *Server) buildCharacterAppearances(bookID, characterID string) ([]speake
 	return out, nil
 }
 
-// resolveAppearanceAudioURL is handleCharacterAppearances/
-// handleCharacterDescriptions' own shared audio-preview lookup - unlike
+// resolveAppearanceAudioURL is handleCharacterAppearances' audio-preview
+// lookup - unlike
 // resolveAudioID (handleGetChapter's own, which has every paragraph in the
 // chapter in hand to resolve a scare-quote merge group pointer against),
 // this deliberately does NOT resolve a pointer paragraph (see
 // store.AudioState.PointerOffset) to its anchor's own file: doing so here
 // would cost a second chapter/paragraph lookup per appearance row for a
-// case rare enough (a paragraph tagged both a character's own dialogue/
-// description AND part of a scare-quote merge group) not to be worth it
+// case rare enough (a character's own dialogue that is also part of a
+// scare-quote merge group) not to be worth it
 // for what's just a preview-clip convenience, not real playback - a
 // pointer paragraph simply shows no preview clip here rather than the
 // wrong one.
@@ -1181,72 +1259,6 @@ func (s *Server) resolveAppearanceAudioURL(paragraphID, voiceID string) string {
 		return ""
 	}
 	return "/api/paragraphs/" + paragraphID + "/audio"
-}
-
-// handleCharacterDescriptions lists every paragraph that describes a
-// character's physical appearance or personality (see
-// internal/speakerattr's DescribeChapter and Store.SetParagraphDescriptions),
-// across every book in their series (see store.SeriesScope) -
-// handleCharacterAppearances' own description-tagging counterpart, same DTO
-// shape and the same "bookID in the path is just how the character is
-// reached" rationale. A description paragraph's own attributed speaker is
-// always "Narrator" (or "", pre-attribution) - see
-// Store.ParagraphsDescribing's own doc comment - so audio resolution here
-// always goes through the "Narrator" name, unlike handleCharacterAppearances'
-// own char.Name: it's previewing the narration itself, not this character's
-// own (nonexistent, for a paragraph they don't speak) dialogue.
-func (s *Server) handleCharacterDescriptions(w http.ResponseWriter, r *http.Request) {
-	v, err := s.buildCharacterDescriptions(r.PathValue("id"), r.PathValue("characterId"))
-	writeBuilt(w, v, err)
-}
-
-func (s *Server) buildCharacterDescriptions(bookID, characterID string) ([]speakerAppearanceDTO, error) {
-
-	book, err := s.Store.GetBook(bookID)
-	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
-	}
-	if book == nil {
-		return nil, httpError(http.StatusNotFound, "book not found")
-	}
-	char, err := s.Store.GetCharacter(characterID)
-	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
-	}
-	if char == nil {
-		return nil, httpError(http.StatusNotFound, "character not found")
-	}
-
-	books, err := s.booksInScope(book)
-	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
-	}
-	bookIDs := make([]string, len(books))
-	bookByID := make(map[string]*store.Book, len(books))
-	for i := range books {
-		bookIDs[i] = books[i].ID
-		bookByID[books[i].ID] = &books[i]
-	}
-
-	descriptions, err := s.Store.ParagraphsDescribing(bookIDs, char.Name)
-	if err != nil {
-		return nil, httpError(http.StatusInternalServerError, err.Error())
-	}
-	out := make([]speakerAppearanceDTO, len(descriptions))
-	for i, a := range descriptions {
-		dto := speakerAppearanceDTO{
-			BookID: a.BookID, BookTitle: a.BookTitle,
-			ChapterIdx: a.ChapterIdx, ChapterTitle: a.ChapterTitle,
-			ParagraphIdx: a.ParagraphIdx, Text: a.Text,
-		}
-		if b, ok := bookByID[a.BookID]; ok {
-			if v, err := s.Narration.ForParagraph(b, "Narrator", 0); err == nil {
-				dto.AudioURL = s.resolveAppearanceAudioURL(a.ParagraphID, v.VoiceID())
-			}
-		}
-		out[i] = dto
-	}
-	return out, nil
 }
 
 // characterNameDTO is one entry of a book's series roster, names only - what

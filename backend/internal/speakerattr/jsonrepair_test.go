@@ -72,10 +72,3 @@ func TestFirstJSONValue(t *testing.T) {
 		t.Error("found a value in text with no open bracket")
 	}
 }
-
-func TestParseDescribeItemsStrayClose(t *testing.T) {
-	got, err := parseDescribeItems(`[{"idx": 158, "describes": ["Ingrid"]}]]`)
-	if err != nil || len(got[158]) != 1 || got[158][0] != "Ingrid" {
-		t.Fatalf("got %v, %v", got, err)
-	}
-}

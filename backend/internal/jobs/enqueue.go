@@ -410,7 +410,8 @@ const sentenceTerminators = ".!?"
 // sentenceTerminators - see sentenceTerminators' own doc comment.
 func segmentEndsSentence(p store.Paragraph) bool {
 	text := p.Text
-	if p.IsQuote {
+	// A play's speech (SourceSpeaker) is dialogue with no quote marks.
+	if p.IsQuote && p.SourceSpeaker == "" {
 		runes := []rune(text)
 		if len(runes) < 2 {
 			return false
@@ -953,7 +954,7 @@ func (m *Manager) needs(t *task) []sched.Need {
 		needs = append(needs, m.referenceClipDependency(t)...)
 		needs = append(needs, m.variantClipDependency(t)...)
 	}
-	if t.kind == KindSpeakerAttribution || t.kind == KindDescription {
+	if t.kind == KindSpeakerAttribution {
 		needs = append(needs, m.scareQuoteDependency(t)...)
 	}
 	if t.kind == KindSpeakerAttribution || t.kind == KindAmbience {

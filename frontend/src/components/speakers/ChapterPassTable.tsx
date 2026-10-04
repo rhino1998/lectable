@@ -9,7 +9,6 @@ import {
   RiSpeakLine,
   RiLightbulbLine,
   RiMusic2Line,
-  RiPriceTag3Line,
   RiUserSearchLine,
   RiVoiceprintLine,
 } from 'react-icons/ri'
@@ -17,7 +16,6 @@ import {
   useAttributeSpeakers,
   useResetPass,
   useAttributingChapters,
-  useDescribingChapters,
   useDirectingChapters,
   usePronouncingChapters,
   useResolvePronunciation,
@@ -25,7 +23,6 @@ import {
   useGenerateChapterMusic,
   useGeneratingChapters,
   useGeneratingMusicChapters,
-  useRetagDescriptions,
   useRetagScareQuotes,
   useScareQuotingChapters,
   useRunChapterAmbience,
@@ -42,7 +39,7 @@ import { BulkActionButton, CountStatus, PassStatus } from './PassStatus'
 import { AmbiencePreview } from './AmbiencePreview'
 
 // The Speakers page's per-chapter pass table: one row per chapter with each
-// pass's run button and status (attribution, descriptions, scare quotes,
+// pass's run button and status (attribution, scare quotes,
 // emotions, pronunciation, ambience, narration audio, music audio), topped
 // by whole-book Rest/All/Reset rows. Whole-book actions go through the
 // page's own runBulk (one bulk endpoint, shared with the roster's buttons);
@@ -61,7 +58,6 @@ export function ChapterPassTable({
   onBulkError: (message: string | null) => void
 }) {
   const attributeSpeakers = useAttributeSpeakers(bookId)
-  const retagDescriptions = useRetagDescriptions(bookId)
   const retagScareQuotes = useRetagScareQuotes(bookId)
   const tagDirections = useTagDirections(bookId)
   const resolvePronunciation = useResolvePronunciation(bookId)
@@ -109,11 +105,8 @@ export function ChapterPassTable({
   // as "generate everything for this chapter" once music is turned on.
   const generatingIdxs = useGeneratingChapters(bookId)
   const [generateError, setGenerateError] = useState<string | null>(null)
-  // Same job-queue-derived tracking as attributingIdxs, for description
-  // and scare-quote tagging - both their own queued jobs now (attribution
-  // and description tagging each wait on a chapter's scare-quote job).
-  const describingIdxs = useDescribingChapters(bookId)
-  const [retagError, setRetagError] = useState<string | null>(null)
+  // Same job-queue-derived tracking as attributingIdxs, for scare-quote
+  // tagging - its own queued job (attribution waits on it).
   const scareQuotingIdxs = useScareQuotingChapters(bookId)
   const [retagScareQuoteError, setRetagScareQuoteError] = useState<string | null>(null)
 
@@ -129,14 +122,6 @@ export function ChapterPassTable({
     setSummaryError(null)
     summarizeChapter.mutate(idx, {
       onError: (err) => setSummaryError(err instanceof ApiError ? err.message : 'Summary failed'),
-    })
-  }
-
-  const runRetagDescriptions = (idx: number) => {
-    setRetagError(null)
-    retagDescriptions.mutate(idx, {
-      onError: (err) =>
-        setRetagError(err instanceof ApiError ? err.message : 'Description tagging failed'),
     })
   }
 
@@ -214,9 +199,6 @@ export function ChapterPassTable({
   const runAttributeAll = () => runBulk('attribution', 'all')
   const runAttributeUnattributed = () => runBulk('attribution', 'rest')
   const hasUnattributed = book.chapters.some((c) => !c.passes.attribution)
-  const runRetagDescriptionsAll = () => runBulk('description', 'all')
-  const runRetagDescriptionsUndescribed = () => runBulk('description', 'rest')
-  const hasUndescribed = book.chapters.some((c) => !c.passes.description)
   const runRetagScareQuotesAll = () => runBulk('scare_quote', 'all')
   const runRetagScareQuotesUntagged = () => runBulk('scare_quote', 'rest')
   const hasUnscareQuoted = book.chapters.some((c) => !c.passes.scareQuote)
@@ -269,7 +251,6 @@ export function ChapterPassTable({
         <h2>Attribute speakers</h2>
       </div>
       {attributeError && <p className="error-text">{attributeError}</p>}
-      {retagError && <p className="error-text">{retagError}</p>}
       {retagScareQuoteError && <p className="error-text">{retagScareQuoteError}</p>}
       {directionError && <p className="error-text">{directionError}</p>}
       {reimportError && <p className="error-text">{reimportError}</p>}
@@ -286,7 +267,6 @@ export function ChapterPassTable({
               Summary
             </th>
             <th>Attribution</th>
-            <th>Description</th>
             <th>Scare quotes</th>
             <th>Emotion</th>
             <th>Pronunciation</th>
@@ -320,15 +300,6 @@ export function ChapterPassTable({
                 disabled={!hasUnattributed}
                 onClick={runAttributeUnattributed}
                 title="Attribute unattributed — every chapter that isn't fully attributed yet, skipping ones already done"
-              />
-            </td>
-            <td>
-              <BulkActionButton
-                icon={RiPriceTag3Line}
-                busy={bulkRunning.has('description')}
-                disabled={!hasUndescribed}
-                onClick={runRetagDescriptionsUndescribed}
-                title="Tag untagged descriptions — every chapter that isn't description-tagged yet, skipping ones already done"
               />
             </td>
             <td>
@@ -408,14 +379,6 @@ export function ChapterPassTable({
             </td>
             <td>
               <BulkActionButton
-                icon={RiPriceTag3Line}
-                busy={bulkRunning.has('description')}
-                onClick={runRetagDescriptionsAll}
-                title="Retag all descriptions — every chapter, including ones already done"
-              />
-            </td>
-            <td>
-              <BulkActionButton
                 icon={RiDoubleQuotesL}
                 busy={bulkRunning.has('scare_quote')}
                 onClick={runRetagScareQuotesAll}
@@ -481,14 +444,6 @@ export function ChapterPassTable({
             </td>
             <td>
               <BulkActionButton
-                icon={RiPriceTag3Line}
-                disabled={bulkRunning.has('description') || resetPass.isPending}
-                onClick={() => runReset('description', 'description tags')}
-                title="Reset descriptions — clear every description tag (no audio is affected)"
-              />
-            </td>
-            <td>
-              <BulkActionButton
                 icon={RiDoubleQuotesL}
                 disabled={bulkRunning.has('scare_quote') || resetPass.isPending}
                 onClick={() => runReset('scare_quote', 'scare-quote tags')}
@@ -544,7 +499,6 @@ export function ChapterPassTable({
           </tr>
           {book.chapters.map((c) => {
             const attributing = attributingIdxs.has(c.idx)
-            const retagging = describingIdxs.has(c.idx)
             const retaggingScareQuotes = scareQuotingIdxs.has(c.idx)
             const directing = directingIdxs.has(c.idx)
             const pronouncing = pronouncingIdxs.has(c.idx)
@@ -624,23 +578,6 @@ export function ChapterPassTable({
                         <RiUserSearchLine className={attributing ? 'spin' : undefined} />
                       </button>
                       <PassStatus done={c.passes.attribution} label="Attribution" />
-                    </div>
-                  </td>
-                  <td>
-                    <div className="chapter-attribute-cell">
-                      <button
-                        className="icon-action-button"
-                        disabled={retagging}
-                        onClick={() => runRetagDescriptions(c.idx)}
-                        title={
-                          retagging
-                            ? 'Retagging…'
-                            : "Retag descriptions — re-run description-tagging for this chapter (which narration paragraphs describe a character's appearance or personality)"
-                        }
-                      >
-                        <RiPriceTag3Line className={retagging ? 'spin' : undefined} />
-                      </button>
-                      <PassStatus done={c.passes.description} label="Description tagging" />
                     </div>
                   </td>
                   <td>

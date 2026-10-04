@@ -12,8 +12,7 @@ import (
 	"unicode/utf8"
 )
 
-// ScareQuoteChapter is DescribeChapter's own sibling in shape: a separate,
-// single-purpose pass over a chapter's already-quote-split paragraphs
+// ScareQuoteChapter is a separate, single-purpose pass over a chapter's already-quote-split paragraphs
 // (internal/epub.splitQuoteSegments/store.Paragraph.IsQuote), asking
 // nothing about who's speaking or what's described - only whether a
 // quoted span (internal/epub splits out every balanced quote-mark pair as
@@ -26,12 +25,10 @@ import (
 // he thought derisively" apart from real dialogue needs semantic judgment
 // a structural parser can't do, the reason this is an LLM pass at all.
 //
-// Isolated into its own call, at DescribeChapter's own small batch size,
-// for the same reason DescribeChapter itself was split out of
-// AttributeChapter (see that package doc comment's own "Describe" section
-// and describeBatchParagraphs' doc comment): folding a second judgment
-// into a large per-line batch measurably hurt precision there, and a scare
-// quote is exactly the same shape of rare, easy-to-over-tag judgment.
+// Isolated into its own call rather than folded into AttributeChapter:
+// a second judgment in a large per-line batch measurably hurt precision
+// when description tagging (since retired) was folded in that way, and a
+// scare quote is the same shape of rare, easy-to-over-tag judgment.
 //
 // A flagged paragraph is never re-split or merged by this package itself -
 // see httpapi/jobs' own generation-time handling, which walks
@@ -86,8 +83,8 @@ const scareQuoteParallelBatches = 2
 // Idx values flagged as scare quotes - a paragraph with no entry is real
 // dialogue (the common case).
 //
-// shouldPause/remaining/err follow AttributeChapter/DescribeChapter's own
-// contract (see their doc comments) - nil-safe shouldPause, checked
+// shouldPause/remaining/err follow AttributeChapter's own
+// contract (see its doc comment) - nil-safe shouldPause, checked
 // between batches only; remaining holds everything from the first batch
 // not completed (by a pause or a genuine failure) so the caller can
 // persist real progress and requeue just the rest.
@@ -316,8 +313,8 @@ type scareQuoteItem struct {
 
 // parseScareQuoteItems extracts the JSON array from content, tolerating
 // models that wrap it in prose or a markdown code fence despite the system
-// prompt asking for JSON only - the same tolerance parseDescribeItems
-// applies for DescribeChapter's own response. Also tolerates a model
+// prompt asking for JSON only - the same tolerance parseAttributions
+// applies. Also tolerates a model
 // simplifying [{"idx": N}, ...] down to a flat [N, ...] array of bare
 // indices - a real, observed response shape for this particular schema
 // (its only field is "idx", an easy one to collapse to just the value)

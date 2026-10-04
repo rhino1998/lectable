@@ -24,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Merge
 import androidx.compose.material.icons.filled.MoreVert
@@ -248,12 +247,6 @@ fun SpeakersScreen(
                         onPlayAppearance = viewModel::playUrl,
                         onRegenerateAppearance = viewModel::regenerateAppearance,
                         onReassignAppearance = viewModel::reassignAppearance,
-                        descriptionsExpanded = uiState.descriptionsFor == speaker.id && speaker.id.isNotEmpty(),
-                        descriptions = uiState.descriptions,
-                        descriptionsLoading = uiState.descriptionsLoading,
-                        onToggleDescriptions = { viewModel.toggleDescriptions(speaker.id) },
-                        onPlayDescription = viewModel::playUrl,
-                        onReassignDescription = viewModel::reassignDescription,
                     )
                 }
             }
@@ -357,12 +350,6 @@ private fun SpeakerRow(
     onPlayAppearance: (String) -> Unit,
     onRegenerateAppearance: (chapterIdx: Int, paragraphIdx: Int) -> Unit,
     onReassignAppearance: (chapterIdx: Int, paragraphIdx: Int, speaker: String) -> Unit,
-    descriptionsExpanded: Boolean,
-    descriptions: List<SpeakerAppearanceDto>,
-    descriptionsLoading: Boolean,
-    onToggleDescriptions: () -> Unit,
-    onPlayDescription: (String) -> Unit,
-    onReassignDescription: (chapterIdx: Int, paragraphIdx: Int, targetName: String) -> Unit,
 ) {
     val isNarrator = speaker.id.isEmpty()
     var showMenu by remember { mutableStateOf(false) }
@@ -456,11 +443,6 @@ private fun SpeakerRow(
                             onClick = { onAssignVoice(); showMenu = false },
                         )
                         DropdownMenuItem(
-                            text = { Text(if (descriptionsExpanded) "Hide descriptions" else "View descriptions") },
-                            leadingIcon = { Icon(Icons.Filled.Description, contentDescription = null) },
-                            onClick = { onToggleDescriptions(); showMenu = false },
-                        )
-                        DropdownMenuItem(
                             text = {
                                 Text(
                                     when {
@@ -550,29 +532,6 @@ private fun SpeakerRow(
                 }
             }
         }
-        if (descriptionsExpanded) {
-            Column(modifier = Modifier.padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                when {
-                    descriptionsLoading -> Text("Loading…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    descriptions.isEmpty() -> Text(
-                        "No descriptions found yet - description-tagging runs automatically after a full, " +
-                            "uninterrupted \"Preprocess\", or can be re-run per chapter from the reader's own " +
-                            "chapter picker long-press menu.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    else -> descriptions.forEach { description ->
-                        DescriptionRow(
-                            description = description,
-                            reassignTargets = reassignTargets(),
-                            isPlaying = description.audioUrl != null && description.audioUrl == playingUrl,
-                            onPlay = { description.audioUrl?.let(onPlayDescription) },
-                            onReassign = { target -> onReassignDescription(description.chapterIdx, description.paragraphIdx, target) },
-                        )
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -605,52 +564,6 @@ private fun AppearanceRow(
             }
             IconButton(onClick = onRegenerate) {
                 Icon(Icons.Filled.Refresh, contentDescription = if (appearance.audioUrl != null) "Regenerate this line" else "Generate this line")
-            }
-            Box {
-                TextButton(onClick = { showReassignMenu = true }) { Text("Reassign") }
-                DropdownMenu(expanded = showReassignMenu, onDismissRequest = { showReassignMenu = false }) {
-                    reassignTargets.forEach { name ->
-                        DropdownMenuItem(text = { Text(name) }, onClick = { onReassign(name); showReassignMenu = false })
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** One line from "View descriptions". Unlike [AppearanceRow], this paragraph doesn't belong to
- *  the expanded character as its *speaker* (it's narration *about* them, almost always still
- *  attributed to Narrator as its speaker) - so "reassign" here means moving this paragraph off
- *  this character's own describes-list and onto a different character's instead, not changing
- *  who speaks it - see [SpeakerViewModel.reassignDescription]. No regenerate button, unlike
- *  [AppearanceRow]: the audio preview, when present, is just whatever narrates that paragraph
- *  today (the book's own voice) - there's no per-line "generate this description" action, only
- *  whole-chapter generation. */
-@Composable
-private fun DescriptionRow(
-    description: SpeakerAppearanceDto,
-    reassignTargets: List<String>,
-    isPlaying: Boolean,
-    onPlay: () -> Unit,
-    onReassign: (String) -> Unit,
-) {
-    var showReassignMenu by remember { mutableStateOf(false) }
-    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Text(
-            "${description.bookTitle} · ${description.chapterTitle}",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(description.text, style = MaterialTheme.typography.bodySmall, maxLines = 3, overflow = TextOverflow.Ellipsis)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (description.audioUrl != null) {
-                IconButton(onClick = onPlay) {
-                    if (isPlaying) {
-                        Icon(Icons.Filled.Stop, contentDescription = "Stop playing this paragraph")
-                    } else {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = "Play this paragraph")
-                    }
-                }
             }
             Box {
                 TextButton(onClick = { showReassignMenu = true }) { Text("Reassign") }

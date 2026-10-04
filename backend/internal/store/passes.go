@@ -62,19 +62,8 @@ func (s *SQLiteStore) SetChapterScareQuoted(chapterID string) error {
 	return err
 }
 
-// SetChapterDescribed marks chapterID's own passes.description true - set
-// by httpapi.describeChapterForJob once a description tagging run
-// completes over the whole chapter. SetChapterAttributed's shape.
-func (s *SQLiteStore) SetChapterDescribed(chapterID string) error {
-	_, err := s.db.Exec(
-		`UPDATE chapters SET passes = json_patch(passes, '{"description": true}') WHERE id = ?`,
-		chapterID,
-	)
-	return err
-}
-
 // SetChapterDirected marks chapterID's own PassDirection true, leaving
-// PassAttribution/PassDescription untouched - SetChapterAttributed's own
+// PassAttribution untouched - SetChapterAttributed's own
 // sibling, set by httpapi.directChapter once a run finishes covering the
 // whole chapter in one uninterrupted pass. See SetChapterAttributed's own
 // doc comment for why this is a single json_patch statement rather
@@ -119,18 +108,14 @@ var PassResets = map[string]PassReset{
 	// Attribution leaves a scare-quote paragraph's "Narrator" alone - that
 	// comes from scare-quote tagging, not attribution (see
 	// SetParagraphScareQuotes). ""/"Narrator" both narrate in the book's
-	// own voice, so only a real character's lines have stale audio.
+	// own voice, so only a real character's lines have stale audio. A
+	// play's line goes back to the speaker the book names for it
+	// (Paragraph.SourceSpeaker), not to none.
 	"attribution": {
 		Flag:     "attribution",
-		Set:      "speaker = '', speaker_index = 0",
-		Where:    "speaker <> '' AND NOT scare_quote",
-		Affected: "speaker NOT IN ('', 'Narrator') AND NOT scare_quote",
-	},
-	// Descriptions only feed characterization, never generation.
-	"description": {
-		Flag:  "description",
-		Set:   "describes_characters = '[]'",
-		Where: "describes_characters NOT IN ('[]', 'null')",
+		Set:      "speaker = source_speaker, speaker_index = 0",
+		Where:    "speaker <> source_speaker AND NOT scare_quote",
+		Affected: "speaker NOT IN ('', 'Narrator') AND speaker <> source_speaker AND NOT scare_quote",
 	},
 	"scare_quote": {
 		Flag:     "scareQuote",

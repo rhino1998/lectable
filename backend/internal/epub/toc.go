@@ -113,7 +113,7 @@ func parseNavToc(data []byte, navDir string) []TocEntry {
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "a" {
 			href := attr(n, "href")
-			text, _ := extractEmphasis(normalizeWhitespace(collectText(n)))
+			text, _ := extractEmphasis(plainText(collectText(n)))
 			if href != "" && text != "" {
 				p, frag := resolveHrefWithFragment(navDir, href)
 				entries = append(entries, TocEntry{Path: p, Anchor: frag, Title: text})

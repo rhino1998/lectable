@@ -94,18 +94,22 @@ fun VoicesScreen(
             when (val t = target) {
                 VoiceFormTarget.None -> when {
                     uiState.loading -> CircularProgressIndicator()
-                    uiState.error != null -> Text(
-                        "Could not load your voices: ${uiState.error}",
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(24.dp),
-                    )
-                    uiState.presets.isEmpty() -> Text(
-                        "No custom voices yet. Tap + to create one.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(24.dp),
-                    )
                     else -> LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        uiState.error?.let { error ->
+                            item {
+                                Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
+                            }
+                        }
+                        if (uiState.presets.isEmpty()) {
+                            item {
+                                Text(
+                                    "No custom voices yet. Tap + to create one.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(24.dp),
+                                )
+                            }
+                        }
                         items(uiState.presets, key = { it.id }) { preset ->
                             VoiceListRow(
                                 preset = preset,

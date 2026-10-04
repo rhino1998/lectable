@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,34 +23,17 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
-// maxCharacterizeQuotes bounds how many of a character's quotes (across
-// however many books in their series) get pulled for characterization -
-// see Server.provisionCharacterVoice. Matches speakerattr's own internal
-// cap - see its own doc comment for why this was lowered from an original
-// 30 (a real, observed slow characterization task for a prominent
-// character, traced to Store.QuotesForBooks' own pre-LIMIT sort cost, not
-// the LLM call itself) - kept here too so the store query doesn't fetch
-// more rows than will ever be used.
-const maxCharacterizeQuotes = 20
+// maxVoiceClues is how many voice clues characterization is shown.
+const maxVoiceClues = 8
 
-// maxCharacterizeDescriptions is maxCharacterizeQuotes' counterpart for
-// description paragraphs - matches speakerattr's own internal cap (see its
-// own doc comment), kept here too so Store.DescriptionsForBooks doesn't
-// fetch more rows than will ever be used.
-const maxCharacterizeDescriptions = 10
-
-// characterizeVoice asks the LLM (speakerattr.Client.CharacterizeVoice) to
-// describe how char actually sounds, from a sample of *only their own*
-// attributed dialogue plus narration that describes them (see
-// store.QuotesForBooks/DescriptionsForBooks) gathered across every book in
-// their series so far (see store.SeriesScope), and persists the result -
-// both the casting instruction and its paired reference passage - to
-// char.Summary/RefLine - the pure LLM+DB step behind a
+// characterizeVoice asks the LLM how char actually sounds (castCharacter)
+// and persists the result - the casting instruction and its paired
+// reference passage to char.Summary/RefLine - the pure LLM+DB step behind a
 // jobs.KindSpeakerCharacterization task (see jobs.Manager.RunCharacterization),
 // shared by provisionCharacterVoice's lazy-provisioning flow and
 // handleCharacterizeSpeaker's explicit "Regenerate" button.
 //
-// Always actually calls the LLM now, even when quotes and descriptions
+// Always actually calls the LLM now, even when quotes
 // come back empty - speakerattr.Client.CharacterizeVoice's own doc comment
 // covers why (the name alone is enough for its system prompt's "no signal
 // at all" fallback rules), and this is the layer that used to short-
@@ -59,93 +44,248 @@ const maxCharacterizeDescriptions = 10
 // future characterization pass hit this same early return again, silently
 // forever, never persisting a Summary and never erroring either.
 func (s *Server) characterizeVoice(ctx context.Context, book *store.Book, char store.Character) (string, error) {
+	cast, err := s.castCharacter(ctx, book, char, castOptions{})
+	if err != nil {
+		return "", err
+	}
+	if err := s.Store.SetCharacterSummary(char.ID, cast.instruct, cast.refLine); err != nil {
+		return "", fmt.Errorf("save characterization: %w", err)
+	}
+	return cast.instruct, nil
+}
+
+// casting is castCharacter's result.
+type casting struct {
+	instruct string
+	refLine  string
+	// lookups are the searches the casting call made, each with how many
+	// sentences it found ("Scylla + Greek: 3").
+	lookups []string
+}
+
+// Lookup result sizes.
+const (
+	// lookupResults is how many matching paragraphs one lookup returns.
+	lookupResults = 6
+	// lookupSentenceChars caps each one.
+	lookupSentenceChars = 400
+	// lookupPool is how many index matches are read for the whole-word
+	// check to keep lookupResults of.
+	lookupPool = 200
+)
+
+// Retrieval sizes for casting's evidence (speakerattr.CharacterEvidence).
+const (
+	// castingQuotes is how many of the character's lines are read; the
+	// casting call is shown an even spread of 20 of them.
+	castingQuotes = 40
+	// castingIntroductions is how many of the first narration paragraphs
+	// naming them it reads.
+	castingIntroductions = 3
+	// castingTraitPool is how many trait-phrase matches are read for
+	// speakerattr.TraitStatements to choose castingTraits from.
+	castingTraitPool = 400
+	castingTraits    = 14
+)
+
+// lookupExcerpts answers one of the casting call's lookups
+// (speakerattr.CastingOptions.Lookup): up to lookupResults excerpts, spread
+// over the series, of paragraphs where every one of terms appears as a
+// whole word. A lookup that names nobody is given the character's own
+// name (names[0]) - without it the search finds everyone. The index
+// matches substrings ("age" finds "page", "origin" "original"), which is
+// what the first version returned, so each hit is checked again here; the
+// excerpt is cut around the last term, the specific word rather than the
+// name.
+func (s *Server) lookupExcerpts(bookIDs, names, terms []string) ([]string, error) {
+	named := false
+	for _, t := range terms {
+		for _, n := range names {
+			if strings.Contains(strings.ToLower(n), strings.ToLower(t)) || strings.Contains(strings.ToLower(t), strings.ToLower(n)) {
+				named = true
+			}
+		}
+	}
+	if !named {
+		terms = append([]string{names[0]}, terms...)
+	}
+	found, err := s.Store.ParagraphsContainingAll(bookIDs, terms, lookupPool)
+	if err != nil {
+		return nil, err
+	}
+	words := make([]*regexp.Regexp, len(terms))
+	for i, t := range terms {
+		words[i] = regexp.MustCompile(`(?i)\b` + regexp.QuoteMeta(t) + `\b`)
+	}
+	var kept []string
+	for _, f := range found {
+		whole := true
+		for _, w := range words {
+			if !w.MatchString(f) {
+				whole = false
+				break
+			}
+		}
+		if whole {
+			kept = append(kept, speakerattr.Excerpt(f, terms[len(terms)-1], lookupSentenceChars))
+		}
+	}
+	if len(kept) <= lookupResults {
+		return kept, nil
+	}
+	out := make([]string, lookupResults)
+	for i := range out {
+		out[i] = kept[i*len(kept)/lookupResults]
+	}
+	return out, nil
+}
+
+// castOptions are the preview's variations on castCharacter; the zero
+// value is what characterization does.
+type castOptions struct {
+	// temp overrides the casting call's sampling temperature.
+	temp *float32
+	// noLookup casts from the gathered material alone, without letting
+	// the model search the book first (speakerattr.CastingOptions.Lookup).
+	noLookup bool
+}
+
+// castCharacter gathers char's material across their series and casts
+// their voice (speakerattr.Client.CharacterizeVoice), storing nothing.
+// The material is retrieved by search rather than only sampled: the first
+// narration naming them and their trait statements ("Bert was a ...")
+// through the paragraphs_fts index (Store.NarrationMatching), voice and
+// origin clues (narrationClues), idiom counts over every line they speak,
+// and a spread of their lines. The model then searches the book itself
+// for what that leaves unstated (lookupExcerpts) before it casts.
+func (s *Server) castCharacter(ctx context.Context, book *store.Book, char store.Character, opts castOptions) (casting, error) {
 	books, err := s.booksInScope(book)
 	if err != nil {
-		return "", fmt.Errorf("list scope books: %w", err)
+		return casting{}, fmt.Errorf("list scope books: %w", err)
 	}
 	bookIDs := make([]string, len(books))
 	for i, b := range books {
 		bookIDs[i] = b.ID
 	}
 
-	quotes, err := s.Store.QuotesForBooks(bookIDs, char.Name, maxCharacterizeQuotes)
+	quotes, err := s.Store.QuotesForBooks(bookIDs, char.Name, castingQuotes)
 	if err != nil {
-		return "", fmt.Errorf("gather quotes: %w", err)
+		return casting{}, fmt.Errorf("gather quotes: %w", err)
 	}
-	descriptions, err := s.Store.DescriptionsForBooks(bookIDs, char.Name, maxCharacterizeDescriptions)
-	if err != nil {
-		return "", fmt.Errorf("gather descriptions: %w", err)
-	}
-	speakerQuotes := make([]speakerattr.QuoteContext, len(quotes))
+	evidence := speakerattr.CharacterEvidence{Quotes: make([]speakerattr.QuoteContext, len(quotes))}
 	for i, q := range quotes {
-		speakerQuotes[i] = speakerattr.QuoteContext{Text: q.Text, Context: q.Context}
+		evidence.Quotes[i] = speakerattr.QuoteContext{Text: q.Text, Context: q.Context}
 	}
-	speakerDescriptions := make([]speakerattr.DescriptionContext, len(descriptions))
-	for i, d := range descriptions {
-		speakerDescriptions[i] = speakerattr.DescriptionContext{Text: d.Text}
+	names := append([]string{char.Name}, char.Aliases...)
+	setting := s.bookSetting(ctx, book)
+
+	lines, err := s.Store.ParagraphsForSpeaker(bookIDs, char.Name)
+	if err != nil {
+		return casting{}, fmt.Errorf("gather lines: %w", err)
+	}
+	evidence.Idioms = speakerattr.IdiomCounts{}
+	for _, l := range lines {
+		evidence.Idioms.Add(l.Text)
 	}
 
 	costars, err := s.characterizedCostars(bookIDs, char)
 	if err != nil {
-		return "", fmt.Errorf("gather co-stars: %w", err)
+		return casting{}, fmt.Errorf("gather co-stars: %w", err)
 	}
-	origins, err := s.originClues(books, char)
+	origins, voiceClues, err := s.narrationClues(books, bookIDs, char)
 	if err != nil {
-		return "", fmt.Errorf("gather origin clues: %w", err)
+		return casting{}, fmt.Errorf("gather narration clues: %w", err)
 	}
+	evidence.VoiceClues = voiceClues
+	for _, o := range origins {
+		// An accent word makes a sentence both kinds of clue.
+		if !slices.Contains(voiceClues, o) {
+			evidence.Origins = append(evidence.Origins, o)
+		}
+	}
+	if evidence.Introductions, err = s.Store.NarrationMatching(bookIDs, names, castingIntroductions); err != nil {
+		return casting{}, fmt.Errorf("gather introductions: %w", err)
+	}
+	traits, err := s.Store.NarrationMatching(bookIDs, speakerattr.TraitPhrases(names), castingTraitPool)
+	if err != nil {
+		return casting{}, fmt.Errorf("gather trait statements: %w", err)
+	}
+	evidence.Traits = speakerattr.TraitStatements(traits, names, castingTraits)
 
-	instruct, refLine, err := s.Speaker.CharacterizeVoice(ctx, char.Name, char.IsRole, char.Pronouns, s.bookSetting(ctx, book), speakerQuotes, speakerDescriptions, origins, costars)
+	castingOpts := speakerattr.CastingOptions{Temp: opts.temp}
+	var lookups []string
+	if !opts.noLookup {
+		castingOpts.Lookup = func(_ context.Context, terms []string) ([]string, error) {
+			return s.lookupExcerpts(bookIDs, names, terms)
+		}
+		castingOpts.OnLookup = func(terms []string, found int) {
+			lookups = append(lookups, fmt.Sprintf("%s: %d", strings.Join(terms, " + "), found))
+		}
+	}
+	instruct, refLine, err := s.Speaker.CharacterizeVoice(ctx, char.Name, char.IsRole, char.Pronouns, setting, evidence, costars, castingOpts)
 	if err != nil {
-		return "", fmt.Errorf("characterize: %w", err)
+		return casting{}, fmt.Errorf("characterize: %w", err)
 	}
-	if err := s.Store.SetCharacterSummary(char.ID, instruct, refLine); err != nil {
-		return "", fmt.Errorf("save characterization: %w", err)
-	}
-	return instruct, nil
+	return casting{instruct: instruct, refLine: refLine, lookups: lookups}, nil
 }
 
 // maxOriginClues is how many origin clues characterization is shown.
 const maxOriginClues = 6
 
-// originClues returns char's speakerattr.OriginClues across books (their
-// series, in order), from each book's cached origin paragraphs.
-func (s *Server) originClues(books []store.Book, char store.Character) ([]string, error) {
-	var paras []string
+// narrationClues returns char's speakerattr.OriginClues and VoiceClues
+// across books (their series, in order; bookIDs are the same books), from
+// each book's cached clue paragraphs and the narration following char's
+// own lines.
+func (s *Server) narrationClues(books []store.Book, bookIDs []string, char store.Character) (origins, voice []string, err error) {
+	var originParas, voiceParas []string
 	for i := range books {
-		p, err := s.bookOriginParagraphs(&books[i])
+		c, err := s.bookClueParagraphs(&books[i])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		paras = append(paras, p...)
+		originParas = append(originParas, c.origin...)
+		voiceParas = append(voiceParas, c.voice...)
 	}
-	return speakerattr.OriginClues(paras, append([]string{char.Name}, char.Aliases...), maxOriginClues), nil
+	tags, err := s.Store.SpeechTagsForBooks(bookIDs, char.Name)
+	if err != nil {
+		return nil, nil, err
+	}
+	names := append([]string{char.Name}, char.Aliases...)
+	return speakerattr.OriginClues(originParas, names, maxOriginClues), speakerattr.VoiceClues(tags, voiceParas, names, char.Pronouns, maxVoiceClues), nil
 }
 
-type cachedOriginParagraphs struct {
-	paragraphs []string
-	built      time.Time
+// cachedClueParagraphs is one book's speakerattr.OriginParagraphs (every
+// paragraph) and VoiceParagraphs (narration only - "lower your voice" in
+// someone's speech says nothing of how anyone sounds).
+type cachedClueParagraphs struct {
+	origin, voice []string
+	built         time.Time
 }
 
-// bookOriginParagraphs returns book's speakerattr.OriginParagraphs, cached
-// for identityIndexTTL (Server.originParagraphs) - a bulk recast reads
+// bookClueParagraphs returns book's clue paragraphs, cached for
+// identityIndexTTL (Server.originParagraphs) - a bulk recast reads
 // every book of the series once per character.
-func (s *Server) bookOriginParagraphs(book *store.Book) ([]string, error) {
+func (s *Server) bookClueParagraphs(book *store.Book) (cachedClueParagraphs, error) {
 	if v, ok := s.originParagraphs.Load(book.ID); ok {
-		if c := v.(cachedOriginParagraphs); time.Since(c.built) < identityIndexTTL {
-			return c.paragraphs, nil
+		if c := v.(cachedClueParagraphs); time.Since(c.built) < identityIndexTTL {
+			return c, nil
 		}
 	}
 	all, err := s.Store.ListParagraphsRawForBook(book.ID)
 	if err != nil {
-		return nil, err
+		return cachedClueParagraphs{}, err
 	}
 	texts := make([]string, len(all))
+	var narration []string
 	for i, p := range all {
 		texts[i] = p.Text
+		if !p.IsQuote {
+			narration = append(narration, p.Text)
+		}
 	}
-	paras := speakerattr.OriginParagraphs(texts)
-	s.originParagraphs.Store(book.ID, cachedOriginParagraphs{paragraphs: paras, built: time.Now()})
-	return paras, nil
+	c := cachedClueParagraphs{origin: speakerattr.OriginParagraphs(texts), voice: speakerattr.VoiceParagraphs(narration), built: time.Now()}
+	s.originParagraphs.Store(book.ID, c)
+	return c, nil
 }
 
 // maxCharacterizeCostars is how many already-cast co-stars characterization
@@ -756,6 +896,66 @@ func (s *Server) handleCharacterizeSpeaker(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, characterizeResponse{Summary: summary, VoiceInvalidated: invalidated})
 }
 
+// handlePreviewCharacterization runs a character's characterization
+// (castCharacter) and returns the casting without storing it, so a change
+// to the prompts or the retrieval can be judged against the stored casting
+// without discarding anyone's voice or audio. ?temp= sets the casting
+// call's sampling temperature and ?lookup=0 casts without the
+// book lookups.
+func (s *Server) handlePreviewCharacterization(w http.ResponseWriter, r *http.Request) {
+	if s.Speaker == nil {
+		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
+		return
+	}
+	bookID := r.PathValue("id")
+	characterID := r.PathValue("characterId")
+
+	book, err := s.Store.GetBook(bookID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if book == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	char, err := s.Store.GetCharacter(characterID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if char == nil {
+		writeError(w, http.StatusNotFound, "character not found")
+		return
+	}
+
+	opts := castOptions{noLookup: r.URL.Query().Get("lookup") == "0"}
+	if raw := r.URL.Query().Get("temp"); raw != "" {
+		temp, err := strconv.ParseFloat(raw, 32)
+		if err != nil || temp < 0 || temp > 2 {
+			writeError(w, http.StatusBadRequest, "temp must be a number from 0 to 2")
+			return
+		}
+		t := float32(temp)
+		opts.temp = &t
+	}
+	var cast casting
+	if err := s.Jobs.RunCharacterization(r.Context(), book.ID, char.ID, char.Name, func(ctx context.Context) error {
+		var err error
+		cast, err = s.castCharacter(ctx, book, *char, opts)
+		return err
+	}); err != nil {
+		writeError(w, http.StatusBadGateway, "characterization failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, characterizePreviewResponse{
+		Summary:        cast.instruct,
+		RefLine:        cast.refLine,
+		Lookups:        cast.lookups,
+		CurrentSummary: char.Summary,
+	})
+}
+
 // recharacterizeAndInvalidate runs runFn (a CharacterizationFunc closing
 // over the character being re-characterized - see characterizeVoice) and,
 // if it produced a non-empty Summary, invalidates every clone model's
@@ -986,9 +1186,32 @@ func (s *Server) handleVariantAudio(w http.ResponseWriter, r *http.Request) {
 	serveVoiceClip(w, r, path)
 }
 
+// handleRoleVariantAudio serves the reference clip of a role voice's
+// numbered sibling (narration.MemberVoice - a derived preset id, with no
+// stored preset to look up) - the Speakers page's per-number preview. 404
+// until it's been rendered.
+func (s *Server) handleRoleVariantAudio(w http.ResponseWriter, r *http.Request) {
+	presetID := r.PathValue("presetId")
+	if !strings.Contains(presetID, "~") || strings.ContainsAny(presetID, "/\\.") {
+		writeError(w, http.StatusNotFound, "role variant not found")
+		return
+	}
+	path := audiopath.VoicePresetRefFile(s.DataDir, presetID)
+	if _, err := os.Stat(path); err != nil {
+		writeError(w, http.StatusNotFound, "role variant not found")
+		return
+	}
+	w.Header().Set("Content-Type", "audio/wav")
+	serveVoiceClip(w, r, path)
+}
+
 type regenerateVariantRequest struct {
 	Speaker string `json:"speaker"`
 	Emotion string `json:"emotion"`
+	// SpeakerIndex picks one numbered member of a role
+	// (store.Paragraph.SpeakerIndex) - its sibling voice's variant, and
+	// only its lines. 0 for the speaker's own voice.
+	SpeakerIndex int `json:"speakerIndex,omitempty"`
 }
 
 // handleRegenerateVariant re-renders the emotion variant speaker's lines in
@@ -1022,10 +1245,24 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 	if speaker == "" {
 		speaker = "Narrator"
 	}
-	voice, err := s.Narration.ForParagraph(book, speaker, 0)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	if req.SpeakerIndex < 0 || req.SpeakerIndex > store.MaxSpeakerIndex {
+		writeError(w, http.StatusBadRequest, "unknown speaker number")
 		return
+	}
+	// The preset each of this speaker's numbers generates under - a line
+	// is re-voiced only when its number shares the regenerated variant's.
+	presetByIndex := make([]string, store.MaxSpeakerIndex+1)
+	var voice narration.ResolvedVoice
+	for n := range presetByIndex {
+		v, err := s.Narration.ForParagraph(book, speaker, n)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		presetByIndex[n] = v.PresetID
+		if n == req.SpeakerIndex {
+			voice = v
+		}
 	}
 	if voice.PresetID == "" {
 		writeError(w, http.StatusBadRequest, "this speaker's voice has no reference clip to vary")
@@ -1047,7 +1284,7 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 		if name == "" {
 			name = "Narrator"
 		}
-		if name == speaker && p.EffectiveEmotion() == req.Emotion {
+		if name == speaker && p.EffectiveEmotion() == req.Emotion && p.SpeakerIndex <= store.MaxSpeakerIndex && presetByIndex[p.SpeakerIndex] == voice.PresetID {
 			stale = append(stale, p)
 		}
 	}

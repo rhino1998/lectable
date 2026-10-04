@@ -128,7 +128,6 @@ export function ReaderPage() {
     error: chapterActionError,
     setError: setChapterActionError,
     attributingIdxs,
-    describingIdxs,
     scareQuotingIdxs,
     directingIdxs,
     pronouncingIdxs,
@@ -143,7 +142,6 @@ export function ReaderPage() {
     runAttributeAroundEdits,
     saveNotes,
     runRegenerateNotes,
-    runRetagDescriptionsChapter,
     runRetagScareQuotesChapter,
     runTagDirectionsChapter,
     runResolvePronunciationChapter,
@@ -152,7 +150,7 @@ export function ReaderPage() {
     runRegenerateMusic,
   } = useChapterActions(bookId)
 
-  // Colors narrator/speaker/description segments in the paragraph list
+  // Colors narrator/speaker segments in the paragraph list
   // instead of leaving that distinction to the speaker-hint badge alone
   // (see annotationKind above) - off by default since the coloring adds
   // visual noise a reader may not want while just listening.
@@ -169,7 +167,7 @@ export function ReaderPage() {
   // (and no way to change it) while the toggle's off anyway.
   const [selectedSpeaker, setSelectedSpeaker] = useState<string | null>(null)
 
-  // Right-click "reassign speaker"/"reassign description" menu (annotations
+  // Right-click "reassign speaker" menu (annotations
   // view only) - see ParagraphContextMenu. speakersQuery also backs
   // PlayerBar's speaker list.
   const speakersQuery = useSpeakers(bookId)
@@ -719,7 +717,6 @@ export function ReaderPage() {
                 chapterClearing={clearingIdx === idx}
                 chapterReimporting={reimportingIdx === idx}
                 hasAttribution={!!chapterSummary?.passes.attribution}
-                chapterRetaggingDescriptions={describingIdxs.has(idx)}
                 chapterRetaggingScareQuotes={scareQuotingIdxs.has(idx)}
                 chapterDirecting={directingIdxs.has(idx)}
                 chapterPronouncing={pronouncingIdxs.has(idx)}
@@ -743,7 +740,6 @@ export function ReaderPage() {
                 onAttributeAroundEdits={runAttributeAroundEdits}
                 onSaveNotes={saveNotes}
                 onRegenerateNotes={runRegenerateNotes}
-                onRetagDescriptions={runRetagDescriptionsChapter}
                 onRetagScareQuotes={runRetagScareQuotesChapter}
                 onTagDirections={runTagDirectionsChapter}
                 onResolvePronunciation={runResolvePronunciationChapter}

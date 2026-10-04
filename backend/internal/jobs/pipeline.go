@@ -20,12 +20,11 @@ import (
 // withParent, Manager.pushTask): they take its priority while it runs, and
 // are cancelled with it unless something else wants them.
 
-// Book preprocessing runs seven phases, related by pipelinePhaseDeps (see
-// pipelineResolver): scare-quote tagging first, then attribution and
-// description tagging (both need scare quotes flagged - the same edge
-// Manager.scareQuoteDependency enforces per chapter), characterization
-// once both of those are done (it reads a character's attributed dialogue
-// and description paragraphs), then voice provisioning (needs
+// Book preprocessing runs its phases related by pipelinePhaseDeps (see
+// pipelineResolver): scare-quote tagging first, then attribution (it needs
+// scare quotes flagged - the same edge Manager.scareQuoteDependency
+// enforces per chapter), characterization once that is done (it reads a
+// character's attributed dialogue), then voice provisioning (needs
 // characterization's own Summary). Direction tagging, pronunciation
 // resolution and music scoring need nothing any other phase produces (see httpapi.directChapter/
 // ambienceChapter - only the book's resolved voice and each paragraph's
@@ -41,7 +40,6 @@ const (
 	pipelinePhaseDirection
 	pipelinePhaseAmbience
 	pipelinePhaseScareQuote
-	pipelinePhaseDescription
 	pipelinePhasePronunciation
 	pipelinePhaseSummary
 	pipelinePhaseCount
@@ -54,7 +52,6 @@ var pipelinePhaseNames = [pipelinePhaseCount]string{
 	pipelinePhaseDirection:        "direction",
 	pipelinePhaseAmbience:         "ambience",
 	pipelinePhaseScareQuote:       "scare_quote",
-	pipelinePhaseDescription:      "description",
 	pipelinePhasePronunciation:    "pronunciation",
 	pipelinePhaseSummary:          "summary",
 }
@@ -69,7 +66,6 @@ type PipelinePhases = [pipelinePhaseCount]PipelinePhaseFunc
 const (
 	PhaseScareQuote       = pipelinePhaseScareQuote
 	PhaseAttribution      = pipelinePhaseAttribution
-	PhaseDescription      = pipelinePhaseDescription
 	PhaseCharacterization = pipelinePhaseCharacterization
 	PhaseVoiceProvision   = pipelinePhaseVoiceProvision
 	PhaseDirection        = pipelinePhaseDirection
@@ -85,8 +81,7 @@ const (
 var pipelinePhaseDeps = [pipelinePhaseCount][]int{
 	pipelinePhaseAttribution:      {pipelinePhaseScareQuote, pipelinePhaseSummary},
 	pipelinePhaseAmbience:         {pipelinePhaseSummary},
-	pipelinePhaseDescription:      {pipelinePhaseScareQuote},
-	pipelinePhaseCharacterization: {pipelinePhaseAttribution, pipelinePhaseDescription},
+	pipelinePhaseCharacterization: {pipelinePhaseAttribution},
 	pipelinePhaseVoiceProvision:   {pipelinePhaseCharacterization},
 }
 
@@ -105,14 +100,13 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 	pipelinePhaseDirection:        "pipeline_direction",
 	pipelinePhaseAmbience:         "pipeline_ambience",
 	pipelinePhaseScareQuote:       "pipeline_scare_quote",
-	pipelinePhaseDescription:      "pipeline_description",
 	pipelinePhasePronunciation:    "pipeline_pronunciation",
 	pipelinePhaseSummary:          "pipeline_summary",
 }
 
 // PipelinePhaseFunc is one phase's own real work for one book - fan out
 // whatever per-chapter/per-character tasks that phase covers (via
-// RunScareQuote/RunAttribution/RunDescription/RunCharacterization/
+// RunScareQuote/RunAttribution/RunCharacterization/
 // RunVoiceProvision/RunDirection/RunAmbience) and block until every one of them finishes or ctx is
 // canceled. Supplied by the caller at EnqueuePipeline time (httpapi's own
 // preprocessAttributionPhase/preprocessCharacterizationPhase/
@@ -390,7 +384,6 @@ var phaseChildKinds = map[int]Kind{
 	pipelinePhaseDirection:     KindSpeechDirection,
 	pipelinePhaseAmbience:      KindAmbience,
 	pipelinePhaseScareQuote:    KindScareQuote,
-	pipelinePhaseDescription:   KindDescription,
 	pipelinePhasePronunciation: KindPronunciation,
 	pipelinePhaseSummary:       KindSummary,
 }

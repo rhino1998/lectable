@@ -25,9 +25,10 @@ import type {
   Speaker,
   SpeakerAppearance,
   SpeakerEmotion,
+  SpeakerVariant,
   VoicePreset,
 } from '../../api/types'
-import { AppearanceRow, DescriptionRow } from './SpeakerEvidence'
+import { AppearanceRow } from './SpeakerEvidence'
 import { CharacterVoiceEditor } from './CharacterVoiceEditor'
 
 export function SpeakerRow({
@@ -61,10 +62,6 @@ export function SpeakerRow({
   appearances,
   appearancesLoading,
   reassignTargets,
-  descriptionsExpanded,
-  onToggleDescriptions,
-  descriptions,
-  descriptionsLoading,
 }: {
   bookId: string
   speaker: Speaker
@@ -105,10 +102,6 @@ export function SpeakerRow({
   appearances: SpeakerAppearance[] | undefined
   appearancesLoading: boolean
   reassignTargets: string[]
-  descriptionsExpanded: boolean
-  onToggleDescriptions: () => void
-  descriptions: SpeakerAppearance[] | undefined
-  descriptionsLoading: boolean
 }) {
   const isNarrator = speaker.id === ''
   // Auto Split works by name, not id (see api.reattributeSpeaker), so it's
@@ -120,245 +113,282 @@ export function SpeakerRow({
   const canAutoSplit = speaker.name !== 'Narrator' && speaker.paragraphCount > 0
 
   return (
-    <li className="speaker-row">
-      <div className="speaker-row-main">
-        <span>
-          {isNarrator ? (
-            speaker.name
-          ) : (
-            <SpeakerName bookId={bookId} characterId={speaker.id} name={speaker.name} />
-          )}
-          {speaker.role && (
-            <span
-              className="speaker-role-badge"
-              title="A role label — several unnamed people of one kind, not one individual"
-            >
-              role
-            </span>
-          )}
-          {speaker.invalid && (
-            <span
-              className="speaker-invalid-badge"
-              title="Not a real speaker — attribution won't assign this name"
-            >
-              invalid
-            </span>
-          )}
-        </span>
-        <span className="muted">
-          {speaker.readyCount}/{speaker.paragraphCount} generated
-        </span>
-      </div>
+    <>
+      <li className="speaker-row">
+        <div className="speaker-row-main">
+          <span>
+            {isNarrator ? (
+              speaker.name
+            ) : (
+              <SpeakerName bookId={bookId} characterId={speaker.id} name={speaker.name} />
+            )}
+            {speaker.role && (
+              <span
+                className="speaker-role-badge"
+                title="A role label — several unnamed people of one kind, not one individual"
+              >
+                role
+              </span>
+            )}
+            {speaker.invalid && (
+              <span
+                className="speaker-invalid-badge"
+                title="Not a real speaker — attribution won't assign this name"
+              >
+                invalid
+              </span>
+            )}
+          </span>
+          <span className="muted">
+            {speaker.readyCount}/{speaker.paragraphCount} generated
+          </span>
+        </div>
 
-      {!isNarrator && (
-        <>
-          <SpeakerPronouns
-            bookId={bookId}
-            characterId={speaker.id}
-            pronouns={speaker.pronouns ?? ''}
-          />
-          <SpeakerAliases
-            bookId={bookId}
-            characterId={speaker.id}
-            aliases={speaker.aliases ?? []}
-          />
-        </>
-      )}
-      {speaker.summary && <p className="muted speaker-row-summary">{speaker.summary}</p>}
-      {speaker.refLine && (
-        <p className="muted speaker-row-refline">
-          Reference line: <em>&ldquo;{speaker.refLine}&rdquo;</em>
-        </p>
-      )}
-      {speaker.emotions && speaker.emotions.length > 0 && (
-        <SpeakerEmotions bookId={bookId} speakerName={speaker.name} emotions={speaker.emotions} />
-      )}
+        {!isNarrator && (
+          <>
+            <SpeakerPronouns
+              bookId={bookId}
+              characterId={speaker.id}
+              pronouns={speaker.pronouns ?? ''}
+            />
+            <SpeakerAliases
+              bookId={bookId}
+              characterId={speaker.id}
+              aliases={speaker.aliases ?? []}
+            />
+          </>
+        )}
+        {speaker.summary && <p className="muted speaker-row-summary">{speaker.summary}</p>}
+        {speaker.refLine && (
+          <p className="muted speaker-row-refline">
+            Reference line: <em>&ldquo;{speaker.refLine}&rdquo;</em>
+          </p>
+        )}
+        {speaker.emotions && speaker.emotions.length > 0 && (
+          <SpeakerEmotions bookId={bookId} speakerName={speaker.name} emotions={speaker.emotions} />
+        )}
 
-      <div className="speaker-row-actions">
-        {/* The Narrator always narrates in the book's own voice (see
+        <div className="speaker-row-actions">
+          {/* The Narrator always narrates in the book's own voice (see
             backend handleListSpeakers' resolveFor) - previewing that voice
             already lives in VoicePanel/the reader, so this ref-clip box is
             only for an actual character's own assigned voice, not a
             redundant copy of the book's. */}
-        {!isNarrator && speaker.refAudioUrl && (
-          <div className="speaker-row-audio">
-            <audio controls preload="none" src={speaker.refAudioUrl} />
+          {!isNarrator && speaker.refAudioUrl && (
+            <div className="speaker-row-audio">
+              <audio controls preload="none" src={speaker.refAudioUrl} />
+            </div>
+          )}
+
+          {isNarrator ? (
+            speaker.name === 'Narrator' ? (
+              <span className="muted">
+                Narrates in the book's own voice{bookVoiceName ? ` (${bookVoiceName})` : ''}
+              </span>
+            ) : (
+              // An unregistered speaker name (e.g. "Unknown") - no character
+              // id, so none of the real-character actions below apply, but
+              // Auto Split works by name and is still offered.
+              canAutoSplit && (
+                <button
+                  className="icon-action-button"
+                  onClick={onAutoSplit}
+                  disabled={autoSplitting}
+                  title={
+                    autoSplitting
+                      ? 'Auto Split in progress…'
+                      : 'Auto Split — re-judge and reassign every line currently attributed to this speaker to whichever real character, Narrator, or Unknown actually speaks it'
+                  }
+                >
+                  <RiScissorsCutLine className={autoSplitting ? 'spin' : undefined} />
+                </button>
+              )
+            )
+          ) : (
+            <>
+              <button
+                className="icon-action-button"
+                onClick={onCharacterize}
+                disabled={characterizing}
+                title={
+                  characterizing
+                    ? 'Regenerating characterization…'
+                    : "Regenerate characterization — re-describe this character's voice from their dialogue, and invalidate their assigned voice so it's rebuilt fresh next time it's needed"
+                }
+              >
+                <RiUserHeartLine className={characterizing ? 'spin' : undefined} />
+              </button>
+              {!speaker.voicePresetId && (
+                <button
+                  className="icon-action-button"
+                  onClick={onGenerateVoice}
+                  disabled={generatingVoice}
+                  title={
+                    generatingVoice
+                      ? 'Generating…'
+                      : "Generate voice — characterize and create this character's voice now, instead of waiting until their dialogue is next generated"
+                  }
+                >
+                  <RiUserVoiceLine className={generatingVoice ? 'spin' : undefined} />
+                </button>
+              )}
+              <button
+                className={'icon-action-button' + (customizing ? ' icon-action-button-active' : '')}
+                onClick={onToggleCustomize}
+                title="Customize voice"
+              >
+                <RiEqualizerLine />
+              </button>
+              <button className="text-button" onClick={onToggleAppearances}>
+                {expanded ? 'Hide appearances' : 'View appearances'}
+              </button>
+              {canAutoSplit && (
+                <button
+                  className="icon-action-button"
+                  onClick={onAutoSplit}
+                  disabled={autoSplitting}
+                  title={
+                    autoSplitting
+                      ? 'Auto Split in progress…'
+                      : "Auto Split — this character isn't a real, distinct individual: re-judge and reassign every line currently attributed to them to whichever real character, Narrator, or Unknown actually speaks it"
+                  }
+                >
+                  <RiScissorsCutLine className={autoSplitting ? 'spin' : undefined} />
+                </button>
+              )}
+              <button
+                className={'icon-action-button' + (merging ? ' icon-action-button-active' : '')}
+                onClick={onToggleMerge}
+                title="Merge into another speaker"
+              >
+                <RiGitMergeLine />
+              </button>
+              <button
+                className={
+                  'icon-action-button' + (speaker.role ? ' icon-action-button-active' : '')
+                }
+                onClick={onToggleRole}
+                disabled={togglingRole}
+                title={
+                  speaker.role
+                    ? 'Marked as a role — click to treat this name as one individual again'
+                    : 'Mark as a role — a label for several unnamed people of one kind ("Guard", "Woman"), not one individual'
+                }
+              >
+                <RiGroupLine />
+              </button>
+              <button
+                className={
+                  'icon-action-button' + (speaker.invalid ? ' icon-action-button-active' : '')
+                }
+                onClick={onToggleInvalid}
+                disabled={togglingInvalid}
+                title={
+                  speaker.invalid
+                    ? 'Marked invalid — click to allow attribution to assign this name again'
+                    : "Mark invalid — not a real speaker; attribution won't create or assign this name again (existing lines stay until Auto Split)"
+                }
+              >
+                <RiForbidLine />
+              </button>
+              <button
+                className="icon-action-button"
+                onClick={onDelete}
+                disabled={deleting}
+                title="Delete this character — their lines revert to Unknown, and their voice is removed"
+              >
+                <RiDeleteBinLine />
+              </button>
+            </>
+          )}
+        </div>
+
+        {merging && (
+          <MergeCharacterPanel targets={mergeTargets} onMerge={onMerge} onCancel={onToggleMerge} />
+        )}
+
+        {customizing && (
+          <CharacterVoiceEditor
+            bookId={bookId}
+            speaker={speaker}
+            builtins={builtins}
+            customs={customs}
+            narratorPresetId={narratorPresetId}
+            bookCloneModel={bookCloneModel}
+            onDone={onToggleCustomize}
+          />
+        )}
+
+        {expanded && (
+          <div className="speaker-appearances">
+            {appearancesLoading && <p className="muted">Loading…</p>}
+            {appearances?.length === 0 && <p className="muted">No appearances found.</p>}
+            {appearances?.map((a) => (
+              <AppearanceRow
+                key={`${a.bookId}:${a.chapterIdx}:${a.paragraphIdx}`}
+                appearance={a}
+                reassignTargets={reassignTargets}
+              />
+            ))}
           </div>
         )}
+      </li>
+      {speaker.variants?.map((v) => (
+        <SpeakerVariantRow key={v.number} bookId={bookId} speakerName={speaker.name} variant={v} />
+      ))}
+    </>
+  )
+}
 
-        {isNarrator ? (
-          speaker.name === 'Narrator' ? (
-            <span className="muted">
-              Narrates in the book's own voice{bookVoiceName ? ` (${bookVoiceName})` : ''}
-            </span>
-          ) : (
-            // An unregistered speaker name (e.g. "Unknown") - no character
-            // id, so none of the real-character actions below apply, but
-            // Auto Split works by name and is still offered.
-            canAutoSplit && (
-              <button
-                className="icon-action-button"
-                onClick={onAutoSplit}
-                disabled={autoSplitting}
-                title={
-                  autoSplitting
-                    ? 'Auto Split in progress…'
-                    : 'Auto Split — re-judge and reassign every line currently attributed to this speaker to whichever real character, Narrator, or Unknown actually speaks it'
-                }
-              >
-                <RiScissorsCutLine className={autoSplitting ? 'spin' : undefined} />
-              </button>
-            )
-          )
-        ) : (
-          <>
-            <button
-              className="icon-action-button"
-              onClick={onCharacterize}
-              disabled={characterizing}
-              title={
-                characterizing
-                  ? 'Regenerating characterization…'
-                  : "Regenerate characterization — re-describe this character's voice from their dialogue, and invalidate their assigned voice so it's rebuilt fresh next time it's needed"
-              }
-            >
-              <RiUserHeartLine className={characterizing ? 'spin' : undefined} />
-            </button>
-            {!speaker.voicePresetId && (
-              <button
-                className="icon-action-button"
-                onClick={onGenerateVoice}
-                disabled={generatingVoice}
-                title={
-                  generatingVoice
-                    ? 'Generating…'
-                    : "Generate voice — characterize and create this character's voice now, instead of waiting until their dialogue is next generated"
-                }
-              >
-                <RiUserVoiceLine className={generatingVoice ? 'spin' : undefined} />
-              </button>
-            )}
-            <button
-              className={'icon-action-button' + (customizing ? ' icon-action-button-active' : '')}
-              onClick={onToggleCustomize}
-              title="Customize voice"
-            >
-              <RiEqualizerLine />
-            </button>
-            <button className="text-button" onClick={onToggleAppearances}>
-              {expanded ? 'Hide appearances' : 'View appearances'}
-            </button>
-            <button className="text-button" onClick={onToggleDescriptions}>
-              {descriptionsExpanded ? 'Hide descriptions' : 'View descriptions'}
-            </button>
-            {canAutoSplit && (
-              <button
-                className="icon-action-button"
-                onClick={onAutoSplit}
-                disabled={autoSplitting}
-                title={
-                  autoSplitting
-                    ? 'Auto Split in progress…'
-                    : "Auto Split — this character isn't a real, distinct individual: re-judge and reassign every line currently attributed to them to whichever real character, Narrator, or Unknown actually speaks it"
-                }
-              >
-                <RiScissorsCutLine className={autoSplitting ? 'spin' : undefined} />
-              </button>
-            )}
-            <button
-              className={'icon-action-button' + (merging ? ' icon-action-button-active' : '')}
-              onClick={onToggleMerge}
-              title="Merge into another speaker"
-            >
-              <RiGitMergeLine />
-            </button>
-            <button
-              className={'icon-action-button' + (speaker.role ? ' icon-action-button-active' : '')}
-              onClick={onToggleRole}
-              disabled={togglingRole}
-              title={
-                speaker.role
-                  ? 'Marked as a role — click to treat this name as one individual again'
-                  : 'Mark as a role — a label for several unnamed people of one kind ("Guard", "Woman"), not one individual'
-              }
-            >
-              <RiGroupLine />
-            </button>
-            <button
-              className={
-                'icon-action-button' + (speaker.invalid ? ' icon-action-button-active' : '')
-              }
-              onClick={onToggleInvalid}
-              disabled={togglingInvalid}
-              title={
-                speaker.invalid
-                  ? 'Marked invalid — click to allow attribution to assign this name again'
-                  : "Mark invalid — not a real speaker; attribution won't create or assign this name again (existing lines stay until Auto Split)"
-              }
-            >
-              <RiForbidLine />
-            </button>
-            <button
-              className="icon-action-button"
-              onClick={onDelete}
-              disabled={deleting}
-              title="Delete this character — their lines revert to Unknown, and their voice is removed"
-            >
-              <RiDeleteBinLine />
-            </button>
-          </>
-        )}
+// One numbered member of a role ("Guard 2" - backend
+// speakerRowDTO.Variants), listed in the roster as a speaker of its own
+// right after the role: its line count, the reference clip its lines clone
+// from, and its emotion variants. The role's row above carries the casting
+// they all share and the role's unnumbered lines.
+function SpeakerVariantRow({
+  bookId,
+  speakerName,
+  variant,
+}: {
+  bookId: string
+  speakerName: string
+  variant: SpeakerVariant
+}) {
+  return (
+    <li className="speaker-row">
+      <div className="speaker-row-main">
+        <span>
+          {speakerName} {variant.number}
+          <span
+            className="speaker-role-badge"
+            title={`One of several unnamed people sharing the role “${speakerName}” - numbered within a conversation`}
+          >
+            role
+          </span>
+        </span>
+        <span className="muted">
+          {variant.paragraphCount} {variant.paragraphCount === 1 ? 'line' : 'lines'}
+        </span>
       </div>
-
-      {merging && (
-        <MergeCharacterPanel targets={mergeTargets} onMerge={onMerge} onCancel={onToggleMerge} />
-      )}
-
-      {customizing && (
-        <CharacterVoiceEditor
+      {variant.emotions && variant.emotions.length > 0 && (
+        <SpeakerEmotions
           bookId={bookId}
-          speaker={speaker}
-          builtins={builtins}
-          customs={customs}
-          narratorPresetId={narratorPresetId}
-          bookCloneModel={bookCloneModel}
-          onDone={onToggleCustomize}
+          speakerName={speakerName}
+          speakerIndex={variant.number}
+          emotions={variant.emotions}
         />
       )}
-
-      {expanded && (
-        <div className="speaker-appearances">
-          {appearancesLoading && <p className="muted">Loading…</p>}
-          {appearances?.length === 0 && <p className="muted">No appearances found.</p>}
-          {appearances?.map((a) => (
-            <AppearanceRow
-              key={`${a.bookId}:${a.chapterIdx}:${a.paragraphIdx}`}
-              appearance={a}
-              reassignTargets={reassignTargets}
-            />
-          ))}
-        </div>
-      )}
-
-      {descriptionsExpanded && (
-        <div className="speaker-appearances">
-          {descriptionsLoading && <p className="muted">Loading…</p>}
-          {descriptions?.length === 0 && (
-            <p className="muted">
-              No descriptions found yet — description-tagging runs automatically after a full,
-              uninterrupted "Attribute speakers" pass, or can be re-run per chapter above.
-            </p>
-          )}
-          {descriptions?.map((d, i) => (
-            <DescriptionRow
-              key={i}
-              description={d}
-              characterName={speaker.name}
-              reassignTargets={reassignTargets}
-            />
-          ))}
-        </div>
-      )}
+      <div className="speaker-row-actions">
+        {variant.refAudioUrl ? (
+          <div className="speaker-row-audio">
+            <audio controls preload="none" src={variant.refAudioUrl} />
+          </div>
+        ) : (
+          <span className="muted">
+            Their voice renders the first time one of these lines generates
+          </span>
+        )}
+      </div>
     </li>
   )
 }
@@ -558,14 +588,17 @@ function SpeakerPronouns({
 // count, a play button once the variant clip exists, and a regenerate
 // button (re-renders the variant and resets those lines' audio - see
 // api.regenerateVariant). A pending variant renders by itself the first
-// time one of its lines generates.
+// time one of its lines generates. With speakerIndex, the list is one
+// numbered member of a role's (SpeakerVariantRow).
 function SpeakerEmotions({
   bookId,
   speakerName,
+  speakerIndex,
   emotions,
 }: {
   bookId: string
   speakerName: string
+  speakerIndex?: number
   emotions: SpeakerEmotion[]
 }) {
   const regenerate = useRegenerateVariant(bookId)
@@ -593,7 +626,7 @@ function SpeakerEmotions({
   const runRegenerate = (emotion: string) => {
     setError(null)
     regenerate.mutate(
-      { speaker: speakerName, emotion },
+      { speaker: speakerName, emotion, speakerIndex },
       {
         onSuccess: () => setVersions((v) => ({ ...v, [emotion]: Date.now() })),
         onError: (err) =>

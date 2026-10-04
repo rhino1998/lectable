@@ -165,12 +165,12 @@ internal fun PronunciationStrikeIcon(color: Color) {
     }
 }
 
-// Which of the three broad narration roles a paragraph segment plays in annotations mode -
+// Which narration role a paragraph segment plays in annotations mode -
 // mirrors frontend's ReaderPage.tsx annotationKind exactly, computed client-side from
-// isQuote/describesCharacters rather than sent by the backend as its own field. isQuote (not
+// isQuote rather than sent by the backend as its own field. isQuote (not
 // speaker being set) is what marks a segment as dialogue - an unattributed quote still has
 // speaker == "" but is dialogue all the same.
-internal enum class AnnotationKind { NARRATOR, SPEAKER, DESCRIPTION }
+internal enum class AnnotationKind { NARRATOR, SPEAKER }
 
 // A scare-quoted segment is structurally still IsQuote, but isn't actually spoken aloud (see
 // backend store.Paragraph.ScareQuote) - it colors as plain narrator text, same as frontend's own
@@ -179,6 +179,5 @@ internal enum class AnnotationKind { NARRATOR, SPEAKER, DESCRIPTION }
 // narrator color rather than replacing it with the speaker one.
 internal fun annotationKind(p: ParagraphDto): AnnotationKind = when {
     p.isQuote && !p.scareQuote -> AnnotationKind.SPEAKER
-    p.describesCharacters.isNotEmpty() -> AnnotationKind.DESCRIPTION
     else -> AnnotationKind.NARRATOR
 }

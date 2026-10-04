@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.Lightbulb
 import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Spellcheck
@@ -275,7 +274,7 @@ internal fun SpeakerPickerSheet(
     // The live series roster (ReaderUiState.characters) - null until it has arrived.
     characters: List<CharacterNameDto>?,
     currentSpeaker: String,
-    // Everyone who speaks or is described in this segment's own chapter - see
+    // Everyone who speaks in this segment's own chapter - see
     // chapterCharacterNames. Listed first, under "This chapter", ahead of the whole roster.
     chapterNames: Set<String>,
     onSelect: (name: String) -> Unit,
@@ -323,67 +322,6 @@ private fun SpeakerRow(name: String, currentSpeaker: String, onSelect: (String) 
         if (name == currentSpeaker) {
             Icon(Icons.Filled.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
         }
-    }
-}
-
-/** [SpeakerPickerSheet]'s own counterpart for the "Describes: X" long-press entry - moves the
- *  targeted segment(s) off [fromName]'s own describes-list and onto a different character's
- *  instead, mirroring the web Speakers page's `DescriptionRow`/frontend ReaderPage's own
- *  annotations-view "Reassign description" context menu (see ReaderViewModel
- *  .reassignDescription). "Remove" always leads the list (clears the description entirely,
- *  describing no one - same as [SpeakerPickerSheet]'s "Narrator" entry clearing attribution),
- *  followed by every other known character except [fromName] itself. An empty [fromName] is
- *  annotations mode's "Mark as description" instead: plain narration gets tagged, no "Remove".
- *  Reuses the same roster
- *  fetch [SpeakerPickerSheet] does - descriptions and dialogue share one character roster. */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-internal fun DescriptionPickerSheet(
-    onDismiss: () -> Unit,
-    // See SpeakerPickerSheet's own characters.
-    characters: List<CharacterNameDto>?,
-    fromName: String,
-    // See SpeakerPickerSheet's own chapterNames.
-    chapterNames: Set<String>,
-    onSelect: (targetName: String) -> Unit,
-) {
-    val loaded = characters != null
-    val (local, all) = remember(characters, chapterNames, fromName) { pickerSections(characters.orEmpty(), chapterNames, exclude = fromName) }
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        LazyColumn(modifier = Modifier.padding(bottom = 24.dp)) {
-            item {
-                Text(
-                    if (fromName.isEmpty()) "Mark as description of" else "Reassign description of \"$fromName\"",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
-            }
-            if (!loaded) {
-                item { CircularProgressIndicator(modifier = Modifier.padding(24.dp)) }
-            } else {
-                if (fromName.isNotEmpty()) item { DescriptionTargetRow("Remove", onSelect = { onSelect("") }) }
-                if (local.isNotEmpty()) {
-                    item { VoiceSectionHeader("This chapter") }
-                    items(local, key = { "local-$it" }) { name -> DescriptionTargetRow(name, onSelect = { onSelect(name) }) }
-                    item { VoiceSectionHeader("All characters") }
-                }
-                items(all, key = { "all-$it" }) { name -> DescriptionTargetRow(name, onSelect = { onSelect(name) }) }
-            }
-        }
-    }
-}
-
-@Composable
-private fun DescriptionTargetRow(label: String, onSelect: () -> Unit) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onSelect)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyLarge)
     }
 }
 
@@ -842,7 +780,6 @@ internal val ChapterPass.icon: ImageVector
         ChapterPass.SCARE_QUOTES -> Icons.Filled.FormatQuote
         ChapterPass.ATTRIBUTION -> Icons.Filled.RecordVoiceOver
         ChapterPass.AROUND_EDITS -> Icons.Filled.TaskAlt
-        ChapterPass.DESCRIPTIONS -> Icons.Filled.Person
         ChapterPass.DIRECTIONS -> Icons.Filled.Mood
         ChapterPass.PRONUNCIATION -> Icons.Filled.Spellcheck
         ChapterPass.AMBIENCE -> Icons.Filled.MusicNote

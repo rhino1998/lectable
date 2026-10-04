@@ -9,7 +9,6 @@ import {
 } from 'react'
 import { RiEmotionNormalLine } from 'react-icons/ri'
 import {
-  useSetParagraphDescription,
   useSetParagraphEmotion,
   useSetParagraphQuote,
   useSetParagraphScareQuote,
@@ -27,8 +26,7 @@ export interface ParagraphContextMenuHandle {
 
 // The reader's right-click menu (annotations view only): reassign a
 // dialogue line's speaker, mark/unmark it as a scare quote, override its
-// emotion, reassign a description paragraph, or mark plain narration as
-// describing someone. Split out of ReaderPage
+// emotion, or mark plain narration as dialogue. Split out of ReaderPage
 // with an imperative open() (the same shape as AnnotationTooltip) so
 // opening and positioning the menu re-renders only this component, not the
 // reader's whole loaded paragraph list. `speakers` backs the "reassign
@@ -46,7 +44,6 @@ export const ParagraphContextMenu = forwardRef<
   }
 >(({ bookId, chapters, speakers, onError }, ref) => {
   const setParagraphSpeaker = useSetParagraphSpeaker(bookId)
-  const setParagraphDescription = useSetParagraphDescription(bookId)
   const setParagraphScareQuote = useSetParagraphScareQuote(bookId)
   const setParagraphQuote = useSetParagraphQuote(bookId)
   const setParagraphEmotion = useSetParagraphEmotion(bookId)
@@ -55,7 +52,6 @@ export const ParagraphContextMenu = forwardRef<
     paragraphIdx: number
     isQuote: boolean
     currentSpeaker: string
-    describesCharacters: string[]
     scareQuote: boolean
     emotion: string
     x: number
@@ -79,7 +75,6 @@ export const ParagraphContextMenu = forwardRef<
           paragraphIdx: p.idx,
           isQuote: !!p.isQuote,
           currentSpeaker: p.speaker ?? '',
-          describesCharacters: p.describesCharacters ?? [],
           scareQuote: !!p.scareQuote,
           emotion: p.emotion ?? '',
           x,
@@ -136,30 +131,9 @@ export const ParagraphContextMenu = forwardRef<
     [contextMenu, setParagraphSpeaker, onError],
   )
 
-  // reassignSpeaker's own counterpart for a *description* paragraph - moves
-  // it off `from`'s own describes-list and onto `to`'s instead ("" clears
-  // it, describing no one), leaving any other character this same
-  // paragraph also describes untouched (a description paragraph can name
-  // more than one - see the menu's own per-name rows below).
-  const reassignDescription = useCallback(
-    (from: string, to: string) => {
-      if (!contextMenu) return
-      onError(null)
-      setParagraphDescription.mutate(
-        { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, from, to },
-        {
-          onError: (err) =>
-            onError(err instanceof ApiError ? err.message : 'Could not reassign this description'),
-        },
-      )
-      setContextMenu(null)
-    },
-    [contextMenu, setParagraphDescription, onError],
-  )
-
   // Live "mark/unmark as scare quote" toggle - see
   // handleSetParagraphScareQuote's own doc comment for why this (unlike
-  // reassignSpeaker/reassignDescription above) immediately invalidates the
+  // reassignSpeaker above) immediately invalidates the
   // paragraph's own audio server-side rather than requiring a separate
   // explicit regenerate.
   const toggleScareQuote = useCallback(() => {
@@ -221,10 +195,9 @@ export const ParagraphContextMenu = forwardRef<
     [contextMenu, setParagraphEmotion, onError],
   )
 
-  // Everyone who speaks or is described in the clicked paragraph's own
-  // chapter - listed first in both reassign branches, since a misattributed
-  // line or description usually belongs to someone already in the scene.
-  // Mirrors android's SpeakerPickerSheet/DescriptionPickerSheet.
+  // Everyone who speaks in the clicked paragraph's own chapter - listed
+  // first, since a misattributed line usually belongs to someone already
+  // in the scene. Mirrors android's SpeakerPickerSheet.
   const chapterNames = useMemo(
     () => chapterCharacterNames(contextMenu ? chapters.get(contextMenu.chapterIdx) : undefined),
     [contextMenu, chapters],
@@ -301,47 +274,10 @@ export const ParagraphContextMenu = forwardRef<
             onPick={reassignSpeaker}
           />
         </>
-      ) : contextMenu.describesCharacters.length > 0 ? (
-        <>
-          <button className="speaker-context-menu-item" onClick={toggleQuote}>
-            Mark as dialogue
-          </button>
-          <div className="speaker-context-menu-title">Reassign description</div>
-          {contextMenu.describesCharacters.map((from) => (
-            <div key={from} className="speaker-context-menu-group">
-              <div className="speaker-context-menu-current">
-                Describes: <strong>{from}</strong>
-              </div>
-              <button
-                className="speaker-context-menu-item"
-                onClick={() => reassignDescription(from, '')}
-              >
-                Remove
-              </button>
-              <TargetSections
-                sections={pickerSections(rosterNames, chapterNames, from)}
-                keyPrefix={`describes-${from}`}
-                isCurrent={() => false}
-                onPick={(name) => reassignDescription(from, name)}
-              />
-            </div>
-          ))}
-        </>
       ) : (
-        <>
-          <button className="speaker-context-menu-item" onClick={toggleQuote}>
-            Mark as dialogue
-          </button>
-          {/* Plain narration: tag it as describing someone (from '' just
-              adds the name - see handleSetParagraphDescription). */}
-          <div className="speaker-context-menu-title">Mark as description of</div>
-          <TargetSections
-            sections={speakerTargets}
-            keyPrefix="describe-new"
-            isCurrent={() => false}
-            onPick={(name) => reassignDescription('', name)}
-          />
-        </>
+        <button className="speaker-context-menu-item" onClick={toggleQuote}>
+          Mark as dialogue
+        </button>
       )}
     </div>
   )

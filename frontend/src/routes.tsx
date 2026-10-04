@@ -6,6 +6,7 @@ import { SFXPage } from './pages/SFXPage'
 import { LLMPage } from './pages/LLMPage'
 import { SpeakersPage } from './pages/SpeakersPage'
 import { JobsPage } from './pages/JobsPage'
+import { SettingsPage } from './pages/SettingsPage'
 import { ExportPage } from './pages/ExportPage'
 import { RootLayout } from './components/RootLayout'
 
@@ -59,6 +60,12 @@ const jobsRoute = createRoute({
   component: JobsPage,
 })
 
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings',
+  component: SettingsPage,
+})
+
 const routeTree = rootRoute.addChildren([
   libraryRoute,
   voicesRoute,
@@ -68,6 +75,7 @@ const routeTree = rootRoute.addChildren([
   speakersRoute,
   exportRoute,
   jobsRoute,
+  settingsRoute,
 ])
 
 export const router = createRouter({ routeTree })

@@ -1,10 +1,6 @@
 import { useState } from 'react'
 import { RiRefreshLine } from 'react-icons/ri'
-import {
-  useRegenerateParagraph,
-  useSetParagraphDescription,
-  useSetParagraphSpeaker,
-} from '../../api/queries'
+import { useRegenerateParagraph, useSetParagraphSpeaker } from '../../api/queries'
 import { ApiError } from '../../api/client'
 import type { SpeakerAppearance } from '../../api/types'
 
@@ -110,85 +106,6 @@ export function AppearanceRow({
           ⚠
         </span>
       )}
-      {reassignError && (
-        <span className="error-text" title={reassignError}>
-          ⚠
-        </span>
-      )}
-    </div>
-  )
-}
-
-// One line from "View descriptions". Unlike AppearanceRow, this paragraph
-// doesn't belong to characterName as its *speaker* (it's narration *about*
-// them, almost always still attributed to Narrator as its speaker - see
-// backend Store.ParagraphsDescribing's own doc comment) - so "reassign"
-// here means moving this paragraph off characterName's own describes-list
-// and onto a different character's instead (setParagraphDescription), not
-// changing who speaks it. The audio preview, when present, plays whatever
-// narrates that paragraph today (the book's own voice, per the same
-// resolution).
-export function DescriptionRow({
-  description,
-  characterName,
-  reassignTargets,
-}: {
-  description: SpeakerAppearance
-  characterName: string
-  reassignTargets: string[]
-}) {
-  const reassign = useSetParagraphDescription(description.bookId)
-  const [reassigned, setReassigned] = useState(false)
-  const [reassignError, setReassignError] = useState<string | null>(null)
-
-  const runReassign = (targetName: string) => {
-    setReassignError(null)
-    reassign.mutate(
-      {
-        chapterIdx: description.chapterIdx,
-        paragraphIdx: description.paragraphIdx,
-        from: characterName,
-        to: targetName,
-      },
-      {
-        onSuccess: () => setReassigned(true),
-        onError: (err) =>
-          setReassignError(
-            err instanceof ApiError ? err.message : 'Could not reassign this description',
-          ),
-      },
-    )
-  }
-
-  // Same "stays visible as done rather than silently reappearing enabled"
-  // reasoning as AppearanceRow's own reassigned flag - this row disappears
-  // from the list once the descriptions topic pushes the change.
-  return (
-    <div className="speaker-appearance-item">
-      <div className="speaker-appearance-item-main">
-        <span className="book-search-result-chapter">
-          {description.bookTitle} · {description.chapterTitle}
-        </span>
-        <span className="book-search-result-snippet">{description.text}</span>
-      </div>
-      {description.audioUrl && <audio controls preload="none" src={description.audioUrl} />}
-      <select
-        value=""
-        disabled={reassign.isPending || reassigned}
-        onChange={(e) => {
-          if (e.target.value) runReassign(e.target.value)
-        }}
-        title="Reassign this description to a different character"
-      >
-        <option value="" disabled>
-          {reassigned ? 'Reassigned' : 'Reassign to…'}
-        </option>
-        {reassignTargets.map((name) => (
-          <option key={name} value={name}>
-            {name}
-          </option>
-        ))}
-      </select>
       {reassignError && (
         <span className="error-text" title={reassignError}>
           ⚠

@@ -32,6 +32,10 @@ type BlockInput struct {
 	IsQuote bool
 	// Emphasis: BlockText only - see Paragraph.Emphasis.
 	Emphasis []pronounce.Substitution
+	// Speaker: BlockText only - see Paragraph.SourceSpeaker.
+	Speaker string
+	// Label: BlockText only - see Paragraph.Label.
+	Label string
 }
 
 type ChapterInput struct {
@@ -136,8 +140,8 @@ func insertChapterBlocks(tx *notifyTx, chapterID string, blocks []BlockInput) (i
 				return nil, fmt.Errorf("encode emphasis: %w", err)
 			}
 			_, err = tx.Exec(
-				`INSERT INTO paragraphs (id, chapter_id, idx, position, content, inline, is_quote, emphasis) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				NewID(), chapterID, paragraphIdx, position, block.Text, block.Inline, block.IsQuote, encodedEmphasis,
+				`INSERT INTO paragraphs (id, chapter_id, idx, position, content, inline, is_quote, emphasis, speaker, source_speaker, label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				NewID(), chapterID, paragraphIdx, position, block.Text, block.Inline, block.IsQuote, encodedEmphasis, block.Speaker, block.Speaker, block.Label,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("insert paragraph: %w", err)

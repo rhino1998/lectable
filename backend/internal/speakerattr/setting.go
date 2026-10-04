@@ -107,8 +107,19 @@ func (s *BookSetting) castingLines() string {
 	if s.IsZero() {
 		return ""
 	}
+	// A mixed cast's accents ("mixed: British, General American") are
+	// shown as the first with the rest aside: shown as written, the
+	// casting came back "a mixed British-General American accent".
+	accent := s.Accent
+	if rest, ok := strings.CutPrefix(accent, "mixed:"); ok {
+		first, others, _ := strings.Cut(rest, ",")
+		accent = strings.TrimSpace(first)
+		if others = strings.TrimSpace(others); others != "" {
+			accent += " (some of the cast: " + others + ")"
+		}
+	}
 	var sb strings.Builder
-	for _, kv := range [][2]string{{"era", s.Era}, {"place", s.Place}, {"main characters' accent", s.Accent}, {"genre", s.Genre}} {
+	for _, kv := range [][2]string{{"era", s.Era}, {"place", s.Place}, {"main characters' accent", accent}, {"genre", s.Genre}} {
 		if kv[1] != "" {
 			fmt.Fprintf(&sb, "- %s: %s\n", kv[0], kv[1])
 		}
@@ -266,6 +277,10 @@ var idiomWords = []struct {
 }{
 	{"British", []string{"mate", "bloody", "arse", "bloke", "mum", "innit", "cheers", "sodding", "bugger", "quid", "knackered", "rubbish", "whilst", "fortnight", "telly", "wanker", "oi", "cuppa", "bollocks", "lad", "lads"}},
 	{"American", []string{"y'all", "mom", "dude", "buddy", "gotten", "awesome", "ass", "asshole", "folks", "candy", "apartment", "sidewalk", "vacation"}},
+	// Counted so one character's dialect shows against the cast's: Captain
+	// West says "aye" 7 times and "bairn" in 112 lines, and was cast
+	// General British.
+	{"Scottish or Northern English", []string{"aye", "bairn", "bairns", "wee", "lass", "lassie", "laddie", "och", "nae", "dinnae", "cannae", "didnae", "ken", "canny"}},
 }
 
 // IdiomCounts is how often each idiomWords word appears in a book's

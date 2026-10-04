@@ -32,7 +32,6 @@ import {
   type CustomVoicePreset,
   type DesignModel,
 } from '../api/types'
-import { BookSettingsFields } from '../components/speakers/SpeakerSettings'
 import { VoiceEditorForm } from '../components/VoiceEditorForm'
 import { DEFAULT_REF_TEXT, randomSeed } from '../utils/voiceRecipe'
 import { withCacheBust } from '../utils/cacheBust'
@@ -215,17 +214,13 @@ export function VoicesPage() {
   const bumpAudioVersion = (id: string) =>
     setAudioVersion((v) => ({ ...v, [id]: (v[id] ?? 0) + 1 }))
 
-  // The default voice and clone model ride in the same value as the other
-  // book defaults (BookSettingsFields below), so every save sends the lot.
-  const updateDefaults = (
-    patch: { presetId: string; instruct: string } | { cloneModel: string },
-  ) => {
+  // The default voice rides in the same value as the other defaults for
+  // new books (the Settings page), so a save sends the lot.
+  const selectDefault = (p: { id: string; instruct: string }) => {
     const current = defaultVoiceQuery.data
     if (!current) return
-    updateDefaultVoice.mutate({ ...current, ...patch })
+    updateDefaultVoice.mutate({ ...current, presetId: p.id, instruct: p.instruct })
   }
-  const selectDefault = (p: { id: string; instruct: string }) =>
-    updateDefaults({ presetId: p.id, instruct: p.instruct })
 
   const [target, setTarget] = useState<FormTarget>(null)
   const [name, setName] = useState('')
@@ -478,38 +473,6 @@ export function VoicesPage() {
 
       {target === null && (
         <>
-          <label>
-            Default cloning model for new books
-            <select
-              value={defaultCloneModel}
-              onChange={(e) => updateDefaults({ cloneModel: e.target.value })}
-              disabled={!defaultVoiceQuery.data || updateDefaultVoice.isPending}
-            >
-              {CLONE_MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="muted">
-            Each book picks its own cloning model in its voice settings. This only sets what a newly
-            added book starts with. Voices don't have a cloning model of their own, and previews
-            here start on this default.
-          </p>
-
-          <h2>Defaults for new books</h2>
-          <p className="muted">
-            What a newly added book starts with. Each book has the same switches on its Speakers
-            page; changing these doesn't touch existing books.
-          </p>
-          <BookSettingsFields
-            settings={defaultVoiceQuery.data}
-            pending={updateDefaultVoice.isPending}
-            cloneModel={defaultCloneModel}
-            onChange={(next) => updateDefaultVoice.mutate(next)}
-          />
-
           <h2>Built-in</h2>
           {builtinsQuery.isLoading && <p>Loading…</p>}
           {builtinsQuery.isError && <p className="error-text">Could not load built-in voices.</p>}

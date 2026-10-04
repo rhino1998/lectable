@@ -151,7 +151,7 @@ type llmBackend interface {
 
 // Client is a thin caller-side wrapper around an llmBackend: batching,
 // prompt-building, JSON-parsing, and malformed-response retry all live
-// here (see AttributeChapter/DescribeChapter/CharacterizeVoice/
+// here (see AttributeChapter/CharacterizeVoice/
 // EmotionChapter/ResolvePronunciation and generateAndParse below) -
 // the model itself is neither loaded nor run by this package any more (see
 // the package doc comment).
@@ -256,7 +256,7 @@ const maxGenerateRetries = 2
 // retryTempBump is the sampling temperature substituted for a batch's own
 // temp on retry attempt 1 (the first retry), but only when that batch
 // normally runs at temp 0 (greedy/deterministic) - see retryParse's own
-// doc comment. A batch parsed via parseAttributions/parseDescribeItems
+// doc comment. A batch parsed via parseAttributions
 // runs at temp 0 specifically because greedy decoding
 // suits a structured-JSON task better than sampling does (less
 // hallucination, more consistent formatting) - confirmed in production,
@@ -269,12 +269,12 @@ const maxGenerateRetries = 2
 // up temp 0's benefits on the common, successful-first-try path. Kept
 // low - this is meant to nudge a deterministic call off whichever exact
 // token sequence caused the failure, not turn a structured-JSON task into
-// a genuinely creative one. A batch that already samples above 0
-// (CharacterizeVoice, temp 0.3) is left at its own temp on retry instead:
-// llama.cpp's own sampler already draws a fresh random seed per call
-// there (see llamacpp-go/llamacpp/sampler.go's Seed doc comment -
-// SamplerParams.Seed 0 means LLAMA_DEFAULT_SEED, entropy-seeded), so
-// every retry already has natural variance without help.
+// a genuinely creative one. A call that already samples above
+// retryTempBump is left at its own temp on retry instead: llama.cpp's own
+// sampler already draws a fresh random seed per call there (see
+// llamacpp-go/llamacpp/sampler.go's Seed doc comment - SamplerParams.Seed
+// 0 means LLAMA_DEFAULT_SEED, entropy-seeded), so every retry already has
+// natural variance without help.
 //
 // Escalates by another full retryTempBump on each attempt beyond the
 // first (attempt 2 gets 2*retryTempBump, and so on, via generateAndParse's
@@ -292,7 +292,7 @@ const maxGenerateRetries = 2
 //
 // That original case was a (since-removed) speech-direction batch; this
 // escalation applies to whichever batches are still JSON-parsed
-// (attribution, description, characterization).
+// (attribution, characterization).
 const retryTempBump = 0.2
 
 // generateAndParse calls c.generate, then parse on its own output - a thin
@@ -411,7 +411,7 @@ const batchContextLines = 3
 // reasoning trace - see the NoThink doc comment.
 const attributeMaxTokens = 2048
 
-// jsonPassMaxTokens bounds the JSON-array replies DescribeChapter and
+// jsonPassMaxTokens bounds the JSON-array replies
 // ScareQuoteChapter parse - the largest ever logged from either was ~8KB
 // (~2.5K tokens).
 const jsonPassMaxTokens = 4096
@@ -427,20 +427,9 @@ const jsonPassMaxTokens = 4096
 // a paragraph the model dropped or that failed to parse is simply absent
 // from the result rather than failing the whole call.
 //
-// See DescribeChapter for the separate, single-purpose call that tags which
-// narration paragraphs describe a character - folding that into this same
-// call (asking the model for both a speaker judgment and a description
-// judgment per line in one pass) was tried and measurably hurt precision
-// (see cmd/benchattr's own -describe-only flag and its git history): asking
-// two judgments per line across a large batch made the model lapse into
-// blanket-tagging nearly every line touching a salient character as a
-// "description," rather than exercising real per-line judgment. Isolating
-// it into its own smaller-batched, single-purpose call fixed that.
-//
 // knownDescriptions (nil-safe: a nil or missing entry just means no blurb)
 // pairs some of knownCharacters' own names with a short identifying blurb -
-// typically DescribeChapter's own earlier output for them (see
-// httpapi.knownCharacterDescriptions, the only real caller) - included in
+// what the chapter's summary notes call them (Roster.forChapter) - included in
 // the "Known characters" prompt line specifically so a narration tag that
 // refers to someone by role/epithet rather than name ("the captain said,"
 // "the old orc grunted") has something to match against: the blurb often
@@ -779,52 +768,6 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 	return canon, indexes, roleNames, pronouns, remaining, err
 }
 
-// cleanDescribes trims and dedupes a raw "describes" list from one line's
-// own attribution, dropping anything that isn't a real, usable proper name:
-// blanks, the Speaker sentinels ("Narrator"/"Unknown"), and bare pronouns a
-// model might emit instead of leaving someone unnamed (see systemPrompt's
-// own "leave them out ... rather than inventing a name or using a generic
-// label/pronoun" rule, which this backstops the same way
-// normalizeBarePronoun backstops the equivalent Speaker rule). Returns nil
-// (never an empty non-nil slice) when nothing survives, so a paragraph
-// with no real description collapses to the same "no entry" shape
-// AttributeChapter's caller already treats as "describes no one".
-func cleanDescribes(raw []string) []string {
-	if len(raw) == 0 {
-		return nil
-	}
-	seen := make(map[string]bool, len(raw))
-	out := make([]string, 0, len(raw))
-	for _, name := range raw {
-		name = strings.TrimSpace(name)
-		if name == "" || name == "Narrator" || name == "Unknown" {
-			continue
-		}
-		lower := strings.ToLower(name)
-		switch lower {
-		case "i", "me", "myself", "he", "she", "they", "him", "her", "them", "his", "hers", "their":
-			continue
-		}
-		// A real proper name never starts with an article - a generic role
-		// label like "the middle-aged man" or "a woman in the crowd" does,
-		// even after heavy physical detail (a real, observed failure: the
-		// model tagged "the middle-aged man" as a describes-target for a
-		// paragraph that never gave him an actual name).
-		if strings.HasPrefix(lower, "the ") || strings.HasPrefix(lower, "a ") || strings.HasPrefix(lower, "an ") {
-			continue
-		}
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 // normalizeBarePronoun maps a raw speaker value that's just a bare
 // pronoun - first-person ("I"/"me"/"myself") or third-person ("he"/"she"/
 // "him"/"her"/"they"/"them") - back to "Unknown". systemPrompt's own "a
@@ -923,7 +866,6 @@ func canonicalizeSpeakerNames(knownCharacters []string, raw map[int]string, role
 // longer name also in the set into that longer name (see
 // canonicalizeSpeakerNames' own doc comment for that second heuristic and
 // its trade-offs) - the shared core behind canonicalizeSpeakerNames and
-// DescribeChapter's own canonicalizeDescribes.
 // roles are the known role labels: a name is never folded into one of
 // them ("Woman" is not "Refugee Woman" - a role is a type, not a person
 // whose short name that would be), and one of them is never folded into a
@@ -1626,16 +1568,6 @@ type QuoteContext struct {
 	Context string
 }
 
-// DescriptionContext is one paragraph of narration that physically or
-// personality-describes a character (see AttributionResult.Describes and
-// store.DescriptionContext, which this mirrors) - unlike QuoteContext, this
-// is narration *about* the character, not their own dialogue, so it carries
-// no separate Context field: the description text itself already is the
-// narration.
-type DescriptionContext struct {
-	Text string
-}
-
 // CastVoice is another character's existing casting (store.Character's
 // Name and Summary), shown to CharacterizeVoice so the new voice stays
 // distinguishable from the people it shares scenes with - Spire's Spite's
@@ -1660,17 +1592,6 @@ type CastVoice struct {
 // far more than 30 real appearances. A smaller cap bounds that same
 // pre-LIMIT cost, not just the prompt size.
 const maxCharacterizeQuotes = 20
-
-// maxCharacterizeDescriptions bounds how many of a character's description
-// paragraphs get pulled for characterization - matched by httpapi's own
-// maxCharacterizeDescriptions. Lower than maxCharacterizeQuotes: a
-// description paragraph typically runs several sentences (versus one quoted
-// line each), and a handful of genuine physical/personality descriptions
-// says everything this step needs - unlike dialogue, where a bigger sample
-// helps establish a consistent speaking style. Lowered alongside
-// maxCharacterizeQuotes - see its own doc comment for why (Store.
-// DescriptionsForBooks carries the same pre-LIMIT sort cost).
-const maxCharacterizeDescriptions = 10
 
 // characterizeMaxTokens bounds a characterization's generated JSON
 // response - three fields ("evidence", then "instruct", roughly 35-60
@@ -1708,13 +1629,17 @@ Accent: every character gets exactly one named accent (Scottish, Received Pronun
 - An explicit signal in the material wins over everything below, including the setting notes: a stated origin, a described accent, dialect written into their speech (dinnae, y'all, ja), foreign words they use.
 - "Origin clues" are narration sentences naming them near a nationality, language, or accent word. A nationality they are given ("a Danish archeologist") or a language they speak among their own people or under stress (swearing, praying, whispering in Danish) is an explicit origin signal: cast that country's accent speaking English. A language they merely learned, study, or talk about isn't, and a clue about someone else in the same sentence isn't theirs.
 - In a real-world setting, a name clearly from another country than the story's place (a German name in London) is a signal too, a weaker one.
-- Idiom of one national English recurring in their own lines is a signal too, even against the setting notes: British (mate, bloody, arse, bloke, oi, sodding) or American (dude, gotten, mom, y'all - which is Southern American).
+- Idiom of one national English recurring in their own lines is a signal too, even against the setting notes: British (mate, bloody, arse, bloke, oi, sodding), Scottish (aye, bairn, wee, lass, dinnae, och - Scottish unless the material places them in the north of England), or American (dude, gotten, mom, y'all - which is Southern American). "Idiom words across all their lines" counts these over everything they say, and decides it over the sample: one "aye" or "dude" in the sample is not an accent when the counts lean the other way.
 - Otherwise use the setting notes' accent for the main characters' people; when it names several (a mixed cast), use the first. With no setting accent, pick the standard accent the dialogue's idiom points to ("mate", "bloody", "arse", "reckon" read standard British). Most of a cast shares one accent - choose a different one only on a signal.
 - Slang, swearing, dropped g's, bad grammar, and being poor or rough are not regional signals: a working-class character keeps the cast's accent with a rougher, more casual register, not a new accent. Never use a Southern American accent unless the text places them in the American South. Name the accent only; don't list spelling or grammar features in "instruct".
 - Non-human kinds with no signal of their own take the genre-standard voice: dwarf - Scottish; elf - refined RP; orc/goblin - guttural Cockney; giant/troll - broad rural; dragon or demon - plummy aristocratic RP (a beastly demon growls instead); fairy - light Irish; robot/AI/construct - flat, precisely enunciated, no accent; ghost - faint, old-fashioned English. Only for that kind, and only when the material establishes it - never invent a species.
 - Non-human kinds, when established, also shape pitch and texture by size and nature: a hiss for a snake-folk, a resonant rumble for something huge, a thin quick voice for something tiny, an airy reverb for a spirit or angel.
 
 A "Note:" that the name is a ROLE label means several unnamed people shared it: cast the typical member of that type from traits that recur across lines, not one line's quirk. What happened to one of them - an injury, a described feature, a way of talking - belongs to that one person and never goes into the shared casting.
+
+"Voice clues" are narration sentences about how they sound or how old they are, mostly the narration around their own lines. One that states a lasting quality (a deep voice, a lilting accent, "her usual drawl", "his normally steady voice", an age) is direct evidence for pitch, timbre, accent and age, and outranks what you would guess from the dialogue. One about a single moment (lowered, shaking, hoarse from shouting, put on as a disguise) is not their voice. A clue can be about someone else in the same sentence - use only what is said of this character.
+
+"First mentions" is the first narration that names them, and "Statements about them" are narration sentences found by search where their name is followed by a trait. In both, a line that describes someone they are looking at or talking to is not about them, and when this character copies or remarks on another person's voice or accent, that is the other person's.
 
 "Already cast" lists the voices of other characters who share the most scenes with this one. Listeners must tell them apart by ear, so make this voice clearly different from each - in pitch, pace, or texture, not only in attitude - wherever the material leaves room. Never change gender, age group, or accent against the evidence to do it. They are other people: never reuse their wording, species, size, or traits - everything about this voice comes from this character's own material. Never mention them in "instruct" ("distinct from the British Steve"): the voice-design model reads only this one voice's description, so the difference must be in the pitch, pace, and texture you choose, not stated.
 
@@ -1768,17 +1693,30 @@ A "Note:" that the name is a ROLE label means several unnamed people shared it: 
 // user turn the same way - characterizeSystemPrompt treats it as the
 // authoritative gender signal.
 //
-// origins (see OriginClues) go on the user turn as "Origin clues".
+// evidence goes on the
+// user turn section by section: "Their dialogue" (maxCharacterizeQuotes
+// of Quotes), "First mentions", "Statements about
+// them" (see TraitStatements), "Idiom words across all their lines",
+// "Origin clues" (see OriginClues) and "Voice clues" (see VoiceClues).
+//
+// A casting that doesn't cast pronouns' gender (genderContradicts) is
+// retried with a reminder; the last attempt's is kept either way, since
+// Pronouns itself can be the thing that's wrong.
 //
 // costars (see httpapi.characterizeVoice: the characters sharing the most
 // chapters with this one who are already characterized) go on the user
 // turn as "Already cast".
-func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool, pronouns string, setting *BookSetting, quotes []QuoteContext, descriptions []DescriptionContext, origins []string, costars []CastVoice) (instruct string, refLine string, err error) {
+func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool, pronouns string, setting *BookSetting, evidence CharacterEvidence, costars []CastVoice, opts CastingOptions) (instruct string, refLine string, err error) {
+	quotes, origins, voiceClues := evidence.Quotes, evidence.Origins, evidence.VoiceClues
+	introductions, traits := evidence.Introductions, evidence.Traits
 	if len(quotes) > maxCharacterizeQuotes {
-		quotes = quotes[:maxCharacterizeQuotes]
-	}
-	if len(descriptions) > maxCharacterizeDescriptions {
-		descriptions = descriptions[:maxCharacterizeDescriptions]
+		// Evenly, not the first: the caller's sample is already spread
+		// over the character's whole run.
+		spread := make([]QuoteContext, maxCharacterizeQuotes)
+		for i := range spread {
+			spread[i] = quotes[i*len(quotes)/maxCharacterizeQuotes]
+		}
+		quotes = spread
 	}
 
 	var user strings.Builder
@@ -1802,16 +1740,31 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 			user.WriteString("\n")
 		}
 	}
-	if len(descriptions) > 0 {
-		user.WriteString("\nDescription of them:\n")
-		for _, d := range descriptions {
-			fmt.Fprintf(&user, "- %s\n", oneLine(d.Text))
+	if len(introductions) > 0 {
+		user.WriteString("\nFirst mentions:\n")
+		for _, in := range introductions {
+			fmt.Fprintf(&user, "- %s\n", oneLine(truncate(in, maxIntroductionChars)))
 		}
+	}
+	if len(traits) > 0 {
+		user.WriteString("\nStatements about them:\n")
+		for _, t := range traits {
+			fmt.Fprintf(&user, "- %s\n", oneLine(t))
+		}
+	}
+	if idioms := evidence.idiomLines(); idioms != "" {
+		fmt.Fprintf(&user, "\nIdiom words across all their lines:\n%s", idioms)
 	}
 	if len(origins) > 0 {
 		user.WriteString("\nOrigin clues:\n")
 		for _, o := range origins {
 			fmt.Fprintf(&user, "- %s\n", oneLine(o))
+		}
+	}
+	if len(voiceClues) > 0 {
+		user.WriteString("\nVoice clues:\n")
+		for _, v := range voiceClues {
+			fmt.Fprintf(&user, "- %s\n", oneLine(v))
 		}
 	}
 	// A casting that copies a co-star is retried without that co-star in
@@ -1824,7 +1777,10 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 	// are checked.
 	shown := costars
 	copied := map[string]bool{}
+	wrongGender, last := false, false
+	searched, found := false, ""
 	result, err := retryParse(func(attempt int) (string, error) {
+		last = attempt == maxGenerateRetries
 		if len(copied) > 0 {
 			shown = nil
 			if attempt < maxGenerateRetries {
@@ -1836,6 +1792,18 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 			}
 		}
 		prompt := user.String()
+		if opts.Lookup != nil {
+			// Searched once, from the material alone: a retry casts again
+			// from the same results.
+			if !searched {
+				section, err := c.lookupSection(ctx, prompt, opts)
+				if err != nil {
+					return "", err
+				}
+				searched, found = true, section
+			}
+			prompt += found
+		}
 		if len(shown) > 0 {
 			var cast strings.Builder
 			cast.WriteString("\nAlready cast:\n")
@@ -1844,7 +1812,19 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 			}
 			prompt += cast.String()
 		}
-		return c.generate(ctx, characterizeSystemPrompt, prompt, 0.3, characterizeMaxTokens)
+		if wrongGender {
+			prompt += fmt.Sprintf("\nReminder: their pronouns are %s. Open with that gender's word (man, woman, boy, girl); material describing anyone else is not this character.\n", pronouns)
+		}
+		temp := characterizeTemp
+		if opts.Temp != nil {
+			temp = *opts.Temp
+		}
+		// A retry at a temperature too low to sample differently would
+		// only repeat the reply that failed.
+		if attempt > 0 && temp < retryTempBump {
+			temp = float32(attempt) * retryTempBump
+		}
+		return c.generate(ctx, characterizeSystemPrompt, prompt, temp, characterizeMaxTokens)
 	}, func(content string) (characterization, error) {
 		// The retry covers this validation too, not just JSON parsing - a
 		// too-short instruct or refLine is the same kind of one-off model
@@ -1864,12 +1844,125 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 				return characterization{}, fmt.Errorf("llm named co-star %s in the casting: %q", cv.Name, result.Instruct)
 			}
 		}
+		if !last && genderContradicts(result.Instruct, pronouns) {
+			wrongGender = true
+			return characterization{}, fmt.Errorf("casting contradicts pronouns %s: %q", pronouns, result.Instruct)
+		}
 		return result, nil
 	})
 	if err != nil {
 		return "", "", err
 	}
 	return result.Instruct, result.RefLine, nil
+}
+
+// characterizeTemp is CharacterizeVoice's sampling temperature: greedy.
+// At the 0.3 it used to sample at, three castings of the same character
+// from the same material disagreed on age group, accent or pitch for 10
+// of 12 characters (Bert came out Southern American once, Ingrid British
+// once); at 0, for 4 of 12, and the same 12 were no worse cast. Not fully
+// repeatable even so - Sid still came out once with the voice she puts on.
+const characterizeTemp float32 = 0
+
+// CastingOptions are how CharacterizeVoice is run.
+type CastingOptions struct {
+	// Temp overrides characterizeTemp.
+	Temp *float32
+	// Lookup, when set, lets the model search the book before it casts
+	// (lookupSection): it returns sentences of paragraphs containing
+	// every one of terms.
+	Lookup func(ctx context.Context, terms []string) ([]string, error)
+	// OnLookup, when set, is told each lookup the model made and how many
+	// sentences came back.
+	OnLookup func(terms []string, found int)
+}
+
+// maxLookups is how many searches the lookup plan may ask for.
+const maxLookups = 6
+
+// lookupPlanMaxTokens bounds the plan's reply: a short JSON list, plus a
+// thinking model's trace.
+const lookupPlanMaxTokens = 1536
+
+// lookupPlanSystemPrompt asks only what to search for. Offered lookups
+// inside the casting call itself, the model either searched categories
+// ("age", "origin" - which the index answered with "page" and "original")
+// or, told to search concrete words only where the material was silent,
+// never searched at all and cast straight away: the casting instructions
+// outweigh an optional detour. A call whose whole job is the search list
+// can't skip it.
+const lookupPlanSystemPrompt = `You help cast an audiobook voice. Below is the material gathered so far about one character. Before the voice is cast, the book can be searched for what the material does not state. Decide which of these the material leaves unstated: how old they are; where they are from or what accent they have; how their voice sounds; how big they are or what kind of being they are.
+
+Reply with ONLY a JSON object, no other text:
+{"lookup": [["Mara", "accent"], ["Mara", "Danish"]]}
+
+Each lookup is the character's name (or what the text calls them) and ONE concrete word the book itself would print near it; the search returns sentences where both appear as whole words in one paragraph. Use words narration uses, never a category:
+- age: "lad", "girl", "boy", "young", "old", "elderly", "grey", "wrinkled", "teenager", "years", "youth" - not "age"
+- origin: "accent", a country or people you suspect from their name or lines ("Danish", "Greek", "Scottish"), "born", "homeland" - not "origin"
+- voice: "voice", "deep", "rumbled", "squeaked", "lilt", "drawl", "rasp" - not "sound"
+- size or kind: "tall", "huge", "tiny", "towering", or the kind you suspect ("dwarf", "fairy") - not "size" or "build"
+At most 6 lookups, the most useful first. Do not look up what the material already states plainly. If it states everything, reply {"lookup": []}.`
+
+// lookupSection lets the model search the book through opts.Lookup for
+// what material (the casting turn so far) doesn't state: one call
+// (lookupPlanSystemPrompt) lists what to search for, and what the
+// searches found comes back as a "Searched in the book" section for the
+// casting turn, "" when they found nothing.
+func (c *Client) lookupSection(ctx context.Context, material string, opts CastingOptions) (string, error) {
+	plan, err := c.generate(ctx, lookupPlanSystemPrompt, material, 0, lookupPlanMaxTokens)
+	if err != nil {
+		return "", err
+	}
+	var results strings.Builder
+	for _, terms := range parseLookups(plan) {
+		found, err := opts.Lookup(ctx, terms)
+		if err != nil {
+			return "", fmt.Errorf("lookup %q: %w", terms, err)
+		}
+		if opts.OnLookup != nil {
+			opts.OnLookup(terms, len(found))
+		}
+		if len(found) == 0 {
+			continue
+		}
+		fmt.Fprintf(&results, "%s:\n", strings.Join(terms, " + "))
+		for _, f := range found {
+			fmt.Fprintf(&results, "- %s\n", oneLine(f))
+		}
+	}
+	if results.Len() == 0 {
+		return "", nil
+	}
+	return "\nSearched in the book (found by their words, so some are about someone else; these add to the material above and never replace it - use one only where it plainly states something about this character):\n" + results.String(), nil
+}
+
+// parseLookups reads a {"lookup": [[...], ...]} reply, nil when content is
+// anything else. At most maxLookups lookups of at most three terms each
+// are kept.
+func parseLookups(content string) [][]string {
+	value, found := firstJSONValue(content, '{')
+	if !found {
+		return nil
+	}
+	var reply struct {
+		Lookup [][]string `json:"lookup"`
+	}
+	if err := json.Unmarshal([]byte(value), &reply); err != nil {
+		return nil
+	}
+	var out [][]string
+	for _, terms := range reply.Lookup {
+		var kept []string
+		for _, t := range terms {
+			if t = strings.TrimSpace(t); t != "" && len(kept) < 3 {
+				kept = append(kept, t)
+			}
+		}
+		if len(kept) > 0 && len(out) < maxLookups {
+			out = append(out, kept)
+		}
+	}
+	return out
 }
 
 // characterization is CharacterizeVoice's own parsed JSON response shape -
@@ -1883,7 +1976,7 @@ type characterization struct {
 // parseCharacterization extracts and validates CharacterizeVoice's JSON
 // object, tolerating models that wrap it in prose or a markdown code fence
 // despite the system prompt asking for JSON only - the same tolerance
-// parseAttributions/parseDescribeItems apply for their own array replies.
+// parseAttributions applies for its own array reply.
 // A short fragment like "Speak as a" for instruct, or a one-sentence
 // fragment for refLine, is worse than an empty result: it would still pass
 // as non-empty and get saved permanently onto the character's voice preset
@@ -2047,8 +2140,7 @@ func truncate(s string, n int) string {
 
 // SystemPrompts returns every distinct system-prompt string this package's
 // Client will ever call generate with - the fixed, package-level constants
-// backing AttributeChapter (systemPrompt), DescribeChapter
-// (describeSystemPrompt), CharacterizeVoice (characterizeSystemPrompt),
+// backing AttributeChapter (systemPrompt), CharacterizeVoice (characterizeSystemPrompt),
 // EmotionChapter (emotionSystemPrompt),
 // ResolvePronunciation (pronunciationSystemPrompt), and ScoreMusic's own
 // two passes (musicSystemPrompt, musicDescribeSystemPrompt) - the latter
@@ -2065,7 +2157,6 @@ func truncate(s string, n int) string {
 func SystemPrompts() []string {
 	return []string{
 		systemPrompt,
-		describeSystemPrompt,
 		characterizeSystemPrompt,
 		emotionSystemPrompt,
 		pronunciationSystemPrompt,

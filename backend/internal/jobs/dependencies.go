@@ -165,15 +165,13 @@ func (m *Manager) pronunciationDependency(t *task) []sched.Need {
 }
 
 // scareQuoteDependency makes t's own chapter's scare-quote tagging
-// (KindScareQuote) a hard dependency of a KindSpeakerAttribution/
-// KindDescription task: returns that chapter's currently queued or
+// (KindScareQuote) a hard dependency of a KindSpeakerAttribution task: returns that chapter's currently queued or
 // in-flight KindScareQuote task, if any, or lazily creates one via
 // m.scareQuote (a no-op if never configured) the first time it finds the
 // chapter's Passes.ScareQuote unset - speechDirectionDependency's exact
 // shape. Attribution needs scare quotes flagged first so it never assigns
 // a character to a quoted span that isn't dialogue (httpapi.
-// attributeChapter forces those to Narrator), and description tagging
-// reads narration, which a scare quote is part of. A scare-quote run that
+// attributeChapter forces those to Narrator). A scare-quote run that
 // fails leaves Passes.ScareQuote unset, so the next resolution recreates
 // it and the dependent task keeps waiting - deliberate: the pass is
 // sampled, so a retry is expected to succeed eventually, and running

@@ -265,7 +265,12 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	book, err := epub.Parse(tmp, size)
+	playMode, ok := playModeParam(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "play must be auto, on or off")
+		return
+	}
+	book, err := epub.ParseAs(tmp, size, playMode)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not parse epub: "+err.Error())
 		return
@@ -325,6 +330,10 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "book saved but could not be reloaded")
 		return
 	}
+	if err := s.addPlayCharacters(b, book.Chapters); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save characters: "+err.Error())
+		return
+	}
 
 	summary, chapters, err := s.buildBookSummary(*b)
 	if err != nil {
@@ -378,6 +387,40 @@ func (s *Server) handleImportExport(w http.ResponseWriter, r io.ReaderAt, size i
 	writeJSON(w, http.StatusCreated, summary)
 }
 
+// playModeParam reads ?play=auto|on|off (default auto): whether the epub is
+// read as a play, overriding the parser's own detection (epub.ParseAs).
+func playModeParam(r *http.Request) (epub.PlayMode, bool) {
+	switch r.URL.Query().Get("play") {
+	case "", "auto":
+		return epub.PlayAuto, true
+	case "on":
+		return epub.PlayOn, true
+	case "off":
+		return epub.PlayOff, true
+	}
+	return "", false
+}
+
+// addPlayCharacters puts every speaker a play's labels name
+// (epub.Block.Speaker) on the book's roster. Attribution does this for the
+// speakers it finds, but it is never asked about a play's lines.
+func (s *Server) addPlayCharacters(book *store.Book, chapters []epub.Chapter) error {
+	scope := store.SeriesScope(book)
+	seen := map[string]bool{}
+	for _, ch := range chapters {
+		for _, b := range ch.Blocks {
+			if b.Speaker == "" || seen[b.Speaker] {
+				continue
+			}
+			seen[b.Speaker] = true
+			if _, _, err := s.Store.UpsertCharacter(scope, b.Speaker, false); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // chapterBlockInputs converts one parsed epub chapter into store block
 // inputs, plus each image block's bytes in the same order, for the caller
 // to write to disk under whatever IDs the store hands back.
@@ -391,7 +434,7 @@ func chapterBlockInputs(ch epub.Chapter) (blocks []store.BlockInput, imageBytes 
 		case epub.BlockBreak:
 			blocks[j] = store.BlockInput{Kind: store.BlockBreak}
 		default:
-			blocks[j] = store.BlockInput{Kind: store.BlockText, Text: b.Text, Inline: b.Inline, IsQuote: b.IsQuote, Emphasis: b.Emphasis}
+			blocks[j] = store.BlockInput{Kind: store.BlockText, Text: b.Text, Inline: b.Inline, IsQuote: b.IsQuote, Emphasis: b.Emphasis, Speaker: b.Speaker, Label: b.Label}
 		}
 	}
 	return blocks, imageBytes
@@ -492,7 +535,12 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	parsed, err := epub.Parse(src, info.Size())
+	playMode, ok := playModeParam(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "play must be auto, on or off")
+		return
+	}
+	parsed, err := epub.ParseAs(src, info.Size(), playMode)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "could not parse epub: "+err.Error())
 		return
@@ -525,6 +573,12 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if b, err := s.Store.GetBook(bookID); err == nil && b != nil {
+		if err := s.addPlayCharacters(b, []epub.Chapter{fresh}); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save characters: "+err.Error())
+			return
+		}
 	}
 	// The whole chapter audio dir (narration under every voice, SFX,
 	// music) belonged to the old paragraphs.

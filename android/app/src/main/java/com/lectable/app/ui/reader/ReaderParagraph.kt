@@ -57,6 +57,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -89,8 +91,6 @@ internal fun ParagraphRow(
     onToggleBookmark: () -> Unit,
     // Only ever isQuote segments - see SpeakerPickerTarget's doc comment.
     onOpenSpeakerPicker: (paragraphIndices: List<Int>, currentSpeaker: String) -> Unit,
-    // fromName "" = tag plain narration as describing someone ("Mark as description").
-    onOpenDescriptionPicker: (fromName: String, paragraphIndices: List<Int>) -> Unit,
     onToggleScareQuote: (paragraphIndices: List<Int>, scareQuote: Boolean) -> Unit,
     onSetEmotion: (paragraphIndices: List<Int>, emotion: String) -> Unit,
     // See ParagraphBodyText.
@@ -102,7 +102,6 @@ internal fun ParagraphRow(
     val clipboardManager = LocalClipboardManager.current
     val isDarkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val speakerMarkColor = if (isDarkTheme) AnnotationSpeakerColorDark else AnnotationSpeakerColorLight
-    val descriptionMarkColor = if (isDarkTheme) AnnotationDescriptionColorDark else AnnotationDescriptionColorLight
     val scareQuoteMarkColor = if (isDarkTheme) ScareQuoteMarkColorDark else ScareQuoteMarkColorLight
     // Every distinct non-empty Speaker among this block's segments, "Narrator" included -
     // present whenever attribution has run for this paragraph, not gated on book.multiVoice
@@ -111,16 +110,6 @@ internal fun ParagraphRow(
     // since it's secondary information the reader wants on demand, not something that should
     // compete with the narration text itself for every paragraph in a multivoice book.
     val speakers = remember(segments) { segments.mapNotNull { it.speaker }.filter { it.isNotEmpty() }.distinct() }
-    // Every distinct character this block's narration describes (annotations mode's own
-    // "description" kind - see annotationKind), each mapped to which of this block's own
-    // segment idx's actually carry it - a block can have more than one inline segment, and more
-    // than one character described - so "Reassign" (see onOpenDescriptionPicker below) only ever
-    // touches the segment(s) that specific name actually applies to, not the whole block.
-    val describesByName = remember(segments) {
-        val map = linkedMapOf<String, MutableList<Int>>()
-        segments.forEach { seg -> seg.describesCharacters.forEach { name -> map.getOrPut(name) { mutableListOf() }.add(seg.idx) } }
-        map
-    }
     // Every distinct emotion among this block's dialogue segments (backend internal/emotions
     // ids) - mirrors frontend ChapterSection's emotion badge. Same "long-press menu, not
     // inline" placement as [speakers].
@@ -138,14 +127,11 @@ internal fun ParagraphRow(
     // the inline caret's hover title for this (no separate legend/list on the web side either).
     val pronunciationMarks = remember(segments) { segments.flatMap { it.pronunciationMarks } }
     // "Set speaker"/"Mark as scare quote" only make sense when this block actually has quoted
-    // dialogue in it - the backend rejects attributing narration/description to a character (see
+    // dialogue in it - the backend rejects attributing narration to a character (see
     // SpeakerPickerTarget's doc comment) and rejects scare-quoting a non-quoted paragraph the
     // same way, so a pure-narration block just doesn't offer either, same as how
-    // [speakers]/[describesByName]/[directionTags] above only show when they apply.
+    // [speakers]/[directionTags] above only show when they apply.
     val quoteSegments = remember(segments) { segments.filter { it.isQuote } }
-    // Annotations mode's "Mark as description" targets: this block's plain narration segments
-    // not yet describing anyone (a quoted line can't describe - the backend rejects it).
-    val undescribedNarration = remember(segments) { segments.filter { !it.isQuote && it.describesCharacters.isEmpty() }.map { it.idx } }
     val hasQuoteSegment = quoteSegments.isNotEmpty()
     // The segment the menu's long press landed on (ParagraphDto.idx), or null when it missed the
     // text's layout.
@@ -216,13 +202,6 @@ internal fun ParagraphRow(
                         onClick = {},
                     )
                 }
-                describesByName.forEach { (name, idxs) ->
-                    DropdownMenuItem(
-                        text = { Text("Describes: $name") },
-                        leadingIcon = { AnnotationSwatch(descriptionMarkColor) },
-                        onClick = { onOpenDescriptionPicker(name, idxs); showMenu = false },
-                    )
-                }
                 val otherDirectionColor = MaterialTheme.colorScheme.onSurfaceVariant
                 directionTags.forEach { tag ->
                     DropdownMenuItem(
@@ -248,7 +227,7 @@ internal fun ParagraphRow(
                         onClick = {},
                     )
                 }
-                if (speakers.isNotEmpty() || describesByName.isNotEmpty() || directionTags.isNotEmpty() || pronunciationMarks.isNotEmpty() || hasScareQuote) {
+                if (speakers.isNotEmpty() || directionTags.isNotEmpty() || pronunciationMarks.isNotEmpty() || hasScareQuote) {
                     HorizontalDivider()
                 }
                 DropdownMenuItem(
@@ -256,13 +235,6 @@ internal fun ParagraphRow(
                     leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
                     onClick = { onRegenerate(); showMenu = false },
                 )
-                if (annotationsMode && undescribedNarration.isNotEmpty()) {
-                    DropdownMenuItem(
-                        text = { Text("Mark as description") },
-                        leadingIcon = { AnnotationSwatch(descriptionMarkColor) },
-                        onClick = { onOpenDescriptionPicker("", undescribedNarration); showMenu = false },
-                    )
-                }
                 if (hasQuoteSegment) {
                     DropdownMenuItem(
                         text = { QuoteActionLabel("Set speaker$forAll", namedQuote) },
@@ -432,6 +404,7 @@ internal fun ParagraphBodyText(
         var offset = 0
         segments.forEachIndexed { i, seg ->
             if (segmentEmotions[i] != null) offset += 1 // the emotion icon's placeholder char
+            seg.label?.takeIf { it.isNotEmpty() }?.let { offset += it.length + 1 } // the label and its space
             val tokens = tokenizeWords(seg.text)
             val startTimes = wordStartTimes(tokens, seg.words, seg.text.length, seg.durationSeconds ?: 0.0, seg.audioPointerSeconds)
             list.add(SegmentSpan(seg.idx, offset, tokens, startTimes))
@@ -444,6 +417,12 @@ internal fun ParagraphBodyText(
             segments.forEachIndexed { i, seg ->
                 if (i > 0) append(" ")
                 segmentEmotions[i]?.let { appendInlineContent(emotionInlineId(it)) }
+                // A play's speaker label ("THESEUS."), with any direction on how the line is
+                // delivered: shown, never spoken - so outside every span's word offsets.
+                seg.label?.takeIf { it.isNotEmpty() }?.let { label ->
+                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(label) }
+                    append(" ")
+                }
                 append(seg.text)
             }
         }
@@ -470,14 +449,13 @@ internal fun ParagraphBodyText(
     // part along with them.
     val dimColor = MaterialTheme.colorScheme.onSurfaceVariant
     // Annotations mode's own underline/caret colors - exact hex match to frontend's
-    // --annotation-speaker/--annotation-description CSS variables (index.css), light or dark
+    // --annotation-speaker CSS variable (index.css), light or dark
     // set picked off the app's actually-resolved background luminance (not a raw
     // isSystemInDarkTheme() check) so this tracks the same light/dark state as the rest of the
     // UI even when the reader's own Settings screen has overridden it away from the system
     // default - see MainActivity's own darkTheme resolution.
     val isDarkTheme = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val speakerMarkColor = if (isDarkTheme) AnnotationSpeakerColorDark else AnnotationSpeakerColorLight
-    val descriptionMarkColor = if (isDarkTheme) AnnotationDescriptionColorDark else AnnotationDescriptionColorLight
     val pronunciationCaretColor = if (isDarkTheme) PronunciationCaretColorDark else PronunciationCaretColorLight
     val scareQuoteMarkColor = if (isDarkTheme) ScareQuoteMarkColorDark else ScareQuoteMarkColorLight
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
@@ -577,19 +555,18 @@ internal fun ParagraphBodyText(
                 // currently playing/highlighted. Those returns used to sit ahead of this block
                 // too, which meant annotation marks only ever rendered on the one paragraph
                 // actively playing at that instant - i.e. never, for the other ~everything else
-                // in the chapter - since this is meant to mark every dialogue/description
+                // in the chapter - since this is meant to mark every dialogue
                 // segment in the whole chapter regardless of playback state.
                 if (annotationsMode) {
                     segments.forEachIndexed { i, segment ->
                         val segSpan = spans[i]
-                        // Dialogue/description get an underline (annotationKind) - orthogonal to
+                        // Dialogue gets an underline (annotationKind) - orthogonal to
                         // and independent of whichever delivery-tag carets this same segment
                         // might also carry below, exactly like frontend's own annotation-* class
                         // and .direction-caret compose on the same span without one gating the
                         // other.
                         val underlineColor = when (annotationKind(segment)) {
                             AnnotationKind.SPEAKER -> speakerMarkColor
-                            AnnotationKind.DESCRIPTION -> descriptionMarkColor
                             AnnotationKind.NARRATOR -> null
                         }
                         if (underlineColor != null) {
@@ -640,14 +617,12 @@ internal fun ParagraphBodyText(
     )
 }
 
-// Exact hex match to frontend's --annotation-speaker/--annotation-description CSS variables
+// Exact hex match to frontend's --annotation-speaker CSS variable
 // (index.css's :root and its dark-mode overrides) - light/dark picked at the call site off the
 // app's actually-resolved theme, not a raw system check. --annotation-narrator has no
 // counterpart here since narrator segments get no mark at all (see drawAnnotationMark).
 private val AnnotationSpeakerColorLight = Color(0xFF2563EB)
-private val AnnotationDescriptionColorLight = Color(0xFFD97706)
 private val AnnotationSpeakerColorDark = Color(0xFF60A5FA)
-private val AnnotationDescriptionColorDark = Color(0xFFFBBF24)
 
 // Exact hex match to frontend's --direction-emotion/-style/-prosody/-sfx CSS variables - one
 // per delivery-tag category, for the inline caret marks and the long-press menu's own per-tag
@@ -681,7 +656,7 @@ private val ScareQuoteMarkColorDark = Color(0xFFFB923C)
 private val AnnotationUnderlineGap = 0.dp
 private val AnnotationUnderlineStrokeWidth = 1.dp
 
-/** Draws one line-segment's annotations-mode underline (dialogue/description - see
+/** Draws one line-segment's annotations-mode underline (dialogue - see
  *  annotationKind) - no background color, just the line itself, in whichever of the two
  *  annotation colors the caller resolved. */
 private fun DrawScope.drawAnnotationUnderline(bounds: Rect, color: Color) {

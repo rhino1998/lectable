@@ -35,7 +35,6 @@ func main() {
 	nctx := flag.Uint("nctx", 24576, "context size")
 	label := flag.String("label", "run", "label for this run's output")
 	noThink := flag.Bool("nothink", false, "enable NoThink")
-	describeOnly := flag.Bool("describe-only", false, "run speakerattr's experimental isolated DescribeChapter pass instead of AttributeChapter - see internal/speakerattr/describe_experiment.go")
 	scareQuoteOnly := flag.Bool("scarequote-only", false, "run speakerattr's ScareQuoteChapter pass instead of AttributeChapter")
 	useRoster := flag.Bool("roster", false, "seed attribution with the book's real character roster (valid names, aliases, most frequent speakers) instead of starting empty")
 	score := flag.Bool("score", false, "score each chapter's dialogue speakers against the ones stored in the library (e.g. hand-corrected chapters)")
@@ -130,12 +129,9 @@ func main() {
 			attrErr     error
 			speakers    map[int]string
 			indexes     map[int]int
-			describes   map[int][]string
 			scareQuotes map[int]bool
 		)
 		switch {
-		case *describeOnly:
-			describes, remaining, attrErr = client.DescribeChapter(context.Background(), bookTitle, ch.title, known, paras, nil)
 		case *scareQuoteOnly:
 			scareQuotes, remaining, attrErr = client.ScareQuoteChapter(context.Background(), bookTitle, ch.title, paras, nil)
 		default:
@@ -157,7 +153,7 @@ func main() {
 		if attrErr != nil {
 			fmt.Printf("ERROR: %v\n", attrErr)
 		}
-		if *score && !*describeOnly && !*scareQuoteOnly {
+		if *score && !*scareQuoteOnly {
 			chAgree, chTotal := 0, 0
 			for _, p := range paras {
 				if !p.IsQuote || stored[p.Idx] == "" {
@@ -181,18 +177,6 @@ func main() {
 				text = text[:90] + "..."
 			}
 			text = strings.ReplaceAll(text, "\n", " ")
-			if *describeOnly {
-				names := describes[p.Idx]
-				describesStr := ""
-				if len(names) > 0 {
-					describesStr = " [describes: " + strings.Join(names, ", ") + "]"
-				}
-				fmt.Printf("[%3d]%s | %s\n", p.Idx, describesStr, text)
-				for _, name := range names {
-					known = addKnownLocal(known, name)
-				}
-				continue
-			}
 			if *scareQuoteOnly {
 				flag := ""
 				if scareQuotes[p.Idx] {

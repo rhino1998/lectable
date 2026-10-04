@@ -33,7 +33,7 @@ func TestCharacterizeVoiceRetriesCostarCopy(t *testing.T) {
 		`{"evidence": "none", "instruct": "` + own + `", "refLine": "` + ref + `"}`,
 	}}
 	c := NewClient(Config{}, llm)
-	instruct, _, err := c.CharacterizeVoice(context.Background(), "Sessi", false, "he/him", nil, nil, nil, nil, []CastVoice{{Name: "Mizhu", Instruct: mizhu}})
+	instruct, _, err := c.CharacterizeVoice(context.Background(), "Sessi", false, "he/him", nil, CharacterEvidence{}, []CastVoice{{Name: "Mizhu", Instruct: mizhu}}, CastingOptions{})
 	if err != nil {
 		t.Fatalf("CharacterizeVoice: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestCharacterizeVoiceHidesCopiedCostars(t *testing.T) {
 	llm := &replyLLM{replies: []string{reply(bob), reply(oren), reply(bob)}}
 	c := NewClient(Config{}, llm)
 	costars := []CastVoice{{Name: "Bob", Instruct: bob}, {Name: "Oren", Instruct: oren}}
-	instruct, _, err := c.CharacterizeVoice(context.Background(), "Dwarf", true, "he/him", nil, nil, nil, nil, costars)
+	instruct, _, err := c.CharacterizeVoice(context.Background(), "Dwarf", true, "he/him", nil, CharacterEvidence{}, costars, CastingOptions{})
 	if err != nil {
 		t.Fatalf("CharacterizeVoice: %v", err)
 	}
@@ -112,6 +112,11 @@ func TestOriginClues(t *testing.T) {
 	if got := OriginClues(paras, []string{"Lord Ballast"}, 5); len(got) != 1 {
 		t.Fatalf("Lord Ballast clues = %q", got)
 	}
+	// A nationality in the next sentence is someone else's.
+	next := OriginParagraphs([]string{"West stood in the middle, grinning widely. The huge Nigerian clapped him on the back."})
+	if got := OriginClues(next, []string{"West"}, 5); len(got) != 0 {
+		t.Fatalf("a clue crossed a sentence end: %q", got)
+	}
 	if got := OriginClues(paras, []string{"Lord Scarford"}, 5); len(got) != 0 {
 		t.Fatalf("a title alone matched: %q", got)
 	}
@@ -132,5 +137,38 @@ func TestMentionsName(t *testing.T) {
 		if got := mentionsName(c.text, c.name); got != c.want {
 			t.Errorf("mentionsName(%q, %q) = %v, want %v", c.text, c.name, got, c.want)
 		}
+	}
+}
+
+// TestCharacterizeVoiceLookups covers the lookup loop: a {"lookup": ...}
+// reply is searched and its results reach the next turn, and the reply
+// after that is the casting.
+func TestCharacterizeVoiceLookups(t *testing.T) {
+	own := "Speak as an ancient woman with a low, smooth voice and a measured, deliberate pace. Adopt a Greek accent speaking English. She sounds blunt and commanding."
+	ref := "I have watched many harbors fill and empty. The sea keeps what it is given. You learn to wait for the tide."
+	llm := &replyLLM{replies: []string{
+		`{"lookup": [["Scylla", "Greek"], ["", "  "], ["Scylla", "voice", "accent", "extra"]]}`,
+		`{"evidence": "'a Greek demigoddess'", "instruct": "` + own + `", "refLine": "` + ref + `"}`,
+	}}
+	c := &Client{llm: llm}
+	var asked [][]string
+	opts := CastingOptions{
+		Lookup: func(_ context.Context, terms []string) ([]string, error) {
+			asked = append(asked, terms)
+			return []string{"She's a Greek demigoddess or whatever!"}, nil
+		},
+	}
+	instruct, _, err := c.CharacterizeVoice(context.Background(), "Scylla", false, "she/her", nil, CharacterEvidence{}, nil, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instruct != own {
+		t.Fatalf("instruct = %q", instruct)
+	}
+	if len(asked) != 2 || strings.Join(asked[0], "+") != "Scylla+Greek" || len(asked[1]) != 3 {
+		t.Fatalf("lookups asked = %q", asked)
+	}
+	if len(llm.users) != 2 || !strings.Contains(llm.users[1], "Scylla + Greek:\n- She's a Greek demigoddess or whatever!") {
+		t.Fatalf("second turn lacks the lookup results:\n%s", llm.users[len(llm.users)-1])
 	}
 }

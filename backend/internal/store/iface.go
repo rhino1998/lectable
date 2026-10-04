@@ -43,7 +43,6 @@ type Store interface {
 	DeleteParagraphAudioForIdxs(bookID, chapterID string, idxs []int) ([]SpeakerAudioRef, error)
 	DeleteParagraphAudioForSpeaker(bookIDs []string, name string) ([]SpeakerAudioRef, error)
 	DeleteVoicePreset(id string) error
-	DescriptionsForBooks(bookIDs []string, characterName string, limit int) ([]DescriptionContext, error)
 	ExportBookRows(bookID, characterScope string) (map[string][]json.RawMessage, error)
 	ExportFingerprints(bookID, characterScope string) (book string, chapters map[int]string, err error)
 	GetBook(id string) (*Book, error)
@@ -78,14 +77,14 @@ type Store interface {
 	OnChange(fn ChangeFunc)
 	ParagraphAudioStatuses(paragraphIDs []string, voiceID string) (map[string]AudioState, error)
 	ParagraphSFXStates(paragraphIDs []string) (map[string]SFXState, error)
-	ParagraphsDescribing(bookIDs []string, name string) ([]SpeakerAppearance, error)
+	NarrationMatching(bookIDs []string, phrases []string, limit int) ([]string, error)
+	ParagraphsContainingAll(bookIDs []string, terms []string, limit int) ([]string, error)
 	ParagraphsForSpeaker(bookIDs []string, name string) ([]SpeakerAppearance, error)
 	PruneSyncTree(version string) error
 	PutSyncTreeNodes(bookID, version string, nodes []SyncTreeNode) error
 	QuotesForBooks(bookIDs []string, characterName string, limit int) ([]QuoteContext, error)
 	ReadyAudioCountsBySpeaker(bookID string) (map[string]map[string]int, error)
 	ReassignCharacterSpeaker(bookID, fromName, toName string) error
-	ReassignCharacterDescriptions(bookID, fromName, toName string) error
 	RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]string, error)
 	ReplaceChapterContent(chapterID, title string, blocks []BlockInput) (oldImages, newImages []CreatedImage, err error)
 	ResetAllChapterMusicAudioForBook(bookID string) error
@@ -95,7 +94,6 @@ type Store interface {
 	ResetParagraphAudio(id, voiceID string) error
 	SearchParagraphs(bookID, query string, limit int) ([]SearchResult, error)
 	SetChapterAttributed(chapterID string) error
-	SetChapterDescribed(chapterID string) error
 	SetChapterDirected(chapterID string) error
 	SetChapterAmbienceScored(chapterID string) error
 	SetChapterLit(chapterID string) error
@@ -118,7 +116,6 @@ type Store interface {
 	SetMusicRegionLighting(lighting map[string]Lighting) error
 	SetMusicRegionGenerating(id string) error
 	SetMusicRegionReady(id string, durationSeconds float64) error
-	SetParagraphDescriptions(chapterID string, byDescribesIdx map[int][]string) error
 	SetParagraphEmotions(chapterID string, byIdx map[int]string) error
 	SetParagraphError(id, voiceID, message string) error
 	SetParagraphGenerating(id, voiceID string) error
@@ -140,6 +137,7 @@ type Store interface {
 	SetParagraphSpeakersIndexed(chapterID string, bySpeakerIdx map[int]string, indexes map[int]int) error
 	SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error
 	SpeakerLineCounts(bookID string) (map[string]int, error)
+	SpeechTagsForBooks(bookIDs []string, characterName string) ([]string, error)
 	SyncFingerprints(bookID string) (book string, chapters map[int]string, err error)
 	SyncTreeNodes(bookID, version string) (map[int]SyncTreeNode, error)
 	UpdateBookmarkNote(id, note string) error

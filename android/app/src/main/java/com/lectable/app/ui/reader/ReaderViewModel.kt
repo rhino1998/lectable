@@ -132,7 +132,7 @@ data class ReaderUiState(
     val lightingEnabled: Boolean = false,
     val lightingConfigured: Boolean = false,
     val lightingStatus: LightingStatus = LightingStatus.OFF,
-    // The series roster (names only, live) for the set-speaker/description pickers - kept
+    // The series roster (names only, live) for the set-speaker picker - kept
     // subscribed so a picker opens instantly; null until the first value arrives.
     val characters: List<CharacterNameDto>? = null,
 )
@@ -778,23 +778,6 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    /** [setParagraphSpeaker]'s own counterpart for a *description* - reassigns which character
-     *  [paragraphIndices] (this block's own segments whose describesCharacters already lists
-     *  [from] - see ReaderScreen.kt's DescriptionPickerTarget) narrate a description of, from
-     *  [from] to [to] ("" clears it, describing no one). Leaves any *other* character one of
-     *  these segments might also describe untouched - see LibraryRepository
-     *  .setParagraphDescription. The change arrives on the chapter's live topic, same as
-     *  [setParagraphSpeaker]. */
-    fun reassignDescription(chapterIdx: Int, paragraphIndices: List<Int>, from: String, to: String) {
-        if (paragraphIndices.isEmpty()) return
-        viewModelScope.launch {
-            runCatching {
-                paragraphIndices.forEach { idx -> libraryRepository.setParagraphDescription(bookId, chapterIdx, idx, from, to) }
-            }
-                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
-        }
-    }
-
     fun availableCustomPresets(onResult: (List<CustomVoicePresetDto>) -> Unit) {
         viewModelScope.launch {
             runCatching { voiceRepository.customPresets() }.onSuccess(onResult)
@@ -1028,8 +1011,8 @@ class ReaderViewModel @Inject constructor(
      *  per-chapter equivalent of one of the web Speakers page's own buttons (see
      *  android/CLAUDE.md's scaffold limitations - there's still no Android roster UI, just these
      *  explicit triggers). Every one is a separate fire-and-forget backend job; ordering between
-     *  them is the backend's own business (a chapter's attribution and description tagging both
-     *  wait on its scare-quote tagging, queuing it themselves if it's never run), so nothing here
+     *  them is the backend's own business (a chapter's attribution waits on its scare-quote
+     *  tagging, queuing it itself if it's never run), so nothing here
      *  sequences them. A failure (e.g. the LLM being unconfigured server-side) surfaces as the
      *  reader's error banner. */
     fun runChapterPass(chapterIdx: Int, pass: ChapterPass) {
@@ -1039,7 +1022,6 @@ class ReaderViewModel @Inject constructor(
                     ChapterPass.SCARE_QUOTES -> libraryRepository.retagScareQuotes(bookId, chapterIdx)
                     ChapterPass.ATTRIBUTION -> libraryRepository.attributeSpeakers(bookId, chapterIdx)
                     ChapterPass.AROUND_EDITS -> libraryRepository.attributeAroundEdits(bookId, chapterIdx)
-                    ChapterPass.DESCRIPTIONS -> libraryRepository.retagDescriptions(bookId, chapterIdx)
                     ChapterPass.DIRECTIONS -> libraryRepository.tagDirections(bookId, chapterIdx)
                     ChapterPass.PRONUNCIATION -> libraryRepository.resolvePronunciation(bookId, chapterIdx)
                     ChapterPass.AMBIENCE -> libraryRepository.runChapterAmbience(bookId, chapterIdx)
@@ -1207,12 +1189,11 @@ private fun List<BookmarkDto>.toBookmarksByKey(): Map<Pair<Int, Int>, String> =
 
 /** One of the chapter picker's long-press LLM passes - see [ReaderViewModel.runChapterPass].
  *  Declared in the order a chapter's passes run on the backend (scare quotes first, since
- *  attribution and description tagging wait on it), which is also the menu's order. */
+ *  attribution waits on it), which is also the menu's order. */
 enum class ChapterPass(val label: String) {
     SCARE_QUOTES("Tag scare quotes"),
     ATTRIBUTION("Attribute speakers"),
     AROUND_EDITS("Re-attribute around my fixes"),
-    DESCRIPTIONS("Tag descriptions"),
     DIRECTIONS("Label emotions"),
     PRONUNCIATION("Resolve pronunciation"),
     AMBIENCE("Run ambience (music + lighting)"),

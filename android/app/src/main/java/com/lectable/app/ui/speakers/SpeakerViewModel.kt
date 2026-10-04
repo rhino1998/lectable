@@ -46,11 +46,6 @@ data class SpeakerUiState(
     val appearancesFor: String? = null,
     val appearances: List<SpeakerAppearanceDto> = emptyList(),
     val appearancesLoading: Boolean = false,
-    // [appearancesFor]'s own description-tagging counterpart - independently expandable, so a
-    // reader can have both a character's appearances and their descriptions open at once.
-    val descriptionsFor: String? = null,
-    val descriptions: List<SpeakerAppearanceDto> = emptyList(),
-    val descriptionsLoading: Boolean = false,
     val builtinPresets: List<VoicePresetDto> = emptyList(),
     val customPresets: List<CustomVoicePresetDto> = emptyList(),
     // The relative URL (a SpeakerDto.refAudioUrl or SpeakerAppearanceDto.audioUrl - never
@@ -63,9 +58,9 @@ data class SpeakerUiState(
 /** The Android analogue of frontend/src/pages/SpeakersPage.tsx - per-book character roster:
  *  review who's been identified so far (via [LibraryRepository.preprocessBook], already reachable
  *  from the library's own long-press menu), assign/regenerate voices, browse where each character
- *  speaks or is described (reassigning either to someone else), and turn on multi-voice narration
+ *  speaks (reassigning lines to someone else), and turn on multi-voice narration
  *  once satisfied with the assignments. Deliberately scoped down from the web page: no per-chapter
- *  attribution/description/direction-tag status/individual buttons here (preprocess already
+ *  attribution/direction-tag status/individual buttons here (preprocess already
  *  covers the common "just run everything" path, and the reader's own chapter picker long-press
  *  menu covers attribution/tagging one chapter directly - see ReaderViewModel.runChapterPass)
  *  - see android/CLAUDE.md for the fuller reasoning. */
@@ -131,10 +126,9 @@ class SpeakerViewModel @Inject constructor(
         player = null
     }
 
-    // The expanded appearances/descriptions lists' own live subscriptions - cancelled on
+    // The expanded appearances list's own live subscription - cancelled on
     // collapse, so a closed list stops costing the backend anything.
     private var appearancesJob: Job? = null
-    private var descriptionsJob: Job? = null
 
     /** Everything this screen shows is a live topic (see [LiveStore]) - the roster's counts
      *  climbing as audio generates, a preprocessing run finishing, a characterization landing,
@@ -262,7 +256,6 @@ class SpeakerViewModel @Inject constructor(
             runCatching { speakerRepository.deleteCharacter(bookId, characterId) }
                 .onSuccess {
                     if (_uiState.value.appearancesFor == characterId) closeAppearances()
-                    if (_uiState.value.descriptionsFor == characterId) closeDescriptions()
                 }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             _uiState.update { it.copy(deletingIds = it.deletingIds - characterId) }
@@ -284,7 +277,6 @@ class SpeakerViewModel @Inject constructor(
             runCatching { speakerRepository.mergeCharacter(bookId, characterId, targetName) }
                 .onSuccess {
                     if (_uiState.value.appearancesFor == characterId) closeAppearances()
-                    if (_uiState.value.descriptionsFor == characterId) closeDescriptions()
                 }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
@@ -295,7 +287,6 @@ class SpeakerViewModel @Inject constructor(
             runCatching { speakerRepository.deleteSpeakerData(bookId) }
                 .onSuccess {
                     closeAppearances()
-                    closeDescriptions()
                 }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
@@ -351,56 +342,6 @@ class SpeakerViewModel @Inject constructor(
         if (_uiState.value.appearancesFor == null) return
         viewModelScope.launch {
             runCatching { libraryRepository.setParagraphSpeaker(bookId, chapterIdx, paragraphIdx, speaker) }
-                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
-        }
-    }
-
-    /** "View descriptions" toggle - [toggleAppearances]'s own counterpart, independently
-     *  expandable (a character's appearances and descriptions can be open at the same time,
-     *  unlike frontend, which only tracks one of each per character but still lets both be open
-     *  simultaneously for the same reason). */
-    fun toggleDescriptions(characterId: String) {
-        if (_uiState.value.descriptionsFor == characterId) {
-            closeDescriptions()
-            return
-        }
-        _uiState.update { it.copy(descriptionsFor = characterId, descriptions = emptyList(), descriptionsLoading = true) }
-        loadDescriptions(characterId)
-    }
-
-    private fun closeDescriptions() {
-        descriptionsJob?.cancel()
-        descriptionsJob = null
-        _uiState.update { it.copy(descriptionsFor = null, descriptions = emptyList(), descriptionsLoading = false) }
-    }
-
-    private fun loadDescriptions(characterId: String) {
-        descriptionsJob?.cancel()
-        descriptionsJob = viewModelScope.launch {
-            liveStore.characterDescriptions(bookId, characterId).collect { result ->
-                _uiState.update {
-                    it.copy(
-                        descriptions = result.data ?: it.descriptions,
-                        descriptionsLoading = result.loading,
-                        error = result.error?.message ?: it.error,
-                    )
-                }
-            }
-        }
-    }
-
-    /** A description row's own "Reassign to…" action - moves this paragraph off the currently
-     *  expanded character's own describes-list and onto targetName's instead ("Narrator"/""
-     *  clears it, describing no one), the same [chapterIdx]/[paragraphIdx]-addressed shape
-     *  [reassignAppearance] uses. Looks the current character's own name up from the roster
-     *  (the backend call is name-keyed, not id-keyed - see LibraryRepository.setParagraphDescription).
-     *  The reassigned paragraph is no longer this character's, so it drops out of the live
-     *  list (and a brand-new target character shows up in the roster) on its own. */
-    fun reassignDescription(chapterIdx: Int, paragraphIdx: Int, targetName: String) {
-        val characterId = _uiState.value.descriptionsFor ?: return
-        val fromName = _uiState.value.speakers.find { it.id == characterId }?.name ?: return
-        viewModelScope.launch {
-            runCatching { libraryRepository.setParagraphDescription(bookId, chapterIdx, paragraphIdx, fromName, targetName) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }

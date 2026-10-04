@@ -68,11 +68,6 @@ type AmbienceFunc func(ctx context.Context) (scored int, requeue func(), err err
 // task (see httpapi.scareQuoteChapterForJob). DirectionFunc's exact shape.
 type ScareQuoteFunc func(ctx context.Context) (changed int, requeue func(), err error)
 
-// DescriptionFunc performs one chapter's description tagging - the actual
-// work behind a KindDescription task (see httpapi.describeChapterForJob).
-// DirectionFunc's exact shape.
-type DescriptionFunc func(ctx context.Context) (tagged int, requeue func(), err error)
-
 // PronunciationFunc performs one chapter's pronunciation resolution - the
 // actual work behind a KindPronunciation task (see
 // httpapi.pronounceChapter). DirectionFunc's exact shape.
@@ -143,7 +138,7 @@ type CharacterVoiceProvisioner func(ctx context.Context, bookID string, char sto
 // blocking mechanism - see CharacterVoiceProvisioner's own doc comment)
 // ever characterized anyone.
 //
-// A character with no attributed quotes/descriptions gathered yet
+// A character with no attributed quotes gathered yet
 // (characterizeVoice's own "wait for more material" no-op, returning ("",
 // nil) rather than an error) leaves char.Summary empty even after this
 // runs successfully - characterizationDependency has no way to distinguish
@@ -228,11 +223,11 @@ type AmbienceRunner func(ctx context.Context, book *store.Book, ch *store.Chapte
 // ChapterScareQuoter lazily runs one chapter's own scare-quote tagging (the
 // work behind ScareQuoteFunc/EnqueueScareQuote, setting Passes.ScareQuote
 // on a full pass) the moment scareQuoteDependency discovers a
-// KindSpeakerAttribution/KindDescription task for a chapter that isn't
+// KindSpeakerAttribution task for a chapter that isn't
 // tagged yet and finds no scare-quote task already queued or in flight for
 // it - ChapterDirector's exact role for speechDirectionDependency. A
-// never-configured quoter (nil) just means attribution/description never
-// wait on scare-quote tagging.
+// never-configured quoter (nil) just means attribution never waits on
+// scare-quote tagging.
 type ChapterScareQuoter func(ctx context.Context, book *store.Book, ch *store.Chapter) (changed int, requeue func(), err error)
 
 // ChapterPronouncer lazily runs one chapter's own pronunciation resolution

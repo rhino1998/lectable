@@ -145,12 +145,10 @@ The kinds:
     `internal/narration.Resolver` before being queued, so a chapter's
     paragraphs can dispatch to, and cache audio under, several different
     `voice_id`s in one generation run.
-  - `KindScareQuote`/`KindDescription` (`poolLLM`) run one chapter's
-    scare-quote / description tagging - `KindSpeechDirection`'s shape
-    (`EnqueueScareQuote`/`RunScareQuote`, `EnqueueDescription`/
-    `RunDescription`). `KindSpeakerAttribution` and `KindDescription`
-    both depend on the chapter's `KindScareQuote` (see "Scare-quote
-    tagging" in `speakerattr.md`).
+  - `KindScareQuote` (`poolLLM`) runs one chapter's scare-quote
+    tagging - `KindSpeechDirection`'s shape (`EnqueueScareQuote`/
+    `RunScareQuote`). `KindSpeakerAttribution` depends on the chapter's
+    `KindScareQuote` (see "Scare-quote tagging" in `speakerattr.md`).
   - `KindSpeakerAttribution` (`poolLLM`) runs one chapter's speaker
     attribution, triggered via `Manager.EnqueueAttribution` - unlike the
     generation kinds, this package has no `Store`/`Speaker` access of

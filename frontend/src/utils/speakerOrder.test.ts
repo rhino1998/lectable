@@ -26,13 +26,9 @@ describe('pickerSections', () => {
 })
 
 describe('chapterCharacterNames', () => {
-  it('collects speakers and described characters, not the narrator', () => {
+  it('collects speakers, not the narrator', () => {
     const chapter = {
-      paragraphs: [
-        { speaker: 'Nyx' },
-        { speaker: 'Narrator' },
-        { speaker: '', describesCharacters: ['Aeris'] },
-      ],
+      paragraphs: [{ speaker: 'Nyx' }, { speaker: 'Narrator' }, { speaker: 'Aeris' }],
     } as ChapterDetail
     expect([...chapterCharacterNames(chapter)].sort()).toEqual(['Aeris', 'Nyx'])
     expect(chapterCharacterNames(undefined).size).toBe(0)

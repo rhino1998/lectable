@@ -10,7 +10,6 @@ import {
   RiDoubleQuotesL,
   RiEmotionLine,
   RiMusic2Line,
-  RiPriceTag3Line,
   RiRefreshLine,
   RiSpeakLine,
   RiUser3Line,
@@ -263,6 +262,9 @@ const ParagraphGroup = memo(function ParagraphGroup({
               {annotationsView && p.emotion && (
                 <EmotionIcon emotion={p.emotion} onShowTooltip={onShowTooltip} />
               )}
+              {/* A play's speaker label ("THESEUS."), with any direction on
+                  how the line is delivered: shown, never spoken. */}
+              {p.label && <span className="paragraph-label">{p.label} </span>}
               <ParagraphText
                 text={p.text}
                 active={isActive}
@@ -651,10 +653,9 @@ interface ChapterSectionProps {
   // The rest of the chapter-header action buttons - SpeakersPage's own
   // per-chapter row, mirrored here so a reader can run any of these
   // without leaving the reader for the Speakers page. All job-queue-
-  // derived (see useDescribingChapters/useScareQuotingChapters/
+  // derived (see useScareQuotingChapters/
   // useDirectingChapters/useAmbienceChapters/useGeneratingChapters),
   // the same as SpeakersPage's own per-row booleans.
-  chapterRetaggingDescriptions: boolean
   chapterRetaggingScareQuotes: boolean
   chapterDirecting: boolean
   chapterPronouncing: boolean
@@ -696,7 +697,6 @@ interface ChapterSectionProps {
   onAttributeAroundEdits: (idx: number) => void
   onSaveNotes: (idx: number, notes: ChapterNotes) => Promise<void>
   onRegenerateNotes: (idx: number) => void
-  onRetagDescriptions: (idx: number) => void
   onRetagScareQuotes: (idx: number) => void
   onTagDirections: (idx: number) => void
   onResolvePronunciation: (idx: number) => void
@@ -748,7 +748,6 @@ export const ChapterSection = memo(function ChapterSection({
   chapterClearing,
   chapterReimporting,
   hasAttribution,
-  chapterRetaggingDescriptions,
   chapterRetaggingScareQuotes,
   chapterDirecting,
   chapterPronouncing,
@@ -772,7 +771,6 @@ export const ChapterSection = memo(function ChapterSection({
   onAttributeAroundEdits,
   onSaveNotes,
   onRegenerateNotes,
-  onRetagDescriptions,
   onRetagScareQuotes,
   onTagDirections,
   onResolvePronunciation,
@@ -871,18 +869,6 @@ export const ChapterSection = memo(function ChapterSection({
               <RiChatCheckLine className={chapterAttributing ? 'spin' : undefined} />
             </button>
           )}
-          <button
-            className="icon-action-button"
-            onClick={() => onRetagDescriptions(idx)}
-            disabled={chapterRetaggingDescriptions}
-            title={
-              chapterRetaggingDescriptions
-                ? 'Retagging…'
-                : "Retag descriptions — re-run description-tagging for this chapter (which narration paragraphs describe a character's appearance or personality)"
-            }
-          >
-            <RiPriceTag3Line className={chapterRetaggingDescriptions ? 'spin' : undefined} />
-          </button>
           <button
             className="icon-action-button"
             onClick={() => onRetagScareQuotes(idx)}

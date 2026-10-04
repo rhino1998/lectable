@@ -156,7 +156,7 @@ func TestSplitQuoteSegmentsWithEmphasis(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			raw := collectText(bodyNode(t, tc.html))
+			raw := plainText(collectText(bodyNode(t, tc.html)))
 			segs := splitQuoteSegments(raw)
 
 			// Mirror extractChapter's own call site: extractEmphasis runs

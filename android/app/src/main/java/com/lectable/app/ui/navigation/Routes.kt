@@ -4,8 +4,10 @@ sealed class Routes(val route: String) {
     data object Library : Routes("library")
     data object Settings : Routes("settings")
     data object Voices : Routes("voices")
+    data object BookDefaults : Routes("book-defaults")
     data object Jobs : Routes("jobs")
     data object Lighting : Routes("lighting")
+    data object LlmTest : Routes("llm-test")
     data object Reader : Routes("reader/{bookId}") {
         fun path(bookId: String) = "reader/$bookId"
     }

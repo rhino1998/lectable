@@ -15,7 +15,6 @@ import com.lectable.app.data.remote.dto.CreateBookmarkRequestDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.SearchResultDto
-import com.lectable.app.data.remote.dto.SetParagraphDescriptionRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphEmotionRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphScareQuoteRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphSpeakerRequestDto
@@ -46,7 +45,7 @@ class LibraryRepository @Inject constructor(
     suspend fun uploadBook(file: File, fileName: String): BookSummaryDto {
         val body = file.asRequestBody("application/epub+zip".toMediaType())
         val part = MultipartBody.Part.createFormData("file", fileName, body)
-        return api.uploadBook(part)
+        return api.uploadBook(file = part)
     }
 
     /** Copies a SAF `content://` Uri (from the system file picker) into [cacheDir] before uploading it. */
@@ -135,9 +134,6 @@ class LibraryRepository @Inject constructor(
             throw IllegalStateException(message ?: "$fallback (HTTP ${e.code()})", e)
         }
 
-    /** [LectableApi.retagDescriptions] - see its own doc comment. */
-    suspend fun retagDescriptions(bookId: String, idx: Int): Boolean = api.retagDescriptions(bookId, idx).queued > 0
-
     /** [LectableApi.retagScareQuotes] - see its own doc comment. */
     suspend fun retagScareQuotes(bookId: String, idx: Int): Boolean = api.retagScareQuotes(bookId, idx).queued > 0
 
@@ -179,13 +175,6 @@ class LibraryRepository @Inject constructor(
      *  flow as the web Speakers page's separate "Reassign"/"Regenerate" buttons. */
     suspend fun setParagraphSpeaker(bookId: String, chapterIdx: Int, paragraphIdx: Int, speaker: String) {
         api.setParagraphSpeaker(bookId, chapterIdx, paragraphIdx, SetParagraphSpeakerRequestDto(speaker))
-    }
-
-    /** [LectableApi.setParagraphDescription] - reassigns one paragraph's description from one
-     *  character to another, leaving any other character that same paragraph also describes
-     *  untouched. "" and "Narrator" for [to] both mean "describes no one now". */
-    suspend fun setParagraphDescription(bookId: String, chapterIdx: Int, paragraphIdx: Int, from: String, to: String) {
-        api.setParagraphDescription(bookId, chapterIdx, paragraphIdx, SetParagraphDescriptionRequestDto(from, to))
     }
 
     /** [LectableApi.setParagraphScareQuote] - marks/unmarks one quoted paragraph as a scare

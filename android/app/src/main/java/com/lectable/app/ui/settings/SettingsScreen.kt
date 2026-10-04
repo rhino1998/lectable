@@ -68,6 +68,8 @@ import kotlin.math.roundToInt
 fun SettingsScreen(
     onBack: () -> Unit,
     onOpenVoices: () -> Unit,
+    onOpenBookDefaults: () -> Unit,
+    onOpenLlmTest: () -> Unit,
     onOpenJobs: () -> Unit,
     onOpenLighting: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
@@ -237,9 +239,19 @@ fun SettingsScreen(
                 Text("Manage custom voices")
             }
 
+            Text("New books", style = MaterialTheme.typography.titleMedium)
+            Button(onClick = onOpenBookDefaults) {
+                Text("Defaults for new books")
+            }
+
             Text("Job queue", style = MaterialTheme.typography.titleMedium)
             Button(onClick = onOpenJobs) {
                 Text("View job queue")
+            }
+
+            Text("Speaker model", style = MaterialTheme.typography.titleMedium)
+            Button(onClick = onOpenLlmTest) {
+                Text("Test LLM responses")
             }
 
             Text("Downloads", style = MaterialTheme.typography.titleMedium)

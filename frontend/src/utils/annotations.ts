@@ -3,7 +3,7 @@ import type { AnnotationKind, Paragraph } from '../api/types'
 import { formatDirectionTag } from './directionTags'
 import { emotionLabel } from './emotions'
 
-// Which of the three narration roles a paragraph segment plays - dialogue
+// Which narration role a paragraph segment plays - dialogue
 // (isQuote) takes priority regardless of whether it's been attributed to a
 // named speaker yet (an unattributed quote is still dialogue, not
 // narration - see Paragraph.isQuote's own doc comment) UNLESS it's been
@@ -12,14 +12,12 @@ import { emotionLabel } from './emotions'
 // it colors and narrates as plain narrator text - the dashed
 // .annotation-scare-quote underline (ChapterSection) is what still marks
 // it as a flagged quote, layered on top of that narrator color rather than
-// the speaker one. Then a narration segment tagged as describing a
-// character, then plain narration. Depends only on structural/attribution
+// the speaker one. Everything else is narration. Depends only on structural/attribution
 // fields set at import/attribution time, never on audioStatus - so a
 // segment gets colored the same whether or not its audio has been
 // generated yet.
 export function annotationKind(p: Paragraph): AnnotationKind {
   if (p.isQuote && !p.scareQuote) return 'speaker'
-  if (p.describesCharacters && p.describesCharacters.length > 0) return 'description'
   return 'narrator'
 }
 
@@ -37,8 +35,6 @@ export function annotationTitle(p: Paragraph): string {
     // attributed to the book's own first-person narrator) - still dialogue
     // either way, just not yet (or never) tied to a named character.
     base = p.speaker || 'Not yet attributed'
-  } else if (kind === 'description') {
-    base = (p.describesCharacters ?? []).join(', ')
   } else {
     base = ANNOTATION_LABELS.narrator
   }

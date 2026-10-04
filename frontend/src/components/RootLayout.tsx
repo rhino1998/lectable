@@ -46,6 +46,13 @@ export function RootLayout() {
         >
           Jobs
         </Link>
+        <Link
+          to="/settings"
+          className="sidebar-tab"
+          activeProps={{ className: 'sidebar-tab sidebar-tab-active' }}
+        >
+          Settings
+        </Link>
         <div className="app-sidebar-spacer" />
         <ThemeToggle />
       </nav>

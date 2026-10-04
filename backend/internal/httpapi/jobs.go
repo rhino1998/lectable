@@ -16,10 +16,10 @@ type queueTaskDTO struct {
 	// Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
 	// | "voice_provision" | "speaker_attribution" | "speaker_characterization"
 	// | "speech_direction" | "ambience" | "scare_quote_tagging" |
-	// "description_tagging" | "chapter_summary" | "book_setting" (per-item work, see
+	// "chapter_summary" | "book_setting" (per-item work, see
 	// jobs.Kind) or
 	// "pipeline_scare_quote" | "pipeline_attribution" |
-	// "pipeline_description" | "pipeline_characterization" |
+	// "pipeline_characterization" |
 	// "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
 	// | "pipeline_summary"
 	// (one of a book's own preprocessing phases - see

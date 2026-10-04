@@ -345,7 +345,6 @@ var kindPool = map[Kind]poolKey{
 	KindMusicGeneration:         poolSFX,
 	KindMusicLiveGeneration:     poolSFX,
 	KindScareQuote:              poolLLM,
-	KindDescription:             poolLLM,
 	KindPronunciation:           poolLLM,
 	KindSummary:                 poolLLM,
 	KindBookSetting:             poolLLM,

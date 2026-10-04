@@ -74,8 +74,8 @@ type Server struct {
 	// lowercaseWords caches each book's speakerattr.LowercaseWords (bookID
 	// -> cachedLowercaseWords) - see realRoles.
 	lowercaseWords sync.Map
-	// originParagraphs caches each book's speakerattr.OriginParagraphs
-	// (bookID -> cachedOriginParagraphs) - see originClues.
+	// originParagraphs caches each book's speakerattr.OriginParagraphs and
+	// VoiceParagraphs (bookID -> cachedClueParagraphs) - see narrationClues.
 	originParagraphs sync.Map
 
 	// settingLocks is a keyed mutex (bookID -> *sync.Mutex) serializing
@@ -198,7 +198,6 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/generate", s.handleGenerateChapter)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/regenerate", s.handleRegenerateParagraph)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker", s.handleSetParagraphSpeaker)
-	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description", s.handleSetParagraphDescription)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/scare-quote", s.handleSetParagraphScareQuote)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote", s.handleSetParagraphQuote)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion", s.handleSetParagraphEmotion)
@@ -207,7 +206,6 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/attribute-speakers", s.handleAttributeSpeakers)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/attribute-speakers/preview", s.handlePreviewAttribution)
 	mux.HandleFunc("GET /api/books/{id}/paragraph-edits", s.handleListParagraphEdits)
-	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-descriptions", s.handleRetagDescriptions)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-scare-quotes", s.handleRetagScareQuotes)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/retag-scare-quotes/preview", s.handlePreviewScareQuotes)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/summarize", s.handleSummarizeChapter)
@@ -232,6 +230,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/speakers/reattribute", s.handleReattributeSpeaker)
 	mux.HandleFunc("POST /api/books/{id}/speakers/variants/regenerate", s.handleRegenerateVariant)
 	mux.HandleFunc("GET /api/voices/variants/{presetId}/{emotion}/audio", s.handleVariantAudio)
+	mux.HandleFunc("GET /api/voices/role-variants/{presetId}/audio", s.handleRoleVariantAudio)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/voice", s.handleSetCharacterVoice)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/invalid", s.handleSetCharacterInvalid)
 	mux.HandleFunc("PUT /api/books/{id}/characters/{characterId}/role", s.handleSetCharacterRole)
@@ -245,8 +244,8 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/characters/generate-voice", s.handleGenerateCharacterVoices)
 	mux.HandleFunc("POST /api/books/{id}/characters/regenerate-voice", s.handleRegenerateCharacterVoices)
 	mux.HandleFunc("GET /api/books/{id}/characters/{characterId}/appearances", s.handleCharacterAppearances)
-	mux.HandleFunc("GET /api/books/{id}/characters/{characterId}/descriptions", s.handleCharacterDescriptions)
 	mux.HandleFunc("POST /api/books/{id}/characters/{characterId}/characterize", s.handleCharacterizeSpeaker)
+	mux.HandleFunc("POST /api/books/{id}/characters/{characterId}/characterize/preview", s.handlePreviewCharacterization)
 	mux.HandleFunc("POST /api/books/{id}/characters/characterize", s.handleCharacterizeSpeakers)
 
 	mux.HandleFunc("GET /api/jobs", s.handleJobsSnapshot)

@@ -96,7 +96,7 @@ The **clone model** (which TTS family clones every voice's reference clip
 into paragraph audio - Higgs by default, or PocketTTS, BreezeTTS, etc.) is
 also a per-book setting, never a property of a voice: a voice preset is
 just a reference-clip recipe. New books start with the default clone model
-set on the Voices page.
+set on the Settings page.
 
 Dialogue lines can also carry an **emotion** (a small fixed set -
 `backend/internal/emotions`: warm, excited, teasing, sad, pleading,
@@ -108,6 +108,14 @@ clones from that variant instead - so it works under every clone model.
 The only Higgs inline tag still used is `<|prosody:pause|>`, inserted by a
 plain Go pass before ellipses/em dashes. See "Emotions" in
 `backend/docs/speakerattr.md`.
+
+A **play** (speaker labels before each speech, no quote marks) is
+detected at import and parsed deterministically: each speech is stored as
+dialogue already carrying its speaker (`paragraphs.source_speaker`, which
+attribution takes as given and never asks about) plus an unspoken display
+`label` ("THESEUS.", with any direction on how the line is delivered);
+stage directions stay narration. See "Plays" under `internal/epub` in
+`backend/CLAUDE.md`.
 
 The **ambience pass** (formerly "music scoring") splits each chapter into
 tone regions and gives each one a background-music/soundscape prompt and,

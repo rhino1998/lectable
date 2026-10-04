@@ -54,10 +54,11 @@ data class OfflineParagraph(
     val durationSeconds: Double,
     val inline: Boolean = false,
     val speaker: String? = null,
+    // Mirrors ParagraphDto.label: a play's speaker label, shown before the text, never spoken.
+    val label: String? = null,
     val directionMarks: List<DirectionMarkDto> = emptyList(),
     val pronunciationMarks: List<PronunciationMarkDto> = emptyList(),
     val isQuote: Boolean = false,
-    val describesCharacters: List<String> = emptyList(),
     val scareQuote: Boolean = false,
     val emotion: String? = null,
     // Mirrors ParagraphDto.audioPointerSeconds - see its own doc comment. Each downloaded

@@ -28,7 +28,9 @@ idx with the reader's speaker, as a re-run after fixing some lines would
 scores only the odd-idx corrected lines, so it compares across runs with
 and without --given=half.
 
-usage: attreval.py <label> [set] [--given=half] [--no-corrections]
+--blurbs=none leaves out the known characters' description blurbs.
+
+usage: attreval.py <label> [set] [--given=half] [--no-corrections] [--blurbs=none]
        attreval.py summary <label>
        attreval.py errors <label> [book]
        attreval.py diff <labelA> <labelB>  FIXED/BROKE per line
@@ -82,10 +84,10 @@ def preview(book, idx, query=""):
     return d
 
 
-def run(label, set_name="full", given="none", corrections=True):
+def run(label, set_name="full", given="none", corrections=True, blurbs=""):
     os.makedirs(RUNS, exist_ok=True)
     chapters = SETS[set_name]
-    params = [f"given={given}"] + ([] if corrections else ["corrections=0"])
+    params = [f"given={given}"] + ([] if corrections else ["corrections=0"]) + ([f"blurbs={blurbs}"] if blurbs else [])
     query = "?" + "&".join(params)
     # Two at a time: the worker has two LLM slots and a chapter's own
     # batches already fill both, so more just queues.
@@ -341,4 +343,5 @@ if __name__ == "__main__":
         flags = [a for a in sys.argv[2:] if a.startswith("--")]
         rest = [a for a in sys.argv[2:] if not a.startswith("--")]
         given = next((f.split("=", 1)[1] for f in flags if f.startswith("--given=")), "none")
-        run(sys.argv[1], rest[0] if rest else "full", given=given, corrections="--no-corrections" not in flags)
+        blurbs = next((f.split("=", 1)[1] for f in flags if f.startswith("--blurbs=")), "")
+        run(sys.argv[1], rest[0] if rest else "full", given=given, corrections="--no-corrections" not in flags, blurbs=blurbs)

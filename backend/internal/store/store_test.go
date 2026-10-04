@@ -286,19 +286,15 @@ func TestChapterPasses(t *testing.T) {
 		t.Fatalf("expected %+v, got %+v", want, ch.Passes)
 	}
 
-	// Scare-quote and description tagging are their own tasks now, each
-	// setting only its own pass.
+	// Scare-quote tagging is its own task, setting only its own pass.
 	if err := s.SetChapterScareQuoted(chapterID); err != nil {
 		t.Fatalf("SetChapterScareQuoted: %v", err)
-	}
-	if err := s.SetChapterDescribed(chapterID); err != nil {
-		t.Fatalf("SetChapterDescribed: %v", err)
 	}
 	ch, err = s.GetChapterByID(chapterID)
 	if err != nil {
 		t.Fatalf("GetChapterByID after tagging: %v", err)
 	}
-	if want := (Passes{Attribution: true, Description: true, ScareQuote: true}); ch.Passes != want {
+	if want := (Passes{Attribution: true, ScareQuote: true}); ch.Passes != want {
 		t.Fatalf("expected %+v, got %+v", want, ch.Passes)
 	}
 
@@ -309,7 +305,7 @@ func TestChapterPasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChapterByID after directed: %v", err)
 	}
-	if want := (Passes{Attribution: true, Description: true, ScareQuote: true, Direction: true}); ch.Passes != want {
+	if want := (Passes{Attribution: true, ScareQuote: true, Direction: true}); ch.Passes != want {
 		t.Fatalf("expected %+v, got %+v", want, ch.Passes)
 	}
 
@@ -323,7 +319,7 @@ func TestChapterPasses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetChapterByID after re-attributing: %v", err)
 	}
-	if want := (Passes{Attribution: true, Description: true, ScareQuote: true, Direction: true}); ch.Passes != want {
+	if want := (Passes{Attribution: true, ScareQuote: true, Direction: true}); ch.Passes != want {
 		t.Fatalf("expected Direction to survive re-attribution, got %+v", ch.Passes)
 	}
 }
@@ -376,7 +372,7 @@ func TestClearBookSpeakersLeavesDirectionPassAlone(t *testing.T) {
 		t.Fatalf("expected Direction to survive ClearBookSpeakers, got %+v", ch.Passes)
 	}
 
-	// A chapter that only ever reached Attribution/Description (never
+	// A chapter that only ever reached Attribution (never
 	// directed) should have both cleared back to false - attribution data
 	// itself (the thing this actually cleared) is what those stood for.
 	bookID2, chapterID2 := oneChapterBook(t, s, "", 0, "p1")
@@ -391,11 +387,11 @@ func TestClearBookSpeakersLeavesDirectionPassAlone(t *testing.T) {
 		t.Fatalf("GetChapterByID: %v", err)
 	}
 	if ch2.Passes != (Passes{}) {
-		t.Fatalf("expected Attribution/Description to be cleared by ClearBookSpeakers, got %+v", ch2.Passes)
+		t.Fatalf("expected Attribution to be cleared by ClearBookSpeakers, got %+v", ch2.Passes)
 	}
 }
 
-func TestParagraphSpeakerTagsAndDescriptions(t *testing.T) {
+func TestParagraphSpeakerAndEmotion(t *testing.T) {
 	s := openTestStore(t)
 	_, chapterID := oneChapterBook(t, s, "", 0, `"Hi," Alice said.`, "Bob looked tall and stern.")
 
@@ -406,9 +402,6 @@ func TestParagraphSpeakerTagsAndDescriptions(t *testing.T) {
 
 	if err := s.SetParagraphSpeakers(chapterID, map[int]string{0: "Alice"}); err != nil {
 		t.Fatalf("SetParagraphSpeakers: %v", err)
-	}
-	if err := s.SetParagraphDescriptions(chapterID, map[int][]string{1: {"Bob"}}); err != nil {
-		t.Fatalf("SetParagraphDescriptions: %v", err)
 	}
 	if err := s.SetParagraphEmotions(chapterID, map[int]string{0: "angry"}); err != nil {
 		t.Fatalf("SetParagraphEmotions: %v", err)
@@ -435,21 +428,13 @@ func TestParagraphSpeakerTagsAndDescriptions(t *testing.T) {
 		t.Fatalf("expected emotion cleared, got %q", p0.Emotion)
 	}
 
-	p1, err := s.GetParagraph(paragraphs[1].ID)
-	if err != nil {
-		t.Fatalf("GetParagraph(1): %v", err)
-	}
-	if len(p1.DescribesCharacters) != 1 || p1.DescribesCharacters[0] != "Bob" {
-		t.Fatalf("expected DescribesCharacters [Bob], got %v", p1.DescribesCharacters)
-	}
-
 	// SetParagraphSpeaker (singular) overrides one paragraph directly, the
 	// manual-correction path (httpapi.handleSetParagraphSpeaker) rather
 	// than a whole-chapter attribution batch.
 	if err := s.SetParagraphSpeaker(paragraphs[1].ID, "Narrator"); err != nil {
 		t.Fatalf("SetParagraphSpeaker: %v", err)
 	}
-	p1, err = s.GetParagraph(paragraphs[1].ID)
+	p1, err := s.GetParagraph(paragraphs[1].ID)
 	if err != nil {
 		t.Fatalf("GetParagraph(1) after manual override: %v", err)
 	}
@@ -588,8 +573,7 @@ func TestQuotesForBooksContextOnlyFromInlineNarration(t *testing.T) {
 	}
 }
 
-// TestQuotesAndDescriptionsForBooksSingleQuery covers QuotesForBooks/
-// DescriptionsForBooks' own rewrite from a loop issuing one query per book
+// TestQuotesForBooksSingleQuery covers QuotesForBooks' own rewrite from a loop issuing one query per book
 // to a single IN (...) query across every book, with an explicit ORDER BY
 // CASE ranking each result by the *given* bookIDs order - the part most at
 // risk of a silent bug in that rewrite, since it no longer falls out for
@@ -597,7 +581,7 @@ func TestQuotesForBooksContextOnlyFromInlineNarration(t *testing.T) {
 // bookIDs in the *reverse* of their actual book_id/creation order
 // specifically so a test that accidentally fell back to DB/creation order
 // instead of the caller-given order would fail.
-func TestQuotesAndDescriptionsForBooksSingleQuery(t *testing.T) {
+func TestQuotesForBooksSingleQuery(t *testing.T) {
 	s := openTestStore(t)
 	book1, _ := oneChapterBook(t, s, "The Saga", 1,
 		`"First book," Alice said.`, "Bob looked tall in book one.", `"Ignore me," Carol said.`)
@@ -616,20 +600,8 @@ func TestQuotesAndDescriptionsForBooksSingleQuery(t *testing.T) {
 			t.Fatalf("SetParagraphSpeakers(%s): %v", bookID, err)
 		}
 	}
-	for bookID, describes := range map[string]map[int][]string{
-		book1: {1: {"Bob"}},
-		book2: {1: {"Bob"}},
-	} {
-		chapters, err := s.ListChapterSummaries(bookID, "voice-x", nil)
-		if err != nil {
-			t.Fatalf("ListChapterSummaries(%s): %v", bookID, err)
-		}
-		if err := s.SetParagraphDescriptions(chapters[0].ID, describes); err != nil {
-			t.Fatalf("SetParagraphDescriptions(%s): %v", bookID, err)
-		}
-	}
 
-	// Reverse of creation order - QuotesForBooks/DescriptionsForBooks must
+	// Reverse of creation order - QuotesForBooks must
 	// respect *this* order, not book1-before-book2 falling out of DB/
 	// creation order by coincidence.
 	reversed := []string{book2, book1}
@@ -666,22 +638,8 @@ func TestQuotesAndDescriptionsForBooksSingleQuery(t *testing.T) {
 		t.Fatalf("expected Carol's own single quote, got %+v", carolQuotes)
 	}
 
-	descriptions, err := s.DescriptionsForBooks(reversed, "Bob", 10)
-	if err != nil {
-		t.Fatalf("DescriptionsForBooks: %v", err)
-	}
-	if len(descriptions) != 2 {
-		t.Fatalf("expected 2 Bob descriptions across both books, got %d: %+v", len(descriptions), descriptions)
-	}
-	if descriptions[0].Text != "Bob looked stern in book two." || descriptions[1].Text != "Bob looked tall in book one." {
-		t.Fatalf("expected book2's description before book1's, got %+v", descriptions)
-	}
-
 	if empty, err := s.QuotesForBooks(nil, "Alice", 10); err != nil || empty != nil {
 		t.Fatalf("QuotesForBooks(nil bookIDs) = %v, %v; want nil, nil", empty, err)
-	}
-	if empty, err := s.DescriptionsForBooks(nil, "Bob", 10); err != nil || empty != nil {
-		t.Fatalf("DescriptionsForBooks(nil bookIDs) = %v, %v; want nil, nil", empty, err)
 	}
 }
 
@@ -1405,10 +1363,7 @@ func TestResetBookPass(t *testing.T) {
 	if err := s.SetParagraphScareQuotes(chapterID, map[int]bool{1: true}); err != nil {
 		t.Fatalf("SetParagraphScareQuotes: %v", err)
 	}
-	if err := s.SetParagraphDescriptions(chapterID, map[int][]string{2: {"Alice"}}); err != nil {
-		t.Fatalf("SetParagraphDescriptions: %v", err)
-	}
-	for _, set := range []func(string) error{s.SetChapterAttributed, s.SetChapterScareQuoted, s.SetChapterDescribed, s.SetChapterDirected} {
+	for _, set := range []func(string) error{s.SetChapterAttributed, s.SetChapterScareQuoted, s.SetChapterDirected} {
 		if err := set(chapterID); err != nil {
 			t.Fatalf("set pass: %v", err)
 		}
@@ -1456,7 +1411,7 @@ func TestResetBookPass(t *testing.T) {
 	if got := para(1).Speaker; got != "Narrator" {
 		t.Fatalf("scare-quote line speaker %q after attribution reset, want Narrator kept", got)
 	}
-	if want := (Passes{ScareQuote: true, Description: true, Direction: true}); passes() != want {
+	if want := (Passes{ScareQuote: true, Direction: true}); passes() != want {
 		t.Fatalf("passes after attribution reset: %+v, want %+v", passes(), want)
 	}
 
@@ -1471,16 +1426,6 @@ func TestResetBookPass(t *testing.T) {
 		t.Fatalf("after scare-quote reset: scareQuote %v speaker %q, want false \"\"", p.ScareQuote, p.Speaker)
 	}
 
-	affected, err = s.ResetBookPass(bookID, "description", 0)
-	if err != nil {
-		t.Fatalf("ResetBookPass(description): %v", err)
-	}
-	if len(affected) != 0 {
-		t.Fatalf("description reset should never affect audio, got %v", affected)
-	}
-	if got := para(2).DescribesCharacters; len(got) != 0 {
-		t.Fatalf("describes after reset: %v, want empty", got)
-	}
 	if want := (Passes{Direction: true}); passes() != want {
 		t.Fatalf("passes after resets: %+v, want %+v", passes(), want)
 	}
@@ -1847,5 +1792,51 @@ func TestParagraphAudioChapterCopy(t *testing.T) {
 	var left int
 	if err := s.db.QueryRow(`SELECT count(*) FROM paragraph_audio WHERE paragraph_id <> 'no-such-paragraph'`).Scan(&left); err != nil || left != 0 {
 		t.Errorf("%d audio rows outlived their paragraphs (err %v)", left, err)
+	}
+}
+
+// TestNarrationMatching covers the trigram search characterization
+// retrieves with: any of several phrases, reading order, limit, and
+// phrases too short to ask.
+func TestNarrationMatching(t *testing.T) {
+	s := openTestStore(t)
+	bookID, _ := oneChapterBook(t, s, "", 0,
+		"Bert was a broad lad of nineteen.",
+		"The rain came down.",
+		"Everyone knew Tallie, the owner of the tavern.",
+		"Albert was a clerk.",
+	)
+	got, err := s.NarrationMatching([]string{bookID}, []string{"Tallie, the", "Bert was a", "ab"}, 10)
+	if err != nil {
+		t.Fatalf("NarrationMatching: %v", err)
+	}
+	want := []string{"Bert was a broad lad of nineteen.", "Everyone knew Tallie, the owner of the tavern.", "Albert was a clerk."}
+	if !slices.Equal(got, want) {
+		t.Fatalf("NarrationMatching = %q, want %q", got, want)
+	}
+	if got, err := s.NarrationMatching([]string{bookID}, []string{"Bert"}, 1); err != nil || len(got) != 1 || got[0] != want[0] {
+		t.Fatalf("limit 1 = %q, %v", got, err)
+	}
+	if got, err := s.NarrationMatching([]string{bookID}, []string{"ab"}, 10); err != nil || got != nil {
+		t.Fatalf("only short phrases = %q, %v", got, err)
+	}
+}
+
+func TestParagraphsContainingAll(t *testing.T) {
+	s := openTestStore(t)
+	bookID, _ := oneChapterBook(t, s, "", 0,
+		"Scylla spoke with a heavy accent.",
+		`"You sound Greek," he told Scylla.`,
+		"Her accent was gone by morning.",
+	)
+	got, err := s.ParagraphsContainingAll([]string{bookID}, []string{"scylla", "accent", "a"}, 10)
+	if err != nil || !slices.Equal(got, []string{"Scylla spoke with a heavy accent."}) {
+		t.Fatalf("ParagraphsContainingAll = %q, %v", got, err)
+	}
+	if got, err := s.ParagraphsContainingAll([]string{bookID}, []string{"Scylla"}, 1); err != nil || len(got) != 1 {
+		t.Fatalf("limit 1 = %q, %v", got, err)
+	}
+	if got, err := s.ParagraphsContainingAll([]string{bookID}, []string{"a"}, 10); err != nil || got != nil {
+		t.Fatalf("only short terms = %q, %v", got, err)
 	}
 }

@@ -94,6 +94,18 @@ type characterizeResponse struct {
 	VoiceInvalidated bool `json:"voiceInvalidated"`
 }
 
+// characterizePreviewResponse is a characterization that was run but not
+// stored.
+type characterizePreviewResponse struct {
+	Summary string `json:"summary"`
+	RefLine string `json:"refLine"`
+	// Lookups are the book searches the casting call made, each with how
+	// many sentences it found.
+	Lookups []string `json:"lookups"`
+	// CurrentSummary is the character's stored casting, for comparison.
+	CurrentSummary string `json:"currentSummary"`
+}
+
 type generateVoiceResponse struct {
 	VoicePresetID string `json:"voicePresetId"`
 	AudioURL      string `json:"audioUrl"`

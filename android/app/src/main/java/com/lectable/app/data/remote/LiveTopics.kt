@@ -38,9 +38,6 @@ object LiveTopics {
     fun characterAppearances(bookId: String, characterId: String): LiveTopic<List<SpeakerAppearanceDto>> =
         LiveTopic("characterAppearances", mapOf("bookId" to bookId, "characterId" to characterId), serializer<List<SpeakerAppearanceDto>>())
 
-    fun characterDescriptions(bookId: String, characterId: String): LiveTopic<List<SpeakerAppearanceDto>> =
-        LiveTopic("characterDescriptions", mapOf("bookId" to bookId, "characterId" to characterId), serializer<List<SpeakerAppearanceDto>>())
-
     fun bookmarks(bookId: String): LiveTopic<List<BookmarkDto>> =
         LiveTopic("bookmarks", mapOf("bookId" to bookId), serializer<List<BookmarkDto>>())
 

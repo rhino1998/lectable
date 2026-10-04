@@ -398,9 +398,9 @@ func (s *Server) buildDefaultVoice() (voiceSettingsDTO, error) {
 }
 
 // handleUpdateDefaultVoice sets what new books are created with: the voice
-// and clone model ("selecting" a voice, or picking the default clone model,
-// on the Voices page) and the per-book switches (its "Defaults for new
-// books"). Existing books are unaffected. cloneModel "", an empty
+// ("selecting" one on the Voices page), and the clone model and per-book
+// switches (the Settings page's "Defaults for new books"). Existing books
+// are unaffected. cloneModel "", an empty
 // characterVoiceMode, and an omitted strictOrder/settingRequired each leave
 // that default as it is.
 func (s *Server) handleUpdateDefaultVoice(w http.ResponseWriter, r *http.Request) {

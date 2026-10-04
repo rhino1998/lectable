@@ -36,7 +36,6 @@ type bulkAction string
 
 const (
 	bulkAttribution      bulkAction = "attribution"
-	bulkDescription      bulkAction = "description"
 	bulkScareQuote       bulkAction = "scare_quote"
 	bulkDirection        bulkAction = "direction"
 	bulkPronunciation    bulkAction = "pronunciation"
@@ -56,7 +55,6 @@ type resetPass string
 
 const (
 	resetAttribution     = resetPass(bulkAttribution)
-	resetDescription     = resetPass(bulkDescription)
 	resetScareQuote      = resetPass(bulkScareQuote)
 	resetDirection       = resetPass(bulkDirection)
 	resetPronunciation   = resetPass(bulkPronunciation)
@@ -87,16 +85,6 @@ var chapterBulkPasses = map[bulkAction]chapterBulkPass{
 		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
 			_, err := s.Jobs.RunAttribution(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
 				return s.attributeChapter(ctx, book, ch, attributeFull)
-			})
-			return err
-		},
-	},
-	bulkDescription: {
-		kind: jobs.KindDescription,
-		done: func(p store.Passes) bool { return p.Description },
-		run: func(s *Server, ctx context.Context, tier int, book *store.Book, ch *store.Chapter) error {
-			_, err := s.Jobs.RunDescription(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
-				return s.describeChapterForJob(ctx, book, ch)
 			})
 			return err
 		},
@@ -607,7 +595,7 @@ func (s *Server) provisionUsedVoice(ctx context.Context, tier func() int, book *
 // page's per-column reset buttons: clears one pass across the whole book as
 // though it had never run, and deletes whatever generated audio it made
 // stale. pass is a bulk action name:
-//   - "attribution"/"description"/"scare_quote"/"direction"/"pronunciation":
+//   - "attribution"/"scare_quote"/"direction"/"pronunciation":
 //     the paragraph data that pass wrote plus its chapters.passes flag (see
 //     store.PassResets), invalidating audio for just the paragraphs whose
 //     narration it changed (and their scare-quote merge groups). The

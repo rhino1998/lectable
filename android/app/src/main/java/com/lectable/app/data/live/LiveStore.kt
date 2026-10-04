@@ -121,8 +121,6 @@ class LiveStore @Inject constructor(
     fun characterAppearances(bookId: String, characterId: String): StateFlow<LiveResult<List<SpeakerAppearanceDto>>> =
         topic(LiveTopics.characterAppearances(bookId, characterId))
 
-    fun characterDescriptions(bookId: String, characterId: String): StateFlow<LiveResult<List<SpeakerAppearanceDto>>> =
-        topic(LiveTopics.characterDescriptions(bookId, characterId))
 
     /** One topic instance's shared flow - [LiveTopics] (generated from the backend's topic table)
      *  fixes its wire name, params, and value type together. */

@@ -177,27 +177,6 @@ export const api = {
       body: { speaker },
     }),
 
-  // setParagraphSpeaker's own counterpart for a *description* line (a
-  // narration paragraph the Describe pass tagged as describing a
-  // character's appearance/personality, not a spoken line) - used by the
-  // Speakers page's per-character "descriptions" list to move one
-  // individually misattributed description from `from` to `to`, without
-  // touching any other character that same paragraph might also describe
-  // (a paragraph can describe more than one person). "" and "Narrator" for
-  // `to` both mean "describes no one now"; any other name is registered as
-  // a real character if it wasn't one already.
-  setParagraphDescription: (
-    bookId: string,
-    chapterIdx: number,
-    paragraphIdx: number,
-    from: string,
-    to: string,
-  ) =>
-    call('PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/description', {
-      path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx },
-      body: { from, to },
-    }),
-
   // Marks (or unmarks) one quoted paragraph as a scare quote live - a
   // reader's own manual correction of speakerattr's ScareQuoteChapter pass.
   // Unlike setParagraphSpeaker/setParagraphDescription, this immediately
@@ -244,10 +223,10 @@ export const api = {
   // this book's audio for their lines in that emotion - see
   // httpapi.handleRegenerateVariant. Fire-and-forget; the speakers topic
   // reports the new status once it renders.
-  regenerateVariant: (bookId: string, speaker: string, emotion: string) =>
+  regenerateVariant: (bookId: string, speaker: string, emotion: string, speakerIndex?: number) =>
     call('POST /api/books/{id}/speakers/variants/regenerate', {
       path: { id: bookId },
-      body: { speaker, emotion },
+      body: { speaker, emotion, speakerIndex },
     }),
 
   // Sound-effect (Stable Audio SFX) test surface (see backend/CLAUDE.md's
@@ -362,15 +341,6 @@ export const api = {
     call('POST /api/books/{id}/chapters/{idx}/attribute-speakers', {
       path: { id: bookId, idx: chapterIdx },
       query: { scope: 'edits' },
-    }),
-
-  // Enqueues a description-tagging job for one chapter (503 if the backend
-  // has no LECTABLE_SPEAKER_LLM_MODEL_PATH configured) - fire-and-forget like
-  // attributeSpeakers; the job waits on the chapter's scare-quote tagging
-  // first. See httpapi.handleRetagDescriptions.
-  retagDescriptions: (bookId: string, chapterIdx: number) =>
-    call('POST /api/books/{id}/chapters/{idx}/retag-descriptions', {
-      path: { id: bookId, idx: chapterIdx },
     }),
 
   // Enqueues emotion labeling (each dialogue line gets an emotion from

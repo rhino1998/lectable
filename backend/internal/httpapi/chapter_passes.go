@@ -16,70 +16,6 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
 
-// knownCharacterDescriptionMaxChars bounds how much of a known character's
-// own tagged description text (see Store.DescriptionsForBooks) gets handed
-// to attribution as identifying context - a short blurb, not the whole
-// paragraph, since this rides along on every single attribution batch
-// (unlike characterization's own much larger sample, gathered once per
-// character, ever).
-const knownCharacterDescriptionMaxChars = 160
-
-// knownCharacterDescriptions gathers a short identifying blurb for each of
-// existing's characters (their own first tagged description paragraph, if
-// they have one - see Store.SetParagraphDescriptions/DescriptionsForBooks),
-// keyed by name, for AttributeChapter's own "Known characters" prompt (see
-// its own doc comment on why this exists): a narration tag often refers to
-// someone by role or epithet rather than their proper name ("the captain
-// said," "the old orc grunted") - a bare name list gives the model nothing
-// to connect that back to who's actually known, but a one-line "what they
-// look like/are" blurb often repeats the very role/epithet the narration
-// itself uses, closing that gap. A character with no tagged description
-// yet (most of them, especially early in a chapter, or a book where
-// description-tagging hasn't run) is simply absent from the result -
-// AttributeChapter treats that the same as "no blurb available," not an
-// error.
-func (s *Server) knownCharacterDescriptions(book *store.Book, existing []store.Character) (map[string]string, error) {
-	if len(existing) == 0 {
-		return nil, nil
-	}
-	books, err := s.booksInScope(book)
-	if err != nil {
-		return nil, err
-	}
-	bookIDs := make([]string, len(books))
-	for i := range books {
-		bookIDs[i] = books[i].ID
-	}
-	out := make(map[string]string, len(existing))
-	for _, c := range existing {
-		descs, err := s.Store.DescriptionsForBooks(bookIDs, c.Name, 1)
-		if err != nil {
-			return nil, err
-		}
-		if len(descs) == 0 {
-			continue
-		}
-		out[c.Name] = truncateForPrompt(descs[0].Text, knownCharacterDescriptionMaxChars)
-	}
-	return out, nil
-}
-
-// truncateForPrompt trims s to at most maxChars runes for embedding in an
-// LLM prompt, breaking at the last whitespace before the cutoff when
-// possible so it doesn't end mid-word, and appending "..." when actually
-// truncated.
-func truncateForPrompt(s string, maxChars int) string {
-	r := []rune(s)
-	if len(r) <= maxChars {
-		return s
-	}
-	cut := string(r[:maxChars])
-	if i := strings.LastIndexAny(cut, " \t\n"); i > 0 {
-		cut = cut[:i]
-	}
-	return strings.TrimSpace(cut) + "..."
-}
-
 // invalidSpeakers is the set of names marked invalid (store.Character.
 // Invalid) in a scope - matched case-insensitively, since the model
 // re-emitting a rejected name with different casing ("he" vs "He") is
@@ -177,10 +113,6 @@ func (s *Server) runAttribution(ctx context.Context, book *store.Book, ch *store
 			knownPronouns[c.Name] = c.Pronouns
 		}
 	}
-	knownDescriptions, err := s.knownCharacterDescriptions(book, existing)
-	if err != nil {
-		return attributionRun{}, err
-	}
 	// The reader's speaker corrections: this chapter's are shown as settled
 	// lines (opts.given), earlier chapters' as examples of past mistakes.
 	// Later chapters' are left out - a first pass runs in reading order and
@@ -197,6 +129,13 @@ func (s *Server) runAttribution(ctx context.Context, book *store.Book, ch *store
 			given[e.ParagraphIdx] = speakerLabel(e.Value)
 		case e.ChapterIdx < ch.Idx && !opts.noCorrections:
 			corrections = append(corrections, speakerattr.Correction{ChapterIdx: e.ChapterIdx, Text: e.Text, Wrong: speakerLabel(e.Original), Right: speakerLabel(e.Value)})
+		}
+	}
+	// A play's lines come with their speaker (store.Paragraph.
+	// SourceSpeaker): settled like a reader's correction, never asked.
+	for _, p := range all {
+		if _, corrected := given[p.Idx]; p.SourceSpeaker != "" && !corrected {
+			given[p.Idx] = p.SourceSpeaker
 		}
 	}
 
@@ -241,7 +180,7 @@ func (s *Server) runAttribution(ctx context.Context, book *store.Book, ch *store
 	// under real contention could leave most of a bulk run's chapters
 	// silently stuck half-done with nothing left in the queue to ever
 	// pick them back up).
-	attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+	attrRoster := speakerattr.Roster{Names: known, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
 	attrRoster = s.withFirstPerson(attrRoster, book)
 	// The chapter's cast from its summary, when it has one: listed in every
 	// batch with what the chapter calls them, so a batch that only says
@@ -331,6 +270,12 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 	}
 	for idx := range edited {
 		delete(speakers, idx)
+	}
+	// So does a line the book itself names the speaker of - a play's.
+	for _, p := range all {
+		if p.SourceSpeaker != "" {
+			delete(speakers, p.Idx)
+		}
 	}
 
 	paragraphByIdx := make(map[int]store.Paragraph, len(all))
@@ -574,11 +519,6 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 			knownPronouns[c.Name] = c.Pronouns
 		}
 	}
-	knownDescriptions, err := s.knownCharacterDescriptions(book, existing)
-	if err != nil {
-		return 0, nil, err
-	}
-	delete(knownDescriptions, excludeName)
 
 	inputs := make([]speakerattr.ParagraphInput, len(all))
 	paragraphByIdx := make(map[int]store.Paragraph, len(all))
@@ -636,7 +576,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	sort.Ints(retry)
 	var attrErr error
 	if len(retry) > 0 {
-		attrRoster := speakerattr.Roster{Names: known, Descriptions: knownDescriptions, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
+		attrRoster := speakerattr.Roster{Names: known, Roles: knownRoles, Aliases: knownAliases, Pronouns: knownPronouns, Prominent: s.prominentSpeakers(book.ID, ch.Idx, known)}
 		attrRoster = s.withFirstPerson(attrRoster, book)
 		// The chapter's cast from its summary, when it has one: listed in every
 		// batch with what the chapter calls them, so a batch that only says
@@ -692,98 +632,9 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	return len(bySpeakerIdx), nil, attrErr
 }
 
-// describeChapter runs speakerattr.Client.DescribeChapter over every
-// paragraph in chapter and persists which ones describe a character
-// (Store.SetParagraphDescriptions), upserting any newly-discovered
-// character it names along the way - the same deterministic is_quote gate
-// attributeChapter already applies to Speaker applies here to Describes,
-// since narration *about* someone isn't the same as them speaking, whatever
-// the model output. The body of describeChapterForJob (a
-// jobs.KindDescription task). Any error returned is specifically DescribeChapter's own (a genuine LLM/
-// parse failure, not a pause - see its own doc comment) or a persistence
-// failure; per-character UpsertCharacter failures along the way are
-// individually logged and skipped rather than failing the whole call, the
-// same best-effort-within-a-best-effort treatment attributeChapter's own
-// speaker-upsert loop doesn't need (a single UpsertCharacter failure there
-// already fails outright, but this call site never blocks anything more
-// important on getting every single character registered).
-func (s *Server) describeChapter(ctx context.Context, book *store.Book, ch *store.Chapter, all []store.Paragraph) error {
-	scope := store.SeriesScope(book)
-	roster, err := s.Store.ListCharacters(scope)
-	if err != nil {
-		return fmt.Errorf("list characters: %w", err)
-	}
-	existing, invalid := splitInvalidCharacters(roster)
-	known := make([]string, len(existing))
-	for i, c := range existing {
-		known[i] = c.Name
-	}
-
-	inputs := make([]speakerattr.ParagraphInput, len(all))
-	for i, p := range all {
-		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline}
-	}
-
-	descriptions, _, describeErr := s.Speaker.DescribeChapter(ctx, book.Title, ch.Title, known, inputs, nil)
-	// Persisted below regardless of describeErr - descriptions still holds
-	// whatever batches completed before a failing one, same "persist what
-	// actually succeeded" treatment attributeChapter gives a partial
-	// AttributeChapter error; describeErr itself is still returned at the
-	// end, after that persistence, so a caller sees the failure without
-	// losing the real progress this call already made.
-
-	paragraphByIdx := make(map[int]store.Paragraph, len(all))
-	for _, p := range all {
-		paragraphByIdx[p.Idx] = p
-	}
-
-	byDescribesIdx := make(map[int][]string, len(descriptions))
-	for idx, names := range descriptions {
-		// Only an actual narration paragraph may describe someone - the
-		// same is_quote gate attributeChapter applies to Speaker, and for
-		// the same reason: a quoted-dialogue span can't simultaneously be
-		// a description of someone else, whatever the model output. No
-		// found-paragraph fallback trusting the model: a description is
-		// only ever kept when this paragraph is positively confirmed
-		// non-quote.
-		p, found := paragraphByIdx[idx]
-		if !found || p.IsQuote {
-			continue
-		}
-		// An invalid name is dropped outright rather than remapped -
-		// there's no "Unknown" equivalent for who a description is about.
-		kept := make([]string, 0, len(names))
-		for _, name := range names {
-			if !invalid.has(name) {
-				kept = append(kept, name)
-			}
-		}
-		names = kept
-		if len(names) == 0 {
-			continue
-		}
-		for i, name := range names {
-			// A description can register a character not yet in scope -
-			// see DescribeChapter's own doc comment: a character can be
-			// discovered by how they're described before they ever speak.
-			char, _, uerr := s.Store.UpsertCharacter(scope, name, false)
-			if uerr != nil {
-				log.Printf("describeChapter: upsert character %q for chapter %s: %v", name, ch.ID, uerr)
-				continue
-			}
-			names[i] = char.Name // the row's own spelling
-		}
-		byDescribesIdx[idx] = names
-	}
-	if serr := s.Store.SetParagraphDescriptions(ch.ID, byDescribesIdx); serr != nil {
-		return fmt.Errorf("persist descriptions: %w", serr)
-	}
-	return describeErr
-}
-
 // scareQuoteChapter runs speakerattr.Client.ScareQuoteChapter over every
 // quoted paragraph in chapter and persists which ones are scare quotes
-// (Store.SetParagraphScareQuotes) - describeChapter's own sibling, the
+// (Store.SetParagraphScareQuotes) - the
 // body of scareQuoteChapterForJob (a jobs.KindScareQuote task).
 //
 // Invalidates every paragraph in the inline paragraph set (see
@@ -796,13 +647,14 @@ func (s *Server) describeChapter(ctx context.Context, book *store.Book, ch *stor
 func (s *Server) scareQuoteChapter(ctx context.Context, book *store.Book, ch *store.Chapter, all []store.Paragraph) error {
 	inputs := make([]speakerattr.ParagraphInput, len(all))
 	for i, p := range all {
-		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote}
+		// A play's speech is never a scare quote: it has no quote marks
+		// to misread, and its speaker is the book's own word.
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && p.SourceSpeaker == ""}
 	}
 
 	scareQuotes, _, scareQuoteErr := s.Speaker.ScareQuoteChapter(ctx, book.Title, ch.Title, inputs, nil)
-	// Persisted below regardless of scareQuoteErr, same "keep whatever
-	// batches actually completed" treatment describeChapter gives its own
-	// partial-failure case.
+	// Persisted below regardless of scareQuoteErr: whatever batches
+	// completed are kept.
 
 	// A line the reader marked or unmarked by hand keeps their call
 	// (store.ParagraphEdit) - the pass is additive, so an unmarked line
@@ -814,7 +666,7 @@ func (s *Server) scareQuoteChapter(ctx context.Context, book *store.Book, ch *st
 	byIdx := make(map[int]bool, len(scareQuotes))
 	var changed []store.Paragraph
 	for _, p := range all {
-		if edited[p.Idx] {
+		if edited[p.Idx] || p.SourceSpeaker != "" {
 			continue
 		}
 		want := scareQuotes[p.Idx]
@@ -1229,24 +1081,6 @@ func (s *Server) scareQuoteChapterForJob(ctx context.Context, book *store.Book, 
 	return 0, nil, nil
 }
 
-// describeChapterForJob is a jobs.KindDescription task's work:
-// describeChapter over every paragraph, setting Passes.Description only on
-// a clean full pass. scareQuoteChapterForJob's shape; the task itself waits
-// on the chapter's scare-quote tagging (jobs.Manager.scareQuoteDependency).
-func (s *Server) describeChapterForJob(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
-	all, err := s.Store.ListParagraphsRaw(ch.ID)
-	if err != nil {
-		return 0, nil, err
-	}
-	if err := s.describeChapter(ctx, book, ch, all); err != nil {
-		return 0, nil, err
-	}
-	if err := s.Store.SetChapterDescribed(ch.ID); err != nil {
-		log.Printf("describeChapterForJob: could not advance chapter %s passes: %v", ch.ID, err)
-	}
-	return 0, nil, nil
-}
-
 // handleAttributeSpeakers enqueues speaker attribution for one chapter,
 // explicitly triggered by the reader (not automatic) - see
 // backend/CLAUDE.md's "Speaker attribution" section. Fire-and-forget
@@ -1322,8 +1156,8 @@ func (s *Server) handleAttributeSpeakers(w http.ResponseWriter, r *http.Request)
 
 // handleTagDirections enqueues speech-direction tagging for one chapter,
 // explicitly triggered by the reader - see directChapter's own doc comment
-// for why this isn't chained after attribution automatically the way
-// describeChapter is. Fire-and-forget (202 Accepted, no result body),
+// for why this isn't chained after attribution automatically.
+// Fire-and-forget (202 Accepted, no result body),
 // mirroring handleAttributeSpeakers exactly: tagging runs the LLM over a
 // whole chapter in batches and can take a while, so this shouldn't hold a
 // request open for it - see jobs.Manager.EnqueueAttribution's own doc
@@ -1362,23 +1196,6 @@ func (s *Server) handleTagDirections(w http.ResponseWriter, r *http.Request) {
 
 	s.Jobs.EnqueueDirection(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
 		return s.directChapter(ctx, book, ch, nil)
-	})
-	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
-}
-
-// handleRetagDescriptions queues a KindDescription task for one chapter -
-// the Speakers page's own "Retag descriptions" button. Always re-runs, even
-// if the chapter was already described. Fire-and-forget (202), the same
-// shape as handleAttributeSpeakers; the task waits on the chapter's
-// scare-quote tagging first (jobs.Manager.scareQuoteDependency), and
-// progress shows up on the Jobs dashboard.
-func (s *Server) handleRetagDescriptions(w http.ResponseWriter, r *http.Request) {
-	book, ch, ok := s.chapterLLMTarget(w, r)
-	if !ok {
-		return
-	}
-	s.Jobs.EnqueueDescription(book.ID, ch.ID, ch.Idx, func(ctx context.Context) (int, func(), error) {
-		return s.describeChapterForJob(ctx, book, ch)
 	})
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
