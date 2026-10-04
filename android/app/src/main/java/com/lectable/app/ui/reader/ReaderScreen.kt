@@ -66,11 +66,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
 internal const val PLAYBACK_SPEED_MIN = 0.5f
-internal const val PLAYBACK_SPEED_MAX = 5f
+internal const val PLAYBACK_SPEED_MAX = 10f
 private const val PLAYBACK_SPEED_INCREMENT = 0.25f
 internal val PLAYBACK_SPEED_RANGE = PLAYBACK_SPEED_MIN..PLAYBACK_SPEED_MAX
 // Compose Slider's own `steps` counts the stops strictly *between* the two ends, not the ends
-// themselves - 0.5 to 5.0 by 0.25 is 19 total stops (0.5, 0.75, ..., 5.0), so 17 lie between.
+// themselves - 0.5 to 10.0 by 0.25 is 39 total stops (0.5, 0.75, ..., 10.0), so 37 lie between.
 internal val PLAYBACK_SPEED_STEPS = ((PLAYBACK_SPEED_MAX - PLAYBACK_SPEED_MIN) / PLAYBACK_SPEED_INCREMENT).roundToInt() - 1
 
 /** Rounds a raw drag position to the nearest 0.25 increment - belt-and-suspenders alongside the

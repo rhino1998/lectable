@@ -20,6 +20,7 @@ import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.repository.DownloadRepository
+import com.lectable.app.data.settings.DEFAULT_SPEED_RAMP_SECONDS
 import com.lectable.app.data.settings.PlaybackSettingsRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -35,6 +36,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 data class PlaybackState(
     val chapterIdx: Int = -1,
@@ -68,6 +70,10 @@ private const val MAX_LOAD_RETRIES = 4
 /** Delay before the first re-prepare; each later one waits this much longer. */
 private const val LOAD_RETRY_DELAY_MS = 1_500L
 
+// How often a speed ramp moves the player's speed (see ParagraphPlayer.applyPlaybackSpeed) -
+// each move makes the audio sink drain and re-time, so not every frame.
+private const val SPEED_RAMP_TICK_MS = 200L
+
 /**
  * Owns one ExoPlayer instance and advances through a book's paragraphs one
  * `.wav` at a time - the Android analogue of frontend/src/hooks/usePlayback.ts.
@@ -97,7 +103,9 @@ class ParagraphPlayer @Inject constructor(
     private val playbackSettingsRepository: PlaybackSettingsRepository,
     private val downloadRepository: DownloadRepository,
 ) {
-    private val player = ExoPlayer.Builder(context)
+    // Carries speeds past ExoPlayer's own 8x ceiling - see FastSpeedRenderersFactory.
+    private val renderersFactory = FastSpeedRenderersFactory(context)
+    private val player = ExoPlayer.Builder(context, renderersFactory)
         .setAudioAttributes(
             AudioAttributes.Builder()
                 .setUsage(C.USAGE_MEDIA)
@@ -250,6 +258,9 @@ class ParagraphPlayer @Inject constructor(
         scope.launch {
             playbackSettingsRepository.speed.collect { speed -> applyPlaybackSpeed(speed) }
         }
+        scope.launch {
+            playbackSettingsRepository.speedRampSeconds.collect { speedRampSeconds = it }
+        }
     }
 
     /** Call once the book's own detail loads - the notification/lock-screen media control
@@ -323,17 +334,52 @@ class ParagraphPlayer @Inject constructor(
 
     fun pause() = player.pause()
 
-    /** Applies immediately, persists across paragraph/chapter transitions (ExoPlayer's
-     *  playback speed is a player-level setting, not per-media-item), and saves it via
-     *  [PlaybackSettingsRepository] so it's restored on the next app launch too. */
+    /** Persists across paragraph/chapter transitions (ExoPlayer's playback speed is a
+     *  player-level setting, not per-media-item), and saves it via [PlaybackSettingsRepository]
+     *  so it's restored on the next app launch too. While narration is playing the change is
+     *  eased in - see [applyPlaybackSpeed]. */
     fun setPlaybackSpeed(speed: Float) {
         applyPlaybackSpeed(speed)
         scope.launch { playbackSettingsRepository.setSpeed(speed) }
     }
 
+    // The speed the player is running at right now - [PlayerState.playbackSpeed] is the one
+    // that was asked for, which this ramps toward.
+    private var appliedSpeed = 1f
+    // Seconds per 0.5x of change (PlaybackSettingsRepository.speedRampSeconds); 0 = at once.
+    private var speedRampSeconds = DEFAULT_SPEED_RAMP_SECONDS
+    private var speedRamp: Job? = null
+
+    /** Makes [speed] the playback speed: at once when nothing is playing (or ramping is off),
+     *  otherwise eased toward it at 0.5x per [speedRampSeconds], so a big jump doesn't land
+     *  mid-word. A new target while a ramp is running just redirects it. */
     private fun applyPlaybackSpeed(speed: Float) {
-        player.playbackParameters = PlaybackParameters(speed)
         _state.update { it.copy(playbackSpeed = speed) }
+        if (speedRamp?.isActive == true) return
+        if (speedRampSeconds <= 0f || !player.isPlaying) {
+            setAppliedSpeed(speed)
+            return
+        }
+        speedRamp = scope.launch {
+            while (true) {
+                val target = _state.value.playbackSpeed
+                val perSecond = if (speedRampSeconds > 0f) 0.5f / speedRampSeconds else Float.MAX_VALUE
+                val step = perSecond * SPEED_RAMP_TICK_MS / 1000f
+                // Paused mid-ramp: nothing is audible, so finish it.
+                if (!player.isPlaying || abs(target - appliedSpeed) <= step) {
+                    setAppliedSpeed(target)
+                    break
+                }
+                setAppliedSpeed(appliedSpeed + if (target > appliedSpeed) step else -step)
+                delay(SPEED_RAMP_TICK_MS)
+            }
+        }
+    }
+
+    private fun setAppliedSpeed(speed: Float) {
+        appliedSpeed = speed
+        renderersFactory.speed = speed
+        player.playbackParameters = PlaybackParameters(speed)
     }
 
     /**
@@ -453,7 +499,7 @@ class ParagraphPlayer @Inject constructor(
         // that needs to know about local downloads at all.
         val mediaItem = mediaItemFor(chapterIdx, paragraphIdx) ?: return
         player.setMediaItem(mediaItem)
-        player.playbackParameters = PlaybackParameters(_state.value.playbackSpeed)
+        player.playbackParameters = PlaybackParameters(appliedSpeed)
         player.prepare()
         if (seekTarget > 0) player.seekTo((seekTarget * 1000).toLong())
         player.playWhenReady = true

@@ -46,7 +46,7 @@ function splitIntoParts(chapters: ChapterSummary[], parts: number): number[][] {
 // drifts. Word mode groups words into phrases long enough for the chosen
 // top speed: 0.3s of audio per 1x (1.5s at 5x); 1x is plain per-word.
 type SyncMode = 'paragraph' | 'words'
-const SYNC_SPEEDS = [1, 2, 3, 4, 5] as const
+const SYNC_SPEEDS = [1, 2, 3, 4, 5, 6, 8, 10] as const
 const phraseSecondsFor = (speed: number) => (speed <= 1 ? 0 : 0.3 * speed)
 
 function syncLabel(e: BookExport): string | null {

@@ -237,7 +237,7 @@ private val SecondaryIconButtonSize = 40.dp
  * The playback-speed picker - a [ModalBottomSheet] like [ChapterPickerSheet]/[VoicePickerSheet]
  * rather than a small anchored popup, so it pops up over the whole screen the same way those do.
  * See [CleanSlider]'s own doc comment for why the slider itself isn't just a stock Material3
- * `Slider` at [PLAYBACK_SPEED_STEPS]'s 17 steps.
+ * `Slider` at [PLAYBACK_SPEED_STEPS]'s 37 steps.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

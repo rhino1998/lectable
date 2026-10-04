@@ -51,6 +51,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.lectable.app.data.settings.LOOKAHEAD_PARAGRAPHS_STEP
 import com.lectable.app.data.settings.MAX_LOOKAHEAD_PARAGRAPHS
+import com.lectable.app.data.settings.MAX_SPEED_RAMP_SECONDS
+import com.lectable.app.data.settings.SPEED_RAMP_SECONDS_STEP
 import com.lectable.app.data.settings.MIN_LOOKAHEAD_PARAGRAPHS
 import com.lectable.app.data.settings.ReaderFontFamily
 import com.lectable.app.data.settings.MAX_FONT_SIZE_SP
@@ -75,6 +77,7 @@ fun SettingsScreen(
     val fontSize by viewModel.fontSize.collectAsState()
     val fontFamily by viewModel.fontFamily.collectAsState()
     val lookaheadParagraphs by viewModel.lookaheadParagraphs.collectAsState()
+    val speedRampSeconds by viewModel.speedRampSeconds.collectAsState()
     val discoveredServers by viewModel.discoveredServers.collectAsState()
 
     DisposableEffect(Unit) {
@@ -203,6 +206,24 @@ fun SettingsScreen(
                 steps = (MAX_LOOKAHEAD_PARAGRAPHS - MIN_LOOKAHEAD_PARAGRAPHS) / LOOKAHEAD_PARAGRAPHS_STEP - 1,
                 startLabel = "$MIN_LOOKAHEAD_PARAGRAPHS",
                 endLabel = "$MAX_LOOKAHEAD_PARAGRAPHS",
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Text(
+                if (speedRampSeconds > 0f) "Speed change ramp (${"%.2f".format(speedRampSeconds)}s per 0.5×)" else "Speed change ramp (off)",
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                "How gradually a new playback speed takes effect while narration is playing. Off applies it at once.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            CleanSlider(
+                value = speedRampSeconds,
+                onValueChange = { viewModel.setSpeedRampSeconds((it / SPEED_RAMP_SECONDS_STEP).roundToInt() * SPEED_RAMP_SECONDS_STEP) },
+                valueRange = 0f..MAX_SPEED_RAMP_SECONDS,
+                steps = (MAX_SPEED_RAMP_SECONDS / SPEED_RAMP_SECONDS_STEP).roundToInt() - 1,
+                startLabel = "Off",
+                endLabel = "${MAX_SPEED_RAMP_SECONDS.roundToInt()}s",
                 modifier = Modifier.fillMaxWidth(),
             )
 

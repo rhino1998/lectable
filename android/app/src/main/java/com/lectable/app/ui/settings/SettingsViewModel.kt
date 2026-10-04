@@ -7,6 +7,7 @@ import com.lectable.app.data.discovery.NsdDiscoveryRepository
 import com.lectable.app.data.repository.DownloadRepository
 import com.lectable.app.data.settings.DEFAULT_FONT_SIZE_SP
 import com.lectable.app.data.settings.DEFAULT_LOOKAHEAD_PARAGRAPHS
+import com.lectable.app.data.settings.DEFAULT_SPEED_RAMP_SECONDS
 import com.lectable.app.data.settings.LightingSettings
 import com.lectable.app.data.settings.LightingSettingsRepository
 import com.lectable.app.playback.lighting.DiscoveredBridge
@@ -195,6 +196,13 @@ class SettingsViewModel @Inject constructor(
 
     val lookaheadParagraphs: StateFlow<Int> = playbackSettingsRepository.lookaheadParagraphs
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DEFAULT_LOOKAHEAD_PARAGRAPHS)
+
+    val speedRampSeconds: StateFlow<Float> = playbackSettingsRepository.speedRampSeconds
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DEFAULT_SPEED_RAMP_SECONDS)
+
+    fun setSpeedRampSeconds(seconds: Float) {
+        viewModelScope.launch { playbackSettingsRepository.setSpeedRampSeconds(seconds) }
+    }
 
     fun setTheme(theme: ThemePreference) {
         viewModelScope.launch { themeSettingsRepository.setTheme(theme) }

@@ -123,7 +123,10 @@ compiled-in default in place if nothing answers in time.
   `ServerSettingsRepository` (backend URL), `ThemeSettingsRepository`
   (system/light/dark), `ReadingSettingsRepository` (reader font
   size/family - Android-only, no web equivalent), `PlaybackSettingsRepository`
-  (last-picked speed).
+  (last-picked speed; the speed-change ramp - while narration plays,
+  `ParagraphPlayer.applyPlaybackSpeed` eases a new speed in at 0.5x per
+  `speedRampSeconds`, default 1s, 0 = at once, set on the Settings screen;
+  speeds past ExoPlayer's 8x ceiling go through `playback/FastAudioSink.kt`).
 - `data/discovery/NsdDiscoveryRepository.kt` - mDNS backend discovery, see
   "Server address" above.
 - `data/remote/LiveClient.kt` - the Android counterpart of

@@ -15,6 +15,14 @@ private val Context.playbackDataStore by preferencesDataStore(name = "playback_s
 private val PLAYBACK_SPEED_KEY = floatPreferencesKey("speed")
 private val LOOKAHEAD_PARAGRAPHS_KEY = intPreferencesKey("lookahead_paragraphs")
 private val MUSIC_VOLUME_KEY = floatPreferencesKey("music_volume")
+private val SPEED_RAMP_SECONDS_KEY = floatPreferencesKey("speed_ramp_seconds")
+
+/** How gradually a playback-speed change takes effect while narration is playing: the seconds
+ *  it takes to move 0.5x toward the new speed (so 1x to 3x at the default takes 4s). 0 applies
+ *  a change at once. See [com.lectable.app.playback.ParagraphPlayer]'s speed ramp. */
+const val DEFAULT_SPEED_RAMP_SECONDS = 1f
+const val MAX_SPEED_RAMP_SECONDS = 5f
+const val SPEED_RAMP_SECONDS_STEP = 0.25f
 
 /** Background music's own volume (0..1, the ExoPlayer volume [com.lectable.app.playback
  *  .BackgroundMusicPlayer] mixes it in at, relative to narration's full volume) - set from the
@@ -56,6 +64,14 @@ class PlaybackSettingsRepository @Inject constructor(
         context.playbackDataStore.edit { prefs ->
             prefs[LOOKAHEAD_PARAGRAPHS_KEY] = count.coerceIn(MIN_LOOKAHEAD_PARAGRAPHS, MAX_LOOKAHEAD_PARAGRAPHS)
         }
+    }
+
+    val speedRampSeconds: Flow<Float> = context.playbackDataStore.data.map { prefs ->
+        (prefs[SPEED_RAMP_SECONDS_KEY] ?: DEFAULT_SPEED_RAMP_SECONDS).coerceIn(0f, MAX_SPEED_RAMP_SECONDS)
+    }
+
+    suspend fun setSpeedRampSeconds(seconds: Float) {
+        context.playbackDataStore.edit { prefs -> prefs[SPEED_RAMP_SECONDS_KEY] = seconds.coerceIn(0f, MAX_SPEED_RAMP_SECONDS) }
     }
 
     val musicVolume: Flow<Float> = context.playbackDataStore.data.map { prefs ->
