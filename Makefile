@@ -10,19 +10,10 @@
 GO_MODULES := backend audiocpp-go llamacpp-go lac
 GOLANGCI_LINT ?= $(shell command -v golangci-lint 2>/dev/null || echo $(shell go env GOPATH)/bin/golangci-lint)
 ANDROID_SDK_ROOT ?= /home/rhino/android-sdk-toolchains
-# Local audio.cpp/llama.cpp builds for the cgo modules' tests - same defaults
-# as backend/Makefile; override on the command line.
-AUDIOCPP_DIR ?= $(HOME)/audio.cpp/build-rocm7/bin
-LLAMACPP_DIR ?= $(HOME)/llama.cpp-latest/build-live/bin
-# ROCm 7.2.4, unpacked user-space (no system install; /opt/rocm is still
-# 6.4.4 and on ld.so.conf, so this must come first). Under WSL it reaches the
-# GPU through librocdxg, which needs HSA_ENABLE_DXG_DETECTION=1.
-ROCM_DIR ?= $(HOME)/rocm7-user/root/opt/rocm-7.2.4
-export CGO_LDFLAGS := -L$(AUDIOCPP_DIR) -L$(LLAMACPP_DIR)
-# backend/internal/store's search index needs SQLite's FTS5 compiled in.
-export GOFLAGS := -tags=sqlite_fts5 $(GOFLAGS)
-export LD_LIBRARY_PATH := $(LLAMACPP_DIR):$(AUDIOCPP_DIR):$(ROCM_DIR)/lib:$(ROCM_DIR)/llvm/lib:$(LD_LIBRARY_PATH)
-export HSA_ENABLE_DXG_DETECTION := 1
+# The cgo modules' tests need the local audio.cpp/llama.cpp builds; env.sh
+# locates them (and the Go toolchain) for every recipe.
+SHELL := /bin/bash
+export BASH_ENV := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))/env.sh
 
 .PHONY: check lint lint-go lint-frontend lint-android test test-go test-frontend test-android \
 	deploy deploy-backend install-android
