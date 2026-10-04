@@ -61,20 +61,20 @@ data class OfflineParagraph(
     val scareQuote: Boolean = false,
     val emotion: String? = null,
     // Mirrors ParagraphDto.audioPointerSeconds - see its own doc comment. Each downloaded
-    // paragraph still gets its own local .wav file (downloadChapter fetches by this paragraph's
+    // paragraph still gets its own local clip file (downloadChapter fetches by this paragraph's
     // own audioUrl, which for a scare-quote merge group's non-anchor member already resolves to
     // the group's one shared clip - so its own local copy is a full, redundant duplicate of that
     // same clip, not a slice), so this offset is exactly as meaningful for seeking into it
     // offline as it is for the streamed original.
     val audioPointerSeconds: Double = 0.0,
     // ParagraphDto.contentHash/audioHash as of what's stored here - [audioHash] describes the
-    // downloaded .wav, not whatever the backend has since regenerated. "" for a paragraph
+    // downloaded clip, not whatever the backend has since regenerated. "" for a paragraph
     // stored before hashes existed (see hasAudioOf).
     val contentHash: String = "",
     val audioHash: String = "",
 )
 
-/** Whether this stored paragraph's local .wav is still the audio [live] would serve - by
+/** Whether this stored paragraph's local clip is still the audio [live] would serve - by
  *  audioHash when both sides have one, otherwise (a row stored before hashes existed) by the
  *  duration/pointer heuristic that predates them. Never true for a live paragraph whose audio
  *  isn't ready. */

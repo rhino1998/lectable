@@ -63,7 +63,7 @@ data class DownloadedChapter(
     // it. A region is READY here only while its clip is on disk (under the book's music dir,
     // by region id), with the durationSeconds of that clip.
     @ColumnInfo(defaultValue = "") val musicJson: String = "",
-    // Directory holding this chapter's %05d.wav files - always
+    // Directory holding this chapter's clips (%05d.audio) - always
     // context.filesDir/downloads/<libraryId-hash>/<bookId>/<chapterIdx>/<voiceKey-hash>/ in
     // practice (see DownloadRepository.chapterDir), stored explicitly rather than recomputed so
     // a future storage-layout change doesn't orphan already-downloaded files.

@@ -248,7 +248,8 @@ compiled-in default in place if nothing answers in time.
 - `playback/ParagraphPlayer.kt` - the Android analogue of
   `../frontend/src/hooks/usePlayback.ts`: one ExoPlayer instance advancing
   through a book's paragraphs one clip at a time. Downloaded clips are
-  saved as `%05d.wav` whatever their format - the backend now serves Ogg
+  saved as `%05d.audio` whatever their format (`.wav` before; `renameLegacyClips`
+  renames those at startup) - the backend now serves Ogg
   Opus (older downloads are real WAV) - and ExoPlayer picks the extractor
   by sniffing content, so both play. **App-scoped
   (`@Singleton`), not tied to the Reader screen's ViewModel** - playback

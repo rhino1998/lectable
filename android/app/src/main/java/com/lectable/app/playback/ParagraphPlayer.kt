@@ -68,7 +68,7 @@ private const val SPEED_RAMP_TICK_MS = 200L
 
 /**
  * Owns one ExoPlayer instance and advances through a book's paragraphs one
- * `.wav` at a time - the Android analogue of frontend/src/hooks/usePlayback.ts.
+ * clip at a time - the Android analogue of frontend/src/hooks/usePlayback.ts.
  *
  * Like that hook, this is keyed by (chapterIdx, paragraphIdx) pairs looked
  * up in a `Map<Int, ChapterDetailDto>` of currently-loaded chapters, not a

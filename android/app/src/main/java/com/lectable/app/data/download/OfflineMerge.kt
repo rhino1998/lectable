@@ -6,7 +6,7 @@ import kotlinx.serialization.json.Json
 
 /**
  * This COMPLETE row with [chapter]'s text/annotations applied (the backend always wins), keeping
- * each paragraph's stored audio fields - the local .wav files aren't touched here, so
+ * each paragraph's stored audio fields - the local clip files aren't touched here, so
  * durationSeconds/audioPointerSeconds/audioHash keep describing them. Adopts [chapter]'s hash
  * only when every paragraph's local audio still matches, i.e. when the row is then fully in sync;
  * otherwise the old hash stays, so OfflineReconciler still sees the chapter as changed and

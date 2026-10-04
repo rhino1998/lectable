@@ -12,6 +12,8 @@ import com.lectable.app.data.download.DownloadedChapterDao
 import com.lectable.app.data.download.OfflineParagraph
 import com.lectable.app.data.download.STAGED_SUFFIX
 import com.lectable.app.data.download.clipFile
+import com.lectable.app.data.download.clipFiles
+import com.lectable.app.data.download.renameLegacyClips
 import com.lectable.app.data.download.commitStagedClips
 import com.lectable.app.data.download.discardStagedClips
 import com.lectable.app.data.download.downloadDirName
@@ -55,6 +57,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -119,7 +122,7 @@ internal fun ChapterMusicDto.ambienceSettled(withClips: Boolean): Boolean {
 
 /**
  * Downloads a chapter's generated audio to the device for offline playback, one paragraph's
- * `.wav` at a time (reusing the same `GET /api/paragraphs/{id}/audio` endpoint streaming
+ * clip at a time (reusing the same `GET /api/paragraphs/{id}/audio` endpoint streaming
  * playback already uses), plus enough book/chapter metadata (title, author, cover, paragraph
  * text/durations) to browse and open a downloaded book without a live network call at all - see
  * [cachedBook]/[cachedChapter], used by LibraryViewModel/ReaderViewModel as an offline fallback.
@@ -143,6 +146,11 @@ class DownloadRepository @Inject constructor(
 ) {
     private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+    init {
+        // Clips downloaded before they were given a format-neutral name - see renameLegacyClips.
+        repoScope.launch(Dispatchers.IO) { renameLegacyClips(File(context.filesDir, "downloads")) }
+    }
+
     // Mirrors Room's own state via its Flow-returning query - no manual cache invalidation
     // needed, and this keeps ParagraphPlayer's per-paragraph lookup synchronous even though
     // Room's own DAO calls are all suspend. Spans every libraryId (see DownloadedChapterDao
@@ -158,7 +166,7 @@ class DownloadRepository @Inject constructor(
     // row's JSON actually changes (compared by reference - a new row from Room is a new string).
     private val storedParagraphs = ConcurrentHashMap<DownloadKey, Pair<String, Map<Int, OfflineParagraph>>>()
 
-    /** The downloaded .wav for [paragraph], or null if there isn't one or it's stale. A live
+    /** The downloaded clip for [paragraph], or null if there isn't one or it's stale. A live
      *  [paragraph] is only matched to its local file while its audio is still what was
      *  downloaded (see [hasAudioOf] - by audioHash): the file is keyed by the book's voice only,
      *  but a paragraph's audio also depends on its speaker (and scare-quote merge group), so a
@@ -530,7 +538,7 @@ class DownloadRepository @Inject constructor(
      *
      * Doubles as the refresh path for a chapter that's already COMPLETE (OfflineReconciler found
      * its hash changed server-side, or the user downloaded it again): under the same voice, every
-     * paragraph whose local .wav still matches the backend's audioHash is kept rather than
+     * paragraph whose local clip still matches the backend's audioHash is kept rather than
      * re-fetched; under a new voice everything is fetched into a fresh directory. Either way the
      * existing copy stays untouched, and playable offline, until the new one is complete - new
      * clips are staged as `.part` files and only swapped in (and the row replaced) at the end,
@@ -723,7 +731,7 @@ class DownloadRepository @Inject constructor(
                     contentJson = json.encodeToString(chapter.content),
                     readyParagraphs = total,
                     totalParagraphs = total,
-                    totalBytes = dir.listFiles { f -> f.name.endsWith(".wav") }?.sumOf { it.length() } ?: 0L,
+                    totalBytes = clipFiles(dir).sumOf { it.length() },
                     lastAccessedAt = System.currentTimeMillis(),
                     hash = chapter.hash,
                     // Ambience isn't part of this download (see downloadBookAmbience) - a

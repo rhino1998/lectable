@@ -27,9 +27,9 @@ class OfflineFilesTest {
     @Test
     fun `clip files are named by zero-padded paragraph index`() {
         val dir = tmp.root
-        assertEquals("00007.wav", clipFile(dir, 7).name)
-        assertEquals("12345.wav", clipFile(dir, 12345).name)
-        assertEquals("00007.wav.part", stagedClipFile(dir, 7).name)
+        assertEquals("00007.audio", clipFile(dir, 7).name)
+        assertEquals("12345.audio", clipFile(dir, 12345).name)
+        assertEquals("00007.audio.part", stagedClipFile(dir, 7).name)
         assertEquals(dir, clipFile(dir, 7).parentFile)
     }
 
@@ -43,7 +43,7 @@ class OfflineFilesTest {
 
         commitStagedClips(dir, listOf(0, 1, 2))
 
-        assertEquals(listOf("00000.wav", "00001.wav", "00002.wav"), dir.names())
+        assertEquals(listOf("00000.audio", "00001.audio", "00002.audio"), dir.names())
         assertEquals("old 0", clipFile(dir, 0).readText())
         assertEquals("new 1", clipFile(dir, 1).readText())
         assertEquals("new 2", clipFile(dir, 2).readText())
@@ -57,7 +57,7 @@ class OfflineFilesTest {
 
         commitStagedClips(dir, listOf(0, 1))
 
-        assertEquals(listOf("00000.wav", "00001.wav", "notes.txt"), dir.names())
+        assertEquals(listOf("00000.audio", "00001.audio", "notes.txt"), dir.names())
     }
 
     @Test
@@ -79,7 +79,7 @@ class OfflineFilesTest {
 
         discardStagedClips(dir)
 
-        assertEquals(listOf("00000.wav"), dir.names())
+        assertEquals(listOf("00000.audio"), dir.names())
         assertEquals("old 0", clipFile(dir, 0).readText())
     }
 
@@ -89,6 +89,58 @@ class OfflineFilesTest {
         discardStagedClips(missing)
         commitStagedClips(missing, listOf(0))
         assertFalse(missing.exists())
+    }
+
+    @Test
+    fun `a clip still under its legacy name is found`() {
+        val dir = tmp.root
+        File(dir, "00003.wav").writeText("legacy 3")
+        assertEquals("00003.wav", clipFile(dir, 3).name)
+        assertEquals("legacy 3", clipFile(dir, 3).readText())
+        // The current name wins once both exist.
+        File(dir, "00003.audio").writeText("current 3")
+        assertEquals("current 3", clipFile(dir, 3).readText())
+        assertEquals(listOf("00003.audio", "00003.wav"), clipFiles(dir).map { it.name }.sorted())
+    }
+
+    @Test
+    fun `committing over a legacy-named clip leaves one copy`() {
+        val dir = tmp.root
+        File(dir, "00000.wav").writeText("legacy 0")
+        File(dir, "00001.wav").writeText("legacy 1")
+        File(dir, "00002.wav").writeText("legacy 2")
+        stagedClipFile(dir, 1).writeText("new 1")
+
+        commitStagedClips(dir, listOf(0, 1))
+
+        assertEquals(listOf("00000.wav", "00001.audio"), dir.names())
+        assertEquals("new 1", clipFile(dir, 1).readText())
+        assertEquals("legacy 0", clipFile(dir, 0).readText())
+    }
+
+    @Test
+    fun `legacy clips are renamed throughout the downloads tree`() {
+        val chapterA = tmp.newFolder("lib", "book", "0", "voice")
+        val chapterB = tmp.newFolder("lib", "book", "1", "voice")
+        val music = tmp.newFolder("lib", "book", "music")
+        File(chapterA, "00000.wav").writeText("a0")
+        File(chapterA, "00001.wav").writeText("a1")
+        File(chapterA, "00001.wav.part").writeText("staged, left alone")
+        File(chapterB, "00000.wav").writeText("stale duplicate")
+        File(chapterB, "00000.audio").writeText("b0")
+        File(music, "theme.wav").writeText("not a paragraph clip")
+        File(music, "region-1").writeText("music")
+
+        assertEquals(2, renameLegacyClips(tmp.root))
+
+        assertEquals(listOf("00000.audio", "00001.audio", "00001.wav.part"), chapterA.names())
+        assertEquals("a1", File(chapterA, "00001.audio").readText())
+        assertEquals(listOf("00000.audio"), chapterB.names())
+        assertEquals("b0", File(chapterB, "00000.audio").readText())
+        assertEquals(listOf("region-1", "theme.wav"), music.names())
+        // Nothing left to do the second time, or where there are no downloads at all.
+        assertEquals(0, renameLegacyClips(tmp.root))
+        assertEquals(0, renameLegacyClips(File(tmp.root, "missing")))
     }
 
     @Test

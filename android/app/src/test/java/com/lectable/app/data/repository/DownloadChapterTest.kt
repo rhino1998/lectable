@@ -179,7 +179,7 @@ class DownloadChapterTest {
 
         val row = row()!!
         assertEquals(DownloadStatus.COMPLETE, row.status)
-        assertEquals(mapOf("00000.wav" to "clip 0 v1", "00001.wav" to "clip 1 v1", "00002.wav" to "clip 2 v1"), row.files())
+        assertEquals(mapOf("00000.audio" to "clip 0 v1", "00001.audio" to "clip 1 v1", "00002.audio" to "clip 2 v1"), row.files())
         assertEquals(3 to 3, row.readyParagraphs to row.totalParagraphs)
         assertEquals("h1", row.hash)
         assertEquals("Chapter One", row.title)
@@ -246,7 +246,7 @@ class DownloadChapterTest {
         withTimeout(10_000) { job.await() }
 
         assertEquals(DownloadStatus.COMPLETE, row()!!.status)
-        assertEquals("clip 1 v2", row()!!.files()["00001.wav"])
+        assertEquals("clip 1 v2", row()!!.files()["00001.audio"])
         coVerify(exactly = 1) { api.lookahead(BOOK, match { it.chapterIdx == 0 && it.paragraphIdx == 1 }) }
     }
 
@@ -260,8 +260,8 @@ class DownloadChapterTest {
 
         assertEquals(listOf("/audio/0?v=1", "/audio/1?v=1"), media.fetches)
         val row = row()!!
-        assertEquals("clip 1 v1", row.files()["00001.wav"])
-        assertEquals("clip 1 v1", row.files()["00002.wav"])
+        assertEquals("clip 1 v1", row.files()["00001.audio"])
+        assertEquals("clip 1 v1", row.files()["00002.audio"])
         assertEquals(listOf(0.0, 0.0, 1.25), row.paragraphs().map { it.audioPointerSeconds })
     }
 
@@ -276,7 +276,7 @@ class DownloadChapterTest {
 
         assertEquals(listOf("/audio/1?v=2"), media.fetches)
         val row = row()!!
-        assertEquals(mapOf("00000.wav" to "clip 0 v1", "00001.wav" to "clip 1 v2", "00002.wav" to "clip 2 v1"), row.files())
+        assertEquals(mapOf("00000.audio" to "clip 0 v1", "00001.audio" to "clip 1 v2", "00002.audio" to "clip 2 v1"), row.files())
         assertEquals("h2", row.hash)
         assertEquals(listOf("a0-1", "a1-2", "a2-1"), row.paragraphs().map { it.audioHash })
         assertEquals("edited", row.paragraphs()[1].text)
@@ -291,7 +291,7 @@ class DownloadChapterTest {
         download()
 
         val row = row()!!
-        assertEquals(setOf("00000.wav", "00001.wav"), row.files().keys)
+        assertEquals(setOf("00000.audio", "00001.audio"), row.files().keys)
         assertEquals(2, row.totalParagraphs)
     }
 
@@ -305,15 +305,15 @@ class DownloadChapterTest {
         serve(chapter(para(0, v = 2), para(1, status = AudioStatuses.GENERATING), hash = "h2"))
         val job = async(Dispatchers.Default) { repo.downloadChapter(BOOK, 0, VOICE, pinned = true) }
         withTimeout(5_000) { while ("/audio/0?v=2" !in synchronized(media.fetches) { media.fetches.toList() }) delay(10) }
-        withTimeout(5_000) { while (!File(before.localDir, "00000.wav.part").exists()) delay(10) }
+        withTimeout(5_000) { while (!File(before.localDir, "00000.audio.part").exists()) delay(10) }
 
         assertEquals(before, row())
-        assertEquals("clip 0 v1", File(before.localDir, "00000.wav").readText())
-        assertEquals("clip 1 v1", File(before.localDir, "00001.wav").readText())
+        assertEquals("clip 0 v1", File(before.localDir, "00000.audio").readText())
+        assertEquals("clip 1 v1", File(before.localDir, "00001.audio").readText())
 
         serve(chapter(para(0, v = 2), para(1, v = 2), hash = "h3"))
         withTimeout(10_000) { job.await() }
-        assertEquals(mapOf("00000.wav" to "clip 0 v2", "00001.wav" to "clip 1 v2"), row()!!.files())
+        assertEquals(mapOf("00000.audio" to "clip 0 v2", "00001.audio" to "clip 1 v2"), row()!!.files())
         assertEquals("h3", row()!!.hash)
     }
 
@@ -333,7 +333,7 @@ class DownloadChapterTest {
         }
 
         assertEquals(before, row())
-        assertEquals(mapOf("00000.wav" to "clip 0 v1", "00001.wav" to "clip 1 v1"), before.files())
+        assertEquals(mapOf("00000.audio" to "clip 0 v1", "00001.audio" to "clip 1 v1"), before.files())
     }
 
     @Test
@@ -378,7 +378,7 @@ class DownloadChapterTest {
         assertEquals("voice-b", row.voiceKey)
         assertNotEquals(old.localDir, row.localDir)
         assertFalse(File(old.localDir).exists())
-        assertEquals(mapOf("00000.wav" to "clip 0 v2", "00001.wav" to "clip 1 v2"), row.files())
+        assertEquals(mapOf("00000.audio" to "clip 0 v2", "00001.audio" to "clip 1 v2"), row.files())
         assertEquals(2, media.fetches.size)
     }
 
@@ -398,7 +398,7 @@ class DownloadChapterTest {
         }
 
         assertEquals(old, row())
-        assertEquals(mapOf("00000.wav" to "clip 0 v1", "00001.wav" to "clip 1 v1"), old.files())
+        assertEquals(mapOf("00000.audio" to "clip 0 v1", "00001.audio" to "clip 1 v1"), old.files())
         assertEquals(listOf(File(old.localDir).name), File(old.localDir).parentFile!!.list()!!.toList())
     }
 
@@ -418,6 +418,35 @@ class DownloadChapterTest {
         assertNull(repo.localAudioFile(BOOK, 0, "voice-b", chapter.paragraphs[1]))
         assertNull(repo.localAudioFile(BOOK, 1, VOICE, chapter.paragraphs[1]))
         assertNull(repo.localAudioFile("other-book", 0, VOICE, chapter.paragraphs[1]))
+    }
+
+    @Test
+    fun `a refresh of a copy with legacy-named clips reuses them`() {
+        serve(chapter(para(0), para(1)))
+        download()
+        val dir = File(row()!!.localDir)
+        // As an older version of the app left it.
+        dir.listFiles()!!.forEach { it.renameTo(File(dir, it.name.replace(".audio", ".wav"))) }
+        media.fetches.clear()
+
+        serve(chapter(para(0), para(1, v = 2), hash = "h2"))
+        download()
+
+        assertEquals(listOf("/audio/1?v=2"), media.fetches)
+        assertEquals(mapOf("00000.wav" to "clip 0 v1", "00001.audio" to "clip 1 v2"), row()!!.files())
+        assertEquals("clip 0 v1".length * 2L, row()!!.totalBytes)
+    }
+
+    @Test
+    fun `clips downloaded under the legacy name are renamed at startup`() = runBlocking {
+        val dir = tmp.newFolder("downloads", "abc", BOOK, "0", "voice")
+        File(dir, "00000.wav").writeText("legacy")
+
+        repo // constructing it starts the rename
+
+        withTimeout(5_000) { while (!File(dir, "00000.audio").exists()) delay(10) }
+        assertFalse(File(dir, "00000.wav").exists())
+        assertEquals("legacy", File(dir, "00000.audio").readText())
     }
 
     @Test
