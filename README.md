@@ -66,9 +66,13 @@ ACE-Step 1.5 Turbo and Stable Audio 3 Small Music.
 
 ## Quick start
 
-1. **Backend**: from `backend/`, build both binaries
-   (`go build -o ttsworker ./cmd/ttsworker && go build -o server ./cmd/server`),
-   then run `./server` — it spawns `./ttsworker` itself.
+1. **Backend**: from `backend/`, `make build` builds both binaries and
+   `./run.sh` starts the server, which spawns `./ttsworker` itself
+   (`make run` does both). They take the audio.cpp/llama.cpp/ROCm locations
+   and the `sqlite_fts5` build tag from [`env.sh`](./env.sh) — edit it, or
+   set `AUDIOCPP_DIR`/`LLAMACPP_DIR`/`ROCM_DIR`, if yours are elsewhere. A
+   bare `go build` needs `. ./env.sh` first: without the tag the server
+   fails at startup.
 2. **Frontend**: `npm run dev` (from `frontend/`), served at `:5173` and
    proxied to the backend at `:8080`.
 3. **Android** (optional): `./gradlew assembleDebug` (from `android/`), then

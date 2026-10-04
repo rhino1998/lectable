@@ -548,9 +548,10 @@ above) - check here before trusting otherwise if this list drifts.
 `app/src/test/` has pure-JVM unit tests (`ServerSettingsRepositoryTest.kt`,
 `LiveOpsTest.kt` for `applyLiveOps` against the backend's patch wire
 format, and the ones below) - run and pass via `./gradlew test`. There is
-no Robolectric or mocking library, so a class bound to ExoPlayer or Room
-is tested through the plain functions its decisions live in - put new
-logic of that kind there rather than inline:
+no Robolectric, so a class bound to ExoPlayer is tested through the plain
+functions its decisions live in - put new logic of that kind there rather
+than inline. MockK (test-only) stands in for final collaborators such as
+`LiveStore` and `Context`; DAOs are small in-memory fakes:
 - `playback/PlaybackQueue.kt` (`PlaybackQueueTest`) - `ParagraphPlayer`'s
   decisions: what playing a paragraph takes (`playAction`: ask for the
   chapter, park, seek, seek within a merge group, load), which clips to
@@ -562,6 +563,11 @@ logic of that kind there rather than inline:
   paragraphs (`toCachedParagraphs`).
 - `ChapterMusicDto.toAmbienceDownloadState`/`ambienceSettled` in
   `DownloadRepository.kt` (`AmbienceStateTest`).
+- `DownloadChapterTest` - `DownloadRepository.downloadChapter` end to end
+  against a temp directory: first download, waiting on generation,
+  re-requesting a failed paragraph, a merge group's one fetch, refresh
+  (only changed clips; the old copy intact until the swap, and after a
+  failure), a voice change, and `localAudioFile`'s staleness check.
 
 `app/src/androidTest/` has one
 Compose smoke test that launches `MainActivity` and checks the app title

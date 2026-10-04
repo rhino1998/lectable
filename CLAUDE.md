@@ -17,7 +17,7 @@ Qwen3-TTS/Higgs Audio models. Independent components, each with its own
   watchdog-restarted by `cmd/server` (see `backend/internal/ttsworker`) -
   isolated into its own disposable process because audio.cpp has a
   confirmed native memory leak, root-caused to a specific upstream bug (see
-  `backend/CLAUDE.md`'s "ttsworker / audioworker / llmworker" section) and
+  `backend/docs/audiocpp-patches.md`) and
   patched in this box's local `/home/rhino/audio.cpp` checkout - uncommitted
   there and not upstreamed, deliberately, so treat any fresh/reset checkout
   of that repo as still carrying the leak unless the patch has been
@@ -106,8 +106,8 @@ one reference-clip *variant* per emotion its lines actually use (rendered
 by BreezeTTS instructed cloning of the base clip), and an emotional line
 clones from that variant instead - so it works under every clone model.
 The only Higgs inline tag still used is `<|prosody:pause|>`, inserted by a
-plain Go pass before ellipses/em dashes. See `backend/CLAUDE.md`'s
-"Emotions" section.
+plain Go pass before ellipses/em dashes. See "Emotions" in
+`backend/docs/speakerattr.md`.
 
 The **ambience pass** (formerly "music scoring") splits each chapter into
 tone regions and gives each one a background-music/soundscape prompt and,
@@ -115,29 +115,29 @@ in its **lighting sub-pass**, a room-lighting cue (color, accent,
 brightness, effect). The backend only stores cues; the clients drive
 Philips Hue lights themselves over the bridge's local v1 API (HTTPS)
 (`frontend/src/lighting`, android `playback/lighting`), configured
-per device. See `backend/CLAUDE.md`'s `run-ambience` entry.
+per device. See the `run-ambience` entry in `backend/docs/api.md`.
 
 A per-book **setting profile** (era, technology, place, accent, genre)
 is written once per book by one LLM call over excerpts from across it, the first time a pass needs it, and shown to the ambience,
 lighting and characterization prompts so each stops guessing the world
-from its own short span. See `backend/CLAUDE.md`'s `.../setting` entry.
+from its own short span. See the `.../setting` entry in `backend/docs/api.md`.
 
 A per-chapter **summary pass** writes each chapter's summary, scenes
 (where, when, who's there) and cast (with what the text calls them);
 attribution reads the cast and ambience/lighting the scenes. See
-`backend/CLAUDE.md`'s `.../summarize` entry.
+the `.../summarize` entry in `backend/docs/api.md`.
 
 ## Running everything locally
 
-1. `backend`: from `backend/`, build both binaries once
-   (`go build -o ttsworker ./cmd/ttsworker && go build -o server ./cmd/server`,
-   with `CGO_LDFLAGS`/`LD_LIBRARY_PATH` pointed at local audio.cpp *and*
-   llama.cpp builds - see `audiocpp-go/README.md`/`llamacpp-go/README.md`.
-   Only the `ttsworker` build actually needs either linked; `cmd/server`
-   needs neither, so those env vars are harmless-but-unused for its own
-   build), then run `./server` (it spawns `./ttsworker` itself - see
-   `backend/CLAUDE.md` for env vars). `go run ./cmd/server` also works as
-   long as `./ttsworker` has been built into `backend/` first.
+1. `backend`: from `backend/`, `make build` builds both binaries and
+   `./run.sh` starts `./server`, which spawns `./ttsworker` itself (`make
+   run` does both; see `backend/CLAUDE.md` for env vars). Both take their
+   build environment from `env.sh` at the repo root: `CGO_LDFLAGS`/
+   `LD_LIBRARY_PATH` pointed at local audio.cpp *and* llama.cpp builds
+   (see `audiocpp-go/README.md`/`llamacpp-go/README.md`; only `ttsworker`
+   links either) and the `sqlite_fts5` build tag, without which `server`
+   builds but fails at startup. For a bare `go build`/`go run
+   ./cmd/server`, `. ./env.sh` first.
 2. `frontend`: `npm run dev` (from `frontend/`)
 3. `android`: optional - `./gradlew assembleDebug` (from `android/`), needs
    `ANDROID_SDK_ROOT` set to a Linux-native Android SDK (see
@@ -195,7 +195,7 @@ client, not a browser.)
   WAV; see `backend/CLAUDE.md`'s `internal/audiomaint`),
   latents sidecars beside clips whose model has them
   (`<idx>.lat`: Higgs/BreezeTTS codes, PocketTTS latents, exact - see
-  `backend/CLAUDE.md`'s "Latents in the backend") and music seeds as
+  `backend/docs/latents.md`) and music seeds as
   `music/<regionID>.seed.lat` (Stable Audio latents; legacy `.seed.wav` is
   migrated in the background),
   `backups/library-<timestamp>.sqlite` (rolling daily copies of the
