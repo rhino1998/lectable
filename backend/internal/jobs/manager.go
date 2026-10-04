@@ -8,7 +8,6 @@ import (
 	"errors"
 	"log"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,8 +15,8 @@ import (
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/sched"
 	"github.com/rhino1998/lectable/backend/internal/store"
-	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 )
@@ -104,7 +103,7 @@ const maxInFlight = 8
 // or tasks that queue here despite the model having a free slot.
 //
 // KindSpeakerAttribution itself is the one exception to "several poolLLM
-// tasks can progress together": globalAttributionSlotDependency caps it to
+// tasks can progress together": task.CanStart caps it to
 // a single in-flight attribution task at a time, across every book, on
 // top of (not instead of) this pool's own >1 capacity - a deliberate,
 // narrower scheduling choice independent of the VRAM reasoning below, so
@@ -194,7 +193,7 @@ var maxSFXInFlight = envIntOr("LECTABLE_MAX_SFX_IN_FLIGHT", 4)
 // maxTaskAttempts bounds how many total dispatches (the first try plus
 // retries) a task gets after genuine failures before handleResult gives up
 // and reports it as a real failure (AudioError for generation, the error
-// itself for an LLM task's waiters) - see task.attempt/task.requeueCopy.
+// itself for an LLM task's waiters) - see task.attempt/the scheduler's retry.
 // Matches speakerattr's own maxGenerateRetries convention (2 retries, 3
 // attempts total) for a malformed LLM response - same order of magnitude
 // reasoning: a transient hiccup (a dropped ttsworker connection, a one-off
@@ -204,7 +203,7 @@ var maxSFXInFlight = envIntOr("LECTABLE_MAX_SFX_IN_FLIGHT", 4)
 const maxTaskAttempts = 3
 
 // retryEligible reports whether a task that just failed with err should be
-// retried via the queue (see maxTaskAttempts/task.requeueCopy) rather than
+// retried via the queue (see maxTaskAttempts/the scheduler's retry) rather than
 // reported as a real failure: err must be non-nil, err can't be a
 // cancellation, and there has to be attempt budget left. The cancellation
 // exclusion matters specifically for an explicit reader Cancel/CancelAll: a
@@ -272,26 +271,21 @@ func (m *Manager) maybeRecoverWorker(err error) {
 	}()
 }
 
-// poolGeneration/poolDesign/poolLLM are this package's three worker slot
-// pools, now just taskqueue.PoolKey values (see kindPool/poolFor) rather
-// than a closed, hand-maintained enum - internal/taskqueue itself has no
-// idea these three are special, and a caller could introduce a fourth
-// simply by having some Kind report a new key, with no changes needed to
-// taskqueue's own dispatch machinery at all (see its own doc comment).
-// What still IS hand-maintained here, deliberately, is which Kind maps to
-// which of these three (kindPool) and each pool's own capacity
-// (NewManager's RegisterPool calls, using maxInFlight/
-// maxAttributionInFlight/maxDesignInFlight above) - that mapping is real
-// business knowledge (which kind of work shares which GPU-bound resource
-// and how many of it can run at once), not something a generic scheduler
-// could infer on its own.
+// Which Kind dispatches through which pool (kindPool) and how many of a
+// pool's tasks run at once (poolCapacity) is this package's own knowledge:
+// which work shares which GPU-bound resource. The scheduler only sees each
+// task's Context and CanStart.
+// poolKey names a worker pool: a scheduler context (one pool runs at a
+// time) with its own capacity (poolCapacity).
+type poolKey string
+
 const (
 	// poolGeneration is KindVoiceClone's pool (maxInFlight slots) -
 	// GPU-bound paragraph-audio cloning, dispatched to the ttsworker
 	// process against a cached, session-reused clone model (audioworker's
 	// own LRU + 8-slot session cache) - cheap enough per call that several
 	// of these running at once is the whole reason maxInFlight > 1 exists.
-	poolGeneration taskqueue.PoolKey = "generation"
+	poolGeneration poolKey = "generation"
 	// poolDesign is every VoiceDesign-model task's own single dedicated
 	// slot (see maxDesignInFlight): KindVoiceDesign (a paragraph rendered
 	// straight from a fully custom instruct, no preset/reference clip),
@@ -304,11 +298,11 @@ const (
 	// pool's slot count, not just its existence, matter). Still TTS-model
 	// work like poolGeneration (the same ttsworker process/VRAM budget), not
 	// LLM work, so it shares poolGeneration's own mutual exclusion with
-	// poolLLM below (enforced generically now by taskqueue.Queue itself -
+	// poolLLM below (enforced generically now by the scheduler itself -
 	// see its own "one pool at a time" doc comment - not by anything this
 	// package still has to implement), just with its own independent, much
 	// smaller slot count.
-	poolDesign taskqueue.PoolKey = "design"
+	poolDesign poolKey = "design"
 	// poolSFX is KindSFXGeneration/KindSFXPreview's own shared slot
 	// (maxSFXInFlight) - every generation-only "gen task" engine (ACE-Step,
 	// Stable Audio - Music/SFX/Medium - see audioworker.Worker's own
@@ -318,14 +312,14 @@ const (
 	// resident at once). familyOf defaults an unrecognized pool to "tts",
 	// so this needs no explicit case there to correctly share
 	// poolGeneration/poolDesign's own mutual exclusion against poolLLM.
-	poolSFX taskqueue.PoolKey = "sfx"
+	poolSFX poolKey = "sfx"
 	// poolLLM is KindSpeakerAttribution/KindSpeakerCharacterization/
 	// KindSpeechDirection's pool (maxAttributionInFlight slots) - LLM-bound
 	// work dispatched to the ttsworker process via internal/speakerattr
 	// (which itself proxies to internal/llmworker, hosted alongside
 	// poolGeneration/poolDesign's own TTS models - see backend/
 	// CLAUDE.md's "ttsworker / audioworker" section).
-	poolLLM taskqueue.PoolKey = "llm"
+	poolLLM poolKey = "llm"
 )
 
 // kindPool declares which pool each Kind dispatches through - see
@@ -333,8 +327,8 @@ const (
 // extending those switches") for why this is a plain map rather than a
 // switch statement: registering a new Kind's pool is now one line here,
 // not a second hand-maintained switch case to remember alongside
-// dedupKey/requeueCopy's own kind-specific branches.
-var kindPool = map[Kind]taskqueue.PoolKey{
+// dedupKey/the scheduler's retry's own kind-specific branches.
+var kindPool = map[Kind]poolKey{
 	KindVoiceClone:              poolGeneration,
 	KindVoiceDesign:             poolDesign,
 	KindSpeakerAttribution:      poolLLM,
@@ -359,8 +353,8 @@ var kindPool = map[Kind]taskqueue.PoolKey{
 
 // poolFor reports which slot pool kind draws from - see kindPool.
 // Defaults to poolGeneration for an unregistered Kind, matching this
-// function's own pre-taskqueue behavior.
-func poolFor(kind Kind) taskqueue.PoolKey {
+// function's own earlier behavior.
+func poolFor(kind Kind) poolKey {
 	if p, ok := kindPool[kind]; ok {
 		return p
 	}
@@ -375,8 +369,8 @@ func poolFor(kind Kind) taskqueue.PoolKey {
 // every one of those would be pure churn - see poolDesign's own doc
 // comment on how often/cheaply it preempts poolGeneration); only crossing
 // into or out of poolLLM (llmworker's own GGUF model) is. Used by
-// onPoolActivate.
-func familyOf(pool taskqueue.PoolKey) string {
+// onSwitch.
+func familyOf(pool poolKey) string {
 	if pool == poolLLM {
 		return "llm"
 	}
@@ -409,21 +403,29 @@ type Manager struct {
 	pronounce     ChapterPronouncer
 	summarize     ChapterSummarizer
 	deriveSetting BookSettingDeriver
+	// directWindow/pronounceWindow: see SetChapterWindowDirector.
+	directWindow    ChapterWindowPass
+	pronounceWindow ChapterWindowPass
+	// passWindows records, per pass kind and chapter, the paragraph idxs a
+	// window run has already covered in this process (guarded by mu) - see
+	// windowDependency.
+	passWindows map[string]map[int]bool
 	// settingTried is the set of books (bookID -> true) whose setting pass
 	// has run in this process, whatever the outcome - see
 	// bookSettingDependency.
 	settingTried sync.Map
 	ctx          context.Context // set by Start; used by fire-and-forget Enqueue* resolution goroutines
 
-	// queue is this package's whole priority/dependency/pool-dispatch
-	// engine, generalized into internal/taskqueue (see its own doc
-	// comment) rather than hand-rolled here - this package's own job is
-	// just the business logic on top: what a Kind is, how each dependency
-	// kind decides "is this already done" before lazily creating a fresh
-	// task for it (resolveDependencies, taskqueue.Resolver's one
-	// implementation here), and what actually happens when a task
-	// dispatches/finishes (generate/handleResult).
-	queue *taskqueue.Queue
+	// sched is the whole priority/dependency/dispatch engine (see
+	// internal/sched and docs/scheduler-design.md). This package is the
+	// business logic on top: what a Kind is, what each task needs first
+	// (needs), and what happens when it runs (task.Run, handleResult).
+	sched *sched.Scheduler
+	// started is set by Start; nothing dispatches before it.
+	started bool
+	// resuming maps a paused pass's key to its task while that task's
+	// requeue callback runs - see task.Run and pushTask.
+	resuming map[string]*task
 
 	mu             sync.Mutex
 	chapterPending map[string]int // chapterID -> count of queued+in-flight tasks, for IsGenerating
@@ -434,17 +436,8 @@ type Manager struct {
 	// holding the newest position - see EnqueueLookahead.
 	lookaheadMu sync.Mutex
 	lookaheads  map[string]*lookaheadRun
-	wake        chan struct{}
-	// paused, when true, stops worker's own fill loop from dispatching
-	// any *new* task at all (see Pause/Resume) - deliberately not a
-	// property of m.queue itself (internal/taskqueue has no pause
-	// concept, and shouldn't need one just for this): pausing is a
-	// business-level "the reader wants generation to stop for a while"
-	// action, not a scheduling primitive as fundamental as pools/tiers/
-	// dependencies. Whatever's already in flight when Pause is called
-	// keeps running to completion, exactly like this package's own
-	// graceful-drain behavior elsewhere - nothing here ever force-cancels
-	// in-flight work.
+	// paused stops any new task from being dispatched (see Pause/Resume,
+	// gate). Whatever's already in flight keeps running to completion.
 	paused bool
 	// drained is set once a Pause has seen its in-flight work finish and
 	// the models it left resident unloaded (unloadAllOnceIdle), cleared
@@ -455,14 +448,6 @@ type Manager struct {
 	// a TTS<->LLM model swap per call, and never has a model unloaded out
 	// from under it. See WaitDrained.
 	drained bool
-
-	// activeFamily/activeFamilyKnown track which native model family
-	// (see familyOf) the queue's currently-active pool last belonged to -
-	// see onPoolActivate, which uses this to unload the family being left
-	// behind only on a genuine TTS<->LLM crossing, not a same-family
-	// poolGeneration<->poolDesign switch.
-	activeFamily      string
-	activeFamilyKnown bool
 
 	// changeMu/changeSubs back SubscribeChanges/notifyChanged (the Jobs
 	// WebSocket's own signal that Snapshot's result just changed) -
@@ -481,58 +466,56 @@ type Manager struct {
 	// in-flight one instead of each queuing a fresh, wasted restart.
 	recoveringWorker atomic.Bool
 
-	// pipelineQueue/pipelineWake/pipelineMu back EnqueuePipeline/
-	// CancelPipeline/IsPipelineRunning - see pipeline.go's own doc comment
-	// for why book-preprocessing's four ordered phases live on a wholly
-	// separate taskqueue.Queue (their own pool, own worker loop) instead of
-	// one more PoolKey registered on m.queue above.
-	pipelineQueue *taskqueue.Queue
-	pipelineWake  chan struct{}
 	// pipelineMu serializes EnqueuePipeline's own check-then-push against
 	// itself and against CancelPipeline - see EnqueuePipeline's own doc
 	// comment for the race it closes.
 	pipelineMu sync.Mutex
 }
 
+// poolCapacity is how many of a pool's tasks run at once - see
+// maxInFlight/maxAttributionInFlight/maxDesignInFlight/maxSFXInFlight for
+// why each is sized the way it is.
+var poolCapacity = map[poolKey]int{
+	poolGeneration: maxInFlight,
+	poolLLM:        maxAttributionInFlight,
+	poolDesign:     maxDesignInFlight,
+	poolSFX:        maxSFXInFlight,
+}
+
+// contextDwell is how long after the scheduler switches pools only
+// TierUrgent work may force another switch - each one can unload one model
+// and load another (tens of seconds with a large LLM).
+const contextDwell = time.Minute
+
 func NewManager(s store.Store, tts *ttsworker.Manager, dataDir string) *Manager {
+	return newManager(s, tts, dataDir, false)
+}
+
+// newManager is NewManager; manual makes the scheduler hand tasks out
+// through Pop/Finish instead of running them, for tests that step dispatch.
+func newManager(s store.Store, tts *ttsworker.Manager, dataDir string, manual bool) *Manager {
 	m := &Manager{
 		store:          s,
 		tts:            tts,
 		dataDir:        dataDir,
-		narration:      narration.NewResolver(s),
 		chapterPending: make(map[string]int),
 		lookaheads:     make(map[string]*lookaheadRun),
-		wake:           make(chan struct{}, 1),
+		resuming:       make(map[string]*task),
+		passWindows:    make(map[string]map[int]bool),
 		changeSubs:     make(map[chan struct{}]struct{}),
 	}
-	m.queue = taskqueue.NewQueue(m.resolveDependencies)
-	// Capacities match this package's own pre-taskqueue behavior exactly -
-	// see maxInFlight/maxAttributionInFlight/maxDesignInFlight's own doc
-	// comments for why each is sized the way it is. OnActivate is wired on
-	// every pool so a genuine TTS<->LLM model-family crossing (not a
-	// same-family poolGeneration<->poolDesign switch - see familyOf/
-	// onPoolActivate) frees the family being left behind right away,
-	// instead of leaving it resident until ttsworker's own idle timeout
-	// (LECTABLE_MODEL_IDLE_UNLOAD_AFTER) elapses on hardware with no VRAM headroom
-	// to spare running both at once.
-	// Pools of equal priority take turns in stretches, not task by task:
-	// a switch between the TTS and LLM families unloads one and loads the
-	// other (onPoolActivate) - tens of seconds with a large LLM - so a tie
-	// keeps the active pool for up to poolTieSwitchAfter.
-	m.queue.SetTieSwitchAfter(poolTieSwitchAfter)
-	m.queue.RegisterPool(poolGeneration, taskqueue.PoolConfig{Capacity: maxInFlight, OnActivate: func() { m.onPoolActivate(poolGeneration) }})
-	m.queue.RegisterPool(poolLLM, taskqueue.PoolConfig{Capacity: maxAttributionInFlight, OnActivate: func() { m.onPoolActivate(poolLLM) }})
-	m.queue.RegisterPool(poolDesign, taskqueue.PoolConfig{Capacity: maxDesignInFlight, OnActivate: func() { m.onPoolActivate(poolDesign) }})
-	m.queue.RegisterPool(poolSFX, taskqueue.PoolConfig{Capacity: maxSFXInFlight, OnActivate: func() { m.onPoolActivate(poolSFX) }})
-
-	// A second, independent Queue (see pipeline.go) - deliberately not one
-	// more pool registered on m.queue above, which would wrongly subject
-	// book-preprocessing to the same "one pool active at a time" mutual
-	// exclusion poolGeneration/poolDesign/poolLLM need for a real shared
-	// resource (see poolPipeline's own doc comment).
-	m.pipelineQueue = taskqueue.NewQueue(pipelineResolver)
-	m.pipelineQueue.RegisterPool(poolPipeline, taskqueue.PoolConfig{Capacity: maxPipelineInFlight})
-	m.pipelineWake = make(chan struct{}, 1)
+	if s != nil {
+		m.narration = narration.NewResolver(s)
+	}
+	m.sched = sched.New(context.Background(), sched.Config{
+		MaxAttempts: maxTaskAttempts,
+		Dwell:       contextDwell,
+		DwellExempt: TierUrgent,
+		OnSwitch:    m.onSwitch,
+		OnChange:    m.notifyChanged,
+		Manual:      manual,
+	})
+	m.sched.SetGate(m.gate)
 	return m
 }
 
@@ -662,14 +645,34 @@ func (m *Manager) seriesFor(bookID string) (name string, index float64) {
 	return book.SeriesName, book.SeriesIndex
 }
 
-// Start launches the single background worker. TTS generation is
-// serialized on the Python side anyway (one GPU), so one worker here is
-// enough and keeps ordering predictable - it just now pulls from a
-// priority queue instead of a FIFO channel.
+// Start lets the scheduler dispatch; tasks run under ctx's lifetime (the
+// scheduler stops when ctx ends).
 func (m *Manager) Start(ctx context.Context) {
+	m.mu.Lock()
 	m.ctx = ctx
-	go m.worker(ctx)
-	go m.pipelineWorker(ctx)
+	m.started = true
+	m.mu.Unlock()
+	go func() {
+		<-ctx.Done()
+		m.sched.Close()
+	}()
+	m.sched.SetManual(false) // a test manager stepped by hand until now
+}
+
+// gate is the scheduler's admission gate: nothing before Start; while
+// paused, only groups (which do no model work themselves) and, once the
+// pause has drained, explicit previews.
+func (m *Manager) gate(t sched.Task) bool {
+	m.mu.Lock()
+	started, paused, drained := m.started, m.paused, m.drained
+	m.mu.Unlock()
+	if !started {
+		return false
+	}
+	if _, group := t.(*pipelineTask); group || !paused {
+		return true
+	}
+	return drained && isExplicitPreview(t)
 }
 
 // logTaskTiming logs one line per finished task: how long it sat queued
@@ -691,25 +694,6 @@ func logTaskTiming(t *task, err error) {
 		t.kind, t.dedupKey(), t.tier, t.attempt, waited.Round(time.Millisecond), ran.Round(time.Millisecond), status)
 }
 
-func (m *Manager) finishTask(t *task) {
-	m.queue.Finish(t.dedupKey())
-	m.mu.Lock()
-	m.chapterPending[t.chapterID]--
-	if m.chapterPending[t.chapterID] <= 0 {
-		delete(m.chapterPending, t.chapterID)
-	}
-	m.mu.Unlock()
-	m.notifyChanged()
-	// Always safe to call more than once/on a nil-context task (t.cancel is
-	// only unset for a task that was Cancel()-removed straight out of the
-	// queue and never dispatched at all, which never reaches finishTask -
-	// see handleResult/worker) - releases the context's own resources now
-	// that this task is done, cancelled or not.
-	if t.cancel != nil {
-		t.cancel()
-	}
-}
-
 func (m *Manager) IsGenerating(chapterID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -722,7 +706,7 @@ func (m *Manager) IsGenerating(chapterID string) bool {
 // without losing anything already queued). Whatever's already in flight
 // keeps running to completion; nothing here force-cancels it, the same
 // non-destructive philosophy this package's own graceful-drain already
-// follows elsewhere. Wakes the worker loop immediately (rather than
+// follows elsewhere. Wakes the scheduler immediately (rather than
 // waiting for it to notice on its own next iteration) so a Pause called
 // while every slot happens to be idle takes effect without any delay,
 // and calls notifyChanged so the Jobs dashboard reflects the new state
@@ -742,11 +726,7 @@ func (m *Manager) Pause() {
 	if wasPaused {
 		return // a drain (and its unload) is already under way or done
 	}
-	select {
-	case m.wake <- struct{}{}:
-	default:
-	}
-	m.notifyChanged()
+	m.sched.Kick()
 	go m.unloadAllOnceIdle()
 }
 
@@ -757,11 +737,7 @@ func (m *Manager) Resume() {
 	m.paused = false
 	m.drained = false
 	m.mu.Unlock()
-	select {
-	case m.wake <- struct{}{}:
-	default:
-	}
-	m.notifyChanged()
+	m.sched.Kick()
 }
 
 // Paused reports whether Pause is currently in effect - see Snapshot,
@@ -773,48 +749,22 @@ func (m *Manager) Paused() bool {
 	return m.paused
 }
 
-// poolTieSwitchAfter is how long a pool keeps the queue against equally
-// urgent work in another pool - see taskqueue.Queue.SetTieSwitchAfter and
-// NewManager. Long next to a model swap (a 16.5GB LLM loads in ~15s), short
-// next to a whole-book background run.
-const poolTieSwitchAfter = 5 * time.Minute
-
-// onPoolActivate is registered as every pool's own taskqueue.PoolConfig.
-// OnActivate (see NewManager) - fires synchronously, with the queue's own
-// lock held, the moment pool becomes the queue's single active one
-// coming from some other pool (never merely for another dispatch from a
-// pool that was already active - see PoolConfig.OnActivate's own doc
-// comment). Takes only m.mu here (briefly, and never calls back into
-// m.queue), never the queue's own lock a second time, so this stays safe
-// under OnActivate's own "non-reentrant into Queue" rule.
-//
-// Compares familyOf(pool) against whichever family was active before:
-// poolGeneration<->poolDesign is the same family (see familyOf) and never
-// triggers anything here; only a genuine TTS<->LLM crossing schedules
-// unloadFamily for whichever family is now being left behind, off the
-// hot path in its own goroutine (an HTTP round trip to ttsworker has no
-// business blocking this hook).
-func (m *Manager) onPoolActivate(pool taskqueue.PoolKey) {
-	family := familyOf(pool)
-
-	m.mu.Lock()
-	prev := m.activeFamily
-	known := m.activeFamilyKnown
-	m.activeFamily = family
-	m.activeFamilyKnown = true
-	m.mu.Unlock()
-
-	if !known || prev == family {
+// onSwitch is the scheduler's OnSwitch: the running pool changed. Only a
+// genuine TTS<->LLM crossing unloads anything (familyOf) - the family being
+// left, so the one arriving has the VRAM - and off the scheduler's
+// goroutine, since it's an HTTP round trip to ttsworker.
+func (m *Manager) onSwitch(from, to string) {
+	if m.tts == nil || from == "" || familyOf(poolKey(from)) == familyOf(poolKey(to)) {
 		return
 	}
-	go m.unloadFamily(prev)
+	go m.unloadFamily(familyOf(poolKey(from)))
 }
 
 // unloadFamily frees family's own native model (audioworker's TTS clone
 // models, or llmworker's GGUF model - see familyOf) via m.tts, logging
 // rather than propagating any failure: this only ever runs as a best-
 // effort VRAM-reclaiming side effect (of a genuine pool-family switch, see
-// onPoolActivate, or of Pause, see unloadAllOnceIdle), never something a
+// onSwitch, or of Pause, see unloadAllOnceIdle), never something a
 // caller is blocked waiting on - a failed unload just means that model
 // stays resident a while longer, no worse than before this existed.
 func (m *Manager) unloadFamily(family string) {
@@ -833,26 +783,18 @@ func (m *Manager) unloadFamily(family string) {
 // for every currently in-flight task to actually finish - Pause itself
 // never force-cancels anything, so unloading before that would risk
 // yanking a model out from under a request still in flight against it -
-// then frees both native model families. Polling rather than a callback:
-// taskqueue.Queue only has a per-pool OnActivate/OnDeactivate hook fired
-// on a *transition* (see onPoolActivate) - "every pool now idle, with
-// nothing else to transition to" never fires one, since pausing isn't a
-// transition to a different pool at all. This only ever runs once per
-// Pause call, so a short poll loop is simpler than adding a new
-// Queue-level primitive just for this one caller.
+// then frees both native model families. It polls: this runs once per
+// Pause, so a short loop is simpler than a scheduler hook for "nothing is
+// running any more".
 func (m *Manager) unloadAllOnceIdle() {
 	const pollInterval = 500 * time.Millisecond
-	for len(m.queue.InFlightTasks()) > 0 {
+	for m.runningTasks() > 0 {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-time.After(pollInterval):
 		}
 	}
-
-	m.mu.Lock()
-	m.activeFamilyKnown = false
-	m.mu.Unlock()
 
 	if err := m.tts.UnloadTTS(m.ctx); err != nil {
 		log.Printf("jobs: unload TTS models on pause: %v", err)
@@ -864,11 +806,24 @@ func (m *Manager) unloadAllOnceIdle() {
 	m.mu.Lock()
 	m.drained = m.paused // a Resume meanwhile means there's nothing to report
 	m.mu.Unlock()
-	select {
-	case m.wake <- struct{}{}: // previews queued meanwhile can go now
-	default:
-	}
-	m.notifyChanged()
+	m.sched.Kick() // previews queued meanwhile can go now
+}
+
+// runningTasks counts dispatched tasks, groups aside.
+func (m *Manager) runningTasks() int {
+	return len(m.taskKeys(func(_ *task, st sched.State) bool { return st == sched.Running }))
+}
+
+// taskKeys lists the keys of the queued and running tasks (never groups)
+// match accepts. match runs under the scheduler's lock.
+func (m *Manager) taskKeys(match func(*task, sched.State) bool) []string {
+	var keys []string
+	m.sched.Each(func(c sched.Task, st sched.State) {
+		if t, ok := c.(*task); ok && match(t, st) {
+			keys = append(keys, t.Key())
+		}
+	})
+	return keys
 }
 
 // WaitDrained blocks until a Pause has fully drained - everything that was
@@ -908,114 +863,14 @@ func (m *Manager) Drained() bool {
 // eval asked for (a voice-design or SFX test render, an LLM prompt or
 // attribution/scare-quote preview) - the only work a paused, drained queue
 // still dispatches.
-func isExplicitPreview(t taskqueue.Task) bool {
-	switch t.(*task).kind {
+func isExplicitPreview(c sched.Task) bool {
+	t, ok := c.(*task)
+	if !ok {
+		return false
+	}
+	switch t.kind {
 	case KindLLMPreview, KindVoiceDesignPreview, KindSFXPreview:
 		return true
 	}
 	return false
-}
-
-// totalSlots is every worker slot across all pools - see taskPool. Slots
-// [0, maxInFlight) draw from poolGeneration, the next maxAttributionInFlight
-// from poolLLM, and the rest (maxDesignInFlight of them) from poolDesign -
-// see poolForSlot, worker's only reader of this specific layout.
-// worker keeps pulling the next dispatchable task from m.queue
-// (taskqueue.Queue.Pop, which by itself already enforces every pool's own
-// capacity, the one-pool-at-a-time mutual exclusion the three real pools
-// need against ttsworker's shared VRAM budget, graceful draining, and
-// priority/dependency ordering - see that package's own doc comment) and
-// starting it, until Pop reports nothing left to dispatch right now, then
-// waits for either a fresh push (m.wake) or one of the currently-dispatched
-// tasks to finish before reconsidering. Unlike this package's own
-// pre-taskqueue version, there's no separate fixed slot layout or
-// per-pool tryFill/bestPool logic to maintain here at all - Pop already
-// picks the single right thing to dispatch next, pool included, every
-// time it's called.
-//
-// Waiting on a dynamic number of result channels needs reflect.Select -
-// Go's select statement itself only takes a fixed, literal set of cases -
-// but this runs a handful of times a second at most, so the reflection
-// overhead is irrelevant.
-func (m *Manager) worker(ctx context.Context) {
-	type inflight struct {
-		task *task
-		ch   chan taskResult
-	}
-	dispatched := map[string]*inflight{}
-
-	fill := func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			m.mu.Lock()
-			paused, drained := m.paused, m.drained
-			m.mu.Unlock()
-			var match func(taskqueue.Task) bool
-			if paused {
-				if !drained {
-					return // let in-flight work finish and the unload run first
-				}
-				match = isExplicitPreview
-			}
-			tk, ok := m.queue.PopWhere(match)
-			if !ok {
-				return
-			}
-			t := tk.(*task)
-			taskCtx, cancel := context.WithCancel(ctx)
-			t.cancel = cancel
-			t.startedAt = time.Now()
-			m.notifyChanged()
-			dispatched[t.dedupKey()] = &inflight{task: t, ch: m.startTask(taskCtx, t)}
-		}
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		fill()
-
-		// m.wake is always a case here, not just when nothing is dispatched:
-		// a task pushed while every eligible slot happens to already be
-		// occupied - the exact shape of an urgent voice-provisioning task
-		// arriving while poolLLM is busy with a long background attribution
-		// run - would otherwise have no way to make this loop notice it
-		// until some *unrelated* already-dispatched task happened to finish
-		// on its own and unblock the select below; for a large attribution
-		// batch that can be minutes away, during which fill() never got a
-		// chance to reconsider the queue despite the new arrival. Waking on
-		// every push (pushTask already sends to m.wake unconditionally)
-		// instead means fill() reconsiders the queue immediately, regardless
-		// of what else is still busy. A wake signal that turns out to change
-		// nothing (fill() finds nothing new to do) just costs one cheap
-		// extra loop iteration.
-		cases := make([]reflect.SelectCase, 0, len(dispatched)+2)
-		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())})
-		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(m.wake)})
-		keys := make([]string, 2, len(dispatched)+2) // keys[0]/[1] unused (ctx.Done/wake cases)
-		for key, d := range dispatched {
-			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(d.ch)})
-			keys = append(keys, key)
-		}
-
-		chosen, recv, _ := reflect.Select(cases)
-		switch chosen {
-		case 0:
-			return // ctx.Done
-		case 1:
-			continue // woke by a fresh push - let the next iteration's fill() reconsider the queue
-		}
-		key := keys[chosen]
-		d := dispatched[key]
-		delete(dispatched, key)
-		m.handleResult(d.task, recv.Interface().(taskResult))
-	}
 }

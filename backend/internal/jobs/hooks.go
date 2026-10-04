@@ -12,7 +12,7 @@ import (
 // time rather than implemented in this package, since running it needs
 // Store/Speaker access this package doesn't have (see
 // internal/speakerattr, httpapi.Server.attributeChapter). ctx is always
-// the worker loop's own long-lived context (see worker/startTask), not
+// the scheduler's own long-lived context (see worker/startTask), not
 // tied to any particular HTTP request - the whole point of
 // EnqueueAttribution being fire-and-forget is that this keeps running
 // regardless of whether the request that triggered it is still around.
@@ -323,3 +323,16 @@ func (m *Manager) SetChapterSummarizer(fn ChapterSummarizer) {
 func (m *Manager) SetChapterPronouncer(fn ChapterPronouncer) {
 	m.pronounce = fn
 }
+
+// ChapterWindowPass runs a chapter pass (emotion labeling, pronunciation)
+// over only the paragraphs whose idx is in only. partial marks a window
+// run ahead of the rest of the chapter: it must not mark the chapter's
+// pass done, and never requeues. A non-partial run over only is the rest
+// of a chapter whose windows are already done, and does mark it.
+type ChapterWindowPass func(ctx context.Context, book *store.Book, ch *store.Chapter, only map[int]bool, partial bool) (int, func(), error)
+
+// SetChapterWindowDirector and SetChapterWindowPronouncer wire in the
+// windowed forms of the emotion and pronunciation passes - see
+// Manager.windowDependency. Without them those passes always run whole.
+func (m *Manager) SetChapterWindowDirector(fn ChapterWindowPass)   { m.directWindow = fn }
+func (m *Manager) SetChapterWindowPronouncer(fn ChapterWindowPass) { m.pronounceWindow = fn }

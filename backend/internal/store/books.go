@@ -290,7 +290,7 @@ func (s *SQLiteStore) ReplaceChapterContent(chapterID, title string, blocks []Bl
 
 func (s *SQLiteStore) ListBooks() ([]Book, error) {
 	rows, err := s.db.Query(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
-		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled,
+		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled, strict_order, setting_required,
 		pos_chapter_idx, pos_paragraph_idx, pos_seconds, last_read_at, estimate_sec_per_char
 		FROM books ORDER BY added_at DESC`)
 	if err != nil {
@@ -302,7 +302,7 @@ func (s *SQLiteStore) ListBooks() ([]Book, error) {
 	for rows.Next() {
 		var b Book
 		if err := rows.Scan(&b.ID, &b.Title, &b.Author, &b.Language, &b.CoverExt, &b.SeriesName, &b.SeriesIndex, &b.AddedAt,
-			&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CloneModel, &b.CharacterVoiceMode, &b.SpeechDirection, &b.MusicEnabled,
+			&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CloneModel, &b.CharacterVoiceMode, &b.SpeechDirection, &b.MusicEnabled, &b.StrictOrder, &b.SettingRequired,
 			&b.PosChapterIdx, &b.PosParagraphIdx, &b.PosSeconds, &b.LastReadAt, &b.EstimateSecPerChar); err != nil {
 			return nil, err
 		}
@@ -314,11 +314,11 @@ func (s *SQLiteStore) ListBooks() ([]Book, error) {
 func (s *SQLiteStore) GetBook(id string) (*Book, error) {
 	var b Book
 	err := s.db.QueryRow(`SELECT id, title, author, language, cover_ext, series_name, series_index, added_at,
-		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled,
+		voice_preset_id, voice_instruct, voice_language, voice_seed, clone_model, character_voice_mode, speech_direction, music_enabled, strict_order, setting_required,
 		pos_chapter_idx, pos_paragraph_idx, pos_seconds, last_read_at, estimate_sec_per_char
 		FROM books WHERE id = ?`, id).Scan(
 		&b.ID, &b.Title, &b.Author, &b.Language, &b.CoverExt, &b.SeriesName, &b.SeriesIndex, &b.AddedAt,
-		&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CloneModel, &b.CharacterVoiceMode, &b.SpeechDirection, &b.MusicEnabled,
+		&b.VoicePresetID, &b.VoiceInstruct, &b.VoiceLanguage, &b.VoiceSeed, &b.CloneModel, &b.CharacterVoiceMode, &b.SpeechDirection, &b.MusicEnabled, &b.StrictOrder, &b.SettingRequired,
 		&b.PosChapterIdx, &b.PosParagraphIdx, &b.PosSeconds, &b.LastReadAt, &b.EstimateSecPerChar)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -401,6 +401,13 @@ func (s *SQLiteStore) UpdatePosition(bookID string, chapterIdx, paragraphIdx int
 		`UPDATE books SET pos_chapter_idx = ?, pos_paragraph_idx = ?, pos_seconds = ?, last_read_at = ? WHERE id = ?`,
 		chapterIdx, paragraphIdx, seconds, time.Now().Unix(), bookID,
 	)
+	return err
+}
+
+// SetBookProcessing sets how a book's processing is ordered - see
+// Book.StrictOrder and Book.SettingRequired.
+func (s *SQLiteStore) SetBookProcessing(bookID string, strictOrder, settingRequired bool) error {
+	_, err := s.db.Exec(`UPDATE books SET strict_order = ?, setting_required = ? WHERE id = ?`, strictOrder, settingRequired, bookID)
 	return err
 }
 

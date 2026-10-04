@@ -15,34 +15,21 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/oggopus"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
+	"github.com/rhino1998/lectable/backend/internal/sched"
 	"github.com/rhino1998/lectable/backend/internal/store"
-	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker/ttsworkertest"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 	"github.com/rhino1998/lectable/backend/internal/wav"
 )
 
-// newTestManager builds a Manager with a real taskqueue.Queue (registered
-// with this package's own production pool capacities), but no store/tts -
-// for tests that only exercise queue/dependency mechanics directly via
-// hand-built *task values, the same lightweight, store-free shape every
-// test in this file that constructs tasks by hand (rather than through
-// the store-backed public API) has always used.
+// newTestManager builds a Manager with no store/tts whose scheduler is
+// stepped by hand (sched.Config.Manual: Pop/Finish) until Start is called -
+// for tests that exercise queue/dependency mechanics directly via
+// hand-built *task values.
 func newTestManager() *Manager {
-	m := &Manager{
-		chapterPending: map[string]int{},
-		lookaheads:     map[string]*lookaheadRun{},
-		wake:           make(chan struct{}, 1),
-		changeSubs:     map[chan struct{}]struct{}{},
-	}
-	m.queue = taskqueue.NewQueue(m.resolveDependencies)
-	m.queue.RegisterPool(poolGeneration, taskqueue.PoolConfig{Capacity: maxInFlight})
-	m.queue.RegisterPool(poolLLM, taskqueue.PoolConfig{Capacity: maxAttributionInFlight})
-	m.queue.RegisterPool(poolDesign, taskqueue.PoolConfig{Capacity: maxDesignInFlight})
-	m.pipelineQueue = taskqueue.NewQueue(pipelineResolver)
-	m.pipelineQueue.RegisterPool(poolPipeline, taskqueue.PoolConfig{Capacity: maxPipelineInFlight})
-	m.pipelineWake = make(chan struct{}, 1)
+	m := newManager(nil, nil, "", true)
+	m.started = true
 	return m
 }
 
@@ -58,32 +45,54 @@ func newTestManagerWithStore(s *store.SQLiteStore) *Manager {
 }
 
 // setQueue replaces mgr's whole queue with tasks, routing each through the
-// real taskqueue.Queue.Push so its own bookkeeping stays consistent - the
+// real sched.Scheduler.Request so its own bookkeeping stays consistent - the
 // test-side equivalent of what used to be a raw heap assignment back when
 // there was one to poke at directly.
 func setQueue(mgr *Manager, tasks ...*task) {
-	mgr.queue.Drain()
+	mgr.CancelAll()
 	for _, t := range tasks {
-		mgr.queue.Push(t)
+		mgr.pushTask(t)
 	}
 }
 
 // popAll drains every currently dispatchable task from mgr's queue,
-// Finish-ing each one immediately (simulating instant completion) so the
-// next one - including anything a dependency resolver lazily creates
-// along the way - can dispatch in turn, until nothing is left. Returns
-// the tasks in the order they dispatched.
+// finishing each one immediately (simulating instant completion) so the
+// next one - including anything a dependency lazily creates along the
+// way - can dispatch in turn, until nothing is left. Returns the tasks in
+// the order they dispatched.
 func popAll(mgr *Manager) []*task {
 	var out []*task
 	for {
-		tk, ok := mgr.queue.Pop()
+		tk, ok := mgr.sched.Pop()
 		if !ok {
 			return out
 		}
 		bt := tk.(*task)
 		out = append(out, bt)
-		mgr.queue.Finish(bt.dedupKey())
+		mgr.sched.Finish(bt.dedupKey(), nil)
 	}
+}
+
+// complete settles a popped task's result the way task.Run does: through
+// handleResult, whose verdict (done, failed, yield) goes to the scheduler.
+func complete(mgr *Manager, t *task, result taskResult) {
+	mgr.sched.Finish(t.Key(), mgr.handleResult(t, result))
+}
+
+// attemptOf is how many times key's task has already failed.
+func attemptOf(mgr *Manager, key string) int {
+	for _, info := range mgr.sched.Snapshot() {
+		if info.Task.Key() == key {
+			return info.Attempt
+		}
+	}
+	return -1
+}
+
+// findTask returns the queued or running task under key.
+func findTask(mgr *Manager, key string) (sched.Task, bool) {
+	t, _, ok := mgr.sched.Get(key)
+	return t, ok
 }
 
 func openTestStore(t *testing.T) *store.SQLiteStore {
@@ -357,7 +366,7 @@ func TestManagerUrgentColdCacheCloneDoesNotDeadlock(t *testing.T) {
 	// never been rendered in this fresh temp dir, so this is a genuine
 	// cold-cache, urgent clone task that would have hung forever if it were
 	// ever nested-blocked on its own dependency the old way.
-	mgr.EnqueueLookahead(book.ID, 0, 0, 0)
+	mgr.EnqueueLookahead(book.ID, "", 0, 0, 0)
 
 	bookVoice, err := mgr.narration.BookVoice(book)
 	if err != nil {
@@ -372,7 +381,7 @@ func TestManagerUrgentColdCacheCloneDoesNotDeadlock(t *testing.T) {
 //
 // Tier ordering itself (lower tier always wins, regardless of pool) and
 // cross-pool tie-breaking (has-dependents, then insertion order) are now
-// internal/taskqueue's own responsibility, thoroughly covered by that
+// internal/sched's own responsibility, thoroughly covered by that
 // package's tests against synthetic task types - see
 // TestPopFavorsLowerTierAcrossPools/TestPopBreaksCrossPoolTiesByInsertionOrder
 // below for the jobs-level version of that same guarantee. What's left to
@@ -400,12 +409,12 @@ func newGenTask(bookID, chapterID string, chapterIdx, paragraphIdx int, tier int
 }
 
 // sortedByLess sorts tasks by task.Less alone (no tier/dependents axis -
-// those are taskqueue's job, not Less's - see this section's own doc
+// those are the scheduler's job, not Less's - see this section's own doc
 // comment), the same shape a caller invoking Less only ever does once
 // every more general axis is already tied.
 func sortedByLess(tasks []*task) []*task {
 	sorted := append([]*task(nil), tasks...)
-	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Less(sorted[j]) })
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Less(sorted[j], sorted[i].tier) })
 	return sorted
 }
 
@@ -539,14 +548,14 @@ func taskLabels(tasks []*task) []string {
 // --- Pop: tier-first ordering across pools ---
 
 // TestPopFavorsLowerTierAcrossPools confirms Pop's own core property (see
-// internal/taskqueue's own doc comment): it picks whichever pool holds
+// internal/sched's own doc comment): it picks whichever pool holds
 // the single lowest-tier queued task, entirely without regard to which
 // pool each one belongs to - an urgent clone task must win against a
 // background direction-tagging task even though direction-tagging is
 // poolLLM and was pushed first.
 func TestPopFavorsLowerTierAcrossPools(t *testing.T) {
 	mgr := newTestManager()
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected nothing dispatchable from an empty queue")
 	}
 
@@ -554,39 +563,33 @@ func TestPopFavorsLowerTierAcrossPools(t *testing.T) {
 	urgentClone := &task{kind: KindVoiceClone, tier: TierUrgent, bookID: "book-2", chapterID: "ch-2", paragraph: store.Paragraph{ID: "p-1"}}
 	setQueue(mgr, direction, urgentClone)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok || got.(*task).kind != KindVoiceClone {
 		t.Fatalf("expected the urgent clone task to win over background direction-tagging regardless of pool, got %+v ok=%v", got, ok)
 	}
 }
 
-// TestPopBreaksCrossPoolTiesByInsertionOrder documents a deliberate,
-// intentional change from this package's own pre-taskqueue behavior:
-// kindPriority (characterization before plain generation) only ever
-// applies within one pool now (task.Less is never invoked across pools -
-// see its own doc comment). Two same-tier tasks in *different* pools with
-// nothing depending on either fall back to plain insertion order instead.
-func TestPopBreaksCrossPoolTiesByInsertionOrder(t *testing.T) {
+// TestPopOrdersCrossPoolTiesByKind: dispatch follows one total order
+// across pools, so at equal tier kindPriority (characterization before
+// plain generation) decides even between tasks in different pools, however
+// they arrived.
+func TestPopOrdersCrossPoolTiesByKind(t *testing.T) {
 	mgr := newTestManager()
 	background := &task{kind: KindVoiceClone, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", paragraph: store.Paragraph{ID: "p-1"}}
 	characterization := &task{kind: KindSpeakerCharacterization, tier: TierBackground, bookID: "book-1", llmKey: "char-1", label: "Alice"}
 	setQueue(mgr, background, characterization)
 
-	got, ok := mgr.queue.Pop()
-	if !ok || got.(*task).kind != KindVoiceClone {
-		t.Fatalf("expected whichever was pushed first to win a cross-pool tie, got %+v ok=%v", got, ok)
+	got, ok := mgr.sched.Pop()
+	if !ok || got.(*task).kind != KindSpeakerCharacterization {
+		t.Fatalf("expected characterization to win a same-tier tie, got %+v ok=%v", got, ok)
 	}
 }
 
 // --- Snapshot ---
 
-// TestSnapshotQueuedOrderMatchesDispatchOrder guards Snapshot's own tier-
-// first ordering (see TestPopBreaksCrossPoolTiesByInsertionOrder above for
-// why a same-tier cross-pool tie no longer favors characterization over
-// plain generation the way it once did): both TierUrgent tasks must sort
-// before the TierBackground one, and between the two TierUrgent tasks
-// (different pools, no dependents on either), whichever was pushed first
-// sorts first.
+// TestSnapshotQueuedOrderMatchesDispatchOrder: Snapshot lists queued tasks
+// in the scheduler's dispatch order - tier first, then kindPriority
+// (characterization before generation) whatever the pool.
 func TestSnapshotQueuedOrderMatchesDispatchOrder(t *testing.T) {
 	mgr := newTestManager()
 
@@ -599,29 +602,24 @@ func TestSnapshotQueuedOrderMatchesDispatchOrder(t *testing.T) {
 	if len(queued) != 3 {
 		t.Fatalf("expected 3 queued tasks, got %d: %+v", len(queued), queued)
 	}
-	if queued[0].ID != urgentClone.dedupKey() {
-		t.Fatalf("expected the first-pushed urgent task to sort first on a cross-pool tie, got %+v", queued[0])
+	if queued[0].ID != characterization.dedupKey() {
+		t.Fatalf("expected the urgent characterization to sort first, got %+v", queued[0])
 	}
-	if queued[1].ID != characterization.dedupKey() {
-		t.Fatalf("expected the second urgent task next, got %+v", queued[1])
+	if queued[1].ID != urgentClone.dedupKey() {
+		t.Fatalf("expected the urgent clone next, got %+v", queued[1])
 	}
 	if queued[2].ID != background.dedupKey() {
 		t.Fatalf("expected the background task last regardless of pool, got %+v", queued[2])
 	}
 }
 
-// --- Dependency resolution (resolveDependencies) ---
+// --- Dependency resolution (Manager.needs) ---
 //
-// The three functions behind resolveDependencies -
-// characterizationDependency/speechDirectionDependency/
-// referenceClipDependency - are exercised here through the real
-// taskqueue.Queue.Pop path (the only way to reach them at all - they take
-// a *taskqueue.LockedQueue, which only that package can construct), not
-// by calling them directly. This is deliberately the same path production
-// code runs, and is what actually exercises the specific bug this whole
-// mechanism exists to prevent: a dependency task getting silently
-// recreated forever instead of ever recognizing its own real, persisted
-// "already done" state.
+// The functions behind Manager.needs are exercised here through the
+// scheduler itself (stepped by hand), the same path production code runs,
+// and what exercises the bug this mechanism exists to prevent: a dependency
+// task recreated forever instead of recognizing its own persisted "already
+// done" state.
 
 // TestCharacterizationDependencyBlocksThenClearsOnceCharacterized is the
 // core regression test for that bug, for characterizationDependency: an
@@ -649,7 +647,7 @@ func TestCharacterizationDependencyBlocksThenClearsOnceCharacterized(t *testing.
 	cloneForAlice := &task{kind: KindVoiceClone, bookID: book.ID, tier: TierBackground, paragraph: store.Paragraph{ID: "p-1", Speaker: "Alice"}}
 	mgr.pushTask(cloneForAlice)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok {
 		t.Fatalf("expected the lazily-created characterization task to dispatch")
 	}
@@ -657,7 +655,7 @@ func TestCharacterizationDependencyBlocksThenClearsOnceCharacterized(t *testing.
 	if blocker.kind != KindSpeakerCharacterization || blocker.label != char.Name {
 		t.Fatalf("expected a KindSpeakerCharacterization task for %q, got kind=%v label=%q", char.Name, blocker.kind, blocker.label)
 	}
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected the clone to stay blocked while its characterization is in flight")
 	}
 	if characterizeCalls != 0 {
@@ -672,12 +670,12 @@ func TestCharacterizationDependencyBlocksThenClearsOnceCharacterized(t *testing.
 	if characterizeCalls != 1 {
 		t.Fatalf("expected characterize to have run exactly once, got %d", characterizeCalls)
 	}
-	mgr.queue.Finish(blocker.dedupKey())
+	mgr.sched.Finish(blocker.dedupKey(), nil)
 
 	// Now that char.Summary is actually persisted, the clone must
 	// dispatch directly - a fresh dependency check must NOT recreate
 	// another characterization task.
-	got2, ok := mgr.queue.Pop()
+	got2, ok := mgr.sched.Pop()
 	if !ok || got2.(*task) != cloneForAlice {
 		t.Fatalf("expected the clone to dispatch now that its speaker is already characterized, got %v ok=%v", got2, ok)
 	}
@@ -704,14 +702,14 @@ func TestCharacterizationDependencyJoinsAnAlreadyQueuedTask(t *testing.T) {
 	mgr.pushTask(first)
 	mgr.pushTask(second)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok || got.(*task).kind != KindSpeakerCharacterization {
 		t.Fatalf("expected exactly one shared characterization task to dispatch, got %+v ok=%v", got, ok)
 	}
 	// Neither clone can dispatch while that one shared task is in flight -
 	// if a duplicate had been created instead, one of these would
 	// (wrongly) succeed here.
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected both clones to stay blocked on the one shared characterization task")
 	}
 }
@@ -777,7 +775,7 @@ func TestAttributionOrderDependencyBlocksThenClearsOncePreviousChapterAttributed
 	laterChapterTask := &task{kind: KindSpeakerAttribution, bookID: bookID, chapterID: ch1.ID, chapterIdx: 1, tier: TierBackground, llmKey: ch1.ID}
 	mgr.pushTask(laterChapterTask)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok {
 		t.Fatalf("expected the lazily-created chapter-0 attribution task to dispatch")
 	}
@@ -785,7 +783,7 @@ func TestAttributionOrderDependencyBlocksThenClearsOncePreviousChapterAttributed
 	if blocker.kind != KindSpeakerAttribution || blocker.chapterID != ch0.ID {
 		t.Fatalf("expected a KindSpeakerAttribution task for chapter 0, got kind=%v chapterID=%q", blocker.kind, blocker.chapterID)
 	}
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected chapter 1's attribution to stay blocked while chapter 0's is in flight")
 	}
 	if attributeCalls != 0 {
@@ -800,12 +798,12 @@ func TestAttributionOrderDependencyBlocksThenClearsOncePreviousChapterAttributed
 	if attributeCalls != 1 {
 		t.Fatalf("expected attribute to have run exactly once, got %d", attributeCalls)
 	}
-	mgr.queue.Finish(blocker.dedupKey())
+	mgr.sched.Finish(blocker.dedupKey(), nil)
 
 	// Now that chapter 0 is actually attributed, chapter 1 must dispatch
 	// directly - a fresh dependency check must NOT recreate another
 	// chapter-0 attribution task.
-	got2, ok := mgr.queue.Pop()
+	got2, ok := mgr.sched.Pop()
 	if !ok || got2.(*task) != laterChapterTask {
 		t.Fatalf("expected chapter 1's attribution to dispatch now that chapter 0 is already attributed, got %v ok=%v", got2, ok)
 	}
@@ -842,7 +840,7 @@ func TestScareQuoteDependencyBlocksAttributionAndDescription(t *testing.T) {
 
 	runBlocker := func() {
 		t.Helper()
-		got, ok := mgr.queue.Pop()
+		got, ok := mgr.sched.Pop()
 		if !ok {
 			t.Fatalf("expected the lazily-created scare-quote task to dispatch")
 		}
@@ -850,23 +848,23 @@ func TestScareQuoteDependencyBlocksAttributionAndDescription(t *testing.T) {
 		if blocker.kind != KindScareQuote || blocker.chapterID != chapterID {
 			t.Fatalf("expected a KindScareQuote task for chapter %q, got kind=%v chapterID=%q", chapterID, blocker.kind, blocker.chapterID)
 		}
-		if _, ok := mgr.queue.Pop(); ok {
+		if _, ok := mgr.sched.Pop(); ok {
 			t.Fatalf("expected attribution/description to stay blocked while scare-quote tagging is in flight")
 		}
-		_, _, _ = blocker.runLLM(t.Context())
-		mgr.queue.Finish(blocker.dedupKey())
+		n, requeue, err := blocker.runLLM(t.Context())
+		complete(mgr, blocker, taskResult{attributed: n, requeue: requeue, err: err})
 	}
 
-	runBlocker() // fails - Passes.ScareQuote stays unset
+	runBlocker() // fails - the scheduler retries it, dependents keep waiting
 	fail = false
-	runBlocker() // recreated, and succeeds this time
+	runBlocker() // the retry succeeds
 	if calls != 2 {
 		t.Fatalf("expected exactly two scare-quote runs (one failed, one retried), got %d", calls)
 	}
 
 	dispatched := map[*task]bool{}
 	for range 2 {
-		got, ok := mgr.queue.Pop()
+		got, ok := mgr.sched.Pop()
 		if !ok {
 			t.Fatalf("expected attribution and description to dispatch once scare quotes are tagged")
 		}
@@ -877,6 +875,43 @@ func TestScareQuoteDependencyBlocksAttributionAndDescription(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("expected no further scare-quote run once the chapter is tagged, got %d", calls)
+	}
+}
+
+// TestFailedDependencyFailsItsDependents: once a dependency has used up its
+// attempts, what waited for it fails with it instead of waiting forever.
+func TestFailedDependencyFailsItsDependents(t *testing.T) {
+	s := openTestStore(t)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "Some narration.")
+	mgr := newTestManagerWithStore(s)
+	boom := errors.New("sampled a bad response")
+	mgr.scareQuote = func(context.Context, *store.Book, *store.Chapter) (int, func(), error) { return 0, nil, boom }
+
+	waiter := make(chan llmOutcome, 1)
+	mgr.pushTask(&task{kind: KindSpeakerAttribution, bookID: book.ID, chapterID: chapterID, tier: TierBackground, llmKey: chapterID, llmWaiters: []chan llmOutcome{waiter}})
+	for attempt := range maxTaskAttempts {
+		got, ok := mgr.sched.Pop()
+		if !ok || got.(*task).kind != KindScareQuote {
+			t.Fatalf("attempt %d: expected the scare-quote task, got %v ok=%v", attempt, got, ok)
+		}
+		blocker := got.(*task)
+		blocker.attempt = attempt // as task.Run sets it
+		complete(mgr, blocker, taskResult{err: boom})
+	}
+	if got := queuedTasks(mgr); len(got) != 0 {
+		t.Fatalf("expected nothing left queued, got %d tasks", len(got))
+	}
+	select {
+	case out := <-waiter:
+		var depErr *sched.DependencyError
+		if !errors.As(out.err, &depErr) || !errors.Is(out.err, boom) {
+			t.Fatalf("attribution ended with %v, want a dependency error wrapping the failure", out.err)
+		}
+	default:
+		t.Fatalf("the attribution's waiter was never told")
+	}
+	if mgr.IsGenerating(chapterID) {
+		t.Fatalf("the chapter still counts as busy")
 	}
 }
 
@@ -904,20 +939,20 @@ func TestSummaryDependencyBlocksAttributionAndAmbience(t *testing.T) {
 	mgr.pushTask(attrTask)
 	mgr.pushTask(ambTask)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok || got.(*task).kind != KindSummary {
 		t.Fatalf("expected the lazily-created summary task to dispatch first, got %v", got)
 	}
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected attribution/ambience to wait while the summary is in flight")
 	}
 	blocker := got.(*task)
 	_, _, _ = blocker.runLLM(t.Context())
-	mgr.queue.Finish(blocker.dedupKey())
+	mgr.sched.Finish(blocker.dedupKey(), nil)
 
 	dispatched := map[*task]bool{}
 	for range 2 {
-		got, ok := mgr.queue.Pop()
+		got, ok := mgr.sched.Pop()
 		if !ok {
 			t.Fatalf("expected attribution and ambience to dispatch once the chapter is summarized")
 		}
@@ -947,18 +982,18 @@ func TestBookSettingDependency(t *testing.T) {
 	amb := &task{kind: KindAmbience, bookID: book.ID, chapterID: chapterID, tier: TierBackground, llmKey: chapterID}
 	mgr.pushTask(amb)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok || got.(*task).kind != KindBookSetting {
 		t.Fatalf("expected the book setting task first, got %v", got)
 	}
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatal("ambience should wait while the setting pass is in flight")
 	}
 	blocker := got.(*task)
 	_, _, _ = blocker.runLLM(t.Context())
-	mgr.queue.Finish(blocker.dedupKey())
+	mgr.sched.Finish(blocker.dedupKey(), nil)
 
-	got, ok = mgr.queue.Pop()
+	got, ok = mgr.sched.Pop()
 	if !ok || got.(*task) != amb || calls != 1 {
 		t.Fatalf("after a failed setting run ambience should go ahead without it: got %v, %d runs", got, calls)
 	}
@@ -986,27 +1021,27 @@ func TestAttributionOrderDependencyJoinsAnAlreadyQueuedTask(t *testing.T) {
 	mgr.pushTask(earlierChapterTask)
 	mgr.pushTask(laterChapterTask)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok || got.(*task) != earlierChapterTask {
 		t.Fatalf("expected chapter 0's own real task to dispatch first, got %v ok=%v", got, ok)
 	}
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected chapter 1's attribution to stay blocked while chapter 0's is in flight")
 	}
 
 	if _, _, err := earlierChapterTask.runLLM(t.Context()); err != nil {
 		t.Fatalf("runLLM: %v", err)
 	}
-	mgr.queue.Finish(earlierChapterTask.dedupKey())
+	mgr.sched.Finish(earlierChapterTask.dedupKey(), nil)
 
-	got2, ok := mgr.queue.Pop()
+	got2, ok := mgr.sched.Pop()
 	if !ok || got2.(*task) != laterChapterTask {
 		t.Fatalf("expected chapter 1's attribution to dispatch once chapter 0's own task finishes, got %v ok=%v", got2, ok)
 	}
 }
 
 // TestGlobalAttributionSlotDependencyBlocksAcrossDifferentBooks is
-// globalAttributionSlotDependency's own reason to exist: two different
+// task.CanStart's own reason to exist: two different
 // books' own chapter-0 attribution tasks have no attributionOrderDependency
 // relationship at all (chapterIdx 0 always skips it - see its own
 // "prevIdx < 0" check), and maxAttributionInFlight (2 in this test, via
@@ -1020,19 +1055,19 @@ func TestGlobalAttributionSlotDependencyBlocksAcrossDifferentBooks(t *testing.T)
 	mgr.pushTask(bookATask)
 	mgr.pushTask(bookBTask)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok {
 		t.Fatalf("expected one of the two books' attribution tasks to dispatch")
 	}
 	first := got.(*task)
 
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected the other book's attribution task to stay blocked while the first is in flight")
 	}
 
-	mgr.queue.Finish(first.dedupKey())
+	mgr.sched.Finish(first.dedupKey(), nil)
 
-	got2, ok := mgr.queue.Pop()
+	got2, ok := mgr.sched.Pop()
 	if !ok {
 		t.Fatalf("expected the other book's attribution task to dispatch once the first finished")
 	}
@@ -1075,7 +1110,7 @@ func TestSpeechDirectionDependencyBlocksThenClearsOnceTagged(t *testing.T) {
 	cloneTask := &task{kind: KindVoiceClone, bookID: book.ID, chapterID: chapterID, tier: TierBackground, paragraph: store.Paragraph{ID: "p-1"}}
 	mgr.pushTask(cloneTask)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok {
 		t.Fatalf("expected the lazily-created direction task to dispatch")
 	}
@@ -1083,16 +1118,16 @@ func TestSpeechDirectionDependencyBlocksThenClearsOnceTagged(t *testing.T) {
 	if blocker.kind != KindSpeechDirection || blocker.chapterID != chapterID {
 		t.Fatalf("expected a KindSpeechDirection task for chapter %q, got kind=%v chapterID=%q", chapterID, blocker.kind, blocker.chapterID)
 	}
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected the clone to stay blocked while direction-tagging is in flight")
 	}
 
 	if _, _, err := blocker.runLLM(t.Context()); err != nil {
 		t.Fatalf("runLLM: %v", err)
 	}
-	mgr.queue.Finish(blocker.dedupKey())
+	mgr.sched.Finish(blocker.dedupKey(), nil)
 
-	got2, ok := mgr.queue.Pop()
+	got2, ok := mgr.sched.Pop()
 	if !ok || got2.(*task) != cloneTask {
 		t.Fatalf("expected the clone to dispatch now that its chapter is already tagged, got %v ok=%v", got2, ok)
 	}
@@ -1131,7 +1166,7 @@ func TestSpeechDirectionDependencyAppliesToAnyCloneModel(t *testing.T) {
 	// Both chapter passes block the clone; run each as it dispatches.
 	seen := map[Kind]bool{}
 	for range 2 {
-		got, ok := mgr.queue.Pop()
+		got, ok := mgr.sched.Pop()
 		if !ok {
 			t.Fatalf("expected a blocking chapter pass to dispatch")
 		}
@@ -1146,13 +1181,13 @@ func TestSpeechDirectionDependencyAppliesToAnyCloneModel(t *testing.T) {
 		if _, _, err := blocker.runLLM(t.Context()); err != nil {
 			t.Fatalf("runLLM: %v", err)
 		}
-		mgr.queue.Finish(blocker.dedupKey())
+		mgr.sched.Finish(blocker.dedupKey(), nil)
 	}
 	if !seen[KindSpeechDirection] || !seen[KindPronunciation] {
 		t.Fatalf("expected both a direction and a pronunciation task, got %v", seen)
 	}
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok || got.(*task) != cloneTask {
 		t.Fatalf("expected the clone to dispatch once its chapter is labeled, got %v ok=%v", got, ok)
 	}
@@ -1162,7 +1197,7 @@ func TestSpeechDirectionDependencyAppliesToAnyCloneModel(t *testing.T) {
 }
 
 // TestSpeechDirectionDependencyOnlyAppliesToGenerationKinds confirms
-// resolveDependencies' own kind switch: only KindVoiceClone/KindVoiceDesign
+// Manager.needs' own kind switch: only KindVoiceClone/KindVoiceDesign
 // ever check speechDirectionDependency at all - a KindSpeakerAttribution
 // task for the very same chapter must never be blocked by it.
 func TestSpeechDirectionDependencyOnlyAppliesToGenerationKinds(t *testing.T) {
@@ -1170,7 +1205,7 @@ func TestSpeechDirectionDependencyOnlyAppliesToGenerationKinds(t *testing.T) {
 	attribution := &task{kind: KindSpeakerAttribution, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", llmKey: "ch-1"}
 	setQueue(mgr, attribution)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok || got.(*task) != attribution {
 		t.Fatalf("expected the attribution task to dispatch with no direction dependency at all, got %+v ok=%v", got, ok)
 	}
@@ -1208,10 +1243,13 @@ func TestHasHigherPriorityWorkIgnoresSelfBlockedGeneration(t *testing.T) {
 	// The chapter's own paragraph, urgent, blocked on this exact chapter's
 	// not-yet-tagged state - this is what a reader jumping into an
 	// untagged chapter looks like.
-	urgentClone := &task{kind: KindVoiceClone, tier: TierUrgent, bookID: book.ID, chapterID: chapterID, paragraph: store.Paragraph{ID: "p-1"}}
-	mgr.pushTask(urgentClone)
+	// At TierLookahead, so the direction task it waits on is Lookahead too:
+	// a pass an urgent paragraph needs is itself urgent, and yields to
+	// nothing.
+	lookaheadClone := &task{kind: KindVoiceClone, tier: TierLookahead, bookID: book.ID, chapterID: chapterID, paragraph: store.Paragraph{ID: "p-1"}}
+	mgr.pushTask(lookaheadClone)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok || got.(*task).kind != KindSpeechDirection {
 		t.Fatalf("expected the lazily-created direction task to dispatch first, got %+v ok=%v", got, ok)
 	}
@@ -1232,9 +1270,9 @@ func TestHasHigherPriorityWorkIgnoresSelfBlockedGeneration(t *testing.T) {
 
 // TestCharacterizationDependencyPromotesBlockerAheadOfBackgroundWork
 // confirms priority promotion actually works through the real
-// resolveDependencies path (the generic mechanism itself - fixpoint
+// Manager.needs path (the generic mechanism itself - fixpoint
 // relaxation over the dependency graph - is exhaustively tested against
-// synthetic task types in internal/taskqueue's own TestPriorityPromotion;
+// synthetic task types in internal/sched's own TestPriorityPromotion;
 // this is the jobs-level wiring of it): a background characterization
 // task, lazily created for an urgent paragraph, must dispatch ahead of
 // unrelated background work already queued, not queue behind it just
@@ -1254,7 +1292,7 @@ func TestCharacterizationDependencyPromotesBlockerAheadOfBackgroundWork(t *testi
 	mgr.pushTask(otherBackgroundWork)
 	mgr.pushTask(urgentCloneForAlice)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok {
 		t.Fatalf("expected something dispatchable")
 	}
@@ -1270,10 +1308,11 @@ func TestCharacterizationDependencyPromotesBlockerAheadOfBackgroundWork(t *testi
 // Snapshot - non-destructive, unlike popAll, so a test can inspect the
 // result more than once.
 func queuedTasks(mgr *Manager) []*task {
-	qs, _ := mgr.queue.Snapshot()
-	out := make([]*task, len(qs))
-	for i, e := range qs {
-		out[i] = e.Task.(*task)
+	var out []*task
+	for _, info := range mgr.sched.Snapshot() {
+		if t, ok := info.Task.(*task); ok && info.State != sched.Running {
+			out = append(out, t)
+		}
 	}
 	return out
 }
@@ -1309,7 +1348,14 @@ func TestPushTaskMergeRefreshesVoiceOnAStillQueuedTask(t *testing.T) {
 	}
 	mgr.pushTask(freshVoice)
 
-	queued := queuedTasks(mgr)
+	// Dependencies are queued as soon as a task is pushed (its reference
+	// clip here), so count the clone tasks only.
+	var queued []*task
+	for _, q := range queuedTasks(mgr) {
+		if q.kind == KindVoiceClone {
+			queued = append(queued, q)
+		}
+	}
 	if len(queued) != 1 {
 		t.Fatalf("expected the second push to dedup-merge into the first (one queued task), got %d", len(queued))
 	}
@@ -1341,8 +1387,8 @@ func TestPushTaskMergeNeverMutatesVoiceOnAnInFlightTask(t *testing.T) {
 		paragraph: store.Paragraph{ID: "p-1"},
 		voiceID:   "voice-narrator", instruct: "old instruct",
 	}
-	mgr.queue.Push(inFlight)
-	popped, ok := mgr.queue.Pop() // moves it from queued into in-flight
+	mgr.pushTask(inFlight)
+	popped, ok := mgr.sched.Pop() // moves it from queued into in-flight
 	if !ok || popped.(*task) != inFlight {
 		t.Fatalf("expected to pop the just-pushed task, got %+v ok=%v", popped, ok)
 	}
@@ -1382,7 +1428,7 @@ func TestHandleResultRetriesPoolLLMFailureThenGivesUp(t *testing.T) {
 	}
 	dispatch := func(mgr *Manager, t *task) {
 		mgr.pushTask(t)
-		got, ok := mgr.queue.Pop()
+		got, ok := mgr.sched.Pop()
 		if !ok || got.(*task) != t {
 			panic("test setup: expected to dispatch the task just pushed")
 		}
@@ -1394,11 +1440,11 @@ func TestHandleResultRetriesPoolLLMFailureThenGivesUp(t *testing.T) {
 	mgr := newTestManager()
 	t2 := newTask()
 	dispatch(mgr, t2)
-	mgr.handleResult(t2, taskResult{err: errors.New("no JSON array found in response"), requeue: nil})
+	complete(mgr, t2, taskResult{err: errors.New("no JSON array found in response"), requeue: nil})
 	if got := queuedTasks(mgr); len(got) != 1 {
 		t.Fatalf("expected the failed task to be retried via the queue, got %d queued tasks", len(got))
-	} else if got[0].attempt != 1 {
-		t.Fatalf("expected the retried task's attempt to be 1, got %d", got[0].attempt)
+	} else if n := attemptOf(mgr, got[0].Key()); n != 1 {
+		t.Fatalf("expected the retried task's attempt to be 1, got %d", n)
 	}
 
 	// Once attempt has already reached maxTaskAttempts, the same kind of
@@ -1410,7 +1456,7 @@ func TestHandleResultRetriesPoolLLMFailureThenGivesUp(t *testing.T) {
 	t2Exhausted := newTask()
 	t2Exhausted.attempt = maxTaskAttempts - 1 // already made the last dispatch this budget allows
 	dispatch(mgr, t2Exhausted)
-	mgr.handleResult(t2Exhausted, taskResult{err: errors.New("no JSON array found in response"), requeue: nil})
+	complete(mgr, t2Exhausted, taskResult{err: errors.New("no JSON array found in response"), requeue: nil})
 	if got := queuedTasks(mgr); len(got) != 0 {
 		t.Fatalf("expected no further retry once attempt budget is exhausted, got %d queued tasks", len(got))
 	}
@@ -1422,31 +1468,47 @@ func TestHandleResultRetriesPoolLLMFailureThenGivesUp(t *testing.T) {
 	t3 := newTask()
 	t3.chapterID, t3.llmKey = "ch-3", "ch-3"
 	dispatch(mgr, t3)
-	mgr.handleResult(t3, taskResult{err: context.Canceled, requeue: nil})
+	complete(mgr, t3, taskResult{err: context.Canceled, requeue: nil})
 	if got := queuedTasks(mgr); len(got) != 0 {
 		t.Fatalf("expected no requeue for an explicitly-canceled task, got %d queued tasks", len(got))
 	}
 
 	// A cooperative pause (result.requeue non-nil) is always honored, with
 	// no additional full-rerun requeue on top of it.
+	// A cooperative pause yields: the same task stays queued, and its next
+	// run picks the remainder up through the requeue callback.
 	mgr = newTestManager()
-	requeueCalled := false
 	t4 := newTask()
 	t4.chapterID, t4.llmKey = "ch-4", "ch-4"
 	dispatch(mgr, t4)
-	mgr.handleResult(t4, taskResult{err: nil, requeue: func() { requeueCalled = true }})
-	if !requeueCalled {
-		t.Fatalf("expected result.requeue to be called")
+	remainderRan := false
+	complete(mgr, t4, taskResult{attributed: 2, requeue: func() {
+		rest := newTask()
+		rest.chapterID, rest.llmKey = "ch-4", "ch-4"
+		rest.runLLM = func(context.Context) (int, func(), error) {
+			remainderRan = true
+			return 3, nil, nil
+		}
+		mgr.pushTask(rest)
+	}})
+	if got := queuedTasks(mgr); len(got) != 1 || got[0] != t4 || attemptOf(mgr, t4.Key()) != 0 {
+		t.Fatalf("expected the paused task itself to stay queued at attempt 0, got %d queued tasks", len(got))
 	}
-	if got := queuedTasks(mgr); len(got) != 0 {
-		t.Fatalf("expected no additional full-rerun requeue when result.requeue already handled it, got %d queued tasks", len(got))
+	if t4.resume == nil || !mgr.resumeInto(t4, t4.resume) {
+		t.Fatalf("expected the requeue callback to hand its remainder to the paused task")
+	}
+	if got := queuedTasks(mgr); len(got) != 1 {
+		t.Fatalf("expected the remainder not to be queued as a second task, got %d queued tasks", len(got))
+	}
+	if n, _, _ := t4.runLLM(t.Context()); n != 3 || !remainderRan {
+		t.Fatalf("expected the paused task to run the remainder, got %d (ran=%v)", n, remainderRan)
 	}
 }
 
 // TestHandleResultRetriesGenerationFailureThenGivesUp is
 // TestHandleResultRetriesPoolLLMFailureThenGivesUp's own poolGeneration
 // counterpart: a genuine paragraph-generation failure retries via the queue
-// (carrying attempt forward, same requeueCopy mechanism) up to
+// (carrying attempt forward, same the scheduler's retry mechanism) up to
 // maxTaskAttempts, an explicit reader Cancel (context.Canceled) is never
 // resurrected by that retry regardless of remaining budget, and once budget
 // is exhausted the paragraph is finally marked AudioError instead of
@@ -1470,7 +1532,7 @@ func TestHandleResultRetriesGenerationFailureThenGivesUp(t *testing.T) {
 	}
 	dispatch := func(mgr *Manager, tk *task) {
 		mgr.pushTask(tk)
-		got, ok := mgr.queue.Pop()
+		got, ok := mgr.sched.Pop()
 		if !ok || got.(*task) != tk {
 			panic("test setup: expected to dispatch the task just pushed")
 		}
@@ -1480,11 +1542,11 @@ func TestHandleResultRetriesGenerationFailureThenGivesUp(t *testing.T) {
 	mgr := newTestManagerWithStore(s)
 	t1 := &task{kind: KindVoiceClone, paragraph: paragraph, voiceID: voiceID}
 	dispatch(mgr, t1)
-	mgr.handleResult(t1, taskResult{err: errors.New("ttsworker: connection reset")})
+	complete(mgr, t1, taskResult{err: errors.New("ttsworker: connection reset")})
 	if got := queuedTasks(mgr); len(got) != 1 {
 		t.Fatalf("expected the failed paragraph to be retried via the queue, got %d queued tasks", len(got))
-	} else if got[0].attempt != 1 {
-		t.Fatalf("expected the retried task's attempt to be 1, got %d", got[0].attempt)
+	} else if n := attemptOf(mgr, got[0].Key()); n != 1 {
+		t.Fatalf("expected the retried task's attempt to be 1, got %d", n)
 	}
 	if got := audioErrorFor(); got != "" {
 		t.Fatalf("expected no AudioError persisted while a retry is still pending, got %q", got)
@@ -1496,7 +1558,7 @@ func TestHandleResultRetriesGenerationFailureThenGivesUp(t *testing.T) {
 	mgr = newTestManagerWithStore(s)
 	t2 := &task{kind: KindVoiceClone, paragraph: paragraph, voiceID: voiceID}
 	dispatch(mgr, t2)
-	mgr.handleResult(t2, taskResult{err: context.Canceled})
+	complete(mgr, t2, taskResult{err: context.Canceled})
 	if got := queuedTasks(mgr); len(got) != 0 {
 		t.Fatalf("expected no retry for an explicitly-canceled paragraph, got %d queued tasks", len(got))
 	}
@@ -1509,7 +1571,7 @@ func TestHandleResultRetriesGenerationFailureThenGivesUp(t *testing.T) {
 	mgr = newTestManagerWithStore(s)
 	t3 := &task{kind: KindVoiceClone, paragraph: paragraph, voiceID: voiceID, attempt: maxTaskAttempts - 1}
 	dispatch(mgr, t3)
-	mgr.handleResult(t3, taskResult{err: errors.New("ttsworker: connection reset")})
+	complete(mgr, t3, taskResult{err: errors.New("ttsworker: connection reset")})
 	if got := queuedTasks(mgr); len(got) != 0 {
 		t.Fatalf("expected no further retry once attempt budget is exhausted, got %d queued tasks", len(got))
 	}
@@ -1533,7 +1595,7 @@ func TestHandleResultDiscardsStaleGenerationText(t *testing.T) {
 	mgr := newTestManagerWithStore(s)
 	tk := &task{kind: KindVoiceClone, paragraph: paragraphs[0], voiceID: "voice-1"}
 	mgr.pushTask(tk)
-	if got, ok := mgr.queue.Pop(); !ok || got.(*task) != tk {
+	if got, ok := mgr.sched.Pop(); !ok || got.(*task) != tk {
 		t.Fatal("test setup: expected to dispatch the task just pushed")
 	}
 
@@ -1541,7 +1603,7 @@ func TestHandleResultDiscardsStaleGenerationText(t *testing.T) {
 	if err := mgr.store.SetParagraphPronunciation(chapterID, map[int][]pronounce.Substitution{0: fix}); err != nil {
 		t.Fatalf("SetParagraphPronunciation: %v", err)
 	}
-	mgr.handleResult(tk, taskResult{audio: []byte("stale")})
+	complete(mgr, tk, taskResult{audio: []byte("stale")})
 
 	got := queuedTasks(mgr)
 	if len(got) != 1 {
@@ -1550,8 +1612,8 @@ func TestHandleResultDiscardsStaleGenerationText(t *testing.T) {
 	if text := got[0].paragraph.ResolveGenerationText("", nil); text != "Free domains." {
 		t.Errorf("requeued generation text = %q, want %q", text, "Free domains.")
 	}
-	if got[0].attempt != 0 {
-		t.Errorf("requeued attempt = %d, want 0 (a stale result isn't a failure)", got[0].attempt)
+	if n := attemptOf(mgr, got[0].Key()); n != 0 {
+		t.Errorf("requeued attempt = %d, want 0 (a stale result isn't a failure)", n)
 	}
 	if st, err := s.GetParagraphAudioStatus(paragraphs[0].ID, "voice-1"); err == nil && st == store.AudioReady {
 		t.Errorf("stale audio was saved as ready")
@@ -1573,7 +1635,7 @@ func TestHandleResultDiscardsClipRenderedWithOldLexicon(t *testing.T) {
 	mgr := newTestManagerWithStore(s)
 	tk := &task{kind: KindVoiceClone, bookID: bookID, paragraph: paragraphs[0], voiceID: "voice-1"}
 	mgr.pushTask(tk)
-	if got, ok := mgr.queue.Pop(); !ok || got.(*task) != tk {
+	if got, ok := mgr.sched.Pop(); !ok || got.(*task) != tk {
 		t.Fatal("test setup: expected to dispatch the task just pushed")
 	}
 	mgr.snapshotLexicon(tk) // what generate does: renders with no rules yet
@@ -1581,7 +1643,7 @@ func TestHandleResultDiscardsClipRenderedWithOldLexicon(t *testing.T) {
 	if _, _, err := mgr.store.UpsertLexiconEntry(store.SeriesScope(book), pronounce.LexiconEntry{Term: "Nyx", Replacement: "Nicks"}); err != nil {
 		t.Fatal(err)
 	}
-	mgr.handleResult(tk, taskResult{audio: []byte("old pronunciation")})
+	complete(mgr, tk, taskResult{audio: []byte("old pronunciation")})
 
 	got := queuedTasks(mgr)
 	if len(got) != 1 {
@@ -1598,7 +1660,7 @@ func TestHandleResultDiscardsClipRenderedWithOldLexicon(t *testing.T) {
 	mgr2 := newTestManagerWithStore(s)
 	tk2 := &task{kind: KindVoiceClone, bookID: bookID, paragraph: paragraphs[0], voiceID: "voice-1"}
 	mgr2.pushTask(tk2)
-	mgr2.queue.Pop()
+	mgr2.sched.Pop()
 	mgr2.snapshotLexicon(tk2)
 	if _, stale := mgr2.refreshStaleGeneration(tk2); stale {
 		t.Error("unchanged lexicon reported stale")
@@ -1606,7 +1668,7 @@ func TestHandleResultDiscardsClipRenderedWithOldLexicon(t *testing.T) {
 }
 
 // TestUrgentGenerationDispatchesDespitePoolLLMBacklog is a real end-to-end
-// regression test (driven through Manager.Start's actual worker loop, not
+// regression test (driven through Manager.Start's actual scheduler, not
 // just handleResult in isolation the way the tests above check it) for a
 // live starvation bug: a background KindSpeakerCharacterization backlog
 // much bigger than poolLLM's own maxAttributionInFlight slots, combined
@@ -1616,7 +1678,7 @@ func TestHandleResultDiscardsClipRenderedWithOldLexicon(t *testing.T) {
 // itself drain once poolDesign's own urgent work is queued and waiting -
 // confirmed live in production: a 150-chapter "Attribute all" backlog
 // starving an urgent voice-provisioning task indefinitely. Fixed
-// generically now by internal/taskqueue.Queue's own graceful-drain rule
+// generically now by internal/sched's own graceful-drain rule
 // (see its own doc comment) - this test would time out without it, since
 // the backlog here is deliberately large enough that draining it *without*
 // that rule (rather than just letting the one in-flight batch finish)
@@ -1712,7 +1774,20 @@ func TestCancelRemovesQueuedTask(t *testing.T) {
 	// happens here since Start is never called - Snapshot itself is
 	// deliberately side-effect-free (see its own doc comment) and never
 	// triggers it either.
-	inFlight, queued := mgr.Snapshot()
+	// The paragraphs' reference clip is queued with them, as what they wait
+	// for; cancelling it would fail them, so pick a paragraph.
+	paragraphRows := func() []QueueTask {
+		_, queued := mgr.Snapshot()
+		var rows []QueueTask
+		for _, qt := range queued {
+			if qt.Kind == KindVoiceClone {
+				rows = append(rows, qt)
+			}
+		}
+		return rows
+	}
+	inFlight, _ := mgr.Snapshot()
+	queued := paragraphRows()
 	if len(inFlight) != 0 || len(queued) != 2 {
 		t.Fatalf("expected 2 queued paragraph tasks and 0 in flight before Start, got inFlight=%d queued=%d", len(inFlight), len(queued))
 	}
@@ -1725,8 +1800,7 @@ func TestCancelRemovesQueuedTask(t *testing.T) {
 		t.Fatalf("expected a second Cancel of the same id to report false")
 	}
 
-	_, queued = mgr.Snapshot()
-	if len(queued) != 1 {
+	if queued = paragraphRows(); len(queued) != 1 {
 		t.Fatalf("expected 1 remaining queued task after Cancel, got %d", len(queued))
 	}
 }
@@ -1741,9 +1815,10 @@ func TestCancelAllClearsEverythingQueued(t *testing.T) {
 
 	// 3 paragraph clone tasks - see TestCancelRemovesQueuedTask's own
 	// comment on why no reference-clip dependency task exists yet.
+	// Three paragraphs and the reference clip they wait for.
 	n := mgr.CancelAll()
-	if n != 3 {
-		t.Fatalf("expected CancelAll to report 3 tasks acted on, got %d", n)
+	if n != 4 {
+		t.Fatalf("expected CancelAll to report 4 tasks acted on, got %d", n)
 	}
 	inFlight, queued := mgr.Snapshot()
 	if len(inFlight) != 0 || len(queued) != 0 {
@@ -1756,9 +1831,7 @@ func TestCancelAllClearsEverythingQueued(t *testing.T) {
 func TestPromoteTierUpgradesQueuedTask(t *testing.T) {
 	mgr := newTestManager()
 	t1 := newGenTask("book-1", "ch-1", 0, 0, TierBackground, "", 0)
-	if !mgr.queue.Push(t1) {
-		t.Fatalf("push failed")
-	}
+	mgr.pushTask(t1)
 
 	if err := mgr.PromoteTier(t1.dedupKey(), TierUrgent); err != nil {
 		t.Fatalf("PromoteTier: %v", err)
@@ -1778,7 +1851,7 @@ func TestPromoteTierUpgradesQueuedTask(t *testing.T) {
 func TestPromoteTierRejectsDowngrade(t *testing.T) {
 	mgr := newTestManager()
 	t1 := newGenTask("book-1", "ch-1", 0, 0, TierUrgent, "", 0)
-	mgr.queue.Push(t1)
+	mgr.pushTask(t1)
 
 	if err := mgr.PromoteTier(t1.dedupKey(), TierBackground); !errors.Is(err, ErrTierNotMoreUrgent) {
 		t.Fatalf("expected ErrTierNotMoreUrgent, got %v", err)
@@ -1792,7 +1865,7 @@ func TestPromoteTierRejectsDowngrade(t *testing.T) {
 func TestPromoteTierRejectsSameTier(t *testing.T) {
 	mgr := newTestManager()
 	t1 := newGenTask("book-1", "ch-1", 0, 0, TierLookahead, "", 0)
-	mgr.queue.Push(t1)
+	mgr.pushTask(t1)
 
 	if err := mgr.PromoteTier(t1.dedupKey(), TierLookahead); !errors.Is(err, ErrTierNotMoreUrgent) {
 		t.Fatalf("expected ErrTierNotMoreUrgent for a same-tier request, got %v", err)
@@ -1802,7 +1875,7 @@ func TestPromoteTierRejectsSameTier(t *testing.T) {
 func TestPromoteTierRejectsInvalidTierValue(t *testing.T) {
 	mgr := newTestManager()
 	t1 := newGenTask("book-1", "ch-1", 0, 0, TierBackground, "", 0)
-	mgr.queue.Push(t1)
+	mgr.pushTask(t1)
 
 	if err := mgr.PromoteTier(t1.dedupKey(), 42); !errors.Is(err, ErrInvalidTier) {
 		t.Fatalf("expected ErrInvalidTier, got %v", err)
@@ -1841,7 +1914,7 @@ func TestPauseStopsNewDispatchButNotInFlight(t *testing.T) {
 
 	mgr.EnqueueChapter(book.ID, chapterID, 0)
 
-	// Give the worker loop a real chance to (wrongly) dispatch something
+	// Give the scheduler a real chance to (wrongly) dispatch something
 	// if Pause didn't actually take effect - a generous margin given the
 	// fake ttsworker resolves near-instantly, so any real dispatch would
 	// already show up well within this window.
@@ -1849,7 +1922,7 @@ func TestPauseStopsNewDispatchButNotInFlight(t *testing.T) {
 	inFlight, queued := mgr.Snapshot()
 	// The chapter's own pipeline_generate_chapter row stays in flight
 	// while it waits on its paragraphs (see waitForChapterAudio) - that's
-	// bookkeeping on pipelineQueue, not dispatched paragraph work.
+	// bookkeeping on the scheduler, not dispatched paragraph work.
 	generateRow := false
 	for _, qt := range inFlight {
 		if qt.Kind == "pipeline_generate_chapter" {
@@ -1946,7 +2019,7 @@ func TestMusicGenerationWaitsForWholeChapterVoiced(t *testing.T) {
 		t.Fatalf("ListParagraphsRaw: %v (%d)", err, len(paragraphs))
 	}
 	musicQueued := func() bool {
-		_, ok := mgr.queue.Find(func(c taskqueue.Task) bool { return c.Key() == "music_gen:"+chapterID })
+		_, ok := findTask(mgr, "music_gen:"+chapterID)
 		return ok
 	}
 
@@ -2403,7 +2476,7 @@ func TestVariantClipDependencyRendersThenFallsBack(t *testing.T) {
 	}
 	mgr.pushTask(clone)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok {
 		t.Fatalf("expected the variant render to dispatch")
 	}
@@ -2411,15 +2484,15 @@ func TestVariantClipDependencyRendersThenFallsBack(t *testing.T) {
 	if render.kind != KindVoiceProvision || render.dedupKey() != "voice_provision:variant:preset-a:angry" {
 		t.Fatalf("expected the angry variant render, got kind=%v key=%q", render.kind, render.dedupKey())
 	}
-	if _, ok := mgr.queue.Pop(); ok {
+	if _, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected the clone to stay blocked while its variant renders")
 	}
 
 	if err := voicerefs.MarkVariantFailed(mgr.dataDir, "preset-a", "angry"); err != nil {
 		t.Fatalf("MarkVariantFailed: %v", err)
 	}
-	mgr.queue.Finish(render.dedupKey())
-	got, ok = mgr.queue.Pop()
+	mgr.sched.Finish(render.dedupKey(), nil)
+	got, ok = mgr.sched.Pop()
 	if !ok || got.(*task) != clone {
 		t.Fatalf("expected the clone to dispatch once its variant settled, got %v ok=%v", got, ok)
 	}
@@ -2430,7 +2503,7 @@ func TestVariantClipDependencyRendersThenFallsBack(t *testing.T) {
 		paragraph: store.Paragraph{ID: "p-2", Emotion: "sad"},
 	}
 	mgr.pushTask(neutral)
-	if got, ok := mgr.queue.Pop(); !ok || got.(*task) != neutral {
+	if got, ok := mgr.sched.Pop(); !ok || got.(*task) != neutral {
 		t.Fatalf("expected a narration line to dispatch with no variant dependency, got %v ok=%v", got, ok)
 	}
 }
@@ -2451,19 +2524,19 @@ func TestVariantWaitsForBaseClip(t *testing.T) {
 	}
 	mgr.pushTask(clone)
 
-	got, ok := mgr.queue.Pop()
+	got, ok := mgr.sched.Pop()
 	if !ok || got.(*task).dedupKey() != "voice_provision:generate:preset-a" {
 		t.Fatalf("expected the base render first, got %v ok=%v", got, ok)
 	}
-	if next, ok := mgr.queue.Pop(); ok {
+	if next, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("expected nothing else to dispatch before the base exists, got %q", next.(*task).dedupKey())
 	}
 
 	if err := os.WriteFile(audiopath.VoicePresetRefFile(mgr.dataDir, "preset-a"), []byte("wav"), 0o644); err != nil {
 		t.Fatalf("write base clip: %v", err)
 	}
-	mgr.queue.Finish(got.(*task).dedupKey())
-	got, ok = mgr.queue.Pop()
+	mgr.sched.Finish(got.(*task).dedupKey(), nil)
+	got, ok = mgr.sched.Pop()
 	if !ok || got.(*task).dedupKey() != "voice_provision:variant:preset-a:angry" {
 		t.Fatalf("expected the variant render once the base exists, got %v ok=%v", got, ok)
 	}
@@ -2506,9 +2579,12 @@ func TestPausedDrainedQueueRunsOnlyPreviews(t *testing.T) {
 	if err != nil || got != "ok" {
 		t.Fatalf("preview on a drained queue = %q, %v", got, err)
 	}
-	if _, queued := mgr.Snapshot(); len(queued) == 0 {
-		t.Fatal("the chapter's paragraphs should still be waiting")
-	}
+	// The chapter's group row runs while paused (it does no model work) and
+	// queues the paragraphs, which then wait for Resume.
+	waitFor(t, 5*time.Second, func() bool {
+		_, queued := mgr.Snapshot()
+		return len(queued) > 0
+	})
 
 	mgr.Resume()
 	bookVoice, err := mgr.narration.BookVoice(book)
@@ -2560,5 +2636,174 @@ func TestParagraphsNeedingGenerationNumberedRoleVoices(t *testing.T) {
 	}
 	if voiceOf[2] == preset.ID || !strings.HasPrefix(voiceOf[2], preset.ID+"~2-") {
 		t.Errorf("number-2 line = %q, want a sibling of %q", voiceOf[2], preset.ID)
+	}
+}
+
+// --- Reader rules (reader.go) ---
+
+// readerBook is a two-chapter book with speech direction on and no-op
+// passes that mark their chapter done, for the reader-rule tests.
+func readerBook(t *testing.T) (mgr *Manager, s *store.SQLiteStore, book *store.Book, ch0, ch1 *store.Chapter) {
+	t.Helper()
+	s = openTestStore(t)
+	bookID, ch0, ch1 := twoChapterBook(t, s)
+	book, err := s.GetBook(bookID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, "audiocpp-higgs-4b", book.CharacterVoiceMode, true, false); err != nil {
+		t.Fatalf("UpdateVoice: %v", err)
+	}
+	mgr = newTestManagerWithStore(s)
+	mgr.dataDir = t.TempDir()
+	mgr.ctx = t.Context()
+	mgr.direct = func(_ context.Context, _ *store.Book, ch *store.Chapter) (int, func(), error) {
+		return 0, nil, s.SetChapterDirected(ch.ID)
+	}
+	return mgr, s, book, ch0, ch1
+}
+
+func keysWithPrefix(mgr *Manager, prefix string) []string {
+	var keys []string
+	for _, info := range mgr.sched.Snapshot() {
+		if strings.HasPrefix(info.Task.Key(), prefix) {
+			keys = append(keys, info.Task.Key())
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// TestLookaheadRequestsNextChaptersPasses: a reader in chapter 0 has
+// chapter 1's passes asked for at TierLookahead before reaching it.
+func TestLookaheadRequestsNextChaptersPasses(t *testing.T) {
+	mgr, _, book, _, ch1 := readerBook(t)
+	mgr.enqueueLookahead(book.ID, "phone", 0, 0, 1)
+
+	tier, ok := mgr.sched.Priority("direction:" + ch1.ID)
+	if !ok || tier != TierLookahead {
+		t.Fatalf("chapter 1's emotion pass: found=%v tier=%d, want queued at TierLookahead", ok, tier)
+	}
+}
+
+// TestUrgentParagraphWaitsOnlyForItsWindow: the paragraph a reader is
+// blocked on waits for a window run of its chapter's pass, not the whole
+// pass; the whole pass later covers only what the window didn't.
+func TestUrgentParagraphWaitsOnlyForItsWindow(t *testing.T) {
+	mgr, s, book, ch0, _ := readerBook(t)
+	var windowed, rest map[int]bool
+	mgr.directWindow = func(_ context.Context, _ *store.Book, ch *store.Chapter, only map[int]bool, partial bool) (int, func(), error) {
+		if partial {
+			windowed = only
+			return 0, nil, nil
+		}
+		rest = only
+		return 0, nil, s.SetChapterDirected(ch.ID)
+	}
+
+	mgr.enqueueLookahead(book.ID, "phone", 0, 0, 1)
+	windows := keysWithPrefix(mgr, "direction:"+ch0.ID+"@")
+	if len(windows) != 1 {
+		t.Fatalf("expected one window run for chapter 0, got %v", windows)
+	}
+	if _, ok := findTask(mgr, "direction:"+ch0.ID); ok {
+		t.Fatalf("the urgent paragraph must not pull in the whole pass")
+	}
+
+	// The paragraph's reference clip is queued too; step past it.
+	var wt *task
+	for wt == nil {
+		got, ok := mgr.sched.Pop()
+		if !ok {
+			t.Fatalf("the window run never dispatched")
+		}
+		if got.Key() == windows[0] {
+			wt = got.(*task)
+		} else {
+			mgr.sched.Finish(got.Key(), nil)
+		}
+	}
+	n, requeue, err := wt.runLLM(t.Context())
+	complete(mgr, wt, taskResult{attributed: n, requeue: requeue, err: err})
+	if !windowed[0] || len(windowed) != passWindowParagraphs {
+		t.Fatalf("window run covered %d paragraphs (idx 0: %v)", len(windowed), windowed[0])
+	}
+
+	// The whole pass, when something asks for it, leaves the window out.
+	ch, _ := s.GetChapterByID(ch0.ID)
+	full := mgr.newPassTask(KindSpeechDirection, book, ch, TierBackground)
+	if _, _, err := full.runLLM(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if rest == nil || rest[0] {
+		t.Fatalf("the whole pass should skip what the window covered, ran over %v", rest)
+	}
+}
+
+// TestReaderMovingWithdrawsItsOldWindow: what only a reader was waiting
+// for goes when that reader moves on; another reader's window, and
+// anything asked for directly, stay.
+func TestReaderMovingWithdrawsItsOldWindow(t *testing.T) {
+	mgr, s, book, ch0, ch1 := readerBook(t)
+	if err := s.SetChapterDirected(ch0.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetChapterDirected(ch1.ID); err != nil {
+		t.Fatal(err)
+	}
+	p0, _ := s.ListParagraphsRaw(ch0.ID)
+	p1, _ := s.ListParagraphsRaw(ch1.ID)
+
+	mgr.enqueueLookahead(book.ID, "phone", 0, 0, 1)
+	mgr.enqueueLookahead(book.ID, "web", 0, 0, 1)
+	if _, ok := findTask(mgr, p0[0].ID); !ok {
+		t.Fatalf("chapter 0's paragraph should be queued")
+	}
+
+	mgr.enqueueLookahead(book.ID, "phone", 1, 0, 1)
+	if _, ok := findTask(mgr, p0[0].ID); !ok {
+		t.Fatalf("the web reader still wants chapter 0's paragraph")
+	}
+	mgr.enqueueLookahead(book.ID, "web", 1, 0, 1)
+	if _, ok := findTask(mgr, p0[0].ID); ok {
+		t.Fatalf("nobody wants chapter 0's paragraph any more; it should be gone")
+	}
+	if tier, ok := mgr.sched.Priority(p1[0].ID); !ok || tier != TierUrgent {
+		t.Fatalf("chapter 1's paragraph: found=%v tier=%d, want urgent", ok, tier)
+	}
+}
+
+// TestStrictOrderHoldsNarrationUntilAttributed: in a multi-voice book set
+// to strict order, lookahead asks for the chapter's attribution instead of
+// narrating it unattributed.
+func TestStrictOrderHoldsNarrationUntilAttributed(t *testing.T) {
+	mgr, s, book, ch0, _ := readerBook(t)
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, "audiocpp-higgs-4b", store.CharacterVoiceModeAssigned, false, false); err != nil {
+		t.Fatalf("UpdateVoice: %v", err)
+	}
+	if err := s.SetBookProcessing(book.ID, true, false); err != nil {
+		t.Fatalf("SetBookProcessing: %v", err)
+	}
+	mgr.attribute = func(_ context.Context, _ *store.Book, ch *store.Chapter) (int, func(), error) {
+		return 0, nil, s.SetChapterAttributed(ch.ID)
+	}
+	p0, _ := s.ListParagraphsRaw(ch0.ID)
+
+	mgr.enqueueLookahead(book.ID, "phone", 0, 0, 1)
+	if _, ok := findTask(mgr, p0[0].ID); ok {
+		t.Fatalf("an unattributed chapter must not be narrated under strict order")
+	}
+	if tier, ok := mgr.sched.Priority("attr:" + ch0.ID); !ok || tier != TierUrgent {
+		t.Fatalf("chapter 0's attribution: found=%v tier=%d, want urgent", ok, tier)
+	}
+
+	for _, tk := range popAll(mgr) {
+		if tk.runLLM != nil {
+			_, _, _ = tk.runLLM(t.Context())
+		}
+	}
+	mgr.enqueueLookahead(book.ID, "phone", 0, 0, 1)
+	if _, ok := findTask(mgr, p0[0].ID); !ok {
+		t.Fatalf("once attributed, the chapter's paragraph should be queued")
 	}
 }

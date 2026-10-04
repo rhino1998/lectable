@@ -94,7 +94,7 @@ type Server struct {
 // explaining *why* a book being deleted needs this) didn't have to change
 // when pipeline runs moved from a hand-tracked sync.Map of CancelFuncs
 // (Server.pipelineRunning, now gone) to real dependency-ordered tasks in
-// jobs.Manager's own pipelineQueue. See CancelPipeline's own doc comment
+// jobs.Manager's scheduler. See CancelPipeline's own doc comment
 // for what "best-effort" means here.
 func (s *Server) cancelPipeline(bookID string) {
 	s.Jobs.CancelPipeline(bookID)
@@ -133,6 +133,8 @@ func NewRouter(s *Server) http.Handler {
 			s.Jobs.SetChapterAttributor(s.attributeChapterForJob)
 			s.Jobs.SetChapterScareQuoter(s.scareQuoteChapterForJob)
 			s.Jobs.SetChapterPronouncer(s.pronounceChapterForJob)
+			s.Jobs.SetChapterWindowDirector(s.directChapterRange)
+			s.Jobs.SetChapterWindowPronouncer(s.pronounceChapterRange)
 			s.Jobs.SetChapterSummarizer(s.summarizeChapter)
 			s.Jobs.SetBookSettingDeriver(s.deriveBookSettingForJob)
 			// ambienceChapter itself calls s.Speaker.ScoreMusic - same

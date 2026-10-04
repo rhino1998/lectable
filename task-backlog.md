@@ -24,13 +24,14 @@
 
 30. Bench Qwen3.8-9B (GGUF) as the LLM against the current Qwen3.6-35B-A3B. The 35B (18.2 GB with its MTP head) is too big to share the 24 GB card, so every switch between LLM and TTS work unloads the other side (`llmExclusive`, ~15 s a load); a 9B quant that fits beside the clone model would drop those swaps. Measure with the queue drained: `attreval.py` (attribution, several runs for noise) and `attreval.py sq` (scare quotes), `cmd/attrreplay` on its runs, and side-by-side summary notes, setting, characterization, emotion and pronunciation output on the same chapters, plus prompt/generation tok/s and whole-pass wall time. Check it fits beside each clone model at `LECTABLE_SPEAKER_LLM_MAX_CONCURRENT=2`, and whether it has an MTP head / thinking-template quirks like Qwen3.6's.
     - Rejected (2026-09-30): the only Qwen3.8-9B is a community distill (`empero-ai/Qwen3.8-9B-Distill-GGUF`, Qwen3.5-9B architecture, has an MTP head and the same think-block template as Qwen3.6). At Q6_K (7 GiB) it was slower per call - dense 9B vs 3B-active MoE: the attreval set took 413-418s of per-chapter time vs 213-246s for the 35B, prefill ~2380 tok/s - and worse: Arise 91.3% (first-person narrator lines given to the other speaker), scare-quote recall 79/112, characterization gave up on at least 2 characters (copied another character's casting, named co-stars). Spire even (99.5%). Stopped before the same-code 35B baseline and the VRAM fit check. `attreval.py` now takes `LECTABLE_URL` to target a bench instance.
+5. Consider switching to sqlite
+    - Done: `711e681`.
+9. Simplify the queue substantially (with 6, 7, 8: cancel cascade, dynamic priority, one ordering for dispatch and display)
+    - 2026-10-03: `backend/internal/sched` replaces `internal/taskqueue` and the separate pipeline queue; design and decisions in `docs/scheduler-design.md`.
 ---------------------
 
-5. Consider switching to sqlite
-6. Redo task cancellation cascade logic: tasks should cascade cancel if all parents canceled (never if individually queued)
-7. Task prioritization should be dynamic (if a high priority parent is canceled (and no others of that priority exist) then the task should have a lower effective priority)
-8. Unify task ordering/display logic
-9. Simplify the queue substantially (too many adhoc rules). Tasks should be evaluated at enqueue/preflight and otherwise be idle. Recompute effective priorities on task enqueue/cancel. Tasks should track their own exclusivity using a function on the set of in-progress tasks. If the tasks don't exclude, they can become inflight. Write this logic as a new fromt-scratch package. Also context switches are expensive, try to prioritize not doing that. Ask many questions and work through a full design spec.
+31. Scheduler follow-ups not built: remove-bump on the Jobs page (`sched.Unbump` exists); adopt paragraph audio into its group (drops `ChildFilter`/`waitForChapterTasks`); the strict-order and setting-required toggles in the Android app (web only so far); persist root requests across a restart. (Reader rules - per-client reader source, prework, window passes, strict order, setting required - built 2026-10-03, see `backend/internal/jobs/reader.go`.)
+
 16. Prompt output rating w/ experiments. The ability to mark some output as good/especially appropriate/bad (track the input to the prompt as well)
 19. Generalized performance
     - Progress so far: Higgs continuous batching + resident reference KV (`142c685`), one resident clone model / model-kind residency gate (`5f3df73`, `147d1ba`), per-task timing logs (`ef7763d`), DB read cache (`9d75217`).

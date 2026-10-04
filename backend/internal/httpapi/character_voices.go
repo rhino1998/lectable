@@ -386,7 +386,7 @@ func (s *Server) characterizeCharacterForJob(ctx context.Context, bookID string,
 // RunCharacterization a second time here - fatally: that's a blocking call
 // pushing a poolLLM task from *inside* an already-dispatched, in-flight
 // poolGeneration task, which can never actually dispatch while this task
-// holds poolGeneration active and un-drained (see taskqueue.Queue's own
+// holds poolGeneration active and un-drained (see the scheduler's own
 // "one pool at a time" doc comment) - a real deadlock, the same class
 // referenceClipDependency's own doc comment describes fixing for
 // poolDesign, just reintroduced here via stale caller data bypassing that

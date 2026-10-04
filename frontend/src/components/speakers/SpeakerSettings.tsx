@@ -33,6 +33,16 @@ export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneM
     updateVoice.mutate({ ...voiceQuery.data, speechDirection: checked })
   }
 
+  const toggleStrictOrder = (checked: boolean) => {
+    if (!voiceQuery.data) return
+    updateVoice.mutate({ ...voiceQuery.data, strictOrder: checked })
+  }
+
+  const toggleSettingRequired = (checked: boolean) => {
+    if (!voiceQuery.data) return
+    updateVoice.mutate({ ...voiceQuery.data, settingRequired: checked })
+  }
+
   const toggleMusicEnabled = (checked: boolean) => {
     if (!voiceQuery.data) return
     updateVoice.mutate({ ...voiceQuery.data, musicEnabled: checked })
@@ -81,6 +91,38 @@ export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneM
         When on, a chapter's audio waits for emotion labeling and pronunciation resolution to finish
         first, so each line is voiced in its emotion and ambiguous abbreviations are read correctly
         right away, instead of needing a later regenerate. Off by default.
+      </p>
+
+      <label className="checkbox-label">
+        <input
+          type="checkbox"
+          checked={voiceQuery.data?.strictOrder ?? false}
+          disabled={!voiceQuery.data || updateVoice.isPending}
+          onChange={(e) => toggleStrictOrder(e.target.checked)}
+        />
+        Wait for speaker attribution before generating audio
+      </label>
+      <p className="muted">
+        When on (and character voices are in use), a chapter is only narrated once its speakers are
+        attributed, so every line is generated once, in its speaker's voice. Attribution runs in
+        chapter order, so jumping far ahead in an unprocessed book means waiting for it to catch up.
+        Off by default: audio is generated right away and lines are regenerated when attribution
+        later gives them to a character.
+      </p>
+
+      <label className="checkbox-label">
+        <input
+          type="checkbox"
+          checked={voiceQuery.data?.settingRequired ?? false}
+          disabled={!voiceQuery.data || updateVoice.isPending}
+          onChange={(e) => toggleSettingRequired(e.target.checked)}
+        />
+        Require the book setting
+      </label>
+      <p className="muted">
+        When on, the passes that read the book's setting (summary, attribution, characterization,
+        ambience) fail if the setting can't be derived, instead of running without it. Off by
+        default.
       </p>
 
       <label className="checkbox-label">

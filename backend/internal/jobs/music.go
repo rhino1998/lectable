@@ -7,14 +7,15 @@ import (
 	"hash/fnv"
 	"log"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/latents"
 	"github.com/rhino1998/lectable/backend/internal/musicgen"
+	"github.com/rhino1998/lectable/backend/internal/sched"
 	"github.com/rhino1998/lectable/backend/internal/store"
-	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/wav"
 )
@@ -356,16 +357,14 @@ func (m *Manager) advanceLiveMusic(bookID, chapterID string, chapterIdx int, reg
 			behind[r.ID] = true
 		}
 	}
-	for {
-		tk, ok := m.queue.Cancel(func(c taskqueue.Task) bool {
-			return isLiveMusicTask(c, chapterID) && behind[c.(*task).llmKey]
-		})
-		if !ok {
-			break
-		}
-		m.dropCanceledQueued(tk.(*task))
+	queuedLive := m.taskKeys(func(t *task, st sched.State) bool { return st != sched.Running && isLiveMusicTask(t, chapterID) })
+	for _, key := range m.taskKeys(func(t *task, st sched.State) bool {
+		return st != sched.Running && isLiveMusicTask(t, chapterID) && behind[t.llmKey]
+	}) {
+		m.sched.Cancel(key)
+		queuedLive = slices.DeleteFunc(queuedLive, func(k string) bool { return k == key })
 	}
-	if m.queue.AnyQueued(func(c taskqueue.Task) bool { return isLiveMusicTask(c, chapterID) }) {
+	if len(queuedLive) > 0 {
 		return
 	}
 
@@ -441,14 +440,9 @@ func (m *Manager) advanceLiveMusicIntoNextChapter(bookID, chapterID string, chap
 		return
 	}
 	if len(st.regions) == 0 {
-		m.queue.WithTask(
-			func(c taskqueue.Task) bool { return c.Key() == "ambience:"+next.ID },
-			func(c taskqueue.Task) {
-				if TierLookahead < c.Tier() {
-					c.Promote(TierLookahead)
-				}
-			},
-		)
+		if p, ok := m.sched.Priority("ambience:" + next.ID); ok && TierLookahead < p {
+			m.sched.Raise(sourcePromote, "ambience:"+next.ID, TierLookahead)
+		}
 		return
 	}
 	m.advanceLiveMusic(bookID, next.ID, next.Idx, st.regions, 0, st.regionDuration, liveChainCarry{
@@ -485,15 +479,14 @@ func (m *Manager) readerPassedRegion(bookID string, chapterIdx int, region store
 
 // isLiveMusicTask reports whether c is a KindMusicLiveGeneration task for
 // chapterID.
-func isLiveMusicTask(c taskqueue.Task, chapterID string) bool {
-	t := c.(*task)
+func isLiveMusicTask(t *task, chapterID string) bool {
 	return t.kind == KindMusicLiveGeneration && t.chapterID == chapterID
 }
 
 // liveMusicTaskExists reports whether a live task for regionID is queued or
 // in flight.
 func (m *Manager) liveMusicTaskExists(regionID string) bool {
-	_, ok := m.queue.Find(func(c taskqueue.Task) bool { return c.Key() == "music_live:"+regionID })
+	_, _, ok := m.sched.Get("music_live:" + regionID)
 	return ok
 }
 
@@ -501,19 +494,15 @@ func (m *Manager) liveMusicTaskExists(regionID string) bool {
 // predecessor region's clip (its seed): the predecessor's own live task,
 // queued or in flight, or - if the whole-chapter batch has claimed the
 // predecessor - that batch.
-func (m *Manager) liveMusicDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) liveMusicDependency(t *task) []sched.Need {
 	if t.musicPrevRegionID == "" {
 		return nil
 	}
-	if d, ok := lq.Get("music_live:" + t.musicPrevRegionID); ok {
-		return d
-	}
+	needs := joinOnly("music_live:" + t.musicPrevRegionID)
 	if m.musicRegionGenerating(t.musicPrevRegionID) {
-		if d, ok := lq.Get("music_gen:" + t.musicPrevChapterID); ok {
-			return d
-		}
+		needs = append(needs, sched.Need{Key: "music_gen:" + t.musicPrevChapterID})
 	}
-	return nil
+	return needs
 }
 
 // selectLiveMusic is advanceLiveMusic's own scan, pulled out as a pure
@@ -622,7 +611,7 @@ func (m *Manager) MusicRegionGenerating(id string) bool {
 //
 // A single region's own generation failure no longer aborts the rest of
 // the batch the way an earlier version of this function did (return err
-// immediately, relying on handleResult's own retryEligible/requeueCopy to
+// immediately, relying on handleResult's own retryEligible/the scheduler's retry to
 // retry the *whole* batch from its own first item). That shape was fine
 // for a small, per-region task, but got statistically much worse once
 // music generation moved to one task per chapter covering every one of

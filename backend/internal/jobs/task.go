@@ -7,7 +7,6 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
-	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
 
@@ -217,7 +216,7 @@ const (
 	// reader's own playback is waiting on it, the same as a paragraph they
 	// just jumped to). Keyed by
 	// region; the moment one dispatches it queues the next region's task,
-	// which depends on it (resolveDependencies) so it's ready to go the
+	// which depends on it (Manager.needs) so it's ready to go the
 	// instant this one finishes - see advanceLiveMusic. Both kinds can
 	// reach the same region, so each region is claimed in memory
 	// (Manager.claimMusicRegion) before generating and only ever generated
@@ -303,9 +302,32 @@ const (
 // RunCharacterization). Only the fields relevant to t.kind are populated;
 // see generate/handleResult's own per-kind branches for which.
 type task struct {
-	kind       Kind
+	kind Kind
+	// tier is the priority the task was asked for at. Its effective
+	// priority (see internal/sched) can be more urgent; Run sets tier to
+	// that as it starts, so everything downstream of a dispatch reads the
+	// tier the task actually ran at.
 	tier       int
 	chapterIdx int // this task's chapter's index in the book
+
+	// m is the Manager the task was pushed to (set by pushTask and by the
+	// constructors of dependency tasks).
+	m *Manager
+	// parent is the key of the running group that asked for this task, or
+	// "" - see Manager.pushTask.
+	parent string
+	// source is who asks for this task when it isn't a group: "" for a
+	// direct request, or a reader's source (readerSource), whose request
+	// is withdrawn once that reader has moved on.
+	source string
+	// resume is a paused LLM pass's requeue callback: the next Run calls it
+	// to pick up the remainder (see task.Run). attributed sums the pass's
+	// count across its runs.
+	resume     func()
+	attributed int
+	// settled is set once the task's outcome has reached its waiters and
+	// the store, so Ended doesn't deliver a second one.
+	settled bool
 
 	// pushedAt/startedAt time this task's queue wait and run for
 	// handleResult's per-task timing log line. Set before the task is
@@ -314,7 +336,7 @@ type task struct {
 	pushedAt  time.Time
 	startedAt time.Time
 
-	// skipDependencies opts t out of resolveDependencies entirely (see
+	// skipDependencies opts t out of Manager.needs entirely (see
 	// that function's own early check) - set on KindLengthEstimate tasks,
 	// whose sample has no chapter-pipeline state (characterization/
 	// speech-direction/reference-clip) for those dependencies to
@@ -322,9 +344,9 @@ type task struct {
 	// reference clip itself (EnqueueLengthEstimate), before ever building
 	// this task. Never set on any other Kind today, but deliberately a
 	// plain field on task rather than a KindLengthEstimate-only special
-	// case inside resolveDependencies, so a future one-off kind with the
+	// case inside Manager.needs, so a future one-off kind with the
 	// same "self-contained, nothing to wait on" shape can opt in the same
-	// way without resolveDependencies growing another kind check.
+	// way without Manager.needs growing another kind check.
 	skipDependencies bool
 
 	// estimateChars is KindLengthEstimate's own sample's character count -
@@ -335,7 +357,7 @@ type task struct {
 
 	// attempt counts genuine failures this exact unit of work has already
 	// suffered, starting at 0 for a task's first ever dispatch - see
-	// maxTaskAttempts/task.requeueCopy. handleResult checks it on a real
+	// maxTaskAttempts/the scheduler's retry. handleResult checks it on a real
 	// failure (not a cooperative pause, which doesn't count against it) and,
 	// while budget remains, retries by pushing a fresh copy back onto this
 	// same priority queue rather than
@@ -346,28 +368,12 @@ type task struct {
 	// everything else waiting on that slot.
 	attempt int
 
-	// cancel aborts this task's own dispatched context - set only once the
-	// task is actually popped off the queue and dispatched into a worker
-	// slot (see worker); nil while still queued, since a queued task has
-	// no context of its own yet to cancel (Cancel/CancelAll instead just
-	// remove it from the queue directly via taskqueue.Queue.Cancel/Drain -
-	// see their own doc comments). Calling it doesn't guarantee the underlying work
-	// stops immediately: a poolGeneration task's ttsworker HTTP call is
-	// genuinely ctx-aware and aborts promptly (internal/ttsworker.Manager.do
-	// uses http.NewRequestWithContext, same as poolLLM's own HTTP round
-	// trip to ttsworker's /llm/generate now), but a poolLLM task's actual
-	// LLM decode loop is not: llmworker.Scheduler checks ctx only before
-	// admitting a request into a generation slot, never once decoding is
-	// actually underway (llama.cpp's own decode loop is synchronous, with
-	// no mid-call cancellation hook - see llamacpp.Scheduler.Generate's own
-	// doc comment) - so cancelling an in-flight attribution/characterization task takes
-	// effect only once its current batch/call finishes on its own. Either
-	// way, the normal handleResult path delivers the resulting error (ctx
-	// cancellation or otherwise) to this task's own waiters/store updates
-	// exactly as any other failure would - Cancel/CancelAll don't bypass or
-	// duplicate that delivery for an in-flight task, only for one still
-	// queued (see deliverCanceled).
-	cancel context.CancelFunc
+	// Cancelling a dispatched task (Manager.Cancel) cancels the context its
+	// Run was given. A generation task's ttsworker HTTP call aborts
+	// promptly; an LLM task's decode loop only notices between calls
+	// (llama.cpp's decode is synchronous), so it ends once its current
+	// batch does. Either way the task's own result handling delivers the
+	// error to its waiters; only a task that never ran is told by Ended.
 
 	bookID    string
 	chapterID string
@@ -487,7 +493,7 @@ type task struct {
 	// one does, addressing a real gap: it used to call m.provision
 	// directly, bypassing the task queue (and so this dashboard) entirely.
 	// runProvision's attempt param is this task's own t.attempt at dispatch
-	// time (0 on the first try, incremented by requeueCopy on each retry) -
+	// time (0 on the first try, incremented by the scheduler's retry on each retry) -
 	// see EnqueueVoiceProvision/RunVoiceProvision's own doc comments for why
 	// callers need it: VoiceDesign is fully deterministic on (instruct,
 	// seed, refText, language), so a caller whose seed is fixed (a
@@ -559,7 +565,7 @@ type previewTextOutcome struct {
 }
 
 // dedupKey identifies t for queue dedup and in-flight tracking (both owned by
-// internal/taskqueue.Queue now, keyed by this) -
+// internal/sched now, keyed by this) -
 // a paragraph can only usefully be queued once (its own ID); a chapter's
 // attribution, or a character's characterization, can each only usefully
 // run once at a time (llmKey - a chapterID or characterID respectively,
@@ -627,30 +633,10 @@ func (t *task) dedupKey() string {
 	}
 }
 
-// requeueCopy returns a fresh *task carrying the same identity/work/waiters
-// as t, suitable for pushing back onto the queue for another dispatch after
-// a genuine failure - handleResult's own retry path (see maxTaskAttempts,
-// which this counts against via attempt). A shallow copy, not a
-// hand-picked field list the way its one call site used to build one:
-// every field (including llmWaiters/previewWaiters/provisionWaiters, so a
-// caller still blocked on RunCharacterization/RunVoiceDesignPreview/
-// RunVoiceProvision keeps receiving this same unit of work's eventual
-// outcome across a retry rather than being silently dropped) carries over
-// automatically, so a future field added to task can't quietly go missing
-// from a requeue the way a manually-listed struct literal could. cancel is
-// always reset (a requeued copy hasn't been dispatched yet, so it has no
-// live context to cancel).
-func (t *task) requeueCopy() *task {
-	cp := *t
-	cp.cancel = nil
-	cp.attempt++
-	return &cp
-}
-
 // kindPriority ranks Kind for tie-breaking same-tier tasks against each
 // other, inside task.Less - characterization first, then voice
 // provisioning, then actual clone/design generation, the same dependency
-// order this package's resolveDependencies enforces as a hard rule
+// order this package's Manager.needs enforces as a hard rule
 // between pools (a character's voice needs characterizing before it's
 // worth provisioning, and provisioned before paragraphs in it generate)
 // applied here as a soft default among same-tier candidates more broadly,
@@ -671,24 +657,6 @@ func kindPriority(k Kind) int {
 	}
 }
 
-// Key/Pool/Tier/Promote satisfy taskqueue.Task - see that package's own
-// doc comment for how these feed into dispatch order and priority
-// promotion. Promote is only ever called by taskqueue.Queue itself, with
-// its own lock already held (see Task.Promote's own doc comment) -
-// nothing in this package calls it directly; a task that needs its own
-// tier bumped for a different reason (pushTask's own dedup-merge, a
-// fresh push at a more urgent tier joining an already-queued one) goes
-// through taskqueue.Queue.WithTask instead, for the same lock-safety
-// reason.
-func (t *task) Key() string             { return t.dedupKey() }
-func (t *task) Pool() taskqueue.PoolKey { return poolFor(t.kind) }
-func (t *task) Tier() int               { return t.tier }
-func (t *task) Promote(newTier int) {
-	if newTier < t.tier {
-		t.tier = newTier
-	}
-}
-
 // kindCompare maps each Kind to its own tie-break ordering function, used
 // by Less once kindPriority is already tied - a plain per-kind registry
 // (like kindPool) rather than one shared function switching on every
@@ -703,8 +671,8 @@ func (t *task) Promote(newTier int) {
 // need, not a reason to collapse them into one shared case; a kind with
 // no entry (KindVoiceDesignPreview/KindVoiceProvision) has no
 // finer-grained ordering of its own at all, falling straight through to
-// taskqueue.Queue's own stable insertion-order tiebreak.
-var kindCompare = map[Kind]func(a, b *task) int{
+// the scheduler's own arrival-order tiebreak.
+var kindCompare = map[Kind]func(a, b *task, priority int) int{
 	KindVoiceClone:              compareClone,
 	KindVoiceDesign:             comparePosition,
 	KindSpeakerAttribution:      comparePosition,
@@ -718,27 +686,20 @@ var kindCompare = map[Kind]func(a, b *task) int{
 	KindBookSetting:             comparePosition,
 }
 
-// Less breaks a same-pool, same-(promoted-)tier tie between t and other -
-// taskqueue.Queue guarantees both, so this never has to re-check either
-// itself (see taskqueue.Task.Less's own doc comment). cmp.Or evaluates
-// each argument in order and returns the first non-zero one (0 if every
-// argument is), the same "compare by kindPriority, and only if that ties
-// move on to this kind's own finer-grained rule" chain an if/else ladder
-// would otherwise spell out by hand: kindPriority first (characterization
-// before provisioning before plain generation, the same order
-// resolveDependencies' own dependency chain enforces as a hard block -
-// this is just the same preference applied as a soft tiebreak more
-// broadly), then whatever kindCompare has registered for t's own kind (a
-// permanent tie, comparePosition's own zero value, if there's no entry).
-func (t *task) Less(other taskqueue.Task) bool {
-	o := other.(*task)
+// lessTask breaks a tie between two tasks of equal effective priority:
+// kindPriority first (characterization before provisioning before plain
+// generation, the order Manager.needs enforces as a hard dependency,
+// applied as a soft preference more broadly), then whatever kindCompare has
+// registered for t's own kind. A remaining tie is left to the scheduler's
+// arrival order.
+func lessTask(t, o *task, priority int) bool {
 	compare := kindCompare[t.kind]
 	if compare == nil {
-		compare = func(*task, *task) int { return 0 }
+		compare = func(*task, *task, int) int { return 0 }
 	}
 	return cmp.Or(
 		cmp.Compare(kindPriority(o.kind), kindPriority(t.kind)), // higher kindPriority sorts first
-		compare(t, o),
+		compare(t, o, priority),
 	) < 0
 }
 
@@ -759,8 +720,8 @@ func (t *task) Less(other taskqueue.Task) bool {
 // "generate" request happens to reach the backend later (client-side
 // scheduling, retries, network races) never jumps ahead of an earlier
 // chapter's still-queued work. A genuine remaining tie (0) falls through
-// to taskqueue.Queue's own stable insertion-order tiebreak.
-func comparePosition(a, b *task) int {
+// to the scheduler's own arrival-order tiebreak.
+func comparePosition(a, b *task, _ int) int {
 	return cmp.Or(
 		cmp.Compare(a.seriesName, b.seriesName),
 		cmp.Compare(a.seriesIndex, b.seriesIndex),
@@ -779,9 +740,9 @@ func comparePosition(a, b *task) int {
 // restore instead of a full reference prefill, however many voices and
 // emotion variants a chapter uses. TierLookahead/TierUrgent keep strict
 // reading order - a reader is waiting on those in sequence.
-func compareClone(a, b *task) int {
-	if a.tier < TierNormal || a.bookID != b.bookID || a.chapterIdx != b.chapterIdx {
-		return comparePosition(a, b)
+func compareClone(a, b *task, priority int) int {
+	if priority < TierNormal || a.bookID != b.bookID || a.chapterIdx != b.chapterIdx {
+		return comparePosition(a, b, priority)
 	}
 	return cmp.Or(
 		cmp.Compare(a.refKey(), b.refKey()),
@@ -817,7 +778,7 @@ type taskResult struct {
 	// stopped early because HasHigherPriorityWork reported more urgent
 	// work waiting (see AttributionFunc's own doc comment), with
 	// paragraphs left it never got to. Calling it re-enqueues a follow-up
-	// task for just those - handleResult calls it after finishTask has
+	// task for just those - handleResult calls it after the scheduler ending the task has
 	// cleared this task's own dedup entry, so the follow-up (same
 	// dedupKey) doesn't get silently merged into this now-finishing task
 	// instead of actually queuing (see pushTask's own dedup/inFlight

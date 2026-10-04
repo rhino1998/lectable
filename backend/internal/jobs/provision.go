@@ -35,6 +35,7 @@ func (m *Manager) RunVoiceDesignPreview(ctx context.Context, instruct string, fn
 	resultCh := make(chan previewOutcome, 1)
 	seq := atomic.AddInt64(&previewSeq, 1)
 	m.pushTask(&task{
+		parent: parentOf(ctx),
 		kind:   KindVoiceDesignPreview,
 		tier:   TierUrgent,
 		llmKey: fmt.Sprintf("%d", seq),
@@ -121,6 +122,7 @@ func (m *Manager) RunVoiceProvisionAt(ctx context.Context, tier int, bookID, cha
 	}
 	resultCh := make(chan provisionOutcome, 1)
 	m.pushTask(&task{
+		parent:           parentOf(ctx),
 		kind:             KindVoiceProvision,
 		tier:             tier,
 		bookID:           bookID,
@@ -181,6 +183,7 @@ func (m *Manager) RunSFXPreview(ctx context.Context, engine, prompt string, fn f
 	resultCh := make(chan previewOutcome, 1)
 	seq := atomic.AddInt64(&sfxPreviewSeq, 1)
 	m.pushTask(&task{
+		parent:         parentOf(ctx),
 		kind:           KindSFXPreview,
 		tier:           TierUrgent,
 		llmKey:         fmt.Sprintf("%d", seq),
@@ -227,6 +230,7 @@ func (m *Manager) RunLLMPreviewAt(ctx context.Context, tier int, label, userProm
 	resultCh := make(chan previewTextOutcome, 1)
 	seq := atomic.AddInt64(&llmPreviewSeq, 1)
 	m.pushTask(&task{
+		parent:             parentOf(ctx),
 		kind:               KindLLMPreview,
 		tier:               tier,
 		llmKey:             fmt.Sprintf("%d", seq),

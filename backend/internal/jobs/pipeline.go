@@ -5,62 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"reflect"
 	"slices"
 	"time"
 
-	"github.com/rhino1998/lectable/backend/internal/taskqueue"
+	"github.com/rhino1998/lectable/backend/internal/sched"
 )
 
-// poolPipeline is the one PoolKey every book-preprocessing "phase" task
-// (pipelineTask below) dispatches through - but, unlike poolGeneration/
-// poolDesign/poolLLM, it's registered on its own separate taskqueue.Queue
-// (Manager.pipelineQueue, built in NewManager), not m.queue. That's
-// deliberate, not an oversight: taskqueue.Queue enforces "only one of its
-// own registered pools may have a task in flight at a time" (see that
-// package's own "one pool at a time" doc comment) because poolGeneration/
-// poolDesign/poolLLM genuinely do share one GPU/VRAM-bound ttsworker
-// process that can't usefully run two of those three at once. A pipeline
-// phase task does none of that work itself - it only fans out real
-// per-chapter/per-character work into those three pools (via
-// RunAttribution/RunCharacterization/RunVoiceProvision/RunDirection,
-// dispatched exactly the way a reader's own individual "Attribute
-// chapter"/"Regenerate voice" click already is) and blocks waiting for it,
-// the same shape httpapi's old runBookPipeline goroutine already used
-// (see that function's own now-superseded doc comment for the fuller
-// "never occupy the pool slot you're waiting on" reasoning, which still
-// applies unchanged here). Registering poolPipeline as a fourth PoolKey on
-// m.queue would wrongly serialize book-preprocessing progress behind
-// ordinary generation/attribution for no real resource reason - a second,
-// independent Queue is what actually lets it run concurrently with the
-// other three: its own "one pool at a time" rule only ever applies among
-// its own registered pools, which today is just this one.
-const poolPipeline taskqueue.PoolKey = "pipeline"
-
-// maxPipelineInFlight bounds poolPipeline - how many books' preprocessing
-// runs may have a phase actively fanning out work at once. Deliberately
-// much higher than maxInFlight/maxAttributionInFlight/maxDesignInFlight:
-// a phase task itself does no GPU/LLM work and holds no VRAM, it just
-// blocks on a WaitGroup while its own real per-item tasks queue and
-// dispatch through poolGeneration/poolDesign/poolLLM exactly like any
-// other caller's - those three pools' own capacities are what actually
-// bound real concurrent model work; this only bounds how many book-level
-// phase goroutines may be blocked waiting at once, which is cheap. High
-// enough that a reasonable number of books preprocessing at once (each
-// pinned to one phase in flight at a time by its own dependency chain -
-// see pipelineResolver) never queue behind each other for no resource
-// reason - matching the old bare-goroutine runBookPipeline's own
-// behavior, which had no cap on how many books could run concurrently at
-// all.
-//
-// The "generate audio" meta-tasks (EnqueueChapter/EnqueueBookGenerate/
-// EnqueueRemaining) share this pool and stay in flight until the paragraph
-// audio they queued has finished (see waitForChapterAudio) - so a reader
-// clicking "generate" on a few dozen chapters holds that many slots for a
-// long time. Sized well above that so those rows can never starve a
-// book's preprocessing phases of a slot; each is just a goroutine blocked
-// on a channel.
-const maxPipelineInFlight = 256
+// Preprocessing phases and bulk groups (pipelineTask) are tasks in the same
+// scheduler as everything else, but need no context (sched.Task.Context is
+// ""): a group does no model work itself, it only asks for the real
+// per-chapter/per-character tasks and waits for them, so it runs beside
+// whatever pool is active and never holds one of its slots. The tasks it
+// asks for through the context its run is given are adopted by it (see
+// withParent, Manager.pushTask): they take its priority while it runs, and
+// are cancelled with it unless something else wants them.
 
 // Book preprocessing runs seven phases, related by pipelinePhaseDeps (see
 // pipelineResolver): scare-quote tagging first, then attribution and
@@ -162,7 +120,7 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 // preprocessAmbiencePhase), since running
 // any given phase needs Store/Speaker access this package doesn't have -
 // the same reason AttributionFunc/DirectionFunc/CharacterizationFunc are
-// all caller-supplied too. A non-nil return is logged by pipelineWorker
+// all caller-supplied too. A non-nil return is logged by pipelineTask.Run
 // but never blocks a later phase from starting (see pipelineResolver's own
 // doc comment on what "depends on" means here) - every phase function
 // httpapi supplies today is itself best-effort and always returns nil,
@@ -183,7 +141,7 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 // ignore this parameter.
 type PipelinePhaseFunc func(ctx context.Context, tier func() int) error
 
-// pipelineTask is one poolPipeline task: either one of a book's
+// pipelineTask is one group task: either one of a book's
 // preprocessing phases (group == nil - see the pipelinePhase* constants), or
 // a bulk group (see BulkGroup). Carries no paragraph/voice/LLM-call state of
 // its own, just enough identity for pipelineResolver's dependency lookup and
@@ -191,59 +149,28 @@ type PipelinePhaseFunc func(ctx context.Context, tier func() int) error
 // dispatch context (cancel, set once popped - nil while still queued, since
 // a queued task has no context of its own yet to cancel).
 type pipelineTask struct {
+	m      *Manager
 	bookID string
 	phase  int        // one of the pipelinePhase* constants - only meaningful when group == nil
 	group  *BulkGroup // nil for a preprocessing phase
 	tier   int
 	run    PipelinePhaseFunc
-	cancel context.CancelFunc
-}
-
-// pipelineOutcome is a dispatched pipelineTask's real result, delivered
-// over the task's own private channel to pipelineWorker - a struct
-// wrapping err (rather than a bare `chan error`) specifically so
-// pipelineWorker's own reflect.Select loop can type-assert the received
-// value without the nil-interface panic a bare `chan error` would risk
-// (asserting a reflect.Value's Interface() back to the interface type
-// error panics when the sent value was a true nil error - the same reason
-// this package's own taskResult/llmOutcome/previewOutcome/provisionOutcome
-// are all concrete structs rather than bare error/interface channels).
-type pipelineOutcome struct {
-	err error
 }
 
 func pipelineKey(bookID string, phase int) string {
 	return "pipeline:" + bookID + ":" + pipelinePhaseNames[phase]
 }
 
-// currentPipelineTier safely reads the pipelineTask keyed key's own
-// current tier, under pipelineQueue's own lock (via WithTask) - the
-// lock-safe way for a phase's own dispatch goroutine (running with no
-// lock of its own) to read whatever tier Manager.PromoteTier most
-// recently set, rather than racing a bare field read (pipelineTask.tier)
-// against Promote's own concurrent mutation, which real per-item task's
-// own Tier()/Promote() doc comments already flag as unsafe outside
-// taskqueue.Queue's own lock-held code paths. Falls back to
-// defaultAttributionTier if the phase's own task is somehow already gone
-// (finished and Finish()ed between Pop and this call) - a phase always
-// calls this from inside its own still-running PipelinePhaseFunc, so this
-// is only ever a narrow, harmless race against the task's own imminent
-// completion, never a real "phase not found" case.
+// currentPipelineTier is the group task key's effective tier right now -
+// what a phase passes to the Run* calls it makes, so a group bumped while
+// it runs asks for the rest of its work at the new tier.
 func (m *Manager) currentPipelineTier(key string) int {
-	tier := defaultAttributionTier
-	m.pipelineQueue.WithTask(
-		func(c taskqueue.Task) bool { return c.Key() == key },
-		func(c taskqueue.Task) { tier = c.Tier() },
-	)
-	return tier
+	if p, ok := m.sched.Priority(key); ok && p != sched.NoPriority {
+		return p
+	}
+	return defaultAttributionTier
 }
 
-// toPipelineQueueTask reports t as a QueueTask - the Jobs dashboard's own
-// row shape, shared with every ordinary per-item task (see toQueueTask). A
-// preprocessing phase covers the whole book, so its Label is the fixed
-// "Whole book" rather than "" (which would make the dashboard's chapter
-// column fall back to "Chapter 1"); a bulk group reports its own Kind/Label/
-// chapter (see BulkGroup).
 func toPipelineQueueTask(t *pipelineTask, tier int) QueueTask {
 	qt := QueueTask{
 		ID:     t.Key(),
@@ -263,7 +190,7 @@ func toPipelineQueueTask(t *pipelineTask, tier int) QueueTask {
 
 // Key namespaces a bulk group by its own BulkGroup.Key so it can never
 // collide with a same-book preprocessing phase's pipelineKey - see
-// taskqueue.Queue.Push's own dedup-by-Key doc comment for why this is also
+// sched.Scheduler.Request's own dedup-by-Key doc comment for why this is also
 // what makes a duplicate click while one's already queued/in flight a
 // harmless no-op.
 func (t *pipelineTask) Key() string {
@@ -272,57 +199,36 @@ func (t *pipelineTask) Key() string {
 	}
 	return pipelineKey(t.bookID, t.phase)
 }
-func (t *pipelineTask) Pool() taskqueue.PoolKey { return poolPipeline }
 
-// Tier returns t's own current tier - like the real per-item task's own
-// Tier()/Promote() (see their doc comments), safe to call only from
-// taskqueue.Queue's own lock-held code paths (Pop/Snapshot/WithTask/
-// computeState). A phase's own dispatch goroutine, which holds no lock at
-// all, must go through Manager.currentPipelineTier (WithTask-backed)
-// instead of calling this directly - see PipelinePhaseFunc's own doc
-// comment on its tier parameter.
-func (t *pipelineTask) Tier() int { return t.tier }
+// Context, CanStart, Less, Prepare and Run make pipelineTask a sched.Task -
+// see the top of this file.
+func (t *pipelineTask) Context() string            { return "" }
+func (t *pipelineTask) CanStart([]sched.Task) bool { return true }
+func (t *pipelineTask) Less(sched.Task, int) bool  { return false }
 
-// Less never distinguishes two phase tasks - there's no meaningful
-// "closer" between two different books' (or two different phases')
-// preprocessing runs the way comparePosition orders same-tier generation
-// work by book/chapter/paragraph position; a plain stable insertion-order
-// tiebreak (taskqueue.Queue's own last resort) is all this needs.
-func (t *pipelineTask) Less(other taskqueue.Task) bool { return false }
-
-func (t *pipelineTask) Promote(newTier int) {
-	if newTier < t.tier {
-		t.tier = newTier
+// Prepare makes a preprocessing phase wait for the phases
+// pipelinePhaseDeps lists for it that are queued or running for the same
+// book (EnqueuePipeline pushes them first). A phase function reports its
+// own per-item failures and returns nil, so an earlier phase only fails -
+// and takes the later ones with it - by being cancelled.
+func (t *pipelineTask) Prepare() ([]sched.Need, error) {
+	if t.group != nil {
+		return nil, nil
 	}
+	var needs []sched.Need
+	for _, phase := range pipelinePhaseDeps[t.phase] {
+		needs = append(needs, sched.Need{Key: pipelineKey(t.bookID, phase)})
+	}
+	return needs, nil
 }
 
-// pipelineResolver is pipelineQueue's own taskqueue.Resolver - a phase
-// can't dispatch until every phase pipelinePhaseDeps lists for it, for
-// that same book, has finished (see the pipelinePhase* constants' own doc
-// comment for the graph). Never lazily creates a task
-// the way Manager.resolveDependencies' own
-// dependency kinds do (characterizationDependency et al.) - every phase
-// for a given run is pushed up front by EnqueuePipeline, so there's
-// nothing here to conjure into existence, only to look up: a still-
-// queued-or-in-flight earlier phase is a real dependency; once it
-// Finishes (removed from pipelineQueue entirely, success or failure - see
-// PipelinePhaseFunc's own doc comment on why failure doesn't block a
-// dependent phase either), Find stops finding it and the dependent phase
-// becomes eligible.
-func pipelineResolver(lq *taskqueue.LockedQueue, tk taskqueue.Task) []taskqueue.Task {
-	t := tk.(*pipelineTask)
-	// A bulk group has no dependency at all - it doesn't participate in
-	// book-preprocessing's own phase ordering.
-	if t.group != nil {
-		return nil
+func (t *pipelineTask) Run(ctx context.Context, _ int) error {
+	key := t.Key()
+	err := t.run(withParent(ctx, key), func() int { return t.m.currentPipelineTier(key) })
+	if err != nil && ctx.Err() == nil {
+		log.Printf("jobs: pipeline task %s: %v", key, err)
 	}
-	var deps []taskqueue.Task
-	for _, phase := range pipelinePhaseDeps[t.phase] {
-		if dep, ok := lq.Get(pipelineKey(t.bookID, phase)); ok {
-			deps = append(deps, dep)
-		}
-	}
-	return deps
+	return nil
 }
 
 // ErrPipelineAlreadyRunning is EnqueuePipeline's own error when bookID
@@ -332,7 +238,7 @@ func pipelineResolver(lq *taskqueue.LockedQueue, tk taskqueue.Task) []taskqueue.
 var ErrPipelineAlreadyRunning = errors.New("a preprocessing run is already in progress for this book")
 
 // EnqueuePipeline queues bookID's preprocessing phases (see the
-// pipelinePhase* constants) as dependent poolPipeline tasks and
+// pipelinePhase* constants) as dependent group tasks and
 // returns immediately - httpapi.handlePreprocessBook's own "run
 // everything" meta-task (POST .../preprocess), reimplemented as real,
 // dependency-ordered tasks instead of one long-lived bare goroutine
@@ -356,32 +262,35 @@ func (m *Manager) EnqueuePipeline(bookID string, phases PipelinePhases) error {
 	if m.isPipelineRunningLocked(bookID) {
 		return ErrPipelineAlreadyRunning
 	}
-	for phase, fn := range phases {
-		if fn == nil {
-			// An omitted phase is simply absent from this run - any phase
-			// depending on it finds nothing to wait on (see
-			// pipelineResolver).
-			continue
+	// Each phase after the phases it waits for, so its Prepare finds them.
+	pushed := map[int]bool{}
+	var push func(phase int)
+	push = func(phase int) {
+		if pushed[phase] || phases[phase] == nil {
+			return
 		}
-		m.pipelineQueue.Push(&pipelineTask{
+		pushed[phase] = true
+		for _, dep := range pipelinePhaseDeps[phase] {
+			push(dep)
+		}
+		m.sched.Request(sourceDirect, TierBackground, &pipelineTask{
+			m:      m,
 			bookID: bookID,
 			phase:  phase,
 			tier:   TierBackground,
-			run:    fn,
+			run:    phases[phase],
 		})
 	}
-	select {
-	case m.pipelineWake <- struct{}{}:
-	default:
+	for phase := range phases {
+		push(phase)
 	}
-	m.notifyChanged()
 	return nil
 }
 
 // IsPipelineRunning reports whether bookID currently has any preprocessing
 // phase task queued or in flight - the read side of EnqueuePipeline,
 // replacing Server.pipelineRunning's own sync.Map presence check now that
-// a run's presence is tracked by pipelineQueue itself rather than a
+// a run's presence is tracked by the scheduler itself rather than a
 // second, parallel bookkeeping structure httpapi used to maintain by
 // hand. Used by httpapi's bookSummaryDTO.Preprocessing (the library page's
 // per-book spinner).
@@ -396,97 +305,27 @@ func (m *Manager) isPipelineRunningLocked(bookID string) bool {
 	// sharing this same queue must never trip bookSummaryDTO.Preprocessing
 	// - "generating audio" and "book-preprocessing run in progress" are
 	// different concepts a caller needs to tell apart.
-	_, ok := m.pipelineQueue.Find(func(c taskqueue.Task) bool {
-		t := c.(*pipelineTask)
-		return t.bookID == bookID && t.group == nil
+	running := false
+	m.sched.Each(func(c sched.Task, _ sched.State) {
+		if t, ok := c.(*pipelineTask); ok && t.bookID == bookID && t.group == nil {
+			running = true
+		}
 	})
-	return ok
+	return running
 }
 
-// CancelPipeline cancels bookID's in-progress preprocessing run, if any -
-// httpapi.handleDeleteBook's own best-effort stop for a book that's about
-// to stop existing, the same role Server.cancelPipeline played before
-// preprocessing phases were real tasks. A still-queued phase (waiting on
-// an earlier phase to finish, or not yet reached by pipelineWorker) is
-// removed outright, same as Manager.CancelAll's own queued half; an
-// already-dispatched phase can't be un-dispatched, so its own context is
-// canceled instead and its fan-out work (RunAttribution/
-// RunCharacterization/RunVoiceProvision/RunDirection, all already
-// ctx-aware) winds down on its own once it next checks ctx - mirrors
-// Manager.Cancel's two-case shape for an ordinary task. A no-op if bookID
-// has no phase queued or in flight.
+// CancelPipeline cancels bookID's in-progress preprocessing run and bulk
+// groups, if any - httpapi.handleDeleteBook's best-effort stop for a book
+// that's about to stop existing. A queued one is removed; a running one has
+// its context cancelled, and the work it asked for that nothing else wants
+// goes with it.
 func (m *Manager) CancelPipeline(bookID string) {
 	m.pipelineMu.Lock()
 	defer m.pipelineMu.Unlock()
-
-	removed := false
-	for {
-		if _, ok := m.pipelineQueue.Cancel(func(c taskqueue.Task) bool { return c.(*pipelineTask).bookID == bookID }); !ok {
-			break
-		}
-		removed = true
-	}
-	if removed {
-		m.notifyChanged()
-	}
-	for _, tk := range m.pipelineQueue.InFlightTasks() {
-		t := tk.(*pipelineTask)
-		if t.bookID == bookID && t.cancel != nil {
-			t.cancel()
-		}
-	}
-}
-
-// cancelPipelineTask cancels/removes exactly one phase task by its own
-// Key() (e.g. "pipeline:<bookID>:attribution") - Manager.Cancel's own
-// fallback once m.queue reports no match, so the Jobs dashboard's per-row
-// Cancel button works for a pipeline-phase row the same way it already
-// does for an ordinary task row. Unlike CancelPipeline (which stops every
-// remaining phase of a book's run at once), this only touches the one
-// named phase - removing/canceling it still lets a later, still-queued
-// phase for the same book start once pipelineResolver stops finding this
-// one, the same as a normal finish (see PipelinePhaseFunc's own doc
-// comment on why a non-nil/canceled outcome doesn't block a later phase
-// either).
-func (m *Manager) cancelPipelineTask(id string) bool {
-	if _, ok := m.pipelineQueue.Cancel(func(c taskqueue.Task) bool { return c.Key() == id }); ok {
-		m.notifyChanged()
-		return true
-	}
-	if found, ok := m.pipelineQueue.Find(func(c taskqueue.Task) bool { return c.Key() == id }); ok {
-		if t := found.(*pipelineTask); t.cancel != nil {
-			t.cancel()
-		}
-		return true
-	}
-	return false
-}
-
-// cancelAllPipelineTasks cancels every queued and in-flight preprocessing
-// phase task across every book at once - Manager.CancelAll's own
-// pipeline-side half, now that phase tasks are on the same Jobs dashboard
-// its "Cancel all" button already clears. Mirrors CancelAll's own
-// two-part shape (drain queued, cancel in-flight contexts) but has no
-// waiters to deliver a canceled outcome to (phase tasks are
-// fire-and-forget, like EnqueueAttribution's own tasks) and no
-// chapterPending bookkeeping (phase tasks never touch it - see
-// pipelineTask's own doc comment). Returns how many phase tasks were
-// acted on.
-func (m *Manager) cancelAllPipelineTasks() int {
-	drained := m.pipelineQueue.Drain()
-	if len(drained) > 0 {
-		m.notifyChanged()
-	}
-	inFlightCancels := make([]context.CancelFunc, 0, len(m.pipelineQueue.InFlightTasks()))
-	for _, t := range m.pipelineQueue.InFlightTasks() {
-		if pt := t.(*pipelineTask); pt.cancel != nil {
-			inFlightCancels = append(inFlightCancels, pt.cancel)
-		}
-	}
-	for _, cancel := range inFlightCancels {
-		cancel()
-	}
-	return len(drained) + len(inFlightCancels)
+	m.sched.CancelWhere(func(c sched.Task) bool {
+		t, ok := c.(*pipelineTask)
+		return ok && t.bookID == bookID
+	})
 }
 
 // BulkGroup identifies one bulk group - a single cancelable, promotable
@@ -498,7 +337,7 @@ func (m *Manager) cancelAllPipelineTasks() int {
 // reader's per-chapter generate (EnqueueChapter), Auto Split, and the
 // Speakers page's bulk buttons (httpapi.handleBulkAction).
 //
-// A bulk group dispatches through poolPipeline like a preprocessing phase,
+// A bulk group dispatches through the group tasks like a preprocessing phase,
 // but never joins the phase dependency graph (see pipelineResolver) and never
 // counts toward IsPipelineRunning (see isPipelineRunningLocked). Its run is a
 // PipelinePhaseFunc: fan out the real work, block until it finishes, and
@@ -521,14 +360,14 @@ type BulkGroup struct {
 	ChapterID  string
 	ChapterIdx int
 	Tier       int
-	// Children picks out the m.queue tasks this group's run dispatches, so
+	// Children picks out the tasks this group's run dispatches, so
 	// promoting the group's row (Manager.PromoteTier) promotes them too -
 	// see cascadePromotion. nil means promotion doesn't cascade.
 	Children *ChildFilter
 }
 
 // ChildFilter matches a bulk group's (or preprocessing phase's) own child
-// tasks in m.queue, always within the group's own book. Every non-zero
+// tasks in the queue, always within the group's own book. Every non-zero
 // field must match.
 type ChildFilter struct {
 	Kinds     []Kind // empty matches any kind
@@ -556,7 +395,7 @@ var phaseChildKinds = map[int]Kind{
 	pipelinePhaseSummary:       KindSummary,
 }
 
-// children reports which m.queue tasks a promotion of t cascades to, or nil.
+// children reports which the queue tasks a promotion of t cascades to, or nil.
 func (t *pipelineTask) children() *ChildFilter {
 	if t.group != nil {
 		return t.group.Children
@@ -569,21 +408,17 @@ func (t *pipelineTask) children() *ChildFilter {
 
 // EnqueueBulk queues run as one bulk group for bookID (see BulkGroup).
 // Needs no pipelineMu-guarded check-then-push the way EnqueuePipeline does -
-// it's one single task, and taskqueue.Queue.Push already dedupes by Key(),
+// it's one single task, and sched.Scheduler.Request already dedupes by Key(),
 // which is exactly the idempotent "already running this? then this call is
 // a harmless no-op" behavior a repeated click wants.
 func (m *Manager) EnqueueBulk(bookID string, g BulkGroup, run PipelinePhaseFunc) {
-	m.pipelineQueue.Push(&pipelineTask{
+	m.sched.Request(sourceDirect, g.Tier, &pipelineTask{
+		m:      m,
 		bookID: bookID,
 		group:  &g,
 		tier:   g.Tier,
 		run:    run,
 	})
-	select {
-	case m.pipelineWake <- struct{}{}:
-	default:
-	}
-	m.notifyChanged()
 }
 
 // BulkID is the task id (QueueTask.ID - what Cancel and PromoteTier take)
@@ -593,12 +428,8 @@ func BulkID(bookID, key string) string { return "pipeline:" + bookID + ":" + key
 // BulkState reports whether bookID's bulk group with BulkGroup.Key key is
 // queued or running.
 func (m *Manager) BulkState(bookID, key string) (queued, running bool) {
-	id := BulkID(bookID, key)
-	if m.pipelineQueue.InFlight(id) {
-		return false, true
-	}
-	_, queued = m.pipelineQueue.Find(func(t taskqueue.Task) bool { return t.Key() == id })
-	return queued, false
+	_, st, ok := m.sched.Get(BulkID(bookID, key))
+	return ok && st != sched.Running, ok && st == sched.Running
 }
 
 // RenderChapters queues generation for every paragraph of bookID's
@@ -642,7 +473,7 @@ func (m *Manager) EnqueueChapter(bookID, chapterID string, chapterIdx int) {
 		ChapterID:  chapterID,
 		ChapterIdx: chapterIdx,
 		Tier:       TierBackground,
-		// Anything chapter-scoped in m.queue under this chapterID is part of
+		// Anything chapter-scoped in the queue under this chapterID is part of
 		// "generate this chapter" work.
 		Children: &ChildFilter{ChapterID: chapterID},
 	}, func(ctx context.Context, _ func() int) error {
@@ -735,6 +566,10 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 			return // ran off the end of the book
 		}
 
+		if err := m.ensureAttributed(ctx, book, ch, TierBackground); err != nil {
+			log.Printf("jobs: remaining: chapter %s: attribution before narration (strict order): %v", ch.ID, err)
+			return
+		}
 		resolved, all, err := m.paragraphsNeedingGeneration(ctx, book, ch.ID)
 		if err != nil {
 			log.Printf("jobs: list paragraphs for chapter %s: %v", ch.ID, err)
@@ -744,7 +579,7 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 			resolved = skipResolvedBeforeIdx(resolved, book.PosParagraphIdx)
 		}
 		for _, rp := range resolved {
-			m.pushResolvedTask(bookID, ch.ID, chapterIdx, TierBackground, rp, all)
+			m.pushResolvedTask(bookID, ch.ID, chapterIdx, TierBackground, rp, all, "")
 		}
 		pushed[ch.ID] = true
 		chapterIdx++
@@ -778,35 +613,23 @@ func (m *Manager) waitForChapterTasks(ctx context.Context, chapterIDs map[string
 	if len(chapterIDs) == 0 {
 		return
 	}
-	isChapterAudio := func(c taskqueue.Task) bool {
+	isChapterAudio := func(c sched.Task) bool {
 		t, ok := c.(*task)
 		return ok && slices.Contains(kinds, t.kind) && chapterIDs[t.chapterID]
 	}
+	pending := func() bool {
+		found := false
+		m.sched.Each(func(c sched.Task, _ sched.State) { found = found || isChapterAudio(c) })
+		return found
+	}
 	changes := m.SubscribeChanges()
 	defer m.UnsubscribeChanges(changes)
-	for {
-		if _, ok := m.queue.Find(isChapterAudio); !ok {
-			// handleResult finishes a failed task before pushing its
-			// retry (see requeueCopy), so an empty moment can be just
-			// the chapter's last paragraph between attempts - only
-			// treat it as done if it's still empty a moment later.
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(500 * time.Millisecond):
-			}
-			if _, ok := m.queue.Find(isChapterAudio); !ok {
-				return
-			}
-		}
+	for pending() {
 		select {
 		case <-ctx.Done():
-			for {
-				t, ok := m.queue.Cancel(isChapterAudio)
-				if !ok {
-					break
-				}
-				m.dropCanceledQueued(t.(*task))
+			// Queued ones only: a paragraph already rendering finishes.
+			for _, key := range m.taskKeys(func(t *task, st sched.State) bool { return st != sched.Running && isChapterAudio(t) }) {
+				m.sched.Cancel(key)
 			}
 			return
 		case <-changes:
@@ -850,81 +673,4 @@ func (m *Manager) EnqueueBookMusicGeneration(bookID string) {
 		}
 		return nil
 	})
-}
-
-// pipelineWorker mirrors Manager.worker's own dispatch-loop shape almost
-// exactly (see that function's own doc comment for the reasoning behind
-// each piece) - fill() pops every currently-eligible phase task and
-// dispatches it into its own goroutine, then reflect.Select blocks on
-// ctx.Done, a fresh push (m.pipelineWake), or any dispatched phase
-// finishing, looping back to fill() after any of those. The one thing
-// this doesn't need that worker() does is retry/store bookkeeping
-// (handleResult's own job) - a phase task has no persisted state of its
-// own to update and is never retried (PipelinePhaseFunc's own doc comment
-// covers why a non-nil return doesn't block later phases either), so
-// finishing a phase is just Finish() plus a log line on failure.
-func (m *Manager) pipelineWorker(ctx context.Context) {
-	type inflight struct {
-		task *pipelineTask
-		ch   chan pipelineOutcome
-	}
-	dispatched := map[string]*inflight{}
-
-	fill := func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-			tk, ok := m.pipelineQueue.Pop()
-			if !ok {
-				return
-			}
-			t := tk.(*pipelineTask)
-			taskCtx, cancel := context.WithCancel(ctx)
-			t.cancel = cancel
-			m.notifyChanged()
-			ch := make(chan pipelineOutcome, 1)
-			go func() {
-				key := t.Key()
-				ch <- pipelineOutcome{err: t.run(taskCtx, func() int { return m.currentPipelineTier(key) })}
-			}()
-			dispatched[t.Key()] = &inflight{task: t, ch: ch}
-		}
-	}
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		fill()
-
-		cases := make([]reflect.SelectCase, 0, len(dispatched)+2)
-		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())})
-		cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(m.pipelineWake)})
-		keys := make([]string, 2, len(dispatched)+2) // keys[0]/[1] unused (ctx.Done/wake cases)
-		for key, d := range dispatched {
-			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(d.ch)})
-			keys = append(keys, key)
-		}
-
-		chosen, recv, _ := reflect.Select(cases)
-		switch chosen {
-		case 0:
-			return // ctx.Done
-		case 1:
-			continue // woke by a fresh EnqueuePipeline push - let the next fill() reconsider the queue
-		}
-		key := keys[chosen]
-		delete(dispatched, key)
-		m.pipelineQueue.Finish(key)
-		m.notifyChanged()
-		if out := recv.Interface().(pipelineOutcome); out.err != nil {
-			log.Printf("jobs: pipeline task %s: %v", key, out.err)
-		}
-	}
 }

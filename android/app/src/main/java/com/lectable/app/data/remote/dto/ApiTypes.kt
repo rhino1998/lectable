@@ -1254,6 +1254,14 @@ data class LookaheadRequestDto(
      * jobs.LookaheadParagraphCount; clamped to jobs.MaxLookaheadParagraphCount.
      */
     val paragraphCount: Int? = null,
+    /**
+     * ClientID names this reader: any string the client makes up and keeps
+     * (random, per installation). Each reader's window is tracked on its
+     * own - when it moves, what only it was waiting for is dropped - so two
+     * devices on one book don't cancel each other's. Optional; clients
+     * that send none share one.
+     */
+    val clientId: String? = null,
 )
 
 @Serializable
@@ -2211,6 +2219,20 @@ data class VoiceSettingsDto(
      * rather than per-chapter like Passes.Ambience itself. Off by default.
      */
     val musicEnabled: Boolean = false,
+    /**
+     * StrictOrder makes a multi-voice book's narration wait until its
+     * chapter is attributed, so each line is rendered once, in its
+     * speaker's voice - see store.Book.StrictOrder. Off (reader-first) by
+     * default. Omitted on a PUT leaves it unchanged.
+     */
+    val strictOrder: Boolean? = null,
+    /**
+     * SettingRequired makes the passes that read the book's setting profile
+     * fail when the setting pass does, instead of running without one - see
+     * store.Book.SettingRequired. Off by default. Omitted on a PUT leaves
+     * it unchanged.
+     */
+    val settingRequired: Boolean? = null,
     val seed: Int = 0,
 )
 
@@ -2259,6 +2281,20 @@ data class VoiceSettingsUpdateDto(
      * rather than per-chapter like Passes.Ambience itself. Off by default.
      */
     val musicEnabled: Boolean = false,
+    /**
+     * StrictOrder makes a multi-voice book's narration wait until its
+     * chapter is attributed, so each line is rendered once, in its
+     * speaker's voice - see store.Book.StrictOrder. Off (reader-first) by
+     * default. Omitted on a PUT leaves it unchanged.
+     */
+    val strictOrder: Boolean? = null,
+    /**
+     * SettingRequired makes the passes that read the book's setting profile
+     * fail when the setting pass does, instead of running without one - see
+     * store.Book.SettingRequired. Off by default. Omitted on a PUT leaves
+     * it unchanged.
+     */
+    val settingRequired: Boolean? = null,
 )
 
 /**

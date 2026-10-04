@@ -74,7 +74,7 @@ func benchQueueManager(b *testing.B, n int) *Manager {
 
 	for i := 0; i < n; i++ {
 		c := i % chapters
-		m.queue.Push(&task{
+		m.pushTask(&task{
 			kind: KindVoiceClone, tier: TierBackground, bookID: bookID,
 			chapterID: chapterIDs[c], chapterIdx: c, presetID: presets[i%len(presets)],
 			paragraph: store.Paragraph{ID: fmt.Sprintf("p-%d", i), Idx: i, Speaker: speakers[i%len(speakers)]},
@@ -84,7 +84,7 @@ func benchQueueManager(b *testing.B, n int) *Manager {
 }
 
 // BenchmarkQueuePop measures one Pop+Finish round trip against a queue
-// holding n already-unblocked clone tasks - what the worker loop pays for
+// holding n already-unblocked clone tasks - what the scheduler pays for
 // every single dispatch.
 func BenchmarkQueuePop(b *testing.B) {
 	for _, n := range []int{100, 500, 1000, 2000} {
@@ -92,13 +92,14 @@ func BenchmarkQueuePop(b *testing.B) {
 			m := benchQueueManager(b, n)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				tk, ok := m.queue.Pop()
+				tk, ok := m.sched.Pop()
 				if !ok {
 					b.Fatal("expected a dispatchable task")
 				}
-				m.queue.Finish(tk.Key())
-				// Put it straight back so the queue stays at n.
-				m.queue.Push(tk.(*task).requeueCopy())
+				m.sched.Finish(tk.Key(), nil)
+				// Put a copy straight back so the queue stays at n.
+				cp := *tk.(*task)
+				m.pushTask(&cp)
 			}
 		})
 	}
@@ -112,7 +113,7 @@ func BenchmarkQueueSnapshot(b *testing.B) {
 			m := benchQueueManager(b, n)
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				m.queue.Snapshot()
+				m.sched.Snapshot()
 			}
 		})
 	}

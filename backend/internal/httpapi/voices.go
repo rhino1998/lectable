@@ -95,6 +95,16 @@ type voiceSettingsUpdate struct {
 	// store.Book.MusicEnabled's own doc comment for why this is book-wide
 	// rather than per-chapter like Passes.Ambience itself. Off by default.
 	MusicEnabled bool `json:"musicEnabled"`
+	// StrictOrder makes a multi-voice book's narration wait until its
+	// chapter is attributed, so each line is rendered once, in its
+	// speaker's voice - see store.Book.StrictOrder. Off (reader-first) by
+	// default. Omitted on a PUT leaves it unchanged.
+	StrictOrder *bool `json:"strictOrder,omitempty"`
+	// SettingRequired makes the passes that read the book's setting profile
+	// fail when the setting pass does, instead of running without one - see
+	// store.Book.SettingRequired. Off by default. Omitted on a PUT leaves
+	// it unchanged.
+	SettingRequired *bool `json:"settingRequired,omitempty"`
 }
 
 func (s *Server) handleGetVoice(w http.ResponseWriter, r *http.Request) {
@@ -120,6 +130,8 @@ func (s *Server) buildVoice(id string) (voiceSettingsDTO, error) {
 			CharacterVoiceMode: b.CharacterVoiceMode,
 			SpeechDirection:    b.SpeechDirection,
 			MusicEnabled:       b.MusicEnabled,
+			StrictOrder:        &b.StrictOrder,
+			SettingRequired:    &b.SettingRequired,
 		},
 	}, nil
 }
@@ -340,6 +352,20 @@ func (s *Server) handleUpdateVoice(w http.ResponseWriter, r *http.Request) {
 			log.Printf("httpapi: %s for book %s: remove audio dir: %v", invalidateReason, id, err)
 		}
 	}
+	strictOrder, settingRequired := b.StrictOrder, b.SettingRequired
+	if req.StrictOrder != nil {
+		strictOrder = *req.StrictOrder
+	}
+	if req.SettingRequired != nil {
+		settingRequired = *req.SettingRequired
+	}
+	if strictOrder != b.StrictOrder || settingRequired != b.SettingRequired {
+		if err := s.Store.SetBookProcessing(id, strictOrder, settingRequired); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	req.StrictOrder, req.SettingRequired = &strictOrder, &settingRequired
 	req.CloneModel = cloneModel
 	writeJSON(w, http.StatusOK, voiceSettingsDTO{voiceSettingsUpdate: req, Seed: seed})
 }

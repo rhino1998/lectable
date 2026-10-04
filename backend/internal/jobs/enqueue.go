@@ -10,14 +10,14 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/sched"
 	"github.com/rhino1998/lectable/backend/internal/store"
-	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 	"github.com/rhino1998/lectable/backend/internal/wav"
 )
 
-// EnqueueChapter now lives in pipeline.go, as a cancelable poolPipeline
+// EnqueueChapter now lives in pipeline.go, as a cancelable the group tasks
 // bulk group (see EnqueueChapter's own doc comment).
 
 // EnqueueSample generates only enough leading paragraphs of the chapter to
@@ -235,7 +235,7 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 // check then reuses it instead of re-reading the whole chapter for every
 // paragraph pushed, which with lookahead requests arriving every few
 // seconds kept the store's single DB connection saturated. nil loads it.
-func (m *Manager) pushResolvedTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph, chapterParagraphs []store.Paragraph) {
+func (m *Manager) pushResolvedTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph, chapterParagraphs []store.Paragraph, source string) (key string) {
 	var group []store.Paragraph
 	if chapterParagraphs != nil {
 		group = scareQuoteRun(inlineParagraphSetIn(chapterParagraphs, rp.paragraph), rp.paragraph)
@@ -243,22 +243,22 @@ func (m *Manager) pushResolvedTask(bookID, chapterID string, chapterIdx, tier in
 		group = m.scareQuoteMergeGroup(chapterID, rp.paragraph)
 	}
 	if len(group) > 1 {
-		m.pushMergedTask(bookID, chapterID, chapterIdx, tier, rp.voice, group)
-		return
+		return m.pushMergedTask(bookID, chapterID, chapterIdx, tier, rp.voice, group, source)
 	}
-	m.pushSingleTask(bookID, chapterID, chapterIdx, tier, rp)
+	return m.pushSingleTask(bookID, chapterID, chapterIdx, tier, rp, source)
 }
 
-func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph) {
+func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph, source string) (key string) {
 	if err := audiopath.EnsureVoiceDir(m.dataDir, bookID, chapterID, rp.voice.VoiceID()); err != nil {
 		log.Printf("jobs: create audio dir: %v", err)
-		return
+		return ""
 	}
 	kind := KindVoiceClone
 	if rp.voice.PresetID == "" {
 		kind = KindVoiceDesign
 	}
-	m.pushTask(&task{
+	t := &task{
+		source:          source,
 		kind:            kind,
 		chapterIdx:      chapterIdx,
 		tier:            tier,
@@ -275,7 +275,9 @@ func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int,
 		cloneModel:      rp.voice.CloneModel,
 		designModel:     rp.voice.DesignModel,
 		cloneInstruct:   rp.voice.CloneInstruct,
-	})
+	}
+	m.pushTask(t)
+	return t.Key()
 }
 
 // pushMergedTask is pushSingleTask's own counterpart for a scare-quote
@@ -285,16 +287,17 @@ func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int,
 // the same group (the common case: enqueueChapter's loop reaches every
 // not-yet-ready member in turn) correctly dedups against the first rather
 // than queuing a second, competing task for the same group.
-func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int, voice narration.ResolvedVoice, members []store.Paragraph) {
+func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int, voice narration.ResolvedVoice, members []store.Paragraph, source string) (key string) {
 	if err := audiopath.EnsureVoiceDir(m.dataDir, bookID, chapterID, voice.VoiceID()); err != nil {
 		log.Printf("jobs: create audio dir: %v", err)
-		return
+		return ""
 	}
 	kind := KindVoiceClone
 	if voice.PresetID == "" {
 		kind = KindVoiceDesign
 	}
-	m.pushTask(&task{
+	t := &task{
+		source:          source,
 		kind:            kind,
 		chapterIdx:      chapterIdx,
 		tier:            tier,
@@ -312,7 +315,9 @@ func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int,
 		cloneModel:      voice.CloneModel,
 		designModel:     voice.DesignModel,
 		cloneInstruct:   voice.CloneInstruct,
-	})
+	}
+	m.pushTask(t)
+	return t.Key()
 }
 
 // InlineParagraphSet returns the full contiguous run of chapterID's
@@ -550,6 +555,12 @@ func (m *Manager) enqueueChapter(ctx context.Context, bookID, chapterID string, 
 		return
 	}
 	m.maybeRunChapterAmbience(bookID, chapterID, chapterIdx, book)
+	if ch := m.lookupChapter(chapterID); ch != nil {
+		if err := m.ensureAttributed(ctx, book, ch, TierBackground); err != nil {
+			log.Printf("jobs: chapter %s: attribution before narration (strict order): %v", chapterID, err)
+			return
+		}
+	}
 	resolved, all, err := m.paragraphsNeedingGeneration(ctx, book, chapterID)
 	if err != nil {
 		log.Printf("jobs: list paragraphs for chapter %s: %v", chapterID, err)
@@ -559,7 +570,7 @@ func (m *Manager) enqueueChapter(ctx context.Context, bookID, chapterID string, 
 		resolved = limitResolvedByWordCount(resolved, wordLimit)
 	}
 	for _, rp := range resolved {
-		m.pushResolvedTask(bookID, chapterID, chapterIdx, TierBackground, rp, all)
+		m.pushResolvedTask(bookID, chapterID, chapterIdx, TierBackground, rp, all, "")
 	}
 }
 
@@ -628,7 +639,7 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 		log.Printf("jobs: reset paragraph %s for regenerate: %v", paragraph.ID, err)
 		return
 	}
-	m.pushResolvedTask(bookID, chapterID, chapterIdx, TierUrgent, resolvedParagraph{paragraph: paragraph, voice: v}, nil)
+	m.pushResolvedTask(bookID, chapterID, chapterIdx, TierUrgent, resolvedParagraph{paragraph: paragraph, voice: v}, nil, "")
 }
 
 // EnqueueLookahead generates up to count upcoming paragraphs (count <= 0
@@ -651,35 +662,30 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 // among themselves like any other same-tier poolGeneration work - by plain
 // book/chapter/paragraph position (see lessByPosition), not by distance
 // from wherever the reader happens to be right now.
-func (m *Manager) EnqueueLookahead(bookID string, fromChapterIdx, fromParagraphIdx, count int) {
+func (m *Manager) EnqueueLookahead(bookID, clientID string, fromChapterIdx, fromParagraphIdx, count int) {
 	if count <= 0 {
 		count = LookaheadParagraphCount
 	}
 	count = min(count, MaxLookaheadParagraphCount)
-	req := lookaheadRequest{fromChapterIdx, fromParagraphIdx, count}
+	req := lookaheadRequest{clientID, fromChapterIdx, fromParagraphIdx, count}
+	runKey := readerSource(bookID, clientID)
 
-	// Readers post a lookahead every few seconds and one run can take
-	// longer than that (it reads and resolves whole chapters), so starting
-	// a goroutine per request piled up concurrent runs all queued on the
-	// store's single DB connection, stalling everything else. Only the
-	// newest position matters, so a request arriving while this book's run
-	// is busy just replaces the pending one.
 	m.lookaheadMu.Lock()
-	if run, ok := m.lookaheads[bookID]; ok {
+	if run, ok := m.lookaheads[runKey]; ok {
 		run.pending = &req
 		m.lookaheadMu.Unlock()
 		return
 	}
-	m.lookaheads[bookID] = &lookaheadRun{}
+	m.lookaheads[runKey] = &lookaheadRun{}
 	m.lookaheadMu.Unlock()
 
 	go func() {
 		for {
-			m.enqueueLookahead(bookID, req.fromChapterIdx, req.fromParagraphIdx, req.count)
+			m.enqueueLookahead(bookID, req.clientID, req.fromChapterIdx, req.fromParagraphIdx, req.count)
 			m.lookaheadMu.Lock()
-			run := m.lookaheads[bookID]
+			run := m.lookaheads[runKey]
 			if run.pending == nil {
-				delete(m.lookaheads, bookID)
+				delete(m.lookaheads, runKey)
 				m.lookaheadMu.Unlock()
 				return
 			}
@@ -691,16 +697,20 @@ func (m *Manager) EnqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 }
 
 type lookaheadRequest struct {
+	clientID                                string
 	fromChapterIdx, fromParagraphIdx, count int
 }
 
-// lookaheadRun is one book's in-progress EnqueueLookahead; pending is the
-// newest request that arrived while it ran, if any.
 type lookaheadRun struct {
 	pending *lookaheadRequest
 }
 
-func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphIdx, count int) {
+// enqueueLookahead makes the reader's requests exactly this window: the
+// not-ready paragraphs from its position (the first few at TierUrgent, the
+// rest at TierLookahead), plus the passes of the next preworkChapters
+// chapters. Everything this reader asked for before and no longer wants is
+// withdrawn - it falls back to whoever else wants it, or is cancelled.
+func (m *Manager) enqueueLookahead(bookID, clientID string, fromChapterIdx, fromParagraphIdx, count int) {
 	start := time.Now()
 	defer func() {
 		log.Printf("jobs: timing lookahead book=%s from=%d/%d count=%d took %s", bookID, fromChapterIdx, fromParagraphIdx, count, time.Since(start).Round(time.Millisecond))
@@ -710,11 +720,22 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 		log.Printf("jobs: book %s not found: %v", bookID, err)
 		return
 	}
+	source := readerSource(bookID, clientID)
+	wanted := map[string]bool{}
+
+	// Prework first: it has to be asked for whatever the window loop does.
+	for i := 1; i <= preworkChapters; i++ {
+		ch, err := m.store.GetChapterByIdx(bookID, fromChapterIdx+i)
+		if err != nil || ch == nil {
+			break
+		}
+		for _, key := range m.requestChapterPasses(book, ch, TierLookahead, source) {
+			wanted[key] = true
+		}
+	}
 
 	chapterIdx := fromChapterIdx
 	remaining := count
-	// Positions still inside the urgent window at the start of the
-	// current chapter's unplayed paragraphs.
 	urgentLeft := LookaheadUrgentParagraphCount
 	for remaining > 0 {
 		select {
@@ -729,7 +750,21 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 			return
 		}
 		if ch == nil {
-			return // ran off the end of the book
+			break // ran off the end of the book
+		}
+		if m.strictBlocked(book, ch) {
+			// Strict order: no narration until this chapter is attributed.
+			// Ask for that instead; the reader's next lookahead call queues
+			// the paragraphs once it's done.
+			tier := TierLookahead
+			if urgentLeft > 0 {
+				tier = TierUrgent
+			}
+			t := m.newPassTask(KindSpeakerAttribution, book, ch, tier)
+			t.source = source
+			m.pushTask(t)
+			wanted[t.Key()] = true
+			break
 		}
 
 		resolved, all, err := m.paragraphsNeedingGeneration(m.ctx, book, ch.ID)
@@ -752,7 +787,9 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 			if rp.paragraph.Idx-firstIdx < urgentLeft {
 				tier = TierUrgent
 			}
-			m.pushResolvedTask(bookID, ch.ID, chapterIdx, tier, rp, all)
+			if key := m.pushResolvedTask(bookID, ch.ID, chapterIdx, tier, rp, all, source); key != "" {
+				wanted[key] = true
+			}
 		}
 		for _, p := range all {
 			if p.Idx >= firstIdx {
@@ -760,25 +797,13 @@ func (m *Manager) enqueueLookahead(bookID string, fromChapterIdx, fromParagraphI
 			}
 		}
 		if chapterIdx == fromChapterIdx {
-			// Background music should be at least as responsive to reader
-			// position as narration itself - a still-queued scoring/live
-			// generation task for this chapter shouldn't be stuck waiting
-			// out an unrelated TierBackground backlog (e.g. a whole-book
-			// direction-tagging run) the way it otherwise would. Only the
-			// reader's own current chapter, not the whole lookahead window
-			// - see PromoteChapterMusicNear's own doc comment for why
-			// that's enough.
 			m.PromoteChapterMusicNear(bookID, ch.ID)
-			// And start the music right where they are, without waiting
-			// for the rest of the chapter to be voiced - see
-			// KindMusicLiveGeneration. Live path only: the whole-chapter
-			// batch stays TierBackground and is only ever kicked off by
-			// MaybeAdvanceChapterMusic, never by reader position.
 			m.advanceLiveChapterMusic(bookID, ch.ID, fromParagraphIdx)
 		}
 		remaining -= len(resolved)
 		chapterIdx++
 	}
+	m.sched.Retain(source, func(key string) bool { return wanted[key] })
 }
 
 // PromoteChapterMusicNear bumps to TierUrgent whichever still-queued
@@ -809,24 +834,14 @@ func (m *Manager) PromoteChapterMusicNear(bookID, chapterID string) {
 		return
 	}
 	promote := func(id string) {
-		m.queue.WithTask(
-			func(c taskqueue.Task) bool { return c.Key() == id },
-			func(c taskqueue.Task) {
-				if TierUrgent < c.Tier() {
-					c.Promote(TierUrgent)
-				}
-			},
-		)
+		if p, ok := m.sched.Priority(id); ok && TierUrgent < p {
+			m.sched.Raise(sourcePromote, id, TierUrgent)
+		}
 	}
 	promote("ambience:" + chapterID)
-	m.queue.WithEachTask(
-		func(c taskqueue.Task) bool { return isLiveMusicTask(c, chapterID) },
-		func(c taskqueue.Task) {
-			if TierUrgent < c.Tier() {
-				c.Promote(TierUrgent)
-			}
-		},
-	)
+	for _, key := range m.taskKeys(func(t *task, _ sched.State) bool { return isLiveMusicTask(t, chapterID) }) {
+		promote(key)
+	}
 	// Unconditional, same "cheap to over-call" reasoning
 	// MaybeAdvanceChapterMusic's own doc comment gives - simpler than
 	// threading back whether either promote() call actually found and
@@ -839,198 +854,121 @@ func (m *Manager) PromoteChapterMusicNear(bookID, chapterID string) {
 // cancelable bulk groups (EnqueueRemaining/EnqueueBookGenerate) - see their
 // own doc comments there.
 
-// pushTask registers a task as queued (skipping it if already
-// queued/in-flight under the same dedupKey, to avoid dispatching the same
-// paragraph - or the same chapter's attribution, or the same character's
-// characterization - twice when overlapping calls both see it as pending)
-// and adds it to the priority queue. A duplicate push still merges its
-// llmWaiters (if any - only RunCharacterization populates them, see
-// llmWaiters' own doc comment) onto whichever existing task owns key, in
-// flight or still queued, so a second RunCharacterization call for an
-// already-running character joins that run's result instead of being
-// dropped with no way to ever complete, and bumps that existing task's own
-// tier up in place if t's is more urgent - a whole chapter's worth of
-// TierBackground work is a common case an explicit "play this paragraph
-// now" click can land in the middle of, and without this, the dedup below
-// would just silently drop that click's TierLookahead push, since the
-// paragraph already has *a* queue entry, just the wrong-priority one. A
-// duplicate EnqueueAttribution push for an already-queued/in-flight
-// chapter has no waiter to merge and is already at defaultAttributionTier
-// either way - it's just silently deduped, which is fine since nothing is
-// blocked waiting on it anyway.
+// pushTask asks the scheduler for t: on behalf of the running group t.parent
+// names, if there is one (so t follows that group's priority and is
+// cancelled with it - sched.Scheduler.Adopt), otherwise as a request at
+// t.tier from t.source (a reader) or, with none, a direct one. A task already queued or running under t's key takes
+// the request and whatever of t is newer (task.Merge) instead of a second
+// copy being queued.
 //
-// For KindVoiceClone/KindVoiceDesign specifically (dedupKey's default
-// case, keyed by paragraph ID alone - see its own doc comment), a merge
-// also refreshes the existing queued task's voice-defining fields
-// (voiceID/instruct/presetID/etc., even kind itself) from t's freshly
-// re-resolved ones, via the narrower WithQueuedTask rather than WithTask.
-// Without this, a paragraph queued once (e.g. by lookahead) and then
-// re-pushed after something changes which voice it actually resolves to
-// (speaker attribution reassigning it to a character, a character's own
-// voice reassignment, book/MultiVoice changes) would still generate under
-// whatever voice it first queued under: the merge branch used to touch
-// only waiters/tier, silently keeping the stale voice fields, so the
-// dispatched render came out under the wrong voice and paragraphsNeeding
-// Generation - checking the *current* resolution - reported it not ready
-// and queued yet another, correct render right behind it. From a reader's
-// perspective that showed up as a paragraph that had just finished
-// generating flipping back to pending and re-rendering. Deliberately
-// restricted to a still-queued match (never in-flight): an in-flight
-// task's own generate() goroutine reads these same fields with no lock of
-// its own, on the assumption nothing mutates them after dispatch, so
-// there's nothing to correct once a render is already underway - the
-// eventual mismatch there still self-heals the same way it always did,
-// via the next check finding it not-ready under the current voice.
+// A voice reassigned between two pushes of the same paragraph is why Merge
+// refreshes a still-queued task's voice fields: it used to keep the stale
+// ones, render under the wrong voice, and be found not ready and re-queued
+// right behind itself - a paragraph that had just finished flipping back to
+// pending.
 func (m *Manager) pushTask(t *task) {
+	t.m = m
 	t.pushedAt = time.Now()
-	if !m.queue.Push(t) {
-		// Via WithTask, not a plain Find + direct field mutation: this
-		// task's own tier/chapterIdx/waiters are read concurrently by
-		// taskqueue itself (Tier/Pool/Less, called from inside Pop/
-		// Snapshot under its own lock) - mutating them after Find already
-		// returned and released that lock would race against those reads.
-		m.queue.WithTask(func(c taskqueue.Task) bool { return c.Key() == t.Key() }, func(c taskqueue.Task) {
-			et := c.(*task)
-			et.llmWaiters = append(et.llmWaiters, t.llmWaiters...)
-			et.provisionWaiters = append(et.provisionWaiters, t.provisionWaiters...)
-			et.previewWaiters = append(et.previewWaiters, t.previewWaiters...)
-			et.previewTextWaiters = append(et.previewTextWaiters, t.previewTextWaiters...)
-			if t.tier < et.tier {
-				et.tier = t.tier
-				et.chapterIdx = t.chapterIdx
-			}
-		})
-		if t.kind == KindVoiceClone || t.kind == KindVoiceDesign {
-			m.queue.WithQueuedTask(func(c taskqueue.Task) bool { return c.Key() == t.Key() }, func(c taskqueue.Task) {
-				et := c.(*task)
-				et.kind = t.kind
-				et.voiceID = t.voiceID
-				et.instruct = t.instruct
-				et.presetID = t.presetID
-				et.language = t.language
-				et.refText = t.refText
-				et.speedMultiplier = t.speedMultiplier
-				et.seed = t.seed
-				et.cloneModel = t.cloneModel
-				et.designModel = t.designModel
-				et.cloneInstruct = t.cloneInstruct
-			})
-		}
-		m.notifyChanged()
+	key := t.Key()
+
+	m.mu.Lock()
+	if rt := m.resuming[key]; rt != nil {
+		// A paused pass picking its remainder back up - see task.Run.
+		delete(m.resuming, key)
+		rt.runLLM = t.runLLM
+		rt.llmWaiters = append(rt.llmWaiters, t.llmWaiters...)
+		m.mu.Unlock()
 		return
 	}
-	m.notePushed(t)
-	select {
-	case m.wake <- struct{}{}:
-	default:
+	m.chapterPending[t.chapterID]++ // undone below if t turns out to be a duplicate
+	m.mu.Unlock()
+
+	added, adopted := false, false
+	if t.parent != "" {
+		added, adopted = m.sched.Adopt(t.parent, t)
 	}
-	m.notifyChanged()
+	if !adopted {
+		source := t.source
+		if source == "" {
+			source = sourceDirect
+		}
+		added = m.sched.Request(source, t.tier, t)
+		if !added && t.source != "" {
+			// A reader's request is exactly what its latest window says,
+			// not the most urgent it has ever been.
+			m.sched.Raise(source, key, t.tier)
+		}
+	}
+	if !added {
+		m.mu.Lock()
+		m.chapterPending[t.chapterID]--
+		if m.chapterPending[t.chapterID] <= 0 {
+			delete(m.chapterPending, t.chapterID)
+		}
+		m.mu.Unlock()
+	}
 }
 
-// notePushed increments m.chapterPending for a freshly (not a dedup
-// merge), successfully queued t - shared by pushTask itself and this
-// package's own dependency resolvers below, whose own lazily-created
-// dependency tasks go straight through taskqueue.LockedQueue.Push (from
-// inside a taskqueue.Resolver call) rather than pushTask, but still need
-// the exact same bookkeeping so IsGenerating's own count includes a
-// chapter's auto-created reference-clip/characterization/direction-
-// tagging dependency the same as anything explicitly enqueued.
-// finishTask decrements it uniformly for any task's completion regardless
-// of which of these created it.
+// resumeInto runs a paused pass's requeue callback so that the task it
+// pushes under t's key hands its work to t (see pushTask) instead of being
+// queued. It reports whether that happened.
+func (m *Manager) resumeInto(t *task, requeue func()) bool {
+	key := t.Key()
+	m.mu.Lock()
+	m.resuming[key] = t
+	m.mu.Unlock()
+	requeue()
+	m.mu.Lock()
+	_, unclaimed := m.resuming[key]
+	delete(m.resuming, key)
+	m.mu.Unlock()
+	return !unclaimed
+}
+
+// notePushed counts a freshly queued task toward its chapter's
+// IsGenerating; task.Ended undoes it however the task ends.
 func (m *Manager) notePushed(t *task) {
 	m.mu.Lock()
 	m.chapterPending[t.chapterID]++
 	m.mu.Unlock()
 }
 
-// resolveDependencies is this package's taskqueue.Resolver - see that
-// type's own doc comment for the general contract, and Kind's own doc
-// comment ("adding a new kind of job means extending those switches") for
-// what this replaces: three near-identical, hand-copied functions
-// (characterizationBlockerFor/speechDirectionBlockerFor/
-// referenceClipBlockerFor, before this package existed), each separately
-// implementing the same "look for a queued/in-flight match, else check
-// whether the real, persisted state this dependency represents is already
-// done, else lazily create one" shape - and each one a place that check
-// could be (and, in this app's own history, was) forgotten, recreating a
-// "finished" dependency's task forever. Now there's one entry point, and
-// each dependency kind below is just the business-specific part of that
-// shape (what counts as "done", what the fresh task looks like) with the
-// generic queueing/dedup mechanics handled once, by taskqueue itself.
-func (m *Manager) resolveDependencies(lq *taskqueue.LockedQueue, tk taskqueue.Task) []taskqueue.Task {
-	t := tk.(*task)
+// needs is what t waits for before it can run - task.Prepare. Each
+// dependency below checks the real, persisted state it stands for first
+// (the pass flag, the clip on disk) and only names a task to create when
+// that isn't there yet; a task already queued under the same key is joined
+// either way. Called when t is queued and again whenever what it was
+// waiting for has ended, never in between.
+func (m *Manager) needs(t *task) []sched.Need {
 	if t.skipDependencies {
 		return nil
 	}
-	var deps []taskqueue.Task
-	if d := m.characterizationDependency(lq, t); d != nil {
-		deps = append(deps, d)
-	}
+	var needs []sched.Need
+	needs = append(needs, m.characterizationDependency(t)...)
 	if t.kind == KindVoiceClone || t.kind == KindVoiceDesign {
-		if d := m.speechDirectionDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
-		if d := m.pronunciationDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
+		needs = append(needs, m.speechDirectionDependency(t)...)
+		needs = append(needs, m.pronunciationDependency(t)...)
 	}
 	if t.kind == KindVoiceClone {
-		if d := m.referenceClipDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
-		if d := m.variantClipDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
+		needs = append(needs, m.referenceClipDependency(t)...)
+		needs = append(needs, m.variantClipDependency(t)...)
 	}
 	if t.kind == KindSpeakerAttribution || t.kind == KindDescription {
-		if d := m.scareQuoteDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
+		needs = append(needs, m.scareQuoteDependency(t)...)
 	}
 	if t.kind == KindSpeakerAttribution || t.kind == KindAmbience {
-		if d := m.summaryDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
+		needs = append(needs, m.summaryDependency(t)...)
 	}
 	if t.kind == KindAmbience || t.kind == KindSummary || t.kind == KindSpeakerCharacterization || t.kind == KindSpeakerAttribution {
-		if d := m.bookSettingDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
+		needs = append(needs, m.bookSettingDependency(t)...)
 	}
 	if t.kind == KindMusicLiveGeneration {
-		if d := m.liveMusicDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
+		needs = append(needs, m.liveMusicDependency(t)...)
 	}
 	if t.kind == KindSpeakerAttribution {
-		if d := m.attributionOrderDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
-		if d := m.globalAttributionSlotDependency(lq, t); d != nil {
-			deps = append(deps, d)
-		}
+		needs = append(needs, m.attributionOrderDependency(t)...)
 	}
-	return deps
-}
-
-// pushDependency pushes nt (a freshly-built, not-yet-queued dependency
-// task) via lq, falling back to whatever's already there under the same
-// key on the rare chance something else in this same resolveDependencies
-// pass already created it first (see taskqueue.Resolver's own doc comment
-// on why lq.Find is checked before this in every caller below - this is
-// just the defensive "and if that raced anyway" fallback, not the
-// primary dedup path) - shared by every dependency kind below instead of
-// each hand-rolling the same fallback.
-func (m *Manager) pushDependency(lq *taskqueue.LockedQueue, nt *task) taskqueue.Task {
-	nt.pushedAt = time.Now()
-	if lq.Push(nt) {
-		m.notePushed(nt)
-		return nt
-	}
-	if existing, ok := lq.Get(nt.Key()); ok {
-		return existing
-	}
-	return nil
+	return needs
 }
 
 // skipResolvedBeforeIdx drops paragraphs before fromIdx. resolved is

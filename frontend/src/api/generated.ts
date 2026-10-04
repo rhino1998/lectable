@@ -967,6 +967,14 @@ export interface LookaheadRequest {
    * jobs.LookaheadParagraphCount; clamped to jobs.MaxLookaheadParagraphCount.
    */
   paragraphCount?: number
+  /**
+   * ClientID names this reader: any string the client makes up and keeps
+   * (random, per installation). Each reader's window is tracked on its
+   * own - when it moves, what only it was waiting for is dropped - so two
+   * devices on one book don't cancel each other's. Optional; clients
+   * that send none share one.
+   */
+  clientId?: string
 }
 
 export interface MergeCharacterRequest {
@@ -1884,6 +1892,20 @@ export interface VoiceSettingsUpdate {
    * rather than per-chapter like Passes.Ambience itself. Off by default.
    */
   musicEnabled: boolean
+  /**
+   * StrictOrder makes a multi-voice book's narration wait until its
+   * chapter is attributed, so each line is rendered once, in its
+   * speaker's voice - see store.Book.StrictOrder. Off (reader-first) by
+   * default. Omitted on a PUT leaves it unchanged.
+   */
+  strictOrder?: boolean | null
+  /**
+   * SettingRequired makes the passes that read the book's setting profile
+   * fail when the setting pass does, instead of running without one - see
+   * store.Book.SettingRequired. Off by default. Omitted on a PUT leaves
+   * it unchanged.
+   */
+  settingRequired?: boolean | null
 }
 
 /**
@@ -2148,7 +2170,7 @@ export interface Routes {
   }
   /**
    * handleGenerateChapter enqueues background TTS generation for one
-   * chapter's not-yet-generated paragraphs, as a cancelable poolPipeline
+   * chapter's not-yet-generated paragraphs, as a cancelable group task
    * task - see jobs.Manager.EnqueueChapter's own doc comment.
    */
   'POST /api/books/{id}/chapters/{idx}/generate': {
@@ -2938,7 +2960,7 @@ export interface Routes {
    *
    * A single call into jobs.Manager.EnqueueBookGenerate, not a loop over
    * every chapter here: that whole-book walk (and its own cancelability) now
-   * lives on the Manager side, as one cancelable poolPipeline task rather
+   * lives on the Manager side, as one cancelable group task rather
    * than this handler pushing N independent per-chapter tasks with no
    * single handle to stop them all at once - see EnqueueBookGenerate's own
    * doc comment. Fire-and-forget either way: this never itself blocks on an

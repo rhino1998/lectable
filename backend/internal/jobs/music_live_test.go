@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/sched"
 	"github.com/rhino1998/lectable/backend/internal/store"
-	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 )
 
 // fourRegions is a chapter of paragraphs 0-39 split into four ten-
@@ -211,8 +211,8 @@ func TestGenerateChapterMusicExplicit(t *testing.T) {
 	if err != nil || queued != 1 {
 		t.Fatalf("GenerateChapterMusic = %d, %v; want 1 queued", queued, err)
 	}
-	task, ok := mgr.queue.Find(func(c taskqueue.Task) bool { return c.Key() == "music_gen:"+chapterID })
-	if !ok || task.Tier() != TierNormal {
+	tier, ok := mgr.sched.Priority("music_gen:" + chapterID)
+	if !ok || tier != TierNormal {
 		t.Fatalf("music_gen task found=%v; want queued at TierNormal", ok)
 	}
 	if r, _ := s.GetMusicRegion(regions[0].ID); r == nil || r.Status != store.AudioPending {
@@ -248,21 +248,21 @@ func TestLookaheadOnlyDrivesLiveMusic(t *testing.T) {
 			t.Fatalf("SetParagraphReady: %v", err)
 		}
 	}
-	findGen := func() (taskqueue.Task, bool) {
-		return mgr.queue.Find(func(c taskqueue.Task) bool { return c.Key() == "music_gen:"+chapterID })
+	findGen := func() (sched.Task, bool) {
+		return findTask(mgr, "music_gen:"+chapterID)
 	}
 
-	mgr.enqueueLookahead(book.ID, 0, 0, LookaheadParagraphCount)
+	mgr.enqueueLookahead(book.ID, "", 0, 0, LookaheadParagraphCount)
 	if _, ok := findGen(); ok {
 		t.Fatalf("lookahead queued the whole-chapter music batch")
 	}
 
 	mgr.MaybeAdvanceChapterMusic(book.ID, chapterID)
-	if task, ok := findGen(); !ok || task.Tier() != TierBackground {
+	if tier, ok := mgr.sched.Priority("music_gen:" + chapterID); !ok || tier != TierBackground {
 		t.Fatalf("music_gen found=%v; want queued at TierBackground", ok)
 	}
-	mgr.enqueueLookahead(book.ID, 0, 0, LookaheadParagraphCount)
-	if task, ok := findGen(); !ok || task.Tier() != TierBackground {
+	mgr.enqueueLookahead(book.ID, "", 0, 0, LookaheadParagraphCount)
+	if tier, ok := mgr.sched.Priority("music_gen:" + chapterID); !ok || tier != TierBackground {
 		t.Fatalf("lookahead promoted the whole-chapter music batch (found=%v)", ok)
 	}
 }
@@ -289,7 +289,6 @@ func TestLiveMusicChainsRegionByRegion(t *testing.T) {
 
 	mgr := newTestManagerWithStore(s)
 	mgr.narration = narration.NewResolver(s)
-	mgr.queue.RegisterPool(poolSFX, taskqueue.PoolConfig{Capacity: 4})
 	voice, err := mgr.narration.BookVoice(book)
 	if err != nil {
 		t.Fatalf("BookVoice: %v", err)
@@ -301,7 +300,7 @@ func TestLiveMusicChainsRegionByRegion(t *testing.T) {
 		}
 	}
 	popLive := func() *task {
-		tk, ok := mgr.queue.Pop()
+		tk, ok := mgr.sched.Pop()
 		if !ok {
 			return nil
 		}
@@ -327,7 +326,7 @@ func TestLiveMusicChainsRegionByRegion(t *testing.T) {
 		t.Fatalf("dispatched %s while a (its seed) is still in flight", tk.Key())
 	}
 
-	mgr.queue.Finish(a.Key())
+	mgr.sched.Finish(a.Key(), nil)
 	b := popLive()
 	if b == nil || b.llmKey != regions[1].ID || b.musicPrevRegionID != regions[0].ID {
 		t.Fatalf("after a finished, got %+v; want region b depending on a", b)
@@ -358,7 +357,6 @@ func TestLiveMusicChainCrossesChapterBoundary(t *testing.T) {
 
 	mgr := newTestManagerWithStore(s)
 	mgr.narration = narration.NewResolver(s)
-	mgr.queue.RegisterPool(poolSFX, taskqueue.PoolConfig{Capacity: 4})
 	voice, err := mgr.narration.BookVoice(book)
 	if err != nil {
 		t.Fatalf("BookVoice: %v", err)
@@ -384,14 +382,14 @@ func TestLiveMusicChainCrossesChapterBoundary(t *testing.T) {
 	}
 
 	mgr.advanceLiveChapterMusic(bookID, chapterIDs[0], 0)
-	tk, ok := mgr.queue.Pop()
+	tk, ok := mgr.sched.Pop()
 	if !ok || tk.(*task).llmKey != regionIDs[0] {
 		t.Fatalf("first live task = %v; want chapter 1's region", tk)
 	}
 	last := tk.(*task)
 
 	mgr.continueLiveMusic(last)
-	found, ok := mgr.queue.Find(func(c taskqueue.Task) bool { return c.Key() == "music_live:"+regionIDs[1] })
+	found, ok := findTask(mgr, "music_live:"+regionIDs[1])
 	if !ok {
 		t.Fatalf("chapter 2's first region not queued when chapter 1's last dispatched")
 	}
@@ -399,11 +397,11 @@ func TestLiveMusicChainCrossesChapterBoundary(t *testing.T) {
 	if next.chapterID != chapterIDs[1] || next.musicPrevRegionID != regionIDs[0] || next.musicPrevChapterID != chapterIDs[0] {
 		t.Fatalf("next = chapter %s prev %s/%s; want chapter 2 waiting on chapter 1's region", next.chapterID, next.musicPrevChapterID, next.musicPrevRegionID)
 	}
-	if tk, ok := mgr.queue.Pop(); ok {
+	if tk, ok := mgr.sched.Pop(); ok {
 		t.Fatalf("dispatched %s while chapter 1's region is still in flight", tk.Key())
 	}
-	mgr.queue.Finish(last.Key())
-	if tk, ok := mgr.queue.Pop(); !ok || tk.Key() != next.Key() {
+	mgr.sched.Finish(last.Key(), nil)
+	if tk, ok := mgr.sched.Pop(); !ok || tk.Key() != next.Key() {
 		t.Fatalf("after chapter 1 finished, got %v; want chapter 2's region", tk)
 	}
 }

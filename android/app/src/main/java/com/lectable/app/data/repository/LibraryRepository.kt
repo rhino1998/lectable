@@ -21,6 +21,7 @@ import com.lectable.app.data.remote.dto.SetParagraphScareQuoteRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphSpeakerRequestDto
 import com.lectable.app.data.remote.dto.SpeakerDto
 import com.lectable.app.data.remote.dto.UpdateBookmarkRequestDto
+import com.lectable.app.data.settings.PlaybackSettingsRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 import okhttp3.MediaType.Companion.toMediaType
@@ -36,6 +37,7 @@ import retrofit2.HttpException
 @Singleton
 class LibraryRepository @Inject constructor(
     private val api: LectableApi,
+    private val playbackSettingsRepository: PlaybackSettingsRepository,
 ) {
     suspend fun listBooks(): List<BookSummaryDto> = api.listBooks()
 
@@ -146,7 +148,15 @@ class LibraryRepository @Inject constructor(
     suspend fun resolvePronunciation(bookId: String, idx: Int): Boolean = api.resolvePronunciation(bookId, idx).queued > 0
 
     suspend fun lookahead(bookId: String, chapterIdx: Int, paragraphIdx: Int, paragraphCount: Int? = null): Boolean =
-        api.lookahead(bookId, LookaheadRequestDto(chapterIdx = chapterIdx, paragraphIdx = paragraphIdx, paragraphCount = paragraphCount ?: 0)).queued > 0
+        api.lookahead(
+            bookId,
+            LookaheadRequestDto(
+                chapterIdx = chapterIdx,
+                paragraphIdx = paragraphIdx,
+                paragraphCount = paragraphCount ?: 0,
+                clientId = playbackSettingsRepository.clientId(),
+            ),
+        ).queued > 0
 
     /** Forces one already-generated paragraph to be reset and re-rendered - see
      *  [com.lectable.app.data.remote.LectableApi.regenerateParagraph]. */

@@ -472,7 +472,7 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 }
 
 // handleGenerateChapter enqueues background TTS generation for one
-// chapter's not-yet-generated paragraphs, as a cancelable poolPipeline
+// chapter's not-yet-generated paragraphs, as a cancelable group task
 // task - see jobs.Manager.EnqueueChapter's own doc comment.
 func (s *Server) handleGenerateChapter(w http.ResponseWriter, r *http.Request) {
 	bookID := r.PathValue("id")
@@ -1287,6 +1287,12 @@ type lookaheadRequest struct {
 	// Optional: how many paragraphs ahead to generate. Omitted/0 means
 	// jobs.LookaheadParagraphCount; clamped to jobs.MaxLookaheadParagraphCount.
 	ParagraphCount int `json:"paragraphCount,omitempty"`
+	// ClientID names this reader: any string the client makes up and keeps
+	// (random, per installation). Each reader's window is tracked on its
+	// own - when it moves, what only it was waiting for is dropped - so two
+	// devices on one book don't cancel each other's. Optional; clients
+	// that send none share one.
+	ClientID string `json:"clientId,omitempty"`
 }
 
 // handleLookahead keeps some runway of generated audio ahead of wherever
@@ -1302,7 +1308,7 @@ func (s *Server) handleLookahead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Jobs.EnqueueLookahead(bookID, req.ChapterIdx, req.ParagraphIdx, req.ParagraphCount)
+	s.Jobs.EnqueueLookahead(bookID, req.ClientID, req.ChapterIdx, req.ParagraphIdx, req.ParagraphCount)
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 

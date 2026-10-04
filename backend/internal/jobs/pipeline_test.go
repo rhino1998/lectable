@@ -148,7 +148,7 @@ func TestEnqueuePipelineRejectsConcurrentRunForSameBook(t *testing.T) {
 // CancelPipeline's two-case shape: it cancels the currently in-flight
 // phase's own context (so a well-behaved phase - the only kind httpapi
 // ever supplies - returns promptly) and removes every later *chained*
-// phase still sitting in pipelineQueue, so neither characterization nor
+// phase still sitting in the scheduler, so neither characterization nor
 // voice provisioning ever runs. Direction is deliberately left out of this
 // assertion: unlike those two, it carries no dependency on attribution at
 // all (see pipelineResolver), so it can legitimately have already
@@ -196,13 +196,9 @@ func TestCancelPipelineCancelsInFlightAndRemovesQueuedPhases(t *testing.T) {
 	}
 }
 
-// TestPipelineRunsConcurrentlyWithGenerationPool is the whole point of
-// giving preprocessing phases their own taskqueue.Queue (pipelineQueue)
-// instead of one more PoolKey on m.queue: a phase blocked mid-run must
-// never stall ordinary poolGeneration dispatch the way it would if
-// poolPipeline shared m.queue's own "one pool active at a time" mutual
-// exclusion with poolGeneration/poolDesign/poolLLM (see poolPipeline's own
-// doc comment).
+// TestPipelineRunsConcurrentlyWithGenerationPool: a group task needs no
+// context, so a phase blocked mid-run never stalls ordinary poolGeneration
+// dispatch the way it would if it held a pool.
 func TestPipelineRunsConcurrentlyWithGenerationPool(t *testing.T) {
 	fake := ttsworkertest.New(t)
 	s := openTestStore(t)
@@ -232,7 +228,7 @@ func TestPipelineRunsConcurrentlyWithGenerationPool(t *testing.T) {
 		t.Fatalf("BookVoice: %v", err)
 	}
 	// Would never finish while the pipeline's own first phase is still
-	// blocked above if poolPipeline wrongly shared m.queue's own mutual
+	// blocked above if the group tasks wrongly shared the queue's own mutual
 	// exclusion - it lives on a wholly separate Queue instead, so ordinary
 	// generation proceeds regardless of the still-in-flight pipeline phase.
 	waitFor(t, 2*time.Second, func() bool { return allParagraphsReady(t, s, chapterID, bookVoice.VoiceID()) })
@@ -247,7 +243,7 @@ func TestPipelineRunsConcurrentlyWithGenerationPool(t *testing.T) {
 // TestSnapshotIncludesInFlightPipelinePhase checks that a book's
 // currently in-flight phase shows up in Manager.Snapshot's own InFlight
 // list (what the Jobs dashboard renders) - the whole point of merging
-// pipelineQueue into Snapshot, so a reader isn't limited to "preprocessing:
+// the scheduler into Snapshot, so a reader isn't limited to "preprocessing:
 // yes/no" and can actually see which phase a book is on.
 func TestSnapshotIncludesInFlightPipelinePhase(t *testing.T) {
 	mgr := newTestManager()
@@ -344,7 +340,7 @@ func TestCancelAllCancelsPipelineTasksToo(t *testing.T) {
 
 // TestPromoteTierUpgradesQueuedPipelinePhase checks that PromoteTier (see
 // manager_test.go's own TestPromoteTier* tests for the per-item-task
-// half) works identically for a phase still queued in pipelineQueue,
+// half) works identically for a phase still queued in the scheduler,
 // blocked on an earlier phase - the same fallback Cancel/CancelAll
 // already use to reach a pipeline row by its own Key().
 func TestPromoteTierUpgradesQueuedPipelinePhase(t *testing.T) {
@@ -453,22 +449,21 @@ func TestAutoSplitWrapsAsOneCancelablePipelineRow(t *testing.T) {
 }
 
 // TestPromoteTierCascadesToBulkGroupChildren checks that promoting a bulk
-// group's own row also promotes exactly the m.queue tasks its
+// group's own row also promotes exactly the tasks its
 // BulkGroup.Children filter matches - same book, listed kind - and nothing
 // else.
 func TestPromoteTierCascadesToBulkGroupChildren(t *testing.T) {
 	mgr := newTestManager()
+	child := &task{kind: KindSpeakerAttribution, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", llmKey: "ch-1"}
+	otherKind := &task{kind: KindSpeechDirection, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", llmKey: "ch-1"}
+	otherBook := &task{kind: KindSpeakerAttribution, tier: TierBackground, bookID: "book-2", chapterID: "ch-2", llmKey: "ch-2"}
+	setQueue(mgr, child, otherKind, otherBook)
 	mgr.EnqueueBulk("book-1", BulkGroup{
 		Kind:     "pipeline_bulk_attribution",
 		Key:      "bulk:attribution:all",
 		Tier:     TierBackground,
 		Children: &ChildFilter{Kinds: []Kind{KindSpeakerAttribution}},
 	}, func(context.Context, func() int) error { return nil })
-
-	child := &task{kind: KindSpeakerAttribution, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", llmKey: "ch-1"}
-	otherKind := &task{kind: KindSpeechDirection, tier: TierBackground, bookID: "book-1", chapterID: "ch-1", llmKey: "ch-1"}
-	otherBook := &task{kind: KindSpeakerAttribution, tier: TierBackground, bookID: "book-2", chapterID: "ch-2", llmKey: "ch-2"}
-	setQueue(mgr, child, otherKind, otherBook)
 
 	if err := mgr.PromoteTier("pipeline:book-1:bulk:attribution:all", TierUrgent); err != nil {
 		t.Fatalf("PromoteTier: %v", err)
@@ -489,5 +484,56 @@ func TestPromoteTierCascadesToBulkGroupChildren(t *testing.T) {
 	}
 	if got := tiers[otherBook.Key()]; got != TierBackground {
 		t.Fatalf("expected other-book task left alone, got tier %d", got)
+	}
+}
+
+// TestCancelledGroupTakesItsAdoptedTasksWithIt: work a group asks for
+// through its own context is cancelled with the group - unless something
+// else asked for it too.
+func TestCancelledGroupTakesItsAdoptedTasksWithIt(t *testing.T) {
+	mgr := newTestManagerWithStore(openTestStore(t))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	mgr.Start(ctx)
+
+	never := func(ctx context.Context) (int, func(), error) {
+		<-ctx.Done()
+		return 0, nil, ctx.Err()
+	}
+	mgr.EnqueueAttribution("", "kept", 1, never) // asked for directly as well
+	asked := make(chan struct{})
+	mgr.EnqueueBulk("", BulkGroup{Kind: "pipeline_bulk_attribution", Key: "bulk:attribution", Tier: TierBackground},
+		func(ctx context.Context, tier func() int) error {
+			for i, chapterID := range []string{"only-group", "kept"} {
+				go func() { _, _ = mgr.RunAttribution(ctx, "", chapterID, i, tier(), never) }()
+			}
+			waitFor(t, 2*time.Second, func() bool {
+				_, ok := findTask(mgr, "attr:only-group")
+				return ok
+			})
+			close(asked)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	<-asked
+
+	groupID := BulkID("", "bulk:attribution")
+	if err := mgr.PromoteTier(groupID, TierUrgent); err != nil {
+		t.Fatalf("PromoteTier: %v", err)
+	}
+	if tier, _ := mgr.sched.Priority("attr:only-group"); tier != TierUrgent {
+		t.Fatalf("adopted task tier = %d, want the promoted group's", tier)
+	}
+
+	mgr.Cancel(groupID)
+	waitFor(t, 2*time.Second, func() bool {
+		_, ok := findTask(mgr, "attr:only-group")
+		return !ok
+	})
+	if _, ok := findTask(mgr, "attr:kept"); !ok {
+		t.Fatalf("a task someone asked for directly must outlive the group")
+	}
+	if tier, _ := mgr.sched.Priority("attr:kept"); tier != TierBackground {
+		t.Fatalf("kept task tier = %d, want its own again", tier)
 	}
 }

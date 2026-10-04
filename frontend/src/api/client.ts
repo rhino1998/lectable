@@ -1,3 +1,4 @@
+import { clientId } from '../utils/clientId'
 import {
   ROUTE_RESPONSE_KINDS,
   type BookSetting,
@@ -297,7 +298,7 @@ export const api = {
   lookahead: (bookId: string, chapterIdx: number, paragraphIdx: number) =>
     call('POST /api/books/{id}/lookahead', {
       path: { id: bookId },
-      body: { chapterIdx, paragraphIdx },
+      body: { chapterIdx, paragraphIdx, clientId: clientId() },
     }),
 
   // Runs the ambience pass for one chapter - background-music tone-region

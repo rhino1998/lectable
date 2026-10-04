@@ -930,6 +930,13 @@ func (s *Server) invalidateParagraphAudio(book *store.Book, paragraphs []store.P
 // retry loop of its own, and under contention most chapters would pause
 // after their first batch and never be picked up again.
 func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.Chapter, onlyIdx map[int]bool) (labeled int, requeue func(), err error) {
+	return s.directChapterRange(ctx, book, ch, onlyIdx, false)
+}
+
+// directChapterRange is directChapter with partial: a window run (jobs.ChapterWindowPass)
+// that labels only onlyIdx and neither marks the chapter's pass done nor
+// requeues what it didn't reach.
+func (s *Server) directChapterRange(ctx context.Context, book *store.Book, ch *store.Chapter, onlyIdx map[int]bool, partial bool) (labeled int, requeue func(), err error) {
 	all, err := s.Store.ListParagraphsRaw(ch.ID)
 	if err != nil {
 		return 0, nil, err
@@ -944,6 +951,12 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 		}
 	}
 	if len(paragraphs) == 0 {
+		if onlyIdx != nil && !partial {
+			// The rest of a chapter whose windows already covered it all.
+			if serr := s.Store.SetChapterDirected(ch.ID); serr != nil {
+				log.Printf("directChapter: could not advance chapter %s passes: %v", ch.ID, serr)
+			}
+		}
 		return 0, nil, nil
 	}
 
@@ -1019,6 +1032,11 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 		// yet, so a later re-run doesn't skip it.
 		return len(labels), nil, labelErr
 	}
+	if partial {
+		// A window run ahead of the chapter's own pass: that pass finishes
+		// the chapter and marks it done.
+		return len(labels), nil, nil
+	}
 	if len(remaining) > 0 {
 		remainingIdx := make(map[int]bool, len(remaining))
 		for _, p := range remaining {
@@ -1054,6 +1072,13 @@ func (s *Server) directChapter(ctx context.Context, book *store.Book, ch *store.
 // exact contract, including onlyIdx's meaning (non-nil only for a paused
 // run's own continuation).
 func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *store.Chapter, onlyIdx map[int]bool) (resolved int, requeue func(), err error) {
+	return s.pronounceChapterRange(ctx, book, ch, onlyIdx, false)
+}
+
+// pronounceChapterRange is pronounceChapter with partial: a window run (jobs.ChapterWindowPass)
+// that labels only onlyIdx and neither marks the chapter's pass done nor
+// requeues what it didn't reach.
+func (s *Server) pronounceChapterRange(ctx context.Context, book *store.Book, ch *store.Chapter, onlyIdx map[int]bool, partial bool) (resolved int, requeue func(), err error) {
 	all, err := s.Store.ListParagraphsRaw(ch.ID)
 	if err != nil {
 		return 0, nil, err
@@ -1068,6 +1093,12 @@ func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *sto
 		}
 	}
 	if len(paragraphs) == 0 {
+		if onlyIdx != nil && !partial {
+			// The rest of a chapter whose windows already covered it all.
+			if serr := s.Store.SetChapterPronounced(ch.ID); serr != nil {
+				log.Printf("pronounceChapter: could not advance chapter %s passes: %v", ch.ID, serr)
+			}
+		}
 		return 0, nil, nil
 	}
 	inputs := make([]speakerattr.ParagraphInput, len(paragraphs))
@@ -1117,6 +1148,11 @@ func (s *Server) pronounceChapter(ctx context.Context, book *store.Book, ch *sto
 	}
 	if resolveErr != nil {
 		return len(pronunciation), nil, resolveErr
+	}
+	if partial {
+		// A window run ahead of the chapter's own pass: that pass finishes
+		// the chapter and marks it done.
+		return len(pronunciation), nil, nil
 	}
 	if len(remaining) > 0 {
 		remainingIdx := make(map[int]bool, len(remaining))

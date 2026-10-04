@@ -12,6 +12,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
+	"github.com/rhino1998/lectable/backend/internal/sched"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
@@ -157,7 +158,7 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 // already-dispatched poolGeneration task), but by the time a KindVoiceClone
 // task actually reaches this code that fallback is dead code in practice:
 // referenceClipDependency makes "the preset's reference clip exists" a
-// tracked task dependency (see resolveDependencies), so Pop never dispatches
+// tracked task dependency (see Manager.needs), so Pop never dispatches
 // a KindVoiceClone task whose clip is missing in the first place - it
 // instead dispatches (and, via priority promotion, prioritizes) a
 // KindVoiceProvision task to render the clip first, and only dispatches the
@@ -168,7 +169,7 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 // KindVoiceClone task but a real, confirmed-live deadlock for a
 // TierUrgent/TierLookahead one - the outer task could never be canceled to
 // let its own nested child dispatch (this package never force-cancels
-// in-flight work at all - see taskqueue.Queue's own "one pool at a time"
+// in-flight work at all - see the scheduler's own "one pool at a time"
 // doc comment), and the child could never dispatch while the outer task
 // kept poolGeneration active, a standoff only an explicit manual Cancel
 // could break. The dependency system fixes this structurally instead of
@@ -282,16 +283,7 @@ func (m *Manager) emotionVariant(t *task) (path, refLine string, ok bool) {
 	return audiopath.VoicePresetVariantFile(m.dataDir, t.presetID, e.ID), e.RefLine, true
 }
 
-func (m *Manager) handleResult(t *task, result taskResult) {
-	// Not deferred: result.requeue (below) pushes a follow-up task under
-	// this same task's own dedupKey, which needs finishTask to have
-	// already cleared this one out of the queue first - pushTask's
-	// own dedup would otherwise see this task still "in flight" (true right
-	// up until finishTask runs) and silently merge the follow-up into it
-	// instead of actually queuing anything, since this task is seconds away
-	// from finishing with exactly the paused/partial result that follow-up
-	// is meant to complete.
-	m.finishTask(t)
+func (m *Manager) finishResult(t *task, result taskResult) (final bool, err error) {
 	logTaskTiming(t, result.err)
 	if result.err == nil {
 		// An unparseable clip just counts for no audio (wav.Duration's 0).
@@ -307,28 +299,27 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		// already handles that.
 		if result.err != nil {
 			log.Printf("jobs: length estimate for book %s: %v", t.bookID, result.err)
-			return
+			return true, result.err
 		}
 		dur, err := wav.Duration(result.audio)
 		if err != nil || dur <= 0 || t.estimateChars == 0 {
 			log.Printf("jobs: length estimate for book %s: parse wav duration: %v", t.bookID, err)
-			return
+			return true, result.err
 		}
 		if err := m.store.SetLengthEstimate(t.bookID, dur.Seconds()/float64(t.estimateChars)); err != nil {
 			log.Printf("jobs: length estimate for book %s: save: %v", t.bookID, err)
 		}
-		return
+		return true, result.err
 	}
 	if t.kind == KindVoiceDesignPreview {
 		// A genuine (non-preempted) failure gets retried via the queue
-		// itself - see maxTaskAttempts/task.requeueCopy - before ever
+		// itself - see maxTaskAttempts/the scheduler's retry - before ever
 		// delivering to previewWaiters: RunVoiceDesignPreview's caller is
 		// blocked on exactly one outcome, so retrying has to happen before
 		// that single delivery, not race it.
 		if retryEligible(t, result.err) {
 			log.Printf("jobs: voice design preview failed (attempt %d/%d), retrying via queue: %v", t.attempt+1, maxTaskAttempts, result.err)
-			m.pushTask(t.requeueCopy())
-			return
+			return false, result.err
 		}
 		// Same delivery pattern as the poolLLM branch below, just carrying
 		// audio bytes (previewWaiters/previewOutcome) instead of an
@@ -343,7 +334,7 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		if result.err != nil {
 			log.Printf("jobs: voice design preview failed: %v", result.err)
 		}
-		return
+		return true, result.err
 	}
 	if t.kind == KindSFXPreview {
 		// Same retry-before-delivery reasoning as the design-preview
@@ -351,8 +342,7 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		// outcome.
 		if retryEligible(t, result.err) {
 			log.Printf("jobs: %s failed (attempt %d/%d), retrying via queue: %v", t.kind, t.attempt+1, maxTaskAttempts, result.err)
-			m.pushTask(t.requeueCopy())
-			return
+			return false, result.err
 		}
 		m.mu.Lock()
 		waiters := t.previewWaiters
@@ -364,13 +354,12 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		if result.err != nil {
 			log.Printf("jobs: %s failed: %v", t.kind, result.err)
 		}
-		return
+		return true, result.err
 	}
 	if t.kind == KindSFXGeneration {
 		if retryEligible(t, result.err) {
 			log.Printf("jobs: sfx generation task %s failed (attempt %d/%d), retrying via queue: %v", t.dedupKey(), t.attempt+1, maxTaskAttempts, result.err)
-			m.pushTask(t.requeueCopy())
-			return
+			return false, result.err
 		}
 		m.mu.Lock()
 		waiters := t.sfxGenWaiters
@@ -381,13 +370,12 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		if result.err != nil {
 			log.Printf("jobs: sfx generation task %s failed: %v", t.dedupKey(), result.err)
 		}
-		return
+		return true, result.err
 	}
 	if t.kind == KindMusicGeneration || t.kind == KindMusicLiveGeneration {
 		if retryEligible(t, result.err) {
 			log.Printf("jobs: music generation task %s failed (attempt %d/%d), retrying via queue: %v", t.dedupKey(), t.attempt+1, maxTaskAttempts, result.err)
-			m.pushTask(t.requeueCopy())
-			return
+			return false, result.err
 		}
 		m.mu.Lock()
 		waiters := t.musicGenWaiters
@@ -405,13 +393,12 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		// them in this chapter now, the same way a paragraph finishing does
 		// (saveParagraphAudio/handleMergedResult).
 		m.MaybeAdvanceChapterMusic(t.bookID, t.chapterID)
-		return
+		return true, result.err
 	}
 	if t.kind == KindVoiceProvision {
 		if retryEligible(t, result.err) {
 			log.Printf("jobs: voice provision task %s failed (attempt %d/%d), retrying via queue: %v", t.dedupKey(), t.attempt+1, maxTaskAttempts, result.err)
-			m.pushTask(t.requeueCopy())
-			return
+			return false, result.err
 		}
 		// Deliver to any RunVoiceProvision callers currently waiting
 		// (usually none - EnqueueVoiceProvision's own fire-and-forget
@@ -428,7 +415,7 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		if result.err != nil {
 			log.Printf("jobs: voice provision task %s failed: %v", t.dedupKey(), result.err)
 		}
-		return
+		return true, result.err
 	}
 	if t.kind == KindLLMPreview {
 		// Same retry-before-delivery reasoning as the preview/provision
@@ -436,8 +423,7 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		// outcome.
 		if retryEligible(t, result.err) {
 			log.Printf("jobs: llm preview failed (attempt %d/%d), retrying via queue: %v", t.attempt+1, maxTaskAttempts, result.err)
-			m.pushTask(t.requeueCopy())
-			return
+			return false, result.err
 		}
 		m.mu.Lock()
 		waiters := t.previewTextWaiters
@@ -449,39 +435,31 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		if result.err != nil {
 			log.Printf("jobs: llm preview failed: %v", result.err)
 		}
-		return
+		return true, result.err
 	}
 	if poolFor(t.kind) == poolLLM {
-		// Same retry-before-delivery reasoning as the preview/provision
-		// branches above - a cooperative pause (non-nil result.requeue)
-		// isn't a failure at all, so only a genuine failure with budget
-		// remaining takes this path.
-		if result.requeue == nil && retryEligible(t, result.err) {
-			log.Printf("jobs: %s task %s failed (attempt %d/%d), retrying via queue: %v", t.kind, t.dedupKey(), t.attempt+1, maxTaskAttempts, result.err)
-			m.pushTask(t.requeueCopy())
-			return
+		t.attributed += result.attributed
+		if result.requeue != nil {
+			// Paused partway: yield, and pick the remainder up on the next
+			// run (see task.Run).
+			t.resume = result.requeue
+			return false, sched.ErrYield
 		}
-		// Deliver the real result to every RunCharacterization caller
-		// currently waiting on this task (usually one, more if a duplicate
-		// call joined it - see llmWaiters' own doc comment) - buffered
-		// sends, never blocking even on a caller whose ctx was already
-		// cancelled (see RunCharacterization's own comment). A no-op for a
-		// KindSpeakerAttribution task, which never has any waiters (see
-		// EnqueueAttribution).
+		if retryEligible(t, result.err) {
+			log.Printf("jobs: %s task %s failed (attempt %d/%d), retrying via queue: %v", t.kind, t.dedupKey(), t.attempt+1, maxTaskAttempts, result.err)
+			return false, result.err
+		}
 		m.mu.Lock()
 		waiters := t.llmWaiters
 		m.mu.Unlock()
-		outcome := llmOutcome{attributed: result.attributed, err: result.err}
+		outcome := llmOutcome{attributed: t.attributed, err: result.err}
 		for _, waiter := range waiters {
 			waiter <- outcome
 		}
 		if result.err != nil {
 			log.Printf("jobs: %s task %s failed permanently after %d attempt(s): %v", t.kind, t.dedupKey(), t.attempt+1, result.err)
 		}
-		if result.requeue != nil {
-			result.requeue()
-		}
-		return
+		return true, result.err
 	}
 	if result.err != nil {
 		// A merged group's own combined generation call failing (e.g. the
@@ -493,27 +471,53 @@ func (m *Manager) handleResult(t *task, result taskResult) {
 		if len(t.mergeParagraphs) > 1 {
 			log.Printf("jobs: merged generation for chapter %s failed (%d paragraphs), falling back to independent generation: %v", t.chapterID, len(t.mergeParagraphs), result.err)
 			m.generateIndependently(t)
-			return
+			return true, nil
 		}
 		if retryEligible(t, result.err) {
 			log.Printf("jobs: synthesize paragraph %s failed (attempt %d/%d), retrying via queue: %v", t.paragraph.ID, t.attempt+1, maxTaskAttempts, result.err)
-			m.pushTask(t.requeueCopy())
-			return
+			return false, result.err
 		}
 		m.failParagraph(t, t.paragraph, result.err)
-		return
+		return true, result.err
 	}
 	if fresh, stale := m.refreshStaleGeneration(t); stale {
 		log.Printf("jobs: paragraph %s generation text changed while generating, discarding and requeueing", t.paragraph.ID)
-		m.pushTask(fresh)
-		return
+		t.paragraph, t.mergeParagraphs = fresh.paragraph, fresh.mergeParagraphs
+		t.genLexicon, t.genLexiconSet = nil, false
+		return false, sched.ErrYield
 	}
 	if len(t.mergeParagraphs) > 1 {
 		m.handleMergedResult(t, result.audio, result.latents, result.words)
-		return
+		return true, nil
 	}
 	m.saveParagraphAudio(t, t.paragraph, result.audio, result.latents, result.words)
+	return true, nil
 }
+
+// handleResult settles a dispatched task's result and reports it to the
+// scheduler: nil when the work is done (or was handled another way), the
+// error when it failed, sched.ErrYield when the task should run again
+// without that counting as a failure. A failure the scheduler will retry
+// (retryEligible - the same test task.Retryable gives it) isn't settled:
+// waiters and the store only hear of the last attempt.
+func (m *Manager) handleResult(t *task, result taskResult) error {
+	final, err := m.finishResult(t, result)
+	if final {
+		m.mu.Lock()
+		t.settled = true
+		m.mu.Unlock()
+		if err != nil {
+			err = &settledError{err}
+		}
+	}
+	return err
+}
+
+// settledError marks a failure handleResult has already settled, so the
+// scheduler doesn't retry it (task.Retryable).
+type settledError struct{ error }
+
+func (e *settledError) Unwrap() error { return e.error }
 
 // refreshStaleGeneration re-reads t's paragraph(s) and reports whether any
 // one's generation text changed after t snapshotted it - e.g. a
@@ -544,7 +548,6 @@ func (m *Manager) refreshStaleGeneration(t *task) (fresh *task, stale bool) {
 		return *cur
 	}
 	cp := *t
-	cp.cancel = nil
 	cp.genLexicon, cp.genLexiconSet = nil, false
 	cp.paragraph = current(t.paragraph)
 	if len(t.mergeParagraphs) > 1 {

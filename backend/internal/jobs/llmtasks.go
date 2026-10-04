@@ -3,7 +3,7 @@ package jobs
 import (
 	"context"
 
-	"github.com/rhino1998/lectable/backend/internal/taskqueue"
+	"github.com/rhino1998/lectable/backend/internal/sched"
 )
 
 // runLLMTask is RunCharacterization's blocking implementation (attribution
@@ -21,6 +21,7 @@ func (m *Manager) runLLMTask(ctx context.Context, kind Kind, tier int, bookID, c
 	resultCh := make(chan llmOutcome, 1)
 	seriesName, seriesIndex := m.seriesFor(bookID)
 	m.pushTask(&task{
+		parent:     parentOf(ctx),
 		kind:       kind,
 		tier:       tier,
 		chapterIdx: chapterIdx,
@@ -73,6 +74,7 @@ func (m *Manager) runLLMTaskDirect(ctx context.Context, kind Kind, tier int, boo
 	resultCh := make(chan llmOutcome, 1)
 	seriesName, seriesIndex := m.seriesFor(bookID)
 	m.pushTask(&task{
+		parent:      parentOf(ctx),
 		kind:        kind,
 		tier:        tier,
 		chapterIdx:  chapterIdx,
@@ -118,7 +120,7 @@ const defaultAttributionTier = TierBackground
 // all - an earlier version (RunAttribution, since reintroduced below for a
 // different kind of caller - see its own doc comment) took ctx and blocked
 // the calling goroutine until the task finished; the task itself never
-// actually depended on that ctx (it ran via the worker loop's own
+// actually depended on that ctx (it ran via the scheduler's own
 // long-lived context regardless - see worker/startTask), but the *HTTP
 // handler* did block on it for as long as attribution took, which for a
 // several-hundred-paragraph chapter can be minutes. SpeakersPage's
@@ -369,7 +371,7 @@ func (m *Manager) enqueueChapterLLM(kind Kind, bookID, chapterID string, chapter
 // queued (not counting whatever's already in flight - a task already
 // dispatched into poolLLM's own slot is necessarily the caller itself) at a
 // tier more urgent than TierBackground, AND actually dispatchable right
-// now (no unresolved dependency of its own - see taskqueue.Queue.
+// now (no unresolved dependency of its own - see the scheduler.
 // AnyEligibleQueued). AttributionFunc/DirectionFunc implementations check
 // this between batches to decide whether to pause a long-running
 // background run and requeue the rest, rather than make a just-arrived,
@@ -398,12 +400,17 @@ func (m *Manager) enqueueChapterLLM(kind Kind, bookID, chapterID string, chapter
 // this one actually stops. A TTS-family task never needs an equivalent of
 // its own: it isn't a long-running loop that can check this between
 // batches the way an attribution/direction run is, so its only lever for
-// this same contention is the passive one - taskqueue.Queue's own
+// this same contention is the passive one - the scheduler's own
 // "graceful drain" simply refusing to backfill a pool with more
 // lower-priority work while another pool's own more urgent (and eligible)
 // work waits on it to drain.
 func (m *Manager) HasHigherPriorityWork() bool {
-	return m.queue.AnyEligibleQueued(func(c taskqueue.Task) bool { return c.(*task).tier < TierBackground })
+	for _, key := range m.taskKeys(func(t *task, st sched.State) bool { return st == sched.Running && poolFor(t.kind) == poolLLM }) {
+		if m.sched.ShouldYield(key) {
+			return true
+		}
+	}
+	return false
 }
 
 // RunCharacterization queues fn as a KindSpeakerCharacterization task -

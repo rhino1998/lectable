@@ -48,6 +48,9 @@ CREATE TABLE IF NOT EXISTS books (
 	-- feature is on at all is one setting for the whole book, the same
 	-- shape speech_direction above already uses. Off by default.
 	music_enabled BOOLEAN NOT NULL DEFAULT false,
+	-- See store.Book.StrictOrder / SettingRequired. Both off by default.
+	strict_order BOOLEAN NOT NULL DEFAULT false,
+	setting_required BOOLEAN NOT NULL DEFAULT false,
 	pos_chapter_idx INTEGER NOT NULL DEFAULT 0,
 	pos_paragraph_idx INTEGER NOT NULL DEFAULT 0,
 	pos_seconds DOUBLE NOT NULL DEFAULT 0,

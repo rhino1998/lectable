@@ -4,11 +4,14 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 private val Context.playbackDataStore by preferencesDataStore(name = "playback_settings")
@@ -16,6 +19,7 @@ private val PLAYBACK_SPEED_KEY = floatPreferencesKey("speed")
 private val LOOKAHEAD_PARAGRAPHS_KEY = intPreferencesKey("lookahead_paragraphs")
 private val MUSIC_VOLUME_KEY = floatPreferencesKey("music_volume")
 private val SPEED_RAMP_SECONDS_KEY = floatPreferencesKey("speed_ramp_seconds")
+private val CLIENT_ID_KEY = stringPreferencesKey("client_id")
 
 /** How gradually a playback-speed change takes effect while narration is playing: the seconds
  *  it takes to move 0.5x toward the new speed (so 1x to 3x at the default takes 4s). 0 applies
@@ -54,6 +58,16 @@ class PlaybackSettingsRepository @Inject constructor(
 
     suspend fun setSpeed(speed: Float) {
         context.playbackDataStore.edit { prefs -> prefs[PLAYBACK_SPEED_KEY] = speed }
+    }
+
+    /** This installation's reader id: random, made once and kept. Sent with lookahead calls so
+     *  the backend tracks each reader's window on its own (LookaheadRequestDto.clientId). */
+    suspend fun clientId(): String {
+        context.playbackDataStore.data.first()[CLIENT_ID_KEY]?.let { return it }
+        val fresh = UUID.randomUUID().toString()
+        var id = fresh
+        context.playbackDataStore.edit { prefs -> id = prefs[CLIENT_ID_KEY] ?: fresh.also { prefs[CLIENT_ID_KEY] = it } }
+        return id
     }
 
     val lookaheadParagraphs: Flow<Int> = context.playbackDataStore.data.map { prefs ->

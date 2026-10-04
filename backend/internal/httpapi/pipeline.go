@@ -28,7 +28,7 @@ func (s *Server) isPreprocessing(bookID string) bool {
 //
 // A single call into jobs.Manager.EnqueueBookGenerate, not a loop over
 // every chapter here: that whole-book walk (and its own cancelability) now
-// lives on the Manager side, as one cancelable poolPipeline task rather
+// lives on the Manager side, as one cancelable group task rather
 // than this handler pushing N independent per-chapter tasks with no
 // single handle to stop them all at once - see EnqueueBookGenerate's own
 // doc comment. Fire-and-forget either way: this never itself blocks on an

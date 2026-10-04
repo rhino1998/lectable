@@ -52,6 +52,19 @@ type Book struct {
 	// this defaults false and what flipping it on does to already-
 	// generated audio.
 	SpeechDirection bool
+
+	// StrictOrder makes a multi-voice book's narration wait for speaker
+	// attribution: a chapter's paragraphs are only queued once the chapter
+	// is attributed (jobs.Manager.strictBlocked), so each line is rendered
+	// once, in its speaker's voice - at the price of a reader who jumps
+	// ahead waiting for attribution to reach them. Off (the default) is
+	// reader-first: narrate now with what is known, and re-render the
+	// lines attribution later gives to a character.
+	StrictOrder bool
+	// SettingRequired makes the passes that read the book's setting profile
+	// fail when the setting pass does, rather than run without one - see
+	// jobs.Manager.bookSettingDependency. Off by default.
+	SettingRequired bool
 	PosChapterIdx   int
 	PosParagraphIdx int
 	PosSeconds      float64

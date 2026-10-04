@@ -654,9 +654,10 @@ building/running `ttsworker` does, since both now link into that binary.
   audio model load unload it first (`audioworker.Config.BeforeLoad`, called
   outside the audio worker's own locks so it can wait on in-flight LLM
   calls without a lock-order cycle) and its own load unload every audio
-  model (`UnloadAll`). A load takes ~15s, so `jobs` keeps a pool through
-  equal-priority ties for up to `poolTieSwitchAfter` (5 min,
-  `taskqueue.Queue.SetTieSwitchAfter`) instead of ping-ponging. Qwen3-4B
+  model (`UnloadAll`). A load takes ~15s, so the job scheduler keeps a
+  pool through equal-priority ties until it runs dry, and holds off
+  non-urgent switches for a minute after each one (`internal/sched`,
+  `jobs.contextDwell`) instead of ping-ponging. Qwen3-4B
   still works via `LECTABLE_SPEAKER_LLM_MODEL_PATH`.
 
   **Previously recommended: `Qwen3-4B-Instruct-2507`** (a genuinely
@@ -1315,19 +1316,20 @@ building/running `ttsworker` does, since both now link into that binary.
   (`unloadAllOnceIdle`) and the queue is *drained* (`Manager.Drained`,
   `drained` in `GET /api/jobs`). A paused, drained queue still dispatches
   explicit previews (`isExplicitPreview`: LLM, voice-design and SFX
-  previews, including the attribution/scare-quote previews) via
-  `taskqueue.Queue.PopWhere`, which only resolves dependencies for the
-  tasks it's allowed to pick - held-back work never spawns anything.
+  previews, including the attribution/scare-quote previews) - pause is
+  the scheduler's admission gate (`Manager.gate`), so held-back work just
+  stays queued.
   `?drain=1` makes the pause call wait for the drain (`WaitDrained`);
   `backend/attreval` does that around every run so a batch of previews
   runs alone rather than swapping models against generation, and resumes
   after unless the queue was already paused. Files: `manager.go` (the `Manager`, pools
-  and in-flight limits, pause/resume, model unloading, the worker loop),
-  `task.go` (`Kind`, tiers, `task`, dedup keys and ordering), `hooks.go`
+  and in-flight limits, pause/resume, model unloading),
+  `task.go` (`Kind`, tiers, `task`, dedup keys and ordering), `schedtask.go`
+  (`task` as a `sched.Task`: run, retry, merge, how it ends), `hooks.go`
   (the httpapi-supplied hook types and their setters), `enqueue.go`
   (paragraph resolution, merge groups, lookahead, `pushTask`),
-  `dependencies.go` (every `*Dependency` resolver and its memoized
-  lookups), `llmtasks.go` (LLM-pass enqueue/run), `provision.go` (voice
+  `dependencies.go` (every `*Dependency`: what a task needs first),
+  `llmtasks.go` (LLM-pass enqueue/run), `provision.go` (voice
   provisioning, SFX, previews), `music.go` (region music), `control.go`
   (`Snapshot`, cancel, promote), `generation.go` (running a clone task
   and saving its result), `pipeline.go` (bulk groups). (`throughput.go`: successful narration
@@ -1336,114 +1338,90 @@ building/running `ttsworker` does, since both now link into that binary.
   `narrationCharsPerSecond` beside each narration task's `chars`, for the
   Jobs views' time-left estimate; the same run's clip lengths give
   `Manager.RealtimeFactor`, audio seconds per wall-clock second, exposed as
-  `narrationRealtimeFactor`.) Every kind sorts through the same
-  tier-ordered heap (`TierUrgent`/`TierLookahead`/`TierNormal`/`TierBackground` - `TierNormal` is never a default, only reached by manually promoting a task from the Jobs page), but
-  dispatches into one of *two separate* worker slot pools by resource, not
-  one shared pool: `poolGeneration` (`maxInFlight` slots, GPU-bound TTS
-  work) and `poolLLM` (`maxAttributionInFlight` - `2`, matching
-  `llmworker.Config`'s own default `MaxConcurrent` - slots, LLM-bound
-  work). Deliberate, not incidental: an earlier version shared one pool
-  across every kind, and a burst of attribution/characterization requests
-  could fill every slot with LLM work, leaving zero for TTS paragraph
-  generation until it drained. `maxAttributionInFlight` used to be `1`
-  (rather than matching `maxInFlight`) for a second reason: the old,
-  single-sequence `speakerattr.Client` fully serialized every
-  attribution/characterization call behind its own mutex regardless of
-  slot count, so a second `poolLLM` slot could only ever sit blocked. Not
-  true any more now that `speakerattr.Client` proxies to
-  `internal/llmworker.Worker`'s real multi-sequence batching, so
-  `maxAttributionInFlight` was raised to match - keep the two in step if
-  either default changes, or slots go unused / tasks queue despite a free
-  model slot. `poolGeneration`'s own single worker is intentional
-  independent of that: the ttsworker process serializes actual GPU
-  generation anyway, so more Go-side concurrency wouldn't help.
+  `narrationRealtimeFactor`.)
 
-  The two pools are also mutually exclusive at runtime, not just
-  separately slotted: `worker`'s `fill`/`tryFill` closures never let
-  `poolGeneration` and `poolLLM` be active at the same time in either
-  direction (both are GPU-bound; running concurrently pushes VRAM past
-  what either alone needs on hardware with no headroom) - starting one
-  pool's first task for a pass immediately blocks the other from starting
-  in the same pass. `fill` decides which pool gets first crack via
-  `Manager.bestPool`: the single highest-priority queued task in the whole
-  heap, found via the same `taskHeap.Less` ordering (tier, then
-  `kindPriority`, then FIFO) used everywhere else, entirely without regard
-  to pool - not a kind-based special case (an earlier version singled out
-  attribution/characterization specifically; missed tier entirely, so a
-  queued background `KindSpeechDirection` task could still make `poolLLM`
-  go first ahead of a more urgent clone/design task in `poolGeneration`).
-  Under `bestPool`, an urgent clone task always outranks a background
-  direction-tagging task, while a background clone task still loses to
-  background attribution/characterization at equal tier.
+  **Scheduling is `internal/sched`** (rules and reasons:
+  `../docs/scheduler-design.md`; replaced `internal/taskqueue` and this
+  package's second pipeline queue on 2026-10-03). What this package
+  supplies on top:
+    - **Tiers** (`TierUrgent`/`TierLookahead`/`TierNormal`/`TierBackground`)
+      are request priorities. A task's *effective* tier is derived: the
+      most urgent of its own requests and of whatever needs it, so a pass
+      an urgent paragraph waits on is urgent, and stops being so when that
+      paragraph is cancelled. `task.tier` is only what it was asked for at;
+      `Snapshot` and `task.Run` use the effective one.
+    - **Pools are scheduler contexts** (`kindPool`, `poolCapacity`): one of
+      `poolGeneration`/`poolDesign`/`poolSFX`/`poolLLM` runs at a time,
+      since they share ttsworker's VRAM. `task.CanStart` holds each to its
+      capacity and attribution to one task at a time. `Manager.onSwitch`
+      unloads the family being left on a TTS<->LLM crossing.
+    - **Dependencies are declared, not polled**: `Manager.needs`
+      (`task.Prepare`) runs when a task is queued and again when what it
+      waited for has ended. Each `*Dependency` checks the persisted state
+      first (pass flag, clip on disk) and names a task to create only if
+      it's missing; a task already queued under that key is joined. A
+      dependency that fails for good (3 attempts) or is cancelled **fails
+      what waited for it** - a paragraph gets an audio error, a waiter the
+      error (`task.Ended`). Nothing is recreated forever any more.
+    - **Retries are the scheduler's**: `handleResult` returns the error and
+      the same task runs again (`task.Retryable` = `retryEligible`);
+      waiters and the store only hear of the last attempt. A paused LLM
+      pass (non-nil `requeue`) and a stale render return `sched.ErrYield`:
+      same task, no attempt counted. On its next run a paused pass calls
+      its `requeue`, and `pushTask` hands the remainder it pushes to that
+      task (`Manager.resumeInto`) rather than queueing a second one.
+    - **Groups** (`pipeline.go`: preprocessing phases, bulk groups) are
+      tasks with no context, so they run beside any pool. What a group
+      asks for through the context its run is given (`withParent` -
+      every blocking `Run*` call) is *adopted*: it takes the group's tier,
+      follows a promotion, and is cancelled with the group unless
+      something else asked for it. Paragraph audio a group queues is not
+      adopted yet; `waitForChapterTasks` and `cascadePromotion`
+      (`ChildFilter`) still cover it. A cancelled phase fails the phases
+      waiting on it.
+    - **Yielding**: `HasHigherPriorityWork` (checked between batches by
+      long LLM passes) is `sched.ShouldYield` for the running LLM tasks -
+      true only when a strictly more urgent *ready* task is blocked by
+      them.
+    - `PromoteTier` is `sched.Bump` (one more request for the task);
+      `Cancel`/`CancelAll`/`CancelChapter` are `sched.Cancel`/`CancelWhere`.
+    - Tests step dispatch by hand (`newTestManager`: `sched.Config.Manual`,
+      `mgr.sched.Pop`/`Finish`, `complete`) until `Start` is called.
 
-  Unlike a queued task (which a more urgent one simply overtakes in
-  `bestPool`'s ordering before either starts), an already-dispatched task
-  used to never be preempted at all. Two mechanisms now keep a genuinely
-  urgent task from waiting out in-flight *background* work, shaped
-  differently because of a real constraint: a `poolGeneration` task's
-  `ttsworker` HTTP call is ctx-aware and aborts promptly; a `poolLLM`
-  task's synchronous LLM decode loop is not, and can only pause itself
-  between batches.
-    - poolLLM yielding to urgent poolGeneration work: cooperative and
-      cross-pool. `Manager.HasHigherPriorityWork` (checked between batches
-      by attribution/direction implementations) reports true for a queued
-      task at a tier more urgent than `TierBackground` in *either* pool -
-      so a long background run pauses itself and requeues the remainder
-      the moment a reader's own urgent paragraph shows up. Safe to fire
-      often, since it never cancels in-progress GPU work.
-    - Urgent `poolGeneration` work jumping its own queue: hard
-      cancellation, same-pool only, `TierUrgent` only (not
-      `TierLookahead`). `Manager.preemptBackgroundGeneration` cancels just
-      enough in-flight `TierBackground` `poolGeneration` tasks to cover
-      genuinely urgent `poolGeneration` work queued right now that a free
-      slot can't already absorb - e.g. a reader jumping mid-read while a
-      whole-book background run has claimed every slot. `TierLookahead`
-      deliberately does not trigger this: `EnqueueLookahead` continuously
-      re-enqueues a whole window of upcoming paragraphs as a reader
-      scrolls, which is steady read-ahead buffering, not something the
-      reader is blocked on right now - triggering on it fired constantly
-      for very little benefit. Each canceled task is marked
-      `task.preempted` first, so `handleResult` pushes a fresh copy back
-      onto the queue instead of marking it `AudioError`.  Fire-and-forget
-      - never tries to dispatch the waiting task in the same pass; the
-      freed slot shows up on `tryFill`'s next pass once `handleResult`
-      observes it.
+  **Reader rules** (`reader.go`):
+    - Each reader is its own request source (`readerSource`: book plus the
+      `clientId` its lookahead calls carry). `enqueueLookahead` makes that
+      source's requests exactly the current window and withdraws the rest
+      (`sched.Retain`): what only that reader wanted is cancelled, in
+      flight included; what a bulk run or another reader also wants falls
+      back to their priority.
+    - **Prework**: every lookahead also requests the emotion and
+      pronunciation passes (and, under strict order, attribution) of the
+      next `preworkChapters` (3) chapters at `TierLookahead`.
+    - **Window passes**: a `TierUrgent` paragraph whose chapter's emotion or
+      pronunciation pass hasn't run waits for a run over just its
+      30-paragraph window (`windowDependency`, key
+      `direction:<chapterID>@<start>`, `httpapi.directChapterRange` with
+      `partial`), not the whole chapter. The whole pass then runs over what
+      windows left (`passRun`; covered idxs are kept in memory in
+      `Manager.passWindows`, so after a restart a whole pass relabels them).
+      A chapter's pass and its windows never run at once (`task.CanStart`).
+    - **Strict order** (`store.Book.StrictOrder`, `strictBlocked`): a
+      multi-voice book's chapter isn't narrated until it is attributed -
+      lookahead asks for the attribution instead and queues the paragraphs
+      on a later call; chapter/book generation waits for it
+      (`ensureAttributed`). An explicit single-paragraph regenerate ignores
+      it. Off (reader-first) by default.
+    - **Setting required** (`store.Book.SettingRequired`): off, the setting
+      pass is waited for but its failure fails nothing (a member need); on,
+      it's a real dependency.
 
-      Also subtracts in-flight background tasks a *previous* call already
-      marked `preempted` (asked to cancel, not yet observed) from how many
-      new victims it picks - without that, repeated calls while waiting
-      for the first cancellation to take effect would each wrongly
-      conclude a fresh victim is needed, evicting far more background work
-      than the number of urgent tasks actually waiting. Confirmed live,
-      twice: an earlier cross-pool version thrashed constantly against
-      routine `KindSpeakerCharacterization` calls; the first same-pool
-      version (missing this dedup and free-slot accounting) still
-      thrashed - the same paragraph preempted several times within one
-      second, purely from calling itself redundantly while its own first
-      cancellation was still in flight.
+  Not built yet: removing a bump from the Jobs page (`sched.Unbump`
+  exists), adopting paragraph audio into its group, the two settings in the
+  Android app (web Speakers page only), and persisting requests across a
+  restart.
 
-      An even earlier version triggered cross-pool - canceling background
-      `poolGeneration` work whenever `poolLLM` had *any* urgent task
-      queued. Removed after real production thrashing:
-      `KindSpeakerCharacterization` defaults to `TierUrgent` for every
-      caller (because a characterization call is short, not because it's
-      more business-urgent), including `provisionMissingCharacterVoices`'s
-      own lazy calls that happen routinely as part of ordinary bulk
-      background generation - so on a book with many characters, nuking up
-      to `maxInFlight` in-progress GPU renders every time generation
-      crossed into a new character wasted far more than the brief wait it
-      was meant to avoid (observed: thousands of cancellations within
-      seconds, queue depth exploding into the thousands).
-      `preemptBackgroundGeneration`'s own doc comment has the full
-      history - worth reading before changing this again.
-
-  Both mechanisms are independent of, and don't affect,
-  `taskBlockedBySpeechDirection`/`popTask`'s own separate *per-chapter*
-  hard block (a clone/design task for the exact chapter currently being
-  emotion-labeled is skipped entirely until that labeling finishes, and
-  the blocking task's own tier is boosted to match whatever it's
-  blocking) - a chapter actively being read still gets its emotions
-  applied before its audio generates, regardless of either mechanism above.
+  The kinds:
     - `KindVoiceClone`/`KindVoiceDesign` (`poolGeneration`) walk a
       chapter's not-yet-ready paragraphs and generate each one (via
       `internal/voicerefs` + `internal/ttsworker`), writing Ogg Opus clips
@@ -1521,6 +1499,13 @@ building/running `ttsworker` does, since both now link into that binary.
       deletes the cached reference clip, does *not* eagerly re-render)
       that book's resolved clone model's assigned voice preset for the
       character, so it's lazily rebuilt next time it's actually needed.
+- `internal/sched/` — the job scheduler `internal/jobs` runs on: one graph
+  of tasks, each wanted by named requesters and by the tasks that need it;
+  effective priority derived from that, a task nobody wants cancelled, one
+  total order for dispatch and display, one admission rule (one context at
+  a time, stay on a tie, drain then switch for more urgent work, a dwell
+  after each switch). No dependencies beyond the standard library. See
+  `../docs/scheduler-design.md`.
 - `internal/dbbackup/` — rolling copies of `library.sqlite` in
   `LECTABLE_DATA_DIR/backups/library-<YYYYMMDDTHHMMSS>.sqlite`. `Run`
   (started from `cmd/server`) checks at startup and hourly, takes one when
@@ -1918,12 +1903,12 @@ build does, since both now link into that one binary.
 - `POST /api/books/{id}/chapters/{idx}/reimport[?force=true]` — re-parses one chapter from the book's source epub and replaces its content (`store.ReplaceChapterContent`), keeping every other chapter's attribution, fixes, and audio. The source is the copy kept at upload (`data/epubs/<bookID>.epub`, `audiopath.SourceEpubFile`), or an optional multipart `file`, which also replaces the kept copy. Cancels the chapter's queued/in-flight jobs first (`jobs.Manager.CancelChapter`). Resets the chapter's paragraphs, audio, SFX, music regions, images, breaks, and pass flags; bookmarks are re-pointed by idx. `409` with `code` `no_source_epub` (upload the file) or `title_mismatch` (retry with `force=true`), or plain `409` if the epub's chapter count differs or a job is still running
 - `GET /api/books/{id}/manifest?chapters=0,3` — the root of the book's offline-sync hash tree (`httpapi/manifest.go`), for clients reconciling an offline copy (Android downloads) against the backend, which always wins: `hash` covers the book's title/author/cover (file size+mtime)/chapter count plus each listed chapter's `hash` (all chapters if `chapters` is omitted), returned in `chapters`. Built chapter hashes are stored in `sync_tree_nodes` (`Store.PutSyncTreeNodes`/`SyncTreeNodes`) tagged with a fingerprint of the rows they came from (`Store.SyncFingerprints`: one aggregate query per book over whole-row hashes (`rowhash`) of the book row minus position/estimate, its chapters/paragraphs/paragraph_audio minus `word_timings`/images/breaks, plus the whole character/voice tables) and with `syncTreeVersion` - a sha256 of the running `server` executable, since fingerprints can't see code (hash fields, DTO shapes, compiled-in voice presets) and Go builds are reproducible; nodes from other builds are pruned on the first manifest request. Only chapters whose rows moved get rebuilt. Validated by value on each request rather than invalidated by writes, since `OnChange` only knows tables, not rows: over-covering inputs can only cause a needless rebuild, never a stale hash. No PRIMARY KEY on the table (update-then-insert in one transaction instead), a holdover from DuckDB. Measured on the real library: a 244-chapter book's manifest goes from ~11.5s on first build to ~40ms afterwards (under DuckDB; under SQLite the fingerprint query alone is ~100ms for that book), including after a restart; a new build of `server` rebuilds each book once. Every chapter value (REST and the live `chapter` topic) carries its own `hash` plus per-paragraph `contentHash` (text/annotations an offline copy stores) and `audioHash` (resolved voice id, status, backing clip, duration, pointer) - so a client can tell "refresh metadata" from "re-download this .wav". Reading position is returned alongside but kept outside the tree
 - `GET|POST /api/books/{id}/exports`, `GET /api/books/{id}/exports/{exportId}/file`, `DELETE /api/books/{id}/exports/{exportId}` — book exports (`internal/bookexport`, live topic `bookExports`). POST `{"format", "wordLevel", "phraseSeconds", "excludeMusic", "chapters", "asIs"}` queues a `jobs.BulkGroup` (Kind `pipeline_export`, key `export:<id>`, `202`): unless `asIs`, it first renders every not-ready paragraph of the chosen chapters (`jobs.Manager.RenderChapters`, failed ones retried) and waits, then builds - failing with "not fully rendered" if some paragraph still has no audio; `asIs` builds right away, missing audio text-only. Promoting the row promotes the audio it waits on. DELETE cancels the task and/or removes the file. The list overlays the job's queued/running state (`jobs.Manager.BulkState`) on the Manager's own.
-- `GET|PUT /api/books/{id}/voice` — `cloneModel` is the book's own clone model (every voice in it clones through it; voice presets carry none - `""` on PUT leaves it unchanged, and changing it deletes the book's generated audio); changing voice resets that book's paragraph audio to `pending`; `multiVoice` toggles whether character voice assignments (see below) override this book's own voice at all (default off)
+- `GET|PUT /api/books/{id}/voice` — `cloneModel` is the book's own clone model (every voice in it clones through it; voice presets carry none - `""` on PUT leaves it unchanged, and changing it deletes the book's generated audio); changing voice resets that book's paragraph audio to `pending`; `multiVoice` toggles whether character voice assignments (see below) override this book's own voice at all (default off); `strictOrder` and `settingRequired` (both optional on PUT, omitted = unchanged) are `store.Book.StrictOrder`/`SettingRequired`
 - `GET|PUT /api/books/{id}/position` — a save also stamps `books.last_read_at` (`lastReadAt` on the book summary, unix seconds, absent until first opened), which both libraries' "Continue reading" entry picks the latest unfinished book by
 - `GET /api/books/{id}/chapters/{idx}` — paragraphs with `audioStatus`/`audioUrl`/`speaker`/`inline`/`emotion`
 - `POST /api/books/{id}/generate` — enqueues background generation for every chapter in the book at once (library page's hover "Generate audio" button) - just loops `Jobs.EnqueueChapter` per chapter and returns `202` immediately; no background goroutine or dedup needed since `EnqueueChapter` is already fire-and-forget and idempotent per chapter
 - `POST /api/books/{id}/chapters/{idx}/generate` — enqueue background generation (idempotent per chapter while in flight)
-- `POST /api/books/{id}/lookahead` — `{"chapterIdx", "paragraphIdx", "paragraphCount"?}`; enqueues generation of up to `paragraphCount` paragraphs (default `jobs.LookaheadParagraphCount` = 25, capped at `jobs.MaxLookaheadParagraphCount` = 1000) starting at that paragraph for whatever isn't already `AudioReady` (pending/error) - readers scrolling/seeking ahead, not a regenerate. The first `jobs.LookaheadUrgentParagraphCount` = 8 paragraph positions from the requested one (crossing chapter boundaries) queue at `TierUrgent`, the rest at `TierLookahead`. Coalesced per book (`jobs.Manager.EnqueueLookahead`): one run at a time, a request arriving meanwhile replaces the single pending follow-up - readers post one every few seconds, and a goroutine per request used to pile up on the DB connection
+- `POST /api/books/{id}/lookahead` — `{"chapterIdx", "paragraphIdx", "paragraphCount"?, "clientId"?}` (`clientId`: any string a client makes up and keeps; each reader's window is tracked separately, and what only it wanted is dropped when it moves - see `jobs/reader.go`); enqueues generation of up to `paragraphCount` paragraphs (default `jobs.LookaheadParagraphCount` = 25, capped at `jobs.MaxLookaheadParagraphCount` = 1000) starting at that paragraph for whatever isn't already `AudioReady` (pending/error) - readers scrolling/seeking ahead, not a regenerate. The first `jobs.LookaheadUrgentParagraphCount` = 8 paragraph positions from the requested one (crossing chapter boundaries) queue at `TierUrgent`, the rest at `TierLookahead`. Coalesced per book (`jobs.Manager.EnqueueLookahead`): one run at a time, a request arriving meanwhile replaces the single pending follow-up - readers post one every few seconds, and a goroutine per request used to pile up on the DB connection
 - `POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/regenerate` — unconditionally resets one already-`AudioReady` paragraph's audio to `pending` and re-enqueues it at urgent priority, even though `lookahead` above would skip it - the "the reader didn't like this line" action
 - `PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker` — `{"speaker": "..."}` (400 for a group like "Bert and Sid"; an alias resolves to its character); corrects one paragraph's speaker attribution directly, without touching its already-generated audio - a caller wanting the new voice actually narrated still needs a separate `regenerate` call above. `""`/`"Narrator"` both mean "no character"; any other name is registered as a real character if it wasn't one already. 400s if the target paragraph isn't quoted dialogue (`IsQuote`) - narration/description can't be attributed to a speaker
 - `POST /api/books/{id}/chapters/{idx}/attribute-speakers[?scope=edits]` — `scope=edits` (`attributeAroundEdits`, `409 no_edits` when the chapter has no corrected speakers) re-asks only the dialogue within 8 paragraphs of a corrected line, with 20 either side shown as context-only (`speakerattr.ParagraphInput.ContextOnly`, `aroundEditsScope`) and the corrections shown as settled lines; it never touches the pass flag - the reader's "fix a few, sort out the rest" button (chapter header, web). Otherwise enqueues LLM speaker attribution for one chapter and returns `202 {"queued": 1}` immediately, not the result (503 if the LLM model file is missing) - fire-and-forget; registers any newly-discovered character with no voice yet - characterization/voice assignment happens lazily later, the first time that character's voice is actually needed for generation
@@ -1939,7 +1924,7 @@ build does, since both now link into that one binary.
 - `POST /api/books/{id}/chapters/{idx}/summarize`, `GET /api/books/{id}/chapters/{idx}/notes` (live topic `chapterNotes`) — the **summary pass** (`speakerattr.Client.SummarizeChapter`, `summary.go`; `httpapi/summary.go`; a `jobs.KindSummary` task, `"chapter_summary"`, key `summary:<chapterID>`; bulk action and reset `summary`; preprocess phase `pipeline_summary`): one call per chapter (split into ~24K-char windows for long ones, merged) writing `store.ChapterNotes` to `chapter_summaries` (JSON) and setting `passes.summary` - a 2-4 sentence summary, its scenes (first paragraph, location, time of day, who's present) and its cast (name - resolved onto the roster, a description folded to a role via `RoleLabel` - role flag, pronouns, and references: phrases the text uses for them, kept only when found word for word and not possessive, since "his boots" isn't the person). Attribution and the ambience pass depend on it per chapter (`jobs.Manager.summaryDependency`, lazily created like `scareQuoteDependency`; the preprocess pipeline runs it before both). Consumers: attribution lists the chapter's cast in every batch with its references (`Roster.WithCast`) - *instead of* the book's frequent/recent speakers (`Roster.Prominent`), so someone from another chapter isn't offered for a bare "he said" or an untagged line (Arise: Alpha's prologue-only Petros had taken 20 of the first-person narrator's lines in ch. 3, and was still taking 4 wrong lines on a re-run with the narrator handling in place); anyone the cast missed is still listed wherever a batch's own text names them - and maps an answer naming a reference to that person (`ResolveCastRefs`), Auto Split too. In a first-person book (`Roster.FirstPerson`), `speakerattr.FoldFirstPersonCast` renames a cast entry that is really the narrator to them - a placeholder ("Protagonist"), or, when the narrator is missing from the cast, the one unknown non-role member in the most scenes (at least half; ties and contradicting pronouns fold nothing) - since the model only knows them as "I" and identity retrieval finds no named neighbours for them (Arise's Steve, addressed as "Jamey Sultan", was cast as a separate "Jamey"). The summary pass records the folded name as the narrator's alias; attribution applies the fold to existing notes too. The fold can't catch a *known* character standing in for the narrator (Reclaimer ch. 14 cast Dan, named once in a memory, in every scene in Steve's stead - 9 of its chapters did this, each stand-in named at most 4 times and credited with no line), and a mention threshold to fold them was too tight to be safe (a real, present Jonas was named 5 times). So the summary pass re-asks instead: when a first-person window's cast has no entry for the narrator (a placeholder counts), `narratorMissedNote` appends a correction naming the likely stand-in and how few paragraphs name them, and the retry is kept only if it lists the narrator (logged as `summary of "…" left out narrator …, re-asked (kept: …)`). Re-summarizing those 9 chapters (2026-09-30): all 9 now cast Steve, 4 through a re-ask (all kept); the other 5 were right on the first try, so their old notes predate the prompt naming the narrator. A chapter whose narration isn't first person (`FirstPersonNarration`: a prologue elsewhere in time) drops the narrator from its batches and the "I said" rule. The scenes narrow it further (`Roster.Scenes`): a batch lists only who is present in the scenes its lines fall in (`Roster.scenePresent` - plus the narrator, cast members placed in no scene, e.g. a phone voice, and anyone its own text names), and its Lines carry a `[Scene: location; present: A, B]` marker where each scene starts (`sceneStarting`/`sceneMarker`), since a 40-line batch often spans a scene change. `AttributeChapter` used to rebuild each batch's roster without `FirstPerson` (and scenes), so until this change no attribution prompt actually said who "I" was - only the Go-side "I said" rule worked (`TestAttributeChapterPromptCarriesNarratorAndScenes`). In a first-person book `RefineWithSpeechTags` also turns a narrator answer on a line tagged "he said"/"she asked" into Unknown - the narrator's own tag would be "I said". One-word lowercase references ("dude", "man", "mate") are dropped (`mergeRefs`, also applied to stored notes) - a term of address, not a reference, and it would turn a "Man" role answer into that person. On Arise: Alpha ch. 2-3 and 7-8 this took the prologue-only Petros from 20 lines of ch. 3 (and 19 of ch. 2) to none, and a dead thug from 12 lines of ch. 8 to 6; each music region's describe call and each lighting call gets the scene covering it (`ChapterSummary.SceneAt` - location and time of day). After the summary call, **identity retrieval** (`speakerattr/identity_retrieval.go`) checks the cast against the rest of the book, for up to 4 members per chapter: a new name (maybe an alias) and a role entry's references ("the storm guard sergeant" under Guard). `IdentityIndex.FindIdentityEvidence` searches the whole book in plain Go (index cached per book for 10 minutes, `Server.identityIndex`), scores known characters mentioned near each hit - 3 in the same sentence, 1 in a neighbouring paragraph, divided by the square root of how often the character appears at all, since raw co-occurrence is swamped by the protagonist (Fritz is near "the Nightshark" 180 times) - and `MatchIdentity` asks the model which candidate, if any, it is, accepting an answer only with evidence quoted word for word from a passage. A match renames the member (the new name recorded as the character's alias) or moves the reference to that character's own entry. On Spire's Spite it found "the storm guard sergeant" = Louisa and "the advocate" = Mr Worth, correctly declined "the Nightshark" = Jagged Nic ("Jagged Nic. He works for the Nightshark"), and tied the 91-line "greasy, lank-haired man" to Kev ("the man in the oilcoat"); search is milliseconds, a question ~0.5s. A reference two cast members share ("the nobleman") maps to neither, and speech tags ("Rosie said") and possessives aren't kept as references. All of them still run without notes. Needs a model that doesn't invent: Qwen3-4B's cast lists made up references and pronouns. On Qwen3.6 ~5-6s per chapter; attribution on the gold ch. 40-58 unchanged (95.3% vs 95.4% - the main cast is always listed anyway), invented descriptor characters on the 10 identity chapters 0. A Reset deletes the notes only (no audio depends on them). Reimport and book delete remove a chapter's notes; exports carry them (`store.ExportTables`)
 - `GET|PUT /api/books/{id}/setting`, `POST /api/books/{id}/setting/derive` — the book's **setting profile** (`store.BookSetting` in `book_settings`, JSON; `httpapi/setting.go`): era, technology, place, the main characters' accent, genre. Per book, never per series - a series can change era or world between books. The **setting pass** is one `speakerattr.Client.DescribeSetting` call (`setting.go`) over two inputs from one whole-book read (`ListParagraphsRawForBook`): technology-word counts across every paragraph (`TechCounts` - modern/industrial/pre-industrial stems, ambiguous words like "plane"/"torch" left out), and the first ~1500 chars of 16 chapters spread across the book (~6k tokens; `SettingSampleChapters`/`SettingSample`, skipping chapters under 200 words as front matter). The model quotes evidence, then decides `technology` (what works in the story's present - Jake's Magical Market is a modern world whose tech an apocalypse killed) before `era`. Tuned on this library's 5 books: from excerpts alone, the 4B model called Arise (phones, cars) medieval and then, told modern tech means modern, called everything present day - the counts are what made it reliable (all 5 technology lines right; Jake's era still reads medieval, fixable by PUT), run as its own task - `jobs.KindBookSetting` (`"book_setting"`, key `book_setting:<bookID>`, label "Book setting") - which the ambience, summary and characterization tasks wait on while the book has none (`jobs.Manager.bookSettingDependency`); stored with `source: auto`. Unlike scare quotes, a failed run doesn't keep blocking them: once a book's setting pass has run in this process (`Manager.settingTried`) nothing waits on it again, and those passes run without a setting as before it existed. `Server.bookSetting` only reads. Its prompt is deliberately not in `SystemPrompts` (one call per book isn't worth a resident primed sequence). Consumers: the music describe call (palette, and soundscapes kept true to the era/technology - Spire's Spite, a fantasy, had "distant traffic hum, car horn, wet pavement" in ~130 regions; Arise, modern-day, had "clinking mugs, crackling hearth fire", copied verbatim from the prompt's own ambience example, now era-neutral), lighting (which light sources can exist), and characterization (era/place/accent/genre - the default accent for the main characters' own people). A first version also listed recurring locations; dropped, since a handful of excerpts can't show what recurs and the ambience call copied one listed alley into unrelated scenes. `accent` is always named: a stated origin or real-world place decides it, otherwise the dialogue's `IdiomCounts` (specific British/American idiom in quoted speech only - "bloody", "arse", "oi" vs "dude", "gotten", "y'all"; words both use, like "yeah"/"gonna"/"guys", left out) - it used to be "" for any invented world, which was every book here, leaving each character's accent to a per-character guess (Spire's Spite's cast came out Cockney, General American, Scottish and RP in one city). A mixed cast is named as such ("mixed: British, General American"; characterization takes the first unless a character's own idiom says otherwise). Spelling was tried and dropped as a signal: Arise has British characters in London but American spelling. PUT stores a reader's edit (`source: manual`); `derive` queues the pass now (`jobs.Manager.EnqueueBookSetting`, urgent, `202 {"queued": 1}`; the `bookSetting` topic carries the result), replacing even a manual one. Neither re-runs passes that already used the old setting. Exported with the book (`store.ExportTables`)
 - `POST /api/books/{id}/chapters/{idx}/generate-music` — queues the whole-chapter background-music run now (`jobs.Manager.GenerateChapterMusic`, `TierNormal`), regardless of the book's `musicEnabled` toggle; resets failed regions to pending first so they're retried. Each region carries a music prompt and an optional ambience prompt (the setting's soundscape - ocean, tavern, city - `""` for none), both written by `speakerattr`'s describe pass as structured fields and assembled in Go (scoring, `speakerattr.Client.ScoreMusic`, is two passes: pass 1 places region starts in 20-paragraph batches, 2 at a time, each shown the previous batch's last 4 lines so a tone can carry across the seam - it used to force a `cut` at every seam, which was 2701 of 3001 cuts on Spire's Spite; pass 2 describes each region, with one call shared by a region and up to 2 of its length-only 10-paragraph splits, and decides `cut` itself via a `scene` field, since pass 1 almost never marks one. Measured on 4 chapters: 49-78s -> 24-40s per chapter) into Stable Audio 3's tag syntax (`buildMusicPrompt`/`buildAmbiencePrompt`). The two layers render as separate Stable Audio Medium calls and are served mixed (`musicgen.MixAmbience`, ambience level-matched a little under the music) - deliberately not one combined prompt, since SA3 tags each training clip as music *or* SFX and a mixed prompt tends to lose one layer and leaves no control over the balance. Ambience is one seamless 60s loop per distinct ambience prompt per book (`audiopath.AmbienceLoopFile`, rendered the first time a setting appears, tiled under every region set there at a region-derived offset - the describe pass copies an unchanged setting's prompt verbatim, so the same place hits the same file); it used to be re-rendered per region, continuation-seeded, which was about half of all music GPU time. The music layer's last 10s stays on disk (`audiopath.MusicRegionSeedFile`) so a `continuation` region seeds from it. Measured costs (Medium q8, warm, RX 7900 XTX): an unseeded 64s call ~2.6s, a 120s call ~4.6s - roughly linear, so seed length and loop margins are direct overhead; chunks are up to 110s and every clip renders only 4s past its served length for the loop crossfade. Batching the ambience loop with a music chunk (`batch_size=2`) was tried and dropped: the GPU is saturated at batch 1, and a batch renders both at the longer duration (18-25% slower when they differ). `202 {"queued": n}` (regions queued, 0 if all already have music), `409` if the chapter isn't scored or its narration isn't fully generated. Separately, `KindMusicLiveGeneration` tasks (one per region, keyed `music_live:<regionID>`, queued at `TierUrgent` since the reader is listening for them right now) chain forward from the reader's region as soon as each region's own paragraphs are voiced: a live task queues the next region's task the moment it dispatches, and that task depends on it (its seed clip) so it starts as soon as the first finishes - at most one live task per chapter is queued ahead, and a queued one the reader has moved past is canceled. The chain crosses chapter boundaries: past a chapter's last region it continues into the next chapter's first (waiting on the previous chapter's last live task for ordering, but not seeded from it), and an unscored next chapter gets its `ambience` task promoted to `TierLookahead` so the chain can cross once it's scored; reader-position lookahead only drives/promotes this live path (and scoring), never the whole-chapter batch, which stays `TierBackground` unless run explicitly; a region's "generating" state is tracked in memory (`Manager.MusicRegionGenerating`), never stored
-- `POST /api/books/{id}/preprocess` — the "run everything" meta-task: scare-quote tagging, attribution, description tagging, characterization, voice provisioning, direction-tagging, and the ambience pass (music scoring + lighting) for every chapter/character in the book. Phase dependencies are declared in `jobs.pipelinePhaseDeps`: scare-quote tagging before attribution and description tagging, both of those before characterization, characterization before voice provisioning; direction-tagging and music scoring depend on none of them (`directChapter` only needs the book's own already-resolved voice and each paragraph's own `IsQuote`/`Text`, none of which the other three touch), so it dispatches immediately alongside attribution rather than waiting on the other three to clear first - see `jobs.pipelineResolver`'s own doc comment. `202 {"queued": 1}` immediately (503 if the LLM model file is missing, `409` if a run is already in progress for this book) - the four phases are real, dependency-ordered tasks (`jobs.Manager.EnqueuePipeline`, one `pipelineTask` per phase, `httpapi`'s `preprocess*Phase` closures supplying each phase's actual work), each phase task blocking on its own chapter's/character's real per-item task (`RunAttribution`/`RunCharacterization` via `ensureCharacterized`/`RunVoiceProvision`/`RunDirection`) exactly the way a single-item button dispatch already does - so no nested-queue-call deadlock risk (a phase task never occupies the `poolLLM`/`poolGeneration`/`poolDesign` slot it's waiting on). The four phase tasks themselves dispatch through `poolPipeline`, on a second, independent `taskqueue.Queue` (`jobs.Manager.pipelineQueue`) separate from the one `poolGeneration`/`poolDesign`/`poolLLM` share - see `internal/jobs/pipeline.go`'s own doc comment: this is what lets book preprocessing actually run concurrently with ordinary generation/attribution instead of being subject to those three pools' own "one pool active at a time" mutual exclusion, since a phase task does no GPU/LLM work itself. Progress observable exactly like the individual buttons' own. Best-effort and idempotent per item, so rerunning it (or an individual button) after a partial failure only redoes what didn't finish
+- `POST /api/books/{id}/preprocess` — the "run everything" meta-task: scare-quote tagging, attribution, description tagging, characterization, voice provisioning, direction-tagging, and the ambience pass (music scoring + lighting) for every chapter/character in the book. Phase dependencies are declared in `jobs.pipelinePhaseDeps`: scare-quote tagging before attribution and description tagging, both of those before characterization, characterization before voice provisioning; direction-tagging and music scoring depend on none of them (`directChapter` only needs the book's own already-resolved voice and each paragraph's own `IsQuote`/`Text`, none of which the other three touch), so it dispatches immediately alongside attribution rather than waiting on the other three to clear first - see `jobs.pipelineResolver`'s own doc comment. `202 {"queued": 1}` immediately (503 if the LLM model file is missing, `409` if a run is already in progress for this book) - the four phases are real, dependency-ordered tasks (`jobs.Manager.EnqueuePipeline`, one `pipelineTask` per phase, `httpapi`'s `preprocess*Phase` closures supplying each phase's actual work), each phase task blocking on its own chapter's/character's real per-item task (`RunAttribution`/`RunCharacterization` via `ensureCharacterized`/`RunVoiceProvision`/`RunDirection`) exactly the way a single-item button dispatch already does - so no nested-queue-call deadlock risk (a phase task never occupies the `poolLLM`/`poolGeneration`/`poolDesign` slot it's waiting on). The phase tasks are scheduler tasks that need no pool (see `internal/jobs/pipeline.go`), so preprocessing runs alongside ordinary generation/attribution; the per-item tasks a phase asks for are adopted by it, so promoting or cancelling the phase reaches them. Progress observable exactly like the individual buttons' own. Best-effort and idempotent per item, so rerunning it (or an individual button) after a partial failure only redoes what didn't finish
 - `POST /api/books/{id}/bulk/{action}?scope=rest|all` — the Speakers page's whole-book buttons (`httpapi/bulk.go`), each queued as one `jobs.BulkGroup`: a single cancelable/promotable Jobs row (`pipeline_bulk_<action>`) whose run fans out and blocks on the real per-chapter/per-character tasks (`Run*`, at the row's live tier), rather than one row per chapter. `action` is `attribution`/`description`/`scare_quote`/`direction`/`pronunciation`/`ambience` (`rest` skips chapters whose pass is done - for `ambience`, both music and lighting; a scored-but-unlit chapter gets only the lighting sub-pass), `characterization`, `voices` (`rest` = characters with no voice for the book's clone model, `all` = force-regenerate), `music_generation`, `generate` (= `EnqueueBookGenerate`), or `used_voices` (`usedVoicesBulkRun`, scope ignored, works without the LLM): only the voices this book's own lines generate under - not the series roster - but everything each still lacks, so generation never stops to provision one: a voice for a character with none (multi-voice books; needs the LLM to characterize), the preset's base reference clip, and the variant of every emotion its lines carry (`jobs.Manager.RunReferenceClipAt`/`RunEmotionVariantAt`, the blocking forms of the lazy dependency tasks, same keys so they join). Speakers sharing a preset are one item; `queued` counts voices with something missing, 0 when all are ready. `202 {"queued": n}`. `BulkGroup` is the one shape every non-preprocessing pipeline task shares - chapter/book/remaining generate and Auto Split are bulk groups too - and its `Children` filter is what `PromoteTier` cascades a row's promotion to (preprocessing phases cascade through the same `ChildFilter`)
 - `POST /api/books/{id}/reset/{pass}` — the Speakers page's per-pass Reset row (`httpapi.handleResetPass`): clears one pass for the whole book as though it never ran. `attribution`/`description`/`scare_quote`/`direction`/`pronunciation` restore that pass's paragraph columns to defaults and unset its `chapters.passes` flag (`store.PassResets`/`ResetBookPass` - manual overrides included; attribution keeps scare quotes' `Narrator`; the roster is untouched), deleting audio only for paragraphs whose narration used the cleared value (plus scare-quote merge groups); `ambience` deletes every music region, clip and lighting cue; `lighting` clears just the lighting cues and `passes.lighting` (the next `ambience` run re-lights without re-scoring); `music_generation` resets clips to pending; `generate` is `DELETE .../audio`. The paragraph passes take an optional `?fromChapter=<idx>` to reset only chapters from that index on. Doesn't cancel an in-flight run of the same pass (the page disables Reset while one runs). `200 {"invalidated": n}`
 - `GET /api/books/{id}/speakers` — per-book speaker table: Narrator + every attributed character (shared across the whole series), each with its `summary` characterization, paragraph/ready-audio counts, a sample clip URL, and `emotions` (each emotion their lines use, with count and variant status/audio URL)

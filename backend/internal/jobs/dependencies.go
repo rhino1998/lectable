@@ -5,101 +5,51 @@ import (
 	"errors"
 	"log"
 	"os"
+	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
+	"github.com/rhino1998/lectable/backend/internal/sched"
 	"github.com/rhino1998/lectable/backend/internal/store"
-	"github.com/rhino1998/lectable/backend/internal/taskqueue"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 )
 
-// The memo* helpers below wrap every store/disk lookup the dependency
-// resolvers make in taskqueue.LockedQueue.Memo, so each distinct book/
-// chapter/character/preset is looked up once per resolve pass instead of
-// once per queued task - with hundreds of a book's paragraphs queued,
-// that's the difference between a handful of queries and thousands on
-// every single Pop (and every Snapshot/HasHigherPriorityWork). Errors are memoized alongside the
-// value; every caller already treats a lookup error as "no dependency".
-
-type bookLookup struct {
-	book *store.Book
-	err  error
+// depTask finishes a lazily-created dependency task: the scheduler only
+// calls a Need's New when nothing under its key exists yet, so this is the
+// one place such a task enters the queue's bookkeeping.
+func (m *Manager) depTask(nt *task) func() sched.Task {
+	return func() sched.Task {
+		nt.m = m
+		nt.pushedAt = time.Now()
+		m.notePushed(nt)
+		return nt
+	}
 }
 
-func (m *Manager) memoBook(lq *taskqueue.LockedQueue, bookID string) (*store.Book, error) {
-	r := lq.Memo("book:"+bookID, func() any {
-		b, err := m.store.GetBook(bookID)
-		return bookLookup{b, err}
-	}).(bookLookup)
-	return r.book, r.err
+// joinOnly is a dependency on key only while a task under it is queued or
+// running (an explicit re-run, say): nothing is created.
+func joinOnly(key string) []sched.Need { return []sched.Need{{Key: key}} }
+
+func (m *Manager) lookupBook(bookID string) *store.Book {
+	if m.store == nil {
+		return nil
+	}
+	book, err := m.store.GetBook(bookID)
+	if err != nil {
+		return nil
+	}
+	return book
 }
 
-type chapterLookup struct {
-	ch  *store.Chapter
-	err error
-}
-
-func (m *Manager) memoChapterByID(lq *taskqueue.LockedQueue, chapterID string) (*store.Chapter, error) {
-	r := lq.Memo("chapter:"+chapterID, func() any {
-		ch, err := m.store.GetChapterByID(chapterID)
-		return chapterLookup{ch, err}
-	}).(chapterLookup)
-	return r.ch, r.err
-}
-
-type chapterIdxKey struct {
-	bookID string
-	idx    int
-}
-
-func (m *Manager) memoChapterByIdx(lq *taskqueue.LockedQueue, bookID string, idx int) (*store.Chapter, error) {
-	r := lq.Memo(chapterIdxKey{bookID, idx}, func() any {
-		ch, err := m.store.GetChapterByIdx(bookID, idx)
-		return chapterLookup{ch, err}
-	}).(chapterLookup)
-	return r.ch, r.err
-}
-
-type characterKey struct{ scope, name string }
-
-type characterLookup struct {
-	char *store.Character
-	err  error
-}
-
-func (m *Manager) memoCharacterByName(lq *taskqueue.LockedQueue, scope, name string) (*store.Character, error) {
-	r := lq.Memo(characterKey{scope, name}, func() any {
-		c, err := m.store.GetCharacterByName(scope, name)
-		return characterLookup{c, err}
-	}).(characterLookup)
-	return r.char, r.err
-}
-
-// characterizationTaskByLabel indexes every queued/in-flight
-// KindSpeakerCharacterization task by label, built once per resolve pass -
-// characterizationDependency matches on speaker name rather than an exact
-// Key, so without this each clone task paid a full linear scan of the
-// queue. A characterization task pushed later in the same pass isn't in
-// the index, but a second lookup for that speaker still finds it: it
-// falls through to pushDependency, whose Push dedups on Key and returns
-// the existing task.
-type characterizationIndex struct{}
-
-func characterizationTaskByLabel(lq *taskqueue.LockedQueue, name string) (taskqueue.Task, bool) {
-	idx := lq.Memo(characterizationIndex{}, func() any {
-		byLabel := map[string]taskqueue.Task{}
-		lq.Find(func(c taskqueue.Task) bool {
-			if ct := c.(*task); ct.kind == KindSpeakerCharacterization {
-				if _, ok := byLabel[ct.label]; !ok {
-					byLabel[ct.label] = c
-				}
-			}
-			return false
-		})
-		return byLabel
-	}).(map[string]taskqueue.Task)
-	t, ok := idx[name]
-	return t, ok
+func (m *Manager) lookupChapter(chapterID string) *store.Chapter {
+	if m.store == nil {
+		return nil
+	}
+	ch, err := m.store.GetChapterByID(chapterID)
+	if err != nil {
+		return nil
+	}
+	return ch
 }
 
 // characterizationDependency returns t's own speaker's currently queued
@@ -109,7 +59,7 @@ func characterizationTaskByLabel(lq *taskqueue.LockedQueue, name string) (taskqu
 // first time it discovers the speaker isn't characterized yet
 // (char.Summary == "" - a stored fact, not a task-completion signal) -
 // this package's one implementation of the "check before creating" rule
-// resolveDependencies' own doc comment describes. name is
+// Manager.needs' own doc comment describes. name is
 // t.paragraph.Speaker for a KindVoiceClone/KindVoiceDesign task or
 // t.label for a KindVoiceProvision task (see EnqueueVoiceProvision); any
 // other kind never has a name to look up.
@@ -121,7 +71,10 @@ func characterizationTaskByLabel(lq *taskqueue.LockedQueue, name string) (taskqu
 // audio already generated under the now-stale characterization - a clone
 // dispatched moments before that finishes would just get deleted again
 // immediately, wasting the render.
-func (m *Manager) characterizationDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) characterizationDependency(t *task) []sched.Need {
+	if m.store == nil {
+		return nil
+	}
 	var name string
 	switch t.kind {
 	case KindVoiceClone, KindVoiceDesign:
@@ -132,25 +85,20 @@ func (m *Manager) characterizationDependency(lq *taskqueue.LockedQueue, t *task)
 	if name == "" || name == "Narrator" {
 		return nil
 	}
-	if found, ok := characterizationTaskByLabel(lq, name); ok {
-		return found
-	}
-	if m.characterize == nil {
+	book := m.lookupBook(t.bookID)
+	if book == nil {
 		return nil
 	}
-	book, err := m.memoBook(lq, t.bookID)
-	if err != nil || book == nil {
-		return nil
-	}
-	char, err := m.memoCharacterByName(lq, store.SeriesScope(book), name)
+	char, err := m.store.GetCharacterByName(store.SeriesScope(book), name)
 	if err != nil || char == nil {
 		return nil
 	}
-	if char.Summary != "" {
-		return nil // already characterized
+	key := "characterize:" + char.ID
+	if char.Summary != "" || m.characterize == nil {
+		return joinOnly(key) // already characterized
 	}
 	charVal := *char
-	nt := &task{
+	return []sched.Need{{Key: key, New: m.depTask(&task{
 		kind:        KindSpeakerCharacterization,
 		tier:        t.tier,
 		bookID:      t.bookID,
@@ -159,8 +107,7 @@ func (m *Manager) characterizationDependency(lq *taskqueue.LockedQueue, t *task)
 		runLLM:      func(ctx context.Context) (int, func(), error) { return 0, nil, m.characterize(ctx, t.bookID, charVal) },
 		seriesName:  book.SeriesName,
 		seriesIndex: book.SeriesIndex,
-	}
-	return m.pushDependency(lq, nt)
+	})}}
 }
 
 // speechDirectionDependency is characterizationDependency's own sibling,
@@ -174,50 +121,21 @@ func (m *Manager) characterizationDependency(lq *taskqueue.LockedQueue, t *task)
 // labeled would just be invalidated and re-rendered once it is - the
 // exact same wasted-render shape characterizationDependency prevents for
 // a recharacterization changing what a voice sounds like mid-flight.
-func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) speechDirectionDependency(t *task) []sched.Need {
 	chapterID := t.chapterID
-	// Every KindSpeechDirection task is keyed by its own chapterID (see
-	// dedupKey), so an exact-key lookup finds the same task a scan by
-	// kind+chapterID would.
-	if found, ok := lq.Get("direction:" + chapterID); ok {
-		return found
-	}
+	key := "direction:" + chapterID
 	if m.direct == nil {
-		return nil
+		return joinOnly(key)
 	}
-	book, err := m.memoBook(lq, t.bookID)
-	if err != nil || book == nil {
-		return nil
+	book := m.lookupBook(t.bookID)
+	ch := m.lookupChapter(chapterID)
+	if book == nil || ch == nil || ch.Passes.Direction || !book.SpeechDirection {
+		return joinOnly(key)
 	}
-	// book.SpeechDirection is this dependency's own explicit opt-in - off
-	// by default (see its own doc comment), so a paragraph clones
-	// immediately rather than waiting on an LLM tagging pass most books
-	// never need. A reader who does want tagged audio turns this on
-	// (httpapi.handleUpdateVoice, which also invalidates any audio already
-	// generated without that guarantee).
-	if !book.SpeechDirection {
-		return nil
+	if needs, ok := m.windowDependency(KindSpeechDirection, m.directWindow, t, book, ch); ok {
+		return needs
 	}
-	ch, err := m.memoChapterByID(lq, chapterID)
-	if err != nil || ch == nil {
-		return nil
-	}
-	if ch.Passes.Direction {
-		return nil // already tagged
-	}
-	chVal := *ch
-	nt := &task{
-		kind:        KindSpeechDirection,
-		tier:        t.tier,
-		bookID:      t.bookID,
-		chapterID:   chapterID,
-		chapterIdx:  t.chapterIdx,
-		llmKey:      chapterID,
-		runLLM:      func(ctx context.Context) (int, func(), error) { return m.direct(ctx, book, &chVal) },
-		seriesName:  book.SeriesName,
-		seriesIndex: book.SeriesIndex,
-	}
-	return m.pushDependency(lq, nt)
+	return []sched.Need{{Key: key, New: m.depTask(m.newPassTask(KindSpeechDirection, book, ch, t.tier))}}
 }
 
 // pronunciationDependency is speechDirectionDependency's sibling for
@@ -229,38 +147,21 @@ func (m *Manager) speechDirectionDependency(lq *taskqueue.LockedQueue, t *task) 
 // to every one. Resolving a pronunciation invalidates the chapter's
 // already-generated audio (see httpapi.pronounceChapter), so a clone
 // dispatched before it finishes would just be deleted again.
-func (m *Manager) pronunciationDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) pronunciationDependency(t *task) []sched.Need {
 	chapterID := t.chapterID
-	if found, ok := lq.Get("pronunciation:" + chapterID); ok {
-		return found
-	}
+	key := "pronunciation:" + chapterID
 	if m.pronounce == nil {
-		return nil
+		return joinOnly(key)
 	}
-	book, err := m.memoBook(lq, t.bookID)
-	if err != nil || book == nil || !book.SpeechDirection {
-		return nil
+	book := m.lookupBook(t.bookID)
+	ch := m.lookupChapter(chapterID)
+	if book == nil || ch == nil || ch.Passes.Pronunciation || !book.SpeechDirection {
+		return joinOnly(key)
 	}
-	ch, err := m.memoChapterByID(lq, chapterID)
-	if err != nil || ch == nil {
-		return nil
+	if needs, ok := m.windowDependency(KindPronunciation, m.pronounceWindow, t, book, ch); ok {
+		return needs
 	}
-	if ch.Passes.Pronunciation {
-		return nil // already resolved
-	}
-	chVal := *ch
-	nt := &task{
-		kind:        KindPronunciation,
-		tier:        t.tier,
-		bookID:      t.bookID,
-		chapterID:   chapterID,
-		chapterIdx:  t.chapterIdx,
-		llmKey:      chapterID,
-		runLLM:      func(ctx context.Context) (int, func(), error) { return m.pronounce(ctx, book, &chVal) },
-		seriesName:  book.SeriesName,
-		seriesIndex: book.SeriesIndex,
-	}
-	return m.pushDependency(lq, nt)
+	return []sched.Need{{Key: key, New: m.depTask(m.newPassTask(KindPronunciation, book, ch, t.tier))}}
 }
 
 // scareQuoteDependency makes t's own chapter's scare-quote tagging
@@ -277,27 +178,19 @@ func (m *Manager) pronunciationDependency(lq *taskqueue.LockedQueue, t *task) ta
 // it and the dependent task keeps waiting - deliberate: the pass is
 // sampled, so a retry is expected to succeed eventually, and running
 // attribution against unflagged scare quotes would bake in wrong speakers.
-func (m *Manager) scareQuoteDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) scareQuoteDependency(t *task) []sched.Need {
 	chapterID := t.chapterID
-	if found, ok := lq.Get("scare_quote:" + chapterID); ok {
-		return found
-	}
+	key := "scare_quote:" + chapterID
 	if m.scareQuote == nil {
-		return nil
+		return joinOnly(key)
 	}
-	ch, err := m.memoChapterByID(lq, chapterID)
-	if err != nil || ch == nil {
-		return nil
-	}
-	if ch.Passes.ScareQuote {
-		return nil // already tagged
-	}
-	book, err := m.memoBook(lq, t.bookID)
-	if err != nil || book == nil {
-		return nil
+	book := m.lookupBook(t.bookID)
+	ch := m.lookupChapter(chapterID)
+	if book == nil || ch == nil || ch.Passes.ScareQuote {
+		return joinOnly(key)
 	}
 	chVal := *ch
-	nt := &task{
+	return []sched.Need{{Key: key, New: m.depTask(&task{
 		kind:        KindScareQuote,
 		tier:        t.tier,
 		bookID:      t.bookID,
@@ -307,8 +200,7 @@ func (m *Manager) scareQuoteDependency(lq *taskqueue.LockedQueue, t *task) taskq
 		runLLM:      func(ctx context.Context) (int, func(), error) { return m.scareQuote(ctx, book, &chVal) },
 		seriesName:  book.SeriesName,
 		seriesIndex: book.SeriesIndex,
-	}
-	return m.pushDependency(lq, nt)
+	})}}
 }
 
 // summaryDependency makes t's own chapter's summary pass (KindSummary) a
@@ -319,24 +211,19 @@ func (m *Manager) scareQuoteDependency(lq *taskqueue.LockedQueue, t *task) taskq
 // (who's in the chapter, and what the text calls them), ambience and
 // lighting its scenes (where, and what time of day). A failed summary
 // leaves Passes.Summary unset and is recreated on the next resolution.
-func (m *Manager) summaryDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) summaryDependency(t *task) []sched.Need {
 	chapterID := t.chapterID
-	if found, ok := lq.Get("summary:" + chapterID); ok {
-		return found
-	}
+	key := "summary:" + chapterID
 	if m.summarize == nil {
-		return nil
+		return joinOnly(key)
 	}
-	ch, err := m.memoChapterByID(lq, chapterID)
-	if err != nil || ch == nil || ch.Passes.Summary {
-		return nil
-	}
-	book, err := m.memoBook(lq, t.bookID)
-	if err != nil || book == nil {
-		return nil
+	book := m.lookupBook(t.bookID)
+	ch := m.lookupChapter(chapterID)
+	if book == nil || ch == nil || ch.Passes.Summary {
+		return joinOnly(key)
 	}
 	chVal := *ch
-	nt := &task{
+	return []sched.Need{{Key: key, New: m.depTask(&task{
 		kind:        KindSummary,
 		tier:        t.tier,
 		bookID:      t.bookID,
@@ -346,8 +233,7 @@ func (m *Manager) summaryDependency(lq *taskqueue.LockedQueue, t *task) taskqueu
 		runLLM:      func(ctx context.Context) (int, func(), error) { return m.summarize(ctx, book, &chVal) },
 		seriesName:  book.SeriesName,
 		seriesIndex: book.SeriesIndex,
-	}
-	return m.pushDependency(lq, nt)
+	})}}
 }
 
 // bookSettingDependency makes t's book's setting pass (KindBookSetting) a
@@ -359,31 +245,31 @@ func (m *Manager) summaryDependency(lq *taskqueue.LockedQueue, t *task) taskqueu
 // whose setting pass has run in this process (m.settingTried) is never
 // waited on again; a later explicit re-derive (EnqueueBookSetting) still
 // can be.
-func (m *Manager) bookSettingDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) bookSettingDependency(t *task) []sched.Need {
+	if m.store == nil {
+		return nil
+	}
 	if t.bookID == "" {
 		return nil
 	}
-	if found, ok := lq.Get("book_setting:" + t.bookID); ok {
-		return found
-	}
+	key := "book_setting:" + t.bookID
 	if m.deriveSetting == nil {
-		return nil
+		return joinOnly(key)
 	}
-	if _, tried := m.settingTried.Load(t.bookID); tried {
-		return nil
+	if st, err := m.store.GetBookSetting(t.bookID); err != nil || st != nil {
+		return joinOnly(key) // has one - or an error, which isn't worth blocking on
 	}
-	has := lq.Memo("setting:"+t.bookID, func() any {
-		st, err := m.store.GetBookSetting(t.bookID)
-		return err != nil || st != nil // an error: don't block on it
-	}).(bool)
-	if has {
-		return nil
+	book := m.lookupBook(t.bookID)
+	if book == nil {
+		return joinOnly(key)
 	}
-	book, err := m.memoBook(lq, t.bookID)
-	if err != nil || book == nil {
-		return nil
+	// Unless the book requires its setting (store.Book.SettingRequired), the
+	// pass is only waited for, as a member: its failure doesn't fail t, and
+	// once it has run in this process nothing waits on it again.
+	if _, tried := m.settingTried.Load(t.bookID); tried && !book.SettingRequired {
+		return joinOnly(key)
 	}
-	nt := &task{
+	return []sched.Need{{Key: key, Member: !book.SettingRequired, New: m.depTask(&task{
 		kind:        KindBookSetting,
 		tier:        t.tier,
 		bookID:      t.bookID,
@@ -392,8 +278,7 @@ func (m *Manager) bookSettingDependency(lq *taskqueue.LockedQueue, t *task) task
 		runLLM:      m.settingRun(book, m.deriveSetting),
 		seriesName:  book.SeriesName,
 		seriesIndex: book.SeriesIndex,
-	}
-	return m.pushDependency(lq, nt)
+	})}}
 }
 
 // settingRun wraps a setting-pass run as a KindBookSetting task's work,
@@ -433,43 +318,28 @@ func (m *Manager) EnqueueBookSetting(book *store.Book, fn BookSettingDeriver) {
 // task (nested inside generate() itself, occupying its own poolGeneration
 // slot for as long as that blocking call took, with no way for its own
 // nested poolDesign child to ever dispatch while poolGeneration stayed
-// active - see taskqueue.Queue's own "one pool at a time" doc comment).
+// active - the scheduler runs one context at a time).
 // Routing the render through a real, independently-dispatched poolDesign
 // task instead - one t merely *depends on*, never blocks inside - means t
 // itself is simply left queued (not occupying any slot at all) until that
 // dependency clears, the same "never actually put in flight until it can
 // really run" treatment characterization/direction dependencies already
 // get above. Only ever called for t.kind == KindVoiceClone (see
-// resolveDependencies) - KindVoiceDesign renders straight from an
+// Manager.needs) - KindVoiceDesign renders straight from an
 // instruct, no reference clip involved at all.
-func (m *Manager) referenceClipDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) referenceClipDependency(t *task) []sched.Need {
 	if t.presetID == "" {
-		// A real KindVoiceClone task always has one - pushResolvedTask only
-		// ever picks this Kind when rp.voice.PresetID is non-empty (falling
-		// back to KindVoiceDesign otherwise) - so this only ever fires for
-		// a task built by hand without one (test setups that construct a
-		// bare task{kind: KindVoiceClone} literal directly, bypassing the
-		// real resolution path entirely), where there's no real preset to
-		// check or render anything for.
 		return nil
 	}
-	rendered := lq.Memo("refclip:"+t.presetID, func() any {
-		_, err := os.Stat(audiopath.VoicePresetRefFile(m.dataDir, t.presetID))
-		return err == nil
-	}).(bool)
-	if rendered {
+	if _, err := os.Stat(audiopath.VoicePresetRefFile(m.dataDir, t.presetID)); err == nil {
 		return nil // already rendered - the overwhelmingly common case
 	}
-	if found, ok := lq.Get("voice_provision:generate:" + t.presetID); ok {
-		return found
-	}
-	// Nobody's rendering it yet - create the task now.
 	label := t.paragraph.Speaker
 	if label == "" {
 		label = "Narrator"
 	}
 	nt := m.newReferenceClipTask(t.tier, t.bookID, label, taskBaseClip(t))
-	return m.pushDependency(lq, nt)
+	return []sched.Need{{Key: nt.Key(), New: m.depTask(nt)}}
 }
 
 // variantClipDependency is referenceClipDependency's own counterpart for
@@ -487,7 +357,7 @@ func (m *Manager) referenceClipDependency(lq *taskqueue.LockedQueue, t *task) ta
 // that emotion then clone from the base clip (see generate) instead of
 // blocking forever. Skipped for a scare-quote merge group (one call
 // renders narration and quote together, so no single emotion applies).
-func (m *Manager) variantClipDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) variantClipDependency(t *task) []sched.Need {
 	if t.presetID == "" || len(t.mergeParagraphs) > 1 {
 		return nil
 	}
@@ -495,32 +365,20 @@ func (m *Manager) variantClipDependency(lq *taskqueue.LockedQueue, t *task) task
 	if emotion == emotions.Neutral {
 		return nil
 	}
-	// The variant is cloned from the base clip, and EnsureVariantFile would
-	// otherwise render a missing base inline, from whatever casting t
-	// captured when it was queued - after a recast, the old one, with the
-	// recast's own re-render then replacing that base and wiping the variant
-	// made from it. referenceClipDependency already holds t on the base;
-	// the variant's task is created on a later pass, once the base exists.
-	if !lq.Memo("refclip:"+t.presetID, func() any {
-		_, err := os.Stat(audiopath.VoicePresetRefFile(m.dataDir, t.presetID))
-		return err == nil
-	}).(bool) {
+	if _, err := os.Stat(audiopath.VoicePresetRefFile(m.dataDir, t.presetID)); err != nil {
+		// The base clip comes first (referenceClipDependency); once it
+		// ends, t is prepared again and reaches the variant.
 		return nil
 	}
-	settled := lq.Memo("variantclip:"+t.presetID+":"+emotion, func() any {
-		return voicerefs.VariantExists(m.dataDir, t.presetID, emotion) || voicerefs.VariantFailed(m.dataDir, t.presetID, emotion)
-	}).(bool)
-	if settled {
+	if voicerefs.VariantExists(m.dataDir, t.presetID, emotion) || voicerefs.VariantFailed(m.dataDir, t.presetID, emotion) {
 		return nil
-	}
-	if found, ok := lq.Get("voice_provision:" + variantKey(t.presetID, emotion)); ok {
-		return found
 	}
 	label := t.paragraph.Speaker
 	if label == "" {
 		label = "Narrator"
 	}
-	return m.pushDependency(lq, m.newVariantTask(t.tier, t.bookID, label, taskBaseClip(t), emotion))
+	nt := m.newVariantTask(t.tier, t.bookID, label, taskBaseClip(t), emotion)
+	return []sched.Need{{Key: nt.Key(), New: m.depTask(nt)}}
 }
 
 // variantKey is an emotion variant render's llmKey - one per (preset,
@@ -649,6 +507,7 @@ func (m *Manager) runProvisionTask(ctx context.Context, t *task) error {
 	}
 	resultCh := make(chan provisionOutcome, 1)
 	t.provisionWaiters = []chan provisionOutcome{resultCh}
+	t.parent = parentOf(ctx)
 	m.pushTask(t)
 	select {
 	case <-ctx.Done():
@@ -686,30 +545,28 @@ func (m *Manager) runProvisionTask(ctx context.Context, t *task) error {
 // that was never configured - see ChapterAttributor's own doc comment),
 // covering a lone "Attribute speakers" click on a later chapter whose own
 // earlier chapter was never separately queued.
-func (m *Manager) attributionOrderDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
+func (m *Manager) attributionOrderDependency(t *task) []sched.Need {
+	if m.store == nil {
+		return nil
+	}
 	prevIdx := t.chapterIdx - 1
 	if prevIdx < 0 {
 		return nil
 	}
-	prevCh, err := m.memoChapterByIdx(lq, t.bookID, prevIdx)
+	prevCh, err := m.store.GetChapterByIdx(t.bookID, prevIdx)
 	if err != nil || prevCh == nil {
 		return nil
 	}
-	if found, ok := lq.Get("attr:" + prevCh.ID); ok {
-		return found
+	key := "attr:" + prevCh.ID
+	if prevCh.Passes.Attribution || m.attribute == nil {
+		return joinOnly(key) // already done
 	}
-	if prevCh.Passes.Attribution {
-		return nil // already done
-	}
-	if m.attribute == nil {
-		return nil
-	}
-	book, err := m.memoBook(lq, t.bookID)
-	if err != nil || book == nil {
-		return nil
+	book := m.lookupBook(t.bookID)
+	if book == nil {
+		return joinOnly(key)
 	}
 	chVal := *prevCh
-	nt := &task{
+	return []sched.Need{{Key: key, New: m.depTask(&task{
 		kind:        KindSpeakerAttribution,
 		tier:        t.tier,
 		bookID:      t.bookID,
@@ -719,46 +576,5 @@ func (m *Manager) attributionOrderDependency(lq *taskqueue.LockedQueue, t *task)
 		runLLM:      func(ctx context.Context) (int, func(), error) { return m.attribute(ctx, book, &chVal) },
 		seriesName:  t.seriesName,
 		seriesIndex: t.seriesIndex,
-	}
-	return m.pushDependency(lq, nt)
-}
-
-// globalAttributionSlotDependency makes t (a KindSpeakerAttribution task)
-// depend on any OTHER currently in-flight KindSpeakerAttribution task,
-// regardless of book - attributionOrderDependency's own sibling, but
-// narrower on purpose: that one only orders a book's own chapters against
-// each other, so two DIFFERENT books' attribution tasks (no shared
-// attributionOrderDependency chain between them at all) could otherwise
-// still dispatch concurrently, each claiming one of poolLLM's own
-// maxAttributionInFlight slots. This caps attribution specifically to a
-// single in-flight task at a time, deliberately independent of poolLLM's
-// own overall capacity - maxAttributionInFlight can still be >1 so
-// characterization/direction/music-scoring keep genuine concurrency with
-// each other (and with the one active attribution task), rather than
-// tying that down to attribution's own narrower constraint.
-//
-// Deliberately FindInFlight, not Find: two attribution tasks merely queued
-// alongside each other (neither dispatched yet - e.g. attributionOrderDependency's
-// own lazily-created chapter-0 task sitting next to an already-queued
-// chapter-1 task for the same book) would otherwise each find the other as
-// a "match" under Find and mutually deadlock, since neither has actually
-// started yet. Restricting this to in-flight tasks only breaks that
-// symmetry - see FindInFlight's own doc comment - letting the queue's own
-// ordering (plus attributionOrderDependency's explicit same-book chain)
-// pick one to dispatch first; every other still-queued attribution task
-// then finds that one in flight and correctly waits.
-//
-// Never lazily creates a task the way attributionOrderDependency does
-// (there's nothing to conjure here - either some other attribution task is
-// already in flight, or there isn't), so this is a pure lq.FindInFlight, no
-// pushDependency call.
-func (m *Manager) globalAttributionSlotDependency(lq *taskqueue.LockedQueue, t *task) taskqueue.Task {
-	found, ok := lq.FindInFlight(func(c taskqueue.Task) bool {
-		other, ok := c.(*task)
-		return ok && other.kind == KindSpeakerAttribution && other.Key() != t.Key()
-	})
-	if !ok {
-		return nil
-	}
-	return found
+	})}}
 }
