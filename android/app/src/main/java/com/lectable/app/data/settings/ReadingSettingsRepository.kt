@@ -40,8 +40,7 @@ fun ReaderFontFamily.toComposeFontFamily(): FontFamily = when (this) {
 private val Context.readingDataStore by preferencesDataStore(name = "reading_settings")
 // Still named "font_size" on disk even though it moved from a preset enum's .name to a plain
 // Int sp value - an old stored preset name fails the Int read below and just falls back to
-// DEFAULT_FONT_SIZE_SP, same "not worth a migration" treatment this app's own DuckDB schema
-// gets (see backend/CLAUDE.md) - nothing here is worth preserving across that change.
+// DEFAULT_FONT_SIZE_SP - nothing here is worth a migration to preserve across that change.
 private val FONT_SIZE_KEY = intPreferencesKey("font_size")
 private val FONT_FAMILY_KEY = stringPreferencesKey("font_family")
 private val ANNOTATIONS_MODE_KEY = booleanPreferencesKey("annotations_mode")

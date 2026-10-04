@@ -17,7 +17,6 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import com.lectable.app.data.remote.MediaUrlResolver
-import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.repository.DownloadRepository
 import com.lectable.app.data.settings.DEFAULT_SPEED_RAMP_SECONDS
@@ -36,7 +35,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 
 data class PlaybackState(
     val chapterIdx: Int = -1,
@@ -57,12 +55,6 @@ data class SleepTimerState(
     val option: SleepTimerOption = SleepTimerOption.Off,
     val remainingSeconds: Int = 0,
 )
-
-/** How much upcoming audio (media seconds) [ParagraphPlayer] keeps queued behind the current clip. */
-private const val QUEUE_AHEAD_SECONDS = 30.0
-
-/** Cap on queued clips, whatever their durations. */
-private const val MAX_QUEUED_CLIPS = 20
 
 /** How many times [ParagraphPlayer] re-prepares after a clip fails to load before pausing. */
 private const val MAX_LOAD_RETRIES = 4
@@ -363,14 +355,13 @@ class ParagraphPlayer @Inject constructor(
         speedRamp = scope.launch {
             while (true) {
                 val target = _state.value.playbackSpeed
-                val perSecond = if (speedRampSeconds > 0f) 0.5f / speedRampSeconds else Float.MAX_VALUE
-                val step = perSecond * SPEED_RAMP_TICK_MS / 1000f
+                val next = rampedSpeed(appliedSpeed, target, speedRampStep(speedRampSeconds, SPEED_RAMP_TICK_MS))
                 // Paused mid-ramp: nothing is audible, so finish it.
-                if (!player.isPlaying || abs(target - appliedSpeed) <= step) {
+                if (!player.isPlaying || next == target) {
                     setAppliedSpeed(target)
                     break
                 }
-                setAppliedSpeed(appliedSpeed + if (target > appliedSpeed) step else -step)
+                setAppliedSpeed(next)
                 delay(SPEED_RAMP_TICK_MS)
             }
         }
@@ -430,89 +421,78 @@ class ParagraphPlayer @Inject constructor(
     fun durationMs(): Long = player.duration.takeIf { it > 0 } ?: 0L
 
     private fun playParagraph(chapterIdx: Int, paragraphIdx: Int, startSeconds: Double = 0.0) {
-        val chapter = chapters[chapterIdx]
-        val paragraph = chapter?.paragraphs?.getOrNull(paragraphIdx)
-        if (chapter == null || paragraph == null) {
-            pendingTarget = chapterIdx to paragraphIdx
+        val target = chapterIdx to paragraphIdx
+        val action = playAction(chapters, target, loadedTarget, loadedAudioUrl, player.mediaItemCount > 0)
+        val paragraph = chapters[chapterIdx]?.paragraphs?.getOrNull(paragraphIdx)
+        if (action == PlayAction.NEED_CHAPTER || paragraph == null) {
+            pendingTarget = target
             onNeedChapter?.invoke(chapterIdx)
             return
         }
-        if (paragraph.audioStatus != AudioStatuses.READY || paragraph.audioUrl == null) {
-            // Not generated yet - park here; setChapter() re-attempts once fresh data reports
-            // this paragraph ready. [chapters] is this app-scoped singleton's own cache, decoupled
-            // from whichever ReaderViewModel is currently alive: a chapter can sit in here stale
-            // (e.g. this exact paragraph was regenerated, or simply never refreshed, under an
-            // earlier ReaderViewModel instance that has since been cleared) without the *current*
-            // one's own loadedChapters map - and therefore its poll loop/socket updates - ever
-            // covering it. So this always asks (same as the chapter==null branch above) rather
-            // than assuming some poll/socket is already watching this chapterIdx - onNeedChapter's
-            // handler does a live refetch and re-pushes the result via setChapter, at which point
-            // this chapterIdx joins that ViewModel's own loadedChapters and starts getting the
-            // usual poll/socket coverage on its own. Also still moves the reported "current"
-            // position here (rather than leaving it wherever playback last actually was) so the UI
-            // shows where the listener selected/is waiting, and so the lookahead-on-position-change
-            // collector in ReaderViewModel requests generation starting from *this* paragraph
-            // instead of only from wherever audio was last genuinely playing - the Android
-            // equivalent of an explicit "generate this" request, reusing the same mechanism
-            // that already keeps generation running ahead of normal playback.
-            pendingTarget = chapterIdx to paragraphIdx
+        if (action == PlayAction.PARK) {
+                // Not generated yet - park here; setChapter() re-attempts once fresh data reports
+                // this paragraph ready. [chapters] is this app-scoped singleton's own cache, decoupled
+                // from whichever ReaderViewModel is currently alive: a chapter can sit in here stale
+                // (e.g. this exact paragraph was regenerated, or simply never refreshed, under an
+                // earlier ReaderViewModel instance that has since been cleared) without the *current*
+                // one's own loadedChapters map - and therefore its poll loop/socket updates - ever
+                // covering it. So this always asks (same as the chapter==null branch above) rather
+                // than assuming some poll/socket is already watching this chapterIdx - onNeedChapter's
+                // handler does a live refetch and re-pushes the result via setChapter, at which point
+                // this chapterIdx joins that ViewModel's own loadedChapters and starts getting the
+                // usual poll/socket coverage on its own. Also still moves the reported "current"
+                // position here (rather than leaving it wherever playback last actually was) so the UI
+                // shows where the listener selected/is waiting, and so the lookahead-on-position-change
+                // collector in ReaderViewModel requests generation starting from *this* paragraph
+                // instead of only from wherever audio was last genuinely playing - the Android
+                // equivalent of an explicit "generate this" request, reusing the same mechanism
+                // that already keeps generation running ahead of normal playback.
+            pendingTarget = target
             player.pause()
             _state.update { it.copy(chapterIdx = chapterIdx, paragraphIdx = paragraphIdx) }
             onNeedChapter?.invoke(chapterIdx)
             return
         }
         pendingTarget = null
+        // The paragraph's own start within its clip unless a specific point was asked for -
+        // see seekTargetSeconds.
+        val seekTarget = seekTargetSeconds(paragraph, startSeconds)
 
-        // Every "seconds" value tied to a paragraph (this one included) is an absolute position
-        // within *that paragraph's own* audioUrl, never paragraph-relative - correct without any
-        // special-casing for an ordinary paragraph (audioPointerSeconds 0, so absolute == 0-based)
-        // and exactly the right seek target for a scare-quote merge group's own non-anchor member
-        // (see ParagraphDto.audioPointerSeconds's own doc comment). startSeconds > 0 means "seek
-        // to this specific point" (e.g. a word tap, which already reports an absolute time under
-        // that same convention - see WordHighlight.kt's wordStartTimes); otherwise this paragraph's
-        // own start offset within its clip is the right default landing point, not literal 0 (the
-        // anchor's own start, which would restart the whole group from its very beginning).
-        val seekTarget = if (startSeconds > 0) startSeconds else paragraph.audioPointerSeconds
-
-        if (loadedTarget == chapterIdx to paragraphIdx && player.mediaItemCount > 0) {
-            // Already the loaded clip (e.g. tapping another word within the paragraph
-            // that's already playing) - just seek rather than reloading it from scratch.
-            player.seekTo((seekTarget * 1000).toLong())
-            player.playWhenReady = true
-            return
+        when (action) {
+            PlayAction.SEEK -> {
+                // Already the loaded clip (e.g. tapping another word within the paragraph
+                // that's already playing) - just seek rather than reloading it from scratch.
+                player.seekTo((seekTarget * 1000).toLong())
+                player.playWhenReady = true
+            }
+            PlayAction.SEEK_IN_GROUP -> {
+                // A different member of the same already-loaded scare-quote merge group (see
+                // loadedAudioUrl's own doc comment) - never reload/restart the shared clip, just
+                // relocate playback to this paragraph's own start offset within it.
+                player.seekTo((seekTarget * 1000).toLong())
+                player.playWhenReady = true
+                loadedTarget = target
+                _state.update { it.copy(chapterIdx = chapterIdx, paragraphIdx = paragraphIdx) }
+            }
+            else -> {
+                val mediaItem = mediaItemFor(chapterIdx, paragraphIdx) ?: return
+                player.setMediaItem(mediaItem)
+                player.playbackParameters = PlaybackParameters(appliedSpeed)
+                player.prepare()
+                if (seekTarget > 0) player.seekTo((seekTarget * 1000).toLong())
+                player.playWhenReady = true
+                loadedTarget = target
+                loadedAudioUrl = paragraph.audioUrl
+                _state.update { it.copy(chapterIdx = chapterIdx, paragraphIdx = paragraphIdx) }
+                queueNextClip()
+            }
         }
-
-        if (loadedAudioUrl != null && loadedAudioUrl == paragraph.audioUrl && player.mediaItemCount > 0) {
-            // A different member of the same already-loaded scare-quote merge group (see
-            // loadedAudioUrl's own doc comment) - never reload/restart the shared clip, just
-            // relocate playback to this paragraph's own start offset within it.
-            player.seekTo((seekTarget * 1000).toLong())
-            player.playWhenReady = true
-            loadedTarget = chapterIdx to paragraphIdx
-            _state.update { it.copy(chapterIdx = chapterIdx, paragraphIdx = paragraphIdx) }
-            return
-        }
-
-        // Prefer a downloaded local copy over streaming, if one exists for the book's current
-        // voice and still matches this paragraph's current audio - the whole point of offline downloads (see DownloadRepository). ExoPlayer
-        // accepts a file:// Uri identically to an http:// one, so this is the only call site
-        // that needs to know about local downloads at all.
-        val mediaItem = mediaItemFor(chapterIdx, paragraphIdx) ?: return
-        player.setMediaItem(mediaItem)
-        player.playbackParameters = PlaybackParameters(appliedSpeed)
-        player.prepare()
-        if (seekTarget > 0) player.seekTo((seekTarget * 1000).toLong())
-        player.playWhenReady = true
-        loadedTarget = chapterIdx to paragraphIdx
-        loadedAudioUrl = paragraph.audioUrl
-        _state.update { it.copy(chapterIdx = chapterIdx, paragraphIdx = paragraphIdx) }
-        queueNextClip()
     }
 
     /**
      * The player item for one paragraph's clip, or null if it has none to play. [MediaItem.mediaId]
-     * records which paragraph and clip it is ("<chapterIdx>:<paragraphIdx>:<audioUrl>") so
-     * [onQueuedClipStarted] can tell whether a clip queued ahead of time is still current.
+     * records which paragraph and clip it is ([clipMediaId]) so [onQueuedClipStarted] can tell
+     * whether a clip queued ahead of time is still current.
      */
     private fun mediaItemFor(chapterIdx: Int, paragraphIdx: Int): MediaItem? {
         val chapter = chapters[chapterIdx] ?: return null
@@ -526,7 +506,7 @@ class ParagraphPlayer @Inject constructor(
         val uri = localFile?.let(Uri::fromFile) ?: mediaUrlResolver.resolve(audioUrl)?.let(Uri::parse) ?: return null
         return MediaItem.Builder()
             .setUri(uri)
-            .setMediaId("$chapterIdx:$paragraphIdx:$audioUrl")
+            .setMediaId(clipMediaId(chapterIdx, paragraphIdx, audioUrl))
             // Book title/author/cover, not the current chapter or paragraph text - that's
             // what identifies *what's playing* on a lock-screen/notification media control,
             // same as any audiobook app (chapter is more like a "track position" within it).
@@ -538,29 +518,6 @@ class ParagraphPlayer @Inject constructor(
                     .build(),
             )
             .build()
-    }
-
-    /**
-     * The paragraph whose clip plays after [from]'s (whose clip is [url]): the first paragraph
-     * past that clip's scare-quote merge group (whose members all share one clip), crossing into
-     * the next chapter when that's already cached. Null when it isn't ready yet or doesn't start
-     * its own clip - [advanceToNext] handles those the old way once the current clip ends.
-     */
-    private fun clipStartAfter(from: Pair<Int, Int>, url: String): Pair<Int, Int>? {
-        var (chapterIdx, paragraphIdx) = from
-        while (true) {
-            val chapter = chapters[chapterIdx] ?: return null
-            paragraphIdx++
-            if (paragraphIdx >= chapter.paragraphs.size) {
-                chapterIdx++
-                paragraphIdx = -1
-                continue
-            }
-            val p = chapter.paragraphs[paragraphIdx]
-            if (p.audioStatus != AudioStatuses.READY || p.audioUrl == null) return null
-            if (p.audioUrl == url) continue
-            return if (p.audioPointerSeconds == 0.0) chapterIdx to paragraphIdx else null
-        }
     }
 
     /**
@@ -579,16 +536,8 @@ class ParagraphPlayer @Inject constructor(
     private fun queueNextClip() {
         if (player.mediaItemCount == 0) return
         val wanted = mutableListOf<MediaItem>()
-        var from = loadedTarget
-        var url = loadedAudioUrl
-        var queuedSeconds = 0.0
-        while (from != null && url != null && queuedSeconds < QUEUE_AHEAD_SECONDS && wanted.size < MAX_QUEUED_CLIPS) {
-            val next = clipStartAfter(from, url) ?: break
-            wanted += mediaItemFor(next.first, next.second) ?: break
-            val paragraph = chapters[next.first]?.paragraphs?.getOrNull(next.second)
-            queuedSeconds += paragraph?.durationSeconds ?: 0.0
-            from = next
-            url = paragraph?.audioUrl
+        for ((chapterIdx, paragraphIdx) in clipsToQueue(chapters, loadedTarget, loadedAudioUrl)) {
+            wanted += mediaItemFor(chapterIdx, paragraphIdx) ?: break
         }
         val firstQueued = player.currentMediaItemIndex + 1
         var keep = 0
@@ -603,13 +552,10 @@ class ParagraphPlayer @Inject constructor(
 
     /** The player moved on to a clip [queueNextClip] queued: make it the current paragraph. */
     private fun onQueuedClipStarted(item: MediaItem) {
-        val parts = item.mediaId.split(":", limit = 3)
-        val chapterIdx = parts.getOrNull(0)?.toIntOrNull() ?: return
-        val paragraphIdx = parts.getOrNull(1)?.toIntOrNull() ?: return
-        val audioUrl = parts.getOrNull(2)
+        val clip = parseClipMediaId(item.mediaId) ?: return
+        val (chapterIdx, paragraphIdx, audioUrl) = clip
         player.removeMediaItems(0, player.currentMediaItemIndex)
-        val paragraph = chapters[chapterIdx]?.paragraphs?.getOrNull(paragraphIdx)
-        if (paragraph == null || paragraph.audioStatus != AudioStatuses.READY || paragraph.audioUrl != audioUrl) {
+        if (!clip.isCurrentFor(chapters[chapterIdx]?.paragraphs?.getOrNull(paragraphIdx))) {
             // Regenerated/changed since it was queued - load what's there now instead.
             loadedTarget = null
             loadedAudioUrl = null
@@ -668,11 +614,7 @@ class ParagraphPlayer @Inject constructor(
             val cur = _state.value
             if (cur.chapterIdx < 0) return
             val chapter = chapters[cur.chapterIdx] ?: return
-            val current = chapter.paragraphs.getOrNull(cur.paragraphIdx) ?: return
-            if (current.audioStatus != AudioStatuses.READY || current.audioUrl == null) return
-            val next = chapter.paragraphs.getOrNull(cur.paragraphIdx + 1) ?: return
-            if (next.audioStatus != AudioStatuses.READY || next.audioUrl != current.audioUrl) return
-            if (atPositionMs < (next.audioPointerSeconds * 1000).toLong()) return
+            if (!reachedNextMergeMember(chapter, cur.paragraphIdx, atPositionMs)) return
             loadedTarget = cur.chapterIdx to (cur.paragraphIdx + 1)
             _state.update { it.copy(paragraphIdx = cur.paragraphIdx + 1) }
         }
@@ -709,22 +651,15 @@ class ParagraphPlayer @Inject constructor(
 
         override fun getDuration(): Long {
             val chapter = chapters[_state.value.chapterIdx] ?: return super.getDuration()
-            val totalSeconds = chapter.paragraphs.sumOf { it.durationSeconds ?: 0.0 }
-            return (totalSeconds * 1000).toLong()
+            return chapterDurationMs(chapter)
         }
 
         override fun getCurrentPosition(): Long {
             val cur = _state.value
             val chapter = chapters[cur.chapterIdx] ?: return super.getCurrentPosition()
-            val priorParagraphs = chapter.paragraphs.take(cur.paragraphIdx.coerceAtLeast(0))
-            val elapsedBeforeSeconds = priorParagraphs.sumOf { it.durationSeconds ?: 0.0 }
-            // super.getCurrentPosition() is raw/absolute within whatever clip is loaded - correct
-            // as-is for an ordinary paragraph, but for a scare-quote merge group member it also
-            // includes everything before this paragraph's own audioPointerSeconds within that
-            // shared clip, which priorParagraphs' own durationSeconds sum already accounts for -
-            // without subtracting it back out here, this member's own span would be double-counted.
-            val pointerOffsetMs = ((chapter.paragraphs.getOrNull(cur.paragraphIdx)?.audioPointerSeconds ?: 0.0) * 1000).toLong()
-            return (elapsedBeforeSeconds * 1000).toLong() + (super.getCurrentPosition() - pointerOffsetMs).coerceAtLeast(0)
+            // super.getCurrentPosition() is raw/absolute within whatever clip is loaded - see
+            // chapterPositionMs for how a merge group member's offset is taken back out.
+            return chapterPositionMs(chapter, cur.paragraphIdx, super.getCurrentPosition())
         }
     }
 }

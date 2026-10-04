@@ -10,6 +10,14 @@ import com.lectable.app.data.download.DownloadedBookDao
 import com.lectable.app.data.download.DownloadedChapter
 import com.lectable.app.data.download.DownloadedChapterDao
 import com.lectable.app.data.download.OfflineParagraph
+import com.lectable.app.data.download.STAGED_SUFFIX
+import com.lectable.app.data.download.clipFile
+import com.lectable.app.data.download.commitStagedClips
+import com.lectable.app.data.download.discardStagedClips
+import com.lectable.app.data.download.downloadDirName
+import com.lectable.app.data.download.fetchedCount
+import com.lectable.app.data.download.stagedClipFile
+import com.lectable.app.data.download.toCachedParagraphs
 import com.lectable.app.data.download.hasAudioOf
 import com.lectable.app.data.download.PendingPosition
 import com.lectable.app.data.download.PendingPositionDao
@@ -31,7 +39,6 @@ import java.io.File
 import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
 import retrofit2.HttpException
-import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -94,6 +101,22 @@ data class AmbienceDownloadState(
     val settled: Boolean get() = scored && (!withClips || readyClips + failedClips >= totalClips)
 }
 
+/** A chapter's stored ambience summarized for the UI - see [AmbienceDownloadState]. */
+internal fun ChapterMusicDto.toAmbienceDownloadState(): AmbienceDownloadState = AmbienceDownloadState(
+    scored = scored && lit,
+    withClips = enabled,
+    readyClips = regions.count { it.status == AudioStatuses.READY },
+    failedClips = regions.count { it.status == AudioStatuses.ERROR },
+    totalClips = regions.size,
+)
+
+/** Whether this stored ambience is everything there is to have: scored and lit, and - when
+ *  clips are wanted ([withClips]) - every region either has its clip or failed to render. */
+internal fun ChapterMusicDto.ambienceSettled(withClips: Boolean): Boolean {
+    if (!scored || !lit) return false
+    return !withClips || regions.all { it.status == AudioStatuses.READY || it.status == AudioStatuses.ERROR }
+}
+
 /**
  * Downloads a chapter's generated audio to the device for offline playback, one paragraph's
  * `.wav` at a time (reusing the same `GET /api/paragraphs/{id}/audio` endpoint streaming
@@ -148,7 +171,7 @@ class DownloadRepository @Inject constructor(
         val entry = completeByKey.value[key] ?: return null
         val stored = storedParagraphs(key, entry)[paragraph.idx] ?: return null
         if (!stored.hasAudioOf(paragraph)) return null
-        return audioFile(File(entry.localDir), paragraph.idx).takeIf { it.exists() }
+        return clipFile(File(entry.localDir), paragraph.idx).takeIf { it.exists() }
     }
 
     private fun storedParagraphs(key: DownloadKey, entry: DownloadedChapter): Map<Int, OfflineParagraph> {
@@ -181,15 +204,7 @@ class DownloadRepository @Inject constructor(
         if (row.status != DownloadStatus.COMPLETE) return null
         val key = DownloadKey(row.libraryId, row.bookId, row.chapterIdx, "")
         ambienceStates[key]?.let { (raw, state) -> if (raw == row.musicJson) return state }
-        val state = decodeMusic(row.musicJson)?.let { music ->
-            AmbienceDownloadState(
-                scored = music.scored && music.lit,
-                withClips = music.enabled,
-                readyClips = music.regions.count { it.status == AudioStatuses.READY },
-                failedClips = music.regions.count { it.status == AudioStatuses.ERROR },
-                totalClips = music.regions.size,
-            )
-        }
+        val state = decodeMusic(row.musicJson)?.toAmbienceDownloadState()
         ambienceStates[key] = row.musicJson to state
         return state
     }
@@ -251,26 +266,7 @@ class DownloadRepository @Inject constructor(
         val row = dao.get(libraryId, bookId, chapterIdx)?.takeIf { it.status == DownloadStatus.COMPLETE } ?: return@withContext null
         val offlineParagraphs = runCatching { json.decodeFromString<List<OfflineParagraph>>(row.paragraphsJson) }.getOrDefault(emptyList())
         val dir = File(row.localDir)
-        var clipAnchorIdx = 0
-        val paragraphs = offlineParagraphs.map { p ->
-            if (p.audioPointerSeconds == 0.0) clipAnchorIdx = p.idx
-            ParagraphDto(
-                idx = p.idx,
-                text = p.text,
-                audioStatus = AudioStatuses.READY,
-                audioUrl = Uri.fromFile(audioFile(dir, clipAnchorIdx)).toString(),
-                durationSeconds = p.durationSeconds,
-                speaker = p.speaker,
-                inline = p.inline,
-                directionMarks = p.directionMarks,
-                pronunciationMarks = p.pronunciationMarks,
-                isQuote = p.isQuote,
-                describesCharacters = p.describesCharacters,
-                scareQuote = p.scareQuote,
-                emotion = p.emotion,
-                audioPointerSeconds = p.audioPointerSeconds,
-            )
-        }
+        val paragraphs = offlineParagraphs.toCachedParagraphs { anchorIdx -> Uri.fromFile(clipFile(dir, anchorIdx)).toString() }
         // Falls back to one synthesized text item per paragraph (pre-contentJson rows, or a row
         // that somehow saved an empty list) rather than an empty chapter - contentJson is what
         // preserves image placement offline, but its absence shouldn't lose the text itself.
@@ -392,13 +388,10 @@ class DownloadRepository @Inject constructor(
         false
     }
 
-    /** Whether [row]'s stored ambience is everything there is to have: scored and lit, and - when
-     *  clips are wanted - every region either has its clip or failed to render. */
-    private fun ambienceSettled(row: DownloadedChapter, music: Boolean): Boolean {
-        val stored = decodeMusic(row.musicJson) ?: return false
-        if (!stored.scored || !stored.lit) return false
-        return !music || stored.regions.all { it.status == AudioStatuses.READY || it.status == AudioStatuses.ERROR }
-    }
+    /** Whether [row]'s stored ambience is everything there is to have - see
+     *  [ChapterMusicDto.ambienceSettled]; false while none is stored. */
+    private fun ambienceSettled(row: DownloadedChapter, music: Boolean): Boolean =
+        decodeMusic(row.musicJson)?.ambienceSettled(withClips = music) ?: false
 
     /** Stores [dto] as a downloaded chapter's ambience, fetching (when [withClips]) the clip of
      *  every READY region that isn't on disk yet or was re-rendered since, and dropping clips of
@@ -556,7 +549,7 @@ class DownloadRepository @Inject constructor(
         val dir = reusable?.let { File(it.localDir) } ?: chapterDir(libraryId, bookId, chapterIdx, voiceKey)
         if (reusable == null) dir.deleteRecursively()
         dir.mkdirs()
-        discardStaged(dir)
+        discardStagedClips(dir)
 
         if (existing == null) {
             dao.upsert(
@@ -588,7 +581,7 @@ class DownloadRepository @Inject constructor(
             val fetched = mutableMapOf<Int, OfflineParagraph>()
             if (reusable != null) {
                 runCatching { json.decodeFromString<List<OfflineParagraph>>(reusable.paragraphsJson) }.getOrDefault(emptyList())
-                    .filter { audioFile(dir, it.idx).exists() }
+                    .filter { clipFile(dir, it.idx).exists() }
                     .associateByTo(fetched) { it.idx }
             }
             // Paragraphs a regenerate has already been requested for, this attempt - guards
@@ -627,7 +620,7 @@ class DownloadRepository @Inject constructor(
                     }
                     val url = p.audioUrl ?: continue
                     if (p.audioStatus != AudioStatuses.READY) continue
-                    val target = stagedFile(dir, p.idx)
+                    val target = stagedClipFile(dir, p.idx)
                     val sameClip = clipFiles[url]?.takeIf { it.exists() }
                     if (sameClip != null) {
                         reuseClip(sameClip, target)
@@ -644,7 +637,7 @@ class DownloadRepository @Inject constructor(
                         audioPointerSeconds = p.audioPointerSeconds,
                         audioHash = p.audioHash,
                     )
-                    val ready = chapter.paragraphs.count { fetched[it.idx]?.hasAudioOf(it) == true }
+                    val ready = fetchedCount(chapter.paragraphs, fetched)
                     onProgress(ready, total)
                     // A refresh leaves the COMPLETE row alone until the swap below - it's what
                     // keeps the old copy playable offline meanwhile.
@@ -670,7 +663,7 @@ class DownloadRepository @Inject constructor(
                 // time - the ring should just keep reflecting real progress for as long as that
                 // takes, not flip back to "not downloaded" because it was slow. WorkManager
                 // itself is what actually stops this running if the app process is killed.
-                total > 0 && chapter.paragraphs.all { fetched[it.idx]?.hasAudioOf(it) == true }
+                total > 0 && fetchedCount(chapter.paragraphs, fetched) == total
             }
             val chapter = lastChapter ?: throw IOException("chapter $chapterIdx never loaded")
 
@@ -693,14 +686,9 @@ class DownloadRepository @Inject constructor(
                 }
             }
 
-            // The swap: staged clips replace their committed counterparts (rename(2) - atomic,
-            // and an ExoPlayer mid-way through the old file keeps its own open handle), and
-            // files for paragraphs the chapter no longer has are dropped.
-            dir.listFiles { f -> f.name.endsWith(STAGED_SUFFIX) }?.forEach { part ->
-                part.renameTo(File(dir, part.name.removeSuffix(STAGED_SUFFIX)))
-            }
-            val liveNames = chapter.paragraphs.mapTo(mutableSetOf()) { audioFile(dir, it.idx).name }
-            dir.listFiles { f -> f.name.endsWith(".wav") && f.name !in liveNames }?.forEach { it.delete() }
+            // The swap: staged clips replace their committed counterparts, and files for
+            // paragraphs the chapter no longer has are dropped.
+            commitStagedClips(dir, chapter.paragraphs.map { it.idx })
 
             val offlineParagraphs = chapter.paragraphs.map { p ->
                 val f = fetched.getValue(p.idx)
@@ -755,7 +743,7 @@ class DownloadRepository @Inject constructor(
             // exactly as it was (the next reconcile tries again). Then rethrow so
             // ChapterDownloadWorker's own catch still sees and logs/reports it (also correct for
             // CancellationException, which must always propagate, not be swallowed).
-            discardStaged(dir)
+            discardStagedClips(dir)
             if (existing == null) {
                 markError(libraryId, bookId, chapterIdx)
             } else if (existing.localDir != dir.path) {
@@ -771,14 +759,6 @@ class DownloadRepository @Inject constructor(
         target.delete()
         runCatching { Os.link(source.path, target.path) }
             .onFailure { source.copyTo(target, overwrite = true) }
-    }
-
-    private fun audioFile(dir: File, idx: Int): File = File(dir, "%05d.wav".format(idx))
-
-    private fun stagedFile(dir: File, idx: Int): File = File(dir, "%05d.wav$STAGED_SUFFIX".format(idx))
-
-    private fun discardStaged(dir: File) {
-        dir.listFiles { f -> f.name.endsWith(STAGED_SUFFIX) }?.forEach { it.delete() }
     }
 
     private suspend fun markError(libraryId: String, bookId: String, chapterIdx: Int) {
@@ -818,7 +798,7 @@ class DownloadRepository @Inject constructor(
      *  what's actually on disk. Backs Settings' offline-storage summary. */
     suspend fun totalDownloadedBytes(): Long = withContext(Dispatchers.IO) {
         val libraryId = backendIdentity.libraryId.value ?: return@withContext 0L
-        val dir = File(context.filesDir, "downloads/${hash(libraryId)}")
+        val dir = File(context.filesDir, "downloads/${downloadDirName(libraryId)}")
         if (!dir.exists()) 0L else dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
     }
 
@@ -839,7 +819,7 @@ class DownloadRepository @Inject constructor(
     }
 
     private fun chapterDir(libraryId: String, bookId: String, chapterIdx: Int, voiceKey: String): File =
-        File(bookDir(libraryId, bookId), "$chapterIdx/${hash(voiceKey)}")
+        File(bookDir(libraryId, bookId), "$chapterIdx/${downloadDirName(voiceKey)}")
 
     // A sibling of the per-(chapter,voice) dirs above, not nested under one of them - image
     // bytes don't depend on voice, so they're shared across every voice/chapter download for
@@ -850,16 +830,5 @@ class DownloadRepository @Inject constructor(
     private fun musicDir(libraryId: String, bookId: String): File = File(bookDir(libraryId, bookId), "music")
 
     private fun bookDir(libraryId: String, bookId: String): File =
-        File(context.filesDir, "downloads/${hash(libraryId)}/$bookId")
-
-    private fun hash(value: String): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray())
-        return digest.joinToString("") { "%02x".format(it) }.take(16)
-    }
-
-    private companion object {
-        // Suffix of a clip fetched by an in-progress download/refresh but not yet swapped in -
-        // see downloadChapter.
-        const val STAGED_SUFFIX = ".part"
-    }
+        File(context.filesDir, "downloads/${downloadDirName(libraryId)}/$bookId")
 }
