@@ -43,20 +43,20 @@ individually with the env var shown.
 
 | Model | Used for | Env var |
 | --- | --- | --- |
-| **Higgs Audio v3 TTS 4B** | Default narration model: clones each voice preset's reference clip to speak every paragraph. Also the only model that supports inline speech-direction tags (emotion/SFX/prosody). | `LECTABLE_AUDIOCPP_HIGGS_MODEL_PATH` |
+| **Higgs Audio v3 TTS 4B** | Default narration model: clones each voice's reference clip to speak every paragraph. The narration model is a per-book setting. Also the only model that takes the inline pause tag placed before ellipses and em dashes. | `LECTABLE_AUDIOCPP_HIGGS_MODEL_PATH` |
 | **Breeze TTS 2** | Default VoiceDesign engine: renders a new voice's reference clip from its natural-language description. Also a selectable narration model, and the only one that takes a style instruction at clone time. | `LECTABLE_AUDIOCPP_BREEZE_DESIGN_MODEL_PATH` / `LECTABLE_AUDIOCPP_BREEZE_MODEL_PATH` |
 | **Qwen3-TTS 12Hz 1.7B VoiceDesign** | VoiceDesign for the built-in `velvet-narrator` preset (the default book voice). Selectable for other presets too. | `LECTABLE_AUDIOCPP_QWEN3_DESIGN_MODEL_PATH` |
-| **PocketTTS (English, 100M)** | Fast throwaway samples used to estimate speech length (chars/sec). | `LECTABLE_AUDIOCPP_POCKET_MODEL_PATH` |
+| **PocketTTS (English, 100M)** | Fast throwaway samples used to estimate speech length (chars/sec). Also a selectable narration model, the fastest one. | `LECTABLE_AUDIOCPP_POCKET_MODEL_PATH` |
 | **Qwen3-ForcedAligner 0.6B** | Word-level timestamps for generated audio, which drive word highlighting during playback. | `LECTABLE_ALIGNER_MODEL_PATH` |
 | **Parakeet TDT 0.6B v3** | Transcribes each generated clip to catch extra words the TTS model added (repeats, leaked reference lines), which triggers a regeneration. | `LECTABLE_TRANSCRIBER_MODEL_PATH` |
-| **Qwen3-4B-Instruct-2507** (Q4_K_M, via llama.cpp) | Speaker attribution, character voice descriptions, speech-direction tagging, pronunciation resolution, and music scoring prompts. Optional: those features are turned off if the model file isn't there. | `LECTABLE_SPEAKER_LLM_MODEL_PATH` |
+| **Qwen3.6-35B-A3B** (IQ4_XS, via llama.cpp) | Speaker attribution, chapter summaries, the book's setting profile, character voice descriptions, emotion labeling, pronunciation resolution, and ambience (music and lighting) prompts. Optional: those features are turned off if the model file isn't there. | `LECTABLE_SPEAKER_LLM_MODEL_PATH` |
 | **Stable Audio 3 Medium** | Background music for chapters. | `LECTABLE_AUDIOCPP_STABLE_AUDIO_MEDIUM_MODEL_PATH` |
 | **Stable Audio 3 Small SFX** | Sound effects. | `LECTABLE_AUDIOCPP_STABLE_AUDIO_SFX_MODEL_PATH` |
 
 The design engine can be switched between `breeze_tts`, `qwen3_tts`,
 `omnivoice`, `fireredtts3`, `firered_audio`, `auk`, and `auk_flash` with
 `LECTABLE_AUDIOCPP_DESIGN_ENGINE`. These optional narration models can
-also be picked per voice preset: Qwen3-TTS 12Hz 0.6B Base, OmniVoice,
+also be picked per book: Qwen3-TTS 12Hz 0.6B Base, OmniVoice,
 FireRedTTS3 Instruct (`LECTABLE_AUDIOCPP_FIREREDTTS3_MODEL_PATH`),
 FireRedAudio (`LECTABLE_AUDIOCPP_FIRERED_AUDIO_MODEL_PATH`), and AuK /
 AuK-Flash (`LECTABLE_AUDIOCPP_AUK_MODEL_DIR`, a directory - audio.cpp

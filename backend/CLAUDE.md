@@ -529,8 +529,8 @@ building/running `ttsworker` does, since both now link into that binary.
   audio rows with it (`DeleteBook` used to leave them behind), which is
   what keeps those copies trustworthy; rows with `chapter_id = ''` are
   such leftovers migrated from DuckDB. Needs the
-  **`sqlite_fts5` build tag** (the Makefiles, `run.sh` and `deploy.sh`
-  export `GOFLAGS=-tags=sqlite_fts5`; a bare `go build`/`go test` fails at
+  **`sqlite_fts5` build tag** (`../env.sh`, which the Makefiles, `run.sh` and `deploy.sh`
+  all load, exports `GOFLAGS=-tags=sqlite_fts5`; a bare `go build`/`go test` fails at
   `Open` with "no such module: fts5"): `paragraphs_fts` is a trigram
   full-text index over `paragraphs.content`, external-content (keyed by
   `paragraphs.rowid`) and kept current by triggers, which
@@ -573,15 +573,17 @@ building/running `ttsworker` does, since both now link into that binary.
   `DeleteBook` deletes paragraphs → chapters → book explicitly in a
   transaction. Column
   is `content` not `text` (avoids ambiguity with the SQL `TEXT` type
-  name). **No migrations in code**: there is exactly one library
-  (the live one), so a schema change edits the `CREATE TABLE IF NOT
-  EXISTS` statements in `schema.go` and is applied to the live
-  `library.sqlite` once, by hand, with the server stopped and a fresh copy taken (see
-  `internal/dbbackup`). A temporary `ALTER TABLE ... ADD COLUMN` in `Open`
-  is fine for getting a change deployed, but delete it once the running
-  server has applied it. `cmd/duck2sqlite` is the one-off tool that copied
-  the library out of DuckDB, which this app used before; it is the only
-  thing still importing the DuckDB driver.
+  name). **Schema migrations** are [goose](https://github.com/pressly/goose)
+  SQL files in `internal/store/migrations/` (`NNNNN_name.sql`, embedded
+  in the binary), and `Open` applies whichever ones the library hasn't
+  had (`migrate.go`), each in its own transaction and recorded in
+  `goose_db_version`. A schema change is a new file with the next number
+  (`-- +goose Up`, then the statements; wrap a trigger in `-- +goose
+  StatementBegin`/`StatementEnd`); never edit one a library has applied.
+  They are Up-only: to undo one, restore a backup (see
+  `internal/dbbackup`). `00001_initial_schema.sql` is the schema as it
+  stood when migrations were introduced, all `IF NOT EXISTS`, so a
+  library from before then adopts it as a no-op.
 - `internal/narration/` — resolves a paragraph's *effective* narration
   voice: `Resolver.BookVoice` (a book's own single voice) as the fallback,
   overridden per paragraph by `Resolver.CharacterVoice` when (a)
@@ -1532,10 +1534,8 @@ building/running `ttsworker` does, since both now link into that binary.
   consistent with its table, written via a temp name. A backup is a plain
   SQLite file: to restore, stop the server, delete `library.sqlite-wal` and
   `library.sqlite-shm`, and copy the backup over `library.sqlite`.
-  Hand-applied schema changes (see `internal/store`'s "No migrations in
-  code") also start from a stopped server, so a plain `cp library.sqlite`
-  is enough before one. Backups named `.duckdb` are from before the move to
-  SQLite and are neither listed nor pruned.
+  A backup older than the newest migration is brought up to date the
+  next time the server opens it.
 - `internal/deliverytags/` — dependency-free leaf package for Higgs inline
   `<|category:value|>` tags: `Insertion` (a tag at a byte offset, the type
   `internal/pronounce.Apply` composes with substitutions), the Go pause
@@ -1819,21 +1819,23 @@ export GOTOOLCHAIN=local
 go build ./...
 ```
 
-`Makefile` (this directory) wraps all of the above - the toolchain
+`../env.sh` is the one place all of the above is set - the toolchain
 `PATH`/`GOTOOLCHAIN` override *and* both native libraries'
 `CGO_LDFLAGS`/`LD_LIBRARY_PATH` (defaulting to
-`/home/rhino/audio.cpp/build-rocm7/bin` and
-`/home/rhino/llama.cpp-latest/build-live/bin`, overridable per-invocation,
-e.g. `make build AUDIOCPP_DIR=/some/other/path`) - so day-to-day commands
-don't need any of these exported by hand.
+`~/audio.cpp/build-rocm7/bin` and `~/llama.cpp-latest/build-live/bin`).
+Both Makefiles load it into every recipe (as `BASH_ENV`), and `run.sh` and
+`deploy.sh` source it, so day-to-day commands don't need any of these
+exported by hand; override a location per invocation (`make build
+AUDIOCPP_DIR=/some/other/path`) or by exporting it first. For a bare
+`go build`/`go test`, `. ../env.sh` first. A path that moves is changed
+there and nowhere else.
 
 **GPU toolchain (since 2026-09-28): ROCm 7.2.4**, unpacked user-space in
 `~/rocm7-user/root/opt/rocm-7.2.4` (`ROCM_DIR`; no system install - `/opt/rocm`
 is still 6.4.4 and on `ld.so.conf`, and both share sonames like
 `libhsa-runtime64.so.1`, so `ROCM_DIR/lib` must come first on
 `LD_LIBRARY_PATH`). Under WSL it reaches the GPU through `librocdxg`, which
-needs `HSA_ENABLE_DXG_DETECTION=1`; the Makefiles, `run.sh`, `deploy.sh` and
-`../.env` all set both. llama.cpp is `~/llama.cpp-latest` (a worktree of
+needs `HSA_ENABLE_DXG_DETECTION=1`; `../env.sh` and `../.env` set both. llama.cpp is `~/llama.cpp-latest` (a worktree of
 `llama-cpp-py-sync/vendor/llama.cpp`, no local patches) built in
 `build-live` with `LLAMA_BUILD_COMMON=ON`; audio.cpp is the usual checkout,
 local patches included, built in `build-rocm7`. The old ROCm 6.4.4 builds
@@ -1873,8 +1875,8 @@ go build -o ttsworker ./cmd/ttsworker   # needs CGO_LDFLAGS/LD_LIBRARY_PATH (aud
 go run ./cmd/server                     # needs neither - see the hard invariant above
 ```
 
-`run.sh` (this directory) wraps the above plus every env var below with
-the same defaults `Makefile` uses (override any of them by exporting
+`run.sh` (this directory) wraps the above plus every env var below,
+taking the toolchain locations from `../env.sh` (override any of them by exporting
 first, e.g. `AUDIOCPP_DIR`/`LLAMACPP_DIR`/`LECTABLE_DATA_DIR`/
 `LECTABLE_SPEAKER_LLM_MODEL_PATH`): `./run.sh --build` builds both binaries then
 launches `server` backgrounded (logging to `/tmp/lectable-server.log` by
@@ -1959,7 +1961,7 @@ build does, since both now link into that one binary.
 - `POST /api/books/{id}/characters/{characterId}/characterize` — force re-run LLM voice characterization for one character (503 if the LLM model file is missing), even if already characterized; invalidates every clone model's assigned voice preset for the character, if any
 - `GET /api/paragraphs/{id}/audio` — Ogg Opus (or a not-yet-converted legacy WAV), Range-request-capable, via `http.ServeFile`
 - `GET /api/voices/presets`, `GET /api/voices/languages` — served in-process from `internal/voices` (no worker call needed)
-- `GET|PUT /api/voices/default` — what a newly created book starts with (`default_voice`, `store.DefaultVoice`): the voice, `cloneModel` (defaults to `audiocpp-pocket-100m`, `""` on PUT leaves it unchanged), and the per-book switches `characterVoiceMode`, `speechDirection`, `musicEnabled`, `strictOrder`, `settingRequired` (`store.BookDefaults`, copied onto the book by `CreateBook`; the Voices page's "Defaults for new books"). A PUT replaces all of them, except that an empty `characterVoiceMode` or an omitted `strictOrder`/`settingRequired` is left as it was. Existing books and imported exports are never touched. Voice presets themselves have no clone model; the voice test endpoints take an optional `cloneModel` to preview through, defaulting to this one
+- `GET|PUT /api/voices/default` — what a newly created book starts with (`default_voice`, `store.DefaultVoice`): the voice, `cloneModel` (defaults to `audiocpp-higgs-4b`, `voices.DefaultCloneModel`, `""` on PUT leaves it unchanged), and the per-book switches `characterVoiceMode`, `speechDirection`, `musicEnabled`, `strictOrder`, `settingRequired` (`store.BookDefaults`, copied onto the book by `CreateBook`; the Voices page's "Defaults for new books"). A PUT replaces all of them, except that an empty `characterVoiceMode` or an omitted `strictOrder`/`settingRequired` is left as it was. Existing books and imported exports are never touched. Voice presets themselves have no clone model; the voice test endpoints take an optional `cloneModel` to preview through, defaulting to this one
 
 ## Testing changes
 

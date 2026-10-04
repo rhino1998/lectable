@@ -93,7 +93,7 @@ not a fixed speaker id) — see the presets in `backend/internal/voices`. A
 book's voice is a per-book setting; changing it invalidates that book's
 cached audio, since a book should keep one consistent narrator throughout.
 The **clone model** (which TTS family clones every voice's reference clip
-into paragraph audio - PocketTTS by default, or Higgs, BreezeTTS, etc.) is
+into paragraph audio - Higgs by default, or PocketTTS, BreezeTTS, etc.) is
 also a per-book setting, never a property of a voice: a voice preset is
 just a reference-clip recipe. New books start with the default clone model
 set on the Voices page.
@@ -169,9 +169,10 @@ client, not a browser.)
 
 - `make check` from the repo root runs every linter and test suite (`make
   test` for just the tests, or `test-go` / `test-frontend` /
-  `test-android`): `go test ./...` in every Go module (the root Makefile
-  points `CGO_LDFLAGS`/`LD_LIBRARY_PATH` at the local audio.cpp/llama.cpp
-  builds, like `backend/Makefile`), Vitest for `frontend`, and
+  `test-android`): `go test ./...` in every Go module (`env.sh` at the repo
+  root points `CGO_LDFLAGS`/`LD_LIBRARY_PATH` at the local audio.cpp/llama.cpp
+  builds and picks the Go toolchain; both Makefiles and `backend`'s
+  `run.sh`/`deploy.sh` load it, so a path changes in that one file), Vitest for `frontend`, and
   `testDebugUnitTest` for `android`. Run it before committing.
 
 - The API clients are generated, not hand-mirrored: `backend/internal/httpapi`

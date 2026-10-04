@@ -546,8 +546,24 @@ above) - check here before trusting otherwise if this list drifts.
 ## Testing
 
 `app/src/test/` has pure-JVM unit tests (`ServerSettingsRepositoryTest.kt`,
-and `LiveOpsTest.kt` for `applyLiveOps` against the backend's patch wire
-format) - run and pass via `./gradlew test`. `app/src/androidTest/` has one
+`LiveOpsTest.kt` for `applyLiveOps` against the backend's patch wire
+format, and the ones below) - run and pass via `./gradlew test`. There is
+no Robolectric or mocking library, so a class bound to ExoPlayer or Room
+is tested through the plain functions its decisions live in - put new
+logic of that kind there rather than inline:
+- `playback/PlaybackQueue.kt` (`PlaybackQueueTest`) - `ParagraphPlayer`'s
+  decisions: what playing a paragraph takes (`playAction`: ask for the
+  chapter, park, seek, seek within a merge group, load), which clips to
+  queue ahead (`clipStartAfter`/`clipsToQueue`), queued-item ids, merge
+  group boundaries, chapter-relative position, the speed ramp.
+- `data/download/OfflineFiles.kt` (`OfflineFilesTest`) -
+  `DownloadRepository`'s clip files: naming, the staged `.part` swap
+  (`commitStagedClips`/`discardStagedClips`), and `cachedChapter`'s
+  paragraphs (`toCachedParagraphs`).
+- `ChapterMusicDto.toAmbienceDownloadState`/`ambienceSettled` in
+  `DownloadRepository.kt` (`AmbienceStateTest`).
+
+`app/src/androidTest/` has one
 Compose smoke test that launches `MainActivity` and checks the app title
 renders - needs a device/emulator. `./gradlew connectedAndroidTest` run
 from WSL finds and uses the real device over wireless ADB (the WSL-side
