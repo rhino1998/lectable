@@ -404,6 +404,11 @@ building/running `ttsworker` does, since both now link into that binary.
   text, composing zero-width tag insertions and span-replacing
   substitutions together in one offset-ordered pass so a substitution's
   length change never throws off another edit's offset.
+  `formatting.go` (`FormattingSubstitutions`) strips formatting
+  characters a TTS model would try to say - list bullets, box/shape/
+  dingbat glyphs, and `* _ | = # ~ ·` runs standing alone between spaces -
+  computed at generation time like pauses, never stored; a run between
+  two words leaves a comma ("HP 10 • MP 5").
   `lexicon.go` is the listener-authored half: `LexiconEntry` ("say Nyx as
   Nicks", optional case match) becomes whole-word `Substitution`s
   (`LexiconSubstitutions`, longest term first) that override any

@@ -624,7 +624,9 @@ func (p Paragraph) EffectiveEmotion() string {
 // pass keeps every offset meaningful). p.Text itself, unchanged, in the
 // common case of nothing to apply. Pauses are computed here rather than
 // stored: they're a pure function of the text, so there's nothing to
-// persist or invalidate. Never used for forced alignment/word timing,
+// persist or invalidate. Formatting characters (list bullets, box and
+// rule glyphs - pronounce.FormattingSubstitutions) are stripped the same
+// way, giving way to a pronunciation fix over the same span. Never used for forced alignment/word timing,
 // which always uses p.Text untouched. lexicon is the book's scope's
 // listener-authored rules (ListLexicon), applied as EffectivePronunciation
 // describes.
@@ -633,7 +635,7 @@ func (p Paragraph) ResolveGenerationText(cloneModel string, lexicon []pronounce.
 	if cloneModel == voices.HiggsCloneModel {
 		insertions = deliverytags.PauseInsertions(p.Text)
 	}
-	pron := p.EffectivePronunciation(lexicon)
+	pron := pronounce.MergeLexicon(p.EffectivePronunciation(lexicon), pronounce.FormattingSubstitutions(p.Text))
 	if len(insertions) == 0 && len(pron) == 0 && len(p.Emphasis) == 0 {
 		return p.Text
 	}
