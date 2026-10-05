@@ -730,8 +730,17 @@ regex, no LLM call) - today:
   - `C'mon`/`c'mon` (straight or curly apostrophe, case-insensitive) -
     always returns exactly one reading ("Come on"/"come on"), so it
     never actually reaches the LLM at all.
-  - Homographs `read`/`lead`/`wind`/`tear`/`bow`, each with two
-    respellings (reed/red, leed/led, winned/wined, tare/tier, beau/bough).
+  - Homographs `read`/`lead`/`wind`/`tear`/`bow`/`close` and more, each with two
+    respellings (reed/red, leed/led, winned/wined, tare/tier, beau/bough,
+    cloce/cloze - near vs. shut). `close` is far more frequent than the
+    rest, but its grammar rules settle about 92% of this library's 1,329
+    uses (a 115-term spot check found no wrong call) and only the rest
+    reach the LLM. `wound` (woond/wownd), `live` (liv/lyve), `lives`
+    (lyves/livz), `minute` (minnit/my-newt) and `tears` (tiers/tares)
+    follow the same shape; `wound`, `minute`, `tears` and (bar a
+    sentence-initial one) `lives` always resolve by rule, falling back to
+    the injury, the unit of time, teardrops and the plural of "life", and
+    `live` leaves about 7% of its uses to the LLM.
   - A capitalized word + Roman numeral: a heading word
     (`romanNumeralNonNames`, matched case-insensitively) reads as a
     cardinal with no LLM call ("ACT II" → "Act two", "World War II" →

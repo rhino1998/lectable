@@ -166,7 +166,7 @@ var pronunciationCandidates = []pronunciationCandidate{
 	// excludes any homograph whose dominant sense is extremely
 	// high-frequency in ordinary prose (e.g. "does" as the auxiliary verb,
 	// which would flood every batch with a term that's overwhelmingly
-	// never the rare "female deer" plural) - these five are all common
+	// never the rare "female deer" plural) - the first five are all common
 	// enough to be worth fixing but not so ubiquitous that sending every
 	// occurrence to the model would meaningfully bloat batch size.
 	//
@@ -192,6 +192,20 @@ var pronunciationCandidates = []pronunciationCandidate{
 	//   waist, or a ship's own front - both share the same sound, unlike
 	//   the weapon/ribbon sense - already an exact real-word homophone, a
 	//   tree branch).
+	// - "close": "cloce" (near - no real word spells that sound, so it's
+	//   an invented respelling ending like "truce") vs "cloze" (to shut -
+	//   a real word, the fill-in-the-gap test, and an exact homophone).
+	//   More frequent than the other five, but resolveHomographByGrammar
+	//   settles most uses without the model.
+	// - "wound": "woond" (an injury) vs "wownd" (past of "wind"), both
+	//   invented. "wounds" has only the one sound and isn't a term.
+	// - "live"/"lives": "liv"/"livz" (the verb) vs "lyve"/"lyves" (the
+	//   adjective "live wire", the plural of "life"); candidate 0 is the
+	//   verb for "live" but the noun for "lives", each word's commoner use.
+	// - "minute": "minnit" (sixty seconds) vs "my-newt" (tiny).
+	// - "tears": "tiers" vs "tares", the plural of "tear" above (whose
+	//   candidate order is the other way round: a lone "tear" is more
+	//   often a rip, "tears" nearly always teardrops).
 	{re: regexp.MustCompile(`\b[Rr]ead\b`), dynamicCandidates: homographCandidates("reed", "red"), kind: "read", senses: []string{
 		"present tense, infinitive, command, or the noun \"a good read\" (can read, to read, will read, read this!) - sounds like REED",
 		"past tense or past participle (he read it yesterday, had read, it read:, well-read) - sounds like RED",
@@ -211,6 +225,30 @@ var pronunciationCandidates = []pronunciationCandidate{
 	{re: regexp.MustCompile(`\b[Bb]ow\b`), dynamicCandidates: homographCandidates("beau", "bough"), kind: "bow", senses: []string{
 		"a weapon for shooting arrows, or a ribbon knot (drew his bow, bow and arrow, tied a bow) - rhymes with GO",
 		"bending at the waist, or the front of a ship (took a bow, a stiff bow, the ship's bow) - rhymes with COW",
+	}},
+	{re: regexp.MustCompile(`\b[Ww]ound\b`), dynamicCandidates: homographCandidates("woond", "wownd"), kind: "wound", senses: []string{
+		"an injury, or to injure (a deep wound, the wound bled, to wound him) - rhymes with TUNED",
+		"past tense of \"wind\": twisted, coiled, wrapped, or meandered (wound around, wound up, the path wound through, tightly wound) - rhymes with FOUND",
+	}},
+	{re: regexp.MustCompile(`\b[Ll]ive\b`), dynamicCandidates: homographCandidates("liv", "lyve"), kind: "live", senses: []string{
+		"to be alive, exist, or dwell (to live, will live, live here, live with it) - rhymes with GIVE",
+		"living, active, loaded, or happening now (a live grenade, live fire, live feed, went live) - rhymes with FIVE",
+	}},
+	{re: regexp.MustCompile(`\b[Ll]ives\b`), dynamicCandidates: homographCandidates("lyves", "livz"), kind: "lives", senses: []string{
+		"more than one life (their lives, saved lives, nine lives) - rhymes with FIVES",
+		"exists or dwells (she lives here, who lives there, it lives on) - rhymes with GIVES",
+	}},
+	{re: regexp.MustCompile(`\b[Mm]inute\b`), dynamicCandidates: homographCandidates("minnit", "my-newt"), kind: "minute", senses: []string{
+		"sixty seconds, a moment (a minute, wait a minute, the minute he left, last-minute) - MIN-it",
+		"tiny, very small, or very precise (minute details, minute adjustments, in minute detail) - my-NEWT",
+	}},
+	{re: regexp.MustCompile(`\b[Tt]ears\b`), dynamicCandidates: homographCandidates("tiers", "tares"), kind: "tears", senses: []string{
+		"teardrops, crying (tears ran down, in tears, burst into tears, tears in her eyes) - rhymes with FEARS",
+		"rips, or rips something (it tears through, she tears the page, tears in the fabric) - rhymes with BEARS",
+	}},
+	{re: regexp.MustCompile(`\b[Cc]lose\b`), dynamicCandidates: homographCandidates("cloce", "cloze"), kind: "close", senses: []string{
+		"near, nearby, intimate, or narrow (close to, too close, a close friend, came close, close-knit) - rhymes with DOSE",
+		"to shut or end, or an ending (close the door, to close, close your eyes, the close of day) - rhymes with NOSE",
 	}},
 }
 
