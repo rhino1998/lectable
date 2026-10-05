@@ -41,9 +41,13 @@ fun narrationEta(snapshot: JobsSnapshotDto?): NarrationEta? {
 /** The speed to estimate not-yet-queued work at: the live rate while narration runs, else the
  *  last run's; 0 when nothing has been measured since the backend started. Mirrors frontend's
  *  narrationRate. */
-fun narrationRate(snapshot: JobsSnapshotDto?): Double {
-    val live = snapshot?.narrationCharsPerSecond ?: 0.0
-    return if (live > 0) live else snapshot?.lastNarrationCharsPerSecond ?: 0.0
+fun narrationRate(snapshot: JobsSnapshotDto?): Double =
+    narrationRate(snapshot?.narrationCharsPerSecond, snapshot?.lastNarrationCharsPerSecond)
+
+/** The same choice from the two rates themselves ([JobsSummaryDto] carries them too). */
+fun narrationRate(charsPerSecond: Double?, lastCharsPerSecond: Double?): Double {
+    val live = charsPerSecond ?: 0.0
+    return if (live > 0) live else lastCharsPerSecond ?: 0.0
 }
 
 /** "<1m", "38m", "2h", "1h 25m". */

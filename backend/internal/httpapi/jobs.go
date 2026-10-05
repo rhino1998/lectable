@@ -102,6 +102,40 @@ type jobsSnapshotDTO struct {
 	NarrationRealtimeFactor float64 `json:"narrationRealtimeFactor,omitempty"`
 }
 
+// jobsSummaryDTO is the job queue in a few numbers: what a screen that
+// only wants the narration rate or a queue count reads instead of
+// jobsSnapshotDTO, which lists every task - 29,000 of them (20 MB of JSON)
+// with three books queued for generation, enough to run the Android app
+// out of memory on its library screen.
+type jobsSummaryDTO struct {
+	// InFlight and Queued count the tasks jobsSnapshotDTO lists.
+	InFlight int `json:"inFlight"`
+	Queued   int `json:"queued"`
+	// Paused and Drained are jobsSnapshotDTO's.
+	Paused  bool `json:"paused"`
+	Drained bool `json:"drained"`
+	// The narration rates are jobsSnapshotDTO's, omitted (0) the same way.
+	NarrationCharsPerSecond     float64 `json:"narrationCharsPerSecond,omitempty"`
+	LastNarrationCharsPerSecond float64 `json:"lastNarrationCharsPerSecond,omitempty"`
+	NarrationRealtimeFactor     float64 `json:"narrationRealtimeFactor,omitempty"`
+}
+
+// buildJobsSummary is buildJobsSnapshot without the task lists.
+func (s *Server) buildJobsSummary() (jobsSummaryDTO, error) {
+	inFlight, queued := s.Jobs.Snapshot()
+	out := jobsSummaryDTO{InFlight: len(inFlight), Queued: len(queued), Paused: s.Jobs.Paused(), Drained: s.Jobs.Drained()}
+	if rate, ok := s.Jobs.Throughput(); ok {
+		out.NarrationCharsPerSecond = math.Round(rate*10) / 10
+	}
+	if factor, ok := s.Jobs.RealtimeFactor(); ok {
+		out.NarrationRealtimeFactor = math.Round(factor*10) / 10
+	}
+	if rate, ok := s.Jobs.LastThroughput(); ok {
+		out.LastNarrationCharsPerSecond = math.Round(rate*10) / 10
+	}
+	return out, nil
+}
+
 // buildJobsSnapshot reports the job queue's live state - what's dispatched
 // to a worker slot right now (voice cloning/design generation, or a
 // speaker-attribution/characterization/provision run - see

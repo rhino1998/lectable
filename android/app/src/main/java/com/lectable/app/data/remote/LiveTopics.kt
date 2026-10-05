@@ -85,6 +85,12 @@ object LiveTopics {
     fun jobs(): LiveTopic<JobsSnapshotDto> =
         LiveTopic("jobs", emptyMap(), serializer<JobsSnapshotDto>())
 
+    /**
+     * buildJobsSummary is buildJobsSnapshot without the task lists.
+     */
+    fun jobsSummary(): LiveTopic<JobsSummaryDto> =
+        LiveTopic("jobsSummary", emptyMap(), serializer<JobsSummaryDto>())
+
     fun voicePresets(): LiveTopic<VoicePresetsDto> =
         LiveTopic("voicePresets", emptyMap(), serializer<VoicePresetsDto>())
 

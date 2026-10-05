@@ -15,6 +15,7 @@ import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.ChapterNotesResponseDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.JobsSnapshotDto
+import com.lectable.app.data.remote.dto.JobsSummaryDto
 import com.lectable.app.data.remote.dto.SpeakerAppearanceDto
 import com.lectable.app.data.remote.dto.SpeakerDto
 import com.lectable.app.data.remote.dto.VoicePresetsDto
@@ -93,6 +94,11 @@ class LiveStore @Inject constructor(
     fun defaultVoice(): StateFlow<LiveResult<VoiceSettingsDto>> = topic(LiveTopics.defaultVoice(), eager = true)
 
     fun jobs(): StateFlow<LiveResult<JobsSnapshotDto>> = topic(LiveTopics.jobs())
+
+    /** The queue's counts and narration rates without its task list - what anything but the
+     *  Jobs screen should read: [jobs] carries every queued task, tens of megabytes with a few
+     *  books queued for generation. */
+    fun jobsSummary(): StateFlow<LiveResult<JobsSummaryDto>> = topic(LiveTopics.jobsSummary())
 
     fun book(bookId: String): StateFlow<LiveResult<BookDetailDto>> = topic(LiveTopics.book(bookId))
 

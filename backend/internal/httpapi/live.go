@@ -66,6 +66,7 @@ func withDeps(base []string, extra ...string) []string {
 //	lexiconSuggestions {bookId}           GET /api/books/{id}/lexicon/suggestions
 //	bookExports    {bookId}               GET /api/books/{id}/exports
 //	jobs                                  GET /api/jobs
+//	jobsSummary
 //	voicePresets                          GET /api/voices/presets
 //	customVoicePresets                    GET /api/voices/custom-presets
 //	defaultVoice                          GET /api/voices/default
@@ -102,6 +103,8 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("jobs", noParams("jobs", withDeps(dbDeps("books", "chapters"), DepJobs), 250*time.Millisecond, func() (jobsSnapshotDTO, error) {
 		return s.buildJobsSnapshot(), nil
 	}))
+	// The queue in a few numbers, for screens that don't list its tasks.
+	h.Register("jobsSummary", noParams("jobsSummary", []string{DepJobs}, 2*time.Second, s.buildJobsSummary))
 	// Built-in presets are compiled in, so nothing ever invalidates this -
 	// it's a topic anyway so the frontend has one way to read everything.
 	h.Register("voicePresets", noParams("voicePresets", nil, 0, s.buildVoicePresets))

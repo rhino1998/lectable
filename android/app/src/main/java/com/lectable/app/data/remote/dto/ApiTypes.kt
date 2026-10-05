@@ -1150,6 +1150,33 @@ data class JobsSnapshotDto(
     val narrationRealtimeFactor: Double? = null,
 )
 
+/**
+ * jobsSummaryDTO is the job queue in a few numbers: what a screen that
+ * only wants the narration rate or a queue count reads instead of
+ * jobsSnapshotDTO, which lists every task - 29,000 of them (20 MB of JSON)
+ * with three books queued for generation, enough to run the Android app
+ * out of memory on its library screen.
+ */
+@Serializable
+data class JobsSummaryDto(
+    /**
+     * InFlight and Queued count the tasks jobsSnapshotDTO lists.
+     */
+    val inFlight: Int = 0,
+    val queued: Int = 0,
+    /**
+     * Paused and Drained are jobsSnapshotDTO's.
+     */
+    val paused: Boolean = false,
+    val drained: Boolean = false,
+    /**
+     * The narration rates are jobsSnapshotDTO's, omitted (0) the same way.
+     */
+    val narrationCharsPerSecond: Double? = null,
+    val lastNarrationCharsPerSecond: Double? = null,
+    val narrationRealtimeFactor: Double? = null,
+)
+
 @Serializable
 data class LanguagesResponseDto(
     val languages: List<String> = emptyList(),

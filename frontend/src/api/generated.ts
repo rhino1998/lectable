@@ -871,6 +871,32 @@ export interface JobsSnapshot {
   narrationRealtimeFactor?: number
 }
 
+/**
+ * jobsSummaryDTO is the job queue in a few numbers: what a screen that
+ * only wants the narration rate or a queue count reads instead of
+ * jobsSnapshotDTO, which lists every task - 29,000 of them (20 MB of JSON)
+ * with three books queued for generation, enough to run the Android app
+ * out of memory on its library screen.
+ */
+export interface JobsSummary {
+  /**
+   * InFlight and Queued count the tasks jobsSnapshotDTO lists.
+   */
+  inFlight: number
+  queued: number
+  /**
+   * Paused and Drained are jobsSnapshotDTO's.
+   */
+  paused: boolean
+  drained: boolean
+  /**
+   * The narration rates are jobsSnapshotDTO's, omitted (0) the same way.
+   */
+  narrationCharsPerSecond?: number
+  lastNarrationCharsPerSecond?: number
+  narrationRealtimeFactor?: number
+}
+
 export interface LanguagesResponse {
   languages: string[]
 }
@@ -2005,6 +2031,10 @@ export interface LiveTopics {
   lexiconSuggestions: { params: { bookId: string }; data: LexiconSuggestion[] }
   bookExports: { params: { bookId: string }; data: BookExport[] }
   jobs: { params: Record<never, never>; data: JobsSnapshot }
+  /**
+   * buildJobsSummary is buildJobsSnapshot without the task lists.
+   */
+  jobsSummary: { params: Record<never, never>; data: JobsSummary }
   voicePresets: { params: Record<never, never>; data: VoicePresets }
   customVoicePresets: { params: Record<never, never>; data: CustomVoicePreset[] }
   defaultVoice: { params: Record<never, never>; data: VoiceSettings }

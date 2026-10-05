@@ -83,8 +83,10 @@ class LibraryViewModel @Inject constructor(
             refresh()
         }
         viewModelScope.launch {
-            liveStore.jobs().collect { result ->
-                val rate = narrationRate(result.data)
+            // The summary, never the full queue: decoding every queued task here ran the app
+            // out of memory on launch once three books were queued for generation.
+            liveStore.jobsSummary().collect { result ->
+                val rate = narrationRate(result.data?.narrationCharsPerSecond, result.data?.lastNarrationCharsPerSecond)
                 if (rate != _uiState.value.narrationRate) _uiState.update { it.copy(narrationRate = rate) }
             }
         }
