@@ -22,6 +22,7 @@ android/.idea/
 android/*.iml
 android/captures/
 android/.cxx/
+android/.kotlin/
 
 # editors / OS
 .DS_Store
