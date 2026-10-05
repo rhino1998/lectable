@@ -732,7 +732,7 @@ regex, no LLM call) - today:
     never actually reaches the LLM at all.
   - Homographs `read`/`lead`/`wind`/`tear`/`bow`/`close` and more, each with two
     respellings (reed/red, leed/led, winned/wined, tare/tier, beau/bough,
-    cloce/cloze - near vs. shut). `close` is far more frequent than the
+    clohss/cloze - near vs. shut). `close` is far more frequent than the
     rest, but its grammar rules settle about 92% of this library's 1,329
     uses (a 115-term spot check found no wrong call) and only the rest
     reach the LLM. `wound` (woond/wownd), `live` (liv/lyve), `lives`
@@ -741,6 +741,8 @@ regex, no LLM call) - today:
     sentence-initial one) `lives` always resolve by rule, falling back to
     the injury, the unit of time, teardrops and the plural of "life", and
     `live` leaves about 7% of its uses to the LLM.
+    All of them match in any case, and the respelling takes the word's
+    own ("Close" → "Cloze", "CLOSE" → "CLOZE").
   - A capitalized word + Roman numeral: a heading word
     (`romanNumeralNonNames`, matched case-insensitively) reads as a
     cardinal with no LLM call ("ACT II" → "Act two", "World War II" →

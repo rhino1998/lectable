@@ -26,17 +26,19 @@ func TestHomographDetection(t *testing.T) {
 	}{
 		{"read lowercase", "I read the book every night.", []string{"reed", "red"}},
 		{"Read capitalized", "Read carefully before you sign.", []string{"Reed", "Red"}},
+		{"READ upper case", "DO NOT READ THIS.", []string{"REED", "RED"}},
+		{"CLOSE upper case", "“CLOSE THE DOOR!”", []string{"CLOHSS", "CLOZE"}},
 		{"lead lowercase", "She will lead the expedition.", []string{"leed", "led"}},
 		{"wind lowercase", "The wind picked up outside.", []string{"winned", "wined"}},
 		{"tear lowercase", "A tear rolled down her cheek.", []string{"tare", "tier"}},
 		{"bow lowercase", "He drew his bow and aimed.", []string{"beau", "bough"}},
-		{"close lowercase", "Stay close to me.", []string{"cloce", "cloze"}},
+		{"close lowercase", "Stay close to me.", []string{"clohss", "cloze"}},
 		{"wound lowercase", "The wound bled freely.", []string{"woond", "wownd"}},
 		{"live lowercase", "They live here.", []string{"liv", "lyve"}},
 		{"lives lowercase", "Their lives changed.", []string{"lyves", "livz"}},
 		{"minute lowercase", "Wait a minute.", []string{"minnit", "my-newt"}},
 		{"tears lowercase", "She burst into tears.", []string{"tiers", "tares"}},
-		{"Close capitalized", "Close the door.", []string{"Cloce", "Cloze"}},
+		{"Close capitalized", "Close the door.", []string{"Clohss", "Cloze"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -333,6 +335,9 @@ func TestResolveHomographByGrammar(t *testing.T) {
 		{"At the close of the day.", false, 1, true},
 		{"The gap wouldn’t close.", false, 1, true},
 		{"He heard the door close behind him.", false, 0, false},
+		{"“CLOSE THE DOOR!”", true, 1, true},
+		{"“TOO CLOSE!”", true, 0, true},
+		{"WARNING: LIVE FIRE AHEAD", false, 1, true},
 		{"He had a deep wound.", false, 0, true},
 		{"You wound me, sir!", true, 0, true},
 		{"The path wound through the hills.", false, 1, true},
@@ -383,6 +388,24 @@ func TestMarkedSnippet(t *testing.T) {
 	want := "… Then the ⟦wind⟧ blew hard across the plain.…"
 	if got != want {
 		t.Errorf("markedSnippet = %q, want %q", got, want)
+	}
+}
+
+func TestContextSnippet(t *testing.T) {
+	texts := map[int]string{
+		4: "The sword rose. He could not roll aside.",
+		5: "“Close, close, CLOSE!”",
+		6: "I wheezed out, willing the door to close. Then light.",
+	}
+	i := strings.Index(texts[5], "CLOSE")
+	got := contextSnippet(texts, 5, i, i+5)
+	want := "The sword rose. He could not roll aside. “Close, close, ⟦CLOSE⟧!” I wheezed out, willing the door to close. Then light."
+	if got != want {
+		t.Errorf("contextSnippet = %q, want %q", got, want)
+	}
+	// No neighbours: just the paragraph.
+	if got := contextSnippet(map[int]string{5: texts[5]}, 5, i, i+5); got != "“Close, close, ⟦CLOSE⟧!”" {
+		t.Errorf("contextSnippet alone = %q", got)
 	}
 }
 

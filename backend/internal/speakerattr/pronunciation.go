@@ -192,9 +192,13 @@ var pronunciationCandidates = []pronunciationCandidate{
 	//   waist, or a ship's own front - both share the same sound, unlike
 	//   the weapon/ribbon sense - already an exact real-word homophone, a
 	//   tree branch).
-	// - "close": "cloce" (near - no real word spells that sound, so it's
-	//   an invented respelling ending like "truce") vs "cloze" (to shut -
-	//   a real word, the fill-in-the-gap test, and an exact homophone).
+	// - "close": "clohss" (near - no real word spells that sound) vs
+	//   "cloze" (to shut - a real word, the fill-in-the-gap test, and an
+	//   exact homophone). Chosen by test: each candidate was
+	//   rendered by Higgs, transcribed, and its final consonant checked
+	//   for voicing. "cloce"/"kloce" came out as two syllables
+	//   ("clo-che"), "clohs" voiced like "cloze"; "clohss" (and "klohss",
+	//   "cloase") were heard as "close" with an unvoiced s.
 	//   More frequent than the other five, but resolveHomographByGrammar
 	//   settles most uses without the model.
 	// - "wound": "woond" (an injury) vs "wownd" (past of "wind"), both
@@ -206,55 +210,55 @@ var pronunciationCandidates = []pronunciationCandidate{
 	// - "tears": "tiers" vs "tares", the plural of "tear" above (whose
 	//   candidate order is the other way round: a lone "tear" is more
 	//   often a rip, "tears" nearly always teardrops).
-	{re: regexp.MustCompile(`\b[Rr]ead\b`), dynamicCandidates: homographCandidates("reed", "red"), kind: "read", senses: []string{
+	{re: regexp.MustCompile(`(?i)\bread\b`), dynamicCandidates: homographCandidates("reed", "red"), kind: "read", senses: []string{
 		"present tense, infinitive, command, or the noun \"a good read\" (can read, to read, will read, read this!) - sounds like REED",
 		"past tense or past participle (he read it yesterday, had read, it read:, well-read) - sounds like RED",
 	}},
-	{re: regexp.MustCompile(`\b[Ll]ead\b`), dynamicCandidates: homographCandidates("leed", "led"), kind: "lead", senses: []string{
+	{re: regexp.MustCompile(`(?i)\blead\b`), dynamicCandidates: homographCandidates("leed", "led"), kind: "lead", senses: []string{
 		"to guide, go first, or be ahead; a head start (lead the way, will lead, in the lead, follow her lead) - sounds like LEED",
 		"the heavy metal (lead pipe, heavy as lead), or a misspelling of the past tense \"led\" (yesterday he lead them) - sounds like LED",
 	}},
-	{re: regexp.MustCompile(`\b[Ww]ind\b`), dynamicCandidates: homographCandidates("winned", "wined"), kind: "wind", senses: []string{
+	{re: regexp.MustCompile(`(?i)\bwind\b`), dynamicCandidates: homographCandidates("winned", "wined"), kind: "wind", senses: []string{
 		"moving air, a breeze, breath, or anything named after it (the wind blew, Wind Strike, second wind) - rhymes with PINNED",
 		"to twist, coil, crank, or meander (wind the clock, wind up, the road winds) - rhymes with FIND",
 	}},
-	{re: regexp.MustCompile(`\b[Tt]ear\b`), dynamicCandidates: homographCandidates("tare", "tier"), kind: "tear", senses: []string{
+	{re: regexp.MustCompile(`(?i)\btear\b`), dynamicCandidates: homographCandidates("tare", "tier"), kind: "tear", senses: []string{
 		"to rip, or a rip/hole (tear it apart, a tear in the fabric) - rhymes with BARE",
 		"a teardrop, or eyes filling with tears (a tear rolled down, tear-streaked, her eyes tear up) - rhymes with FEAR",
 	}},
-	{re: regexp.MustCompile(`\b[Bb]ow\b`), dynamicCandidates: homographCandidates("beau", "bough"), kind: "bow", senses: []string{
+	{re: regexp.MustCompile(`(?i)\bbow\b`), dynamicCandidates: homographCandidates("beau", "bough"), kind: "bow", senses: []string{
 		"a weapon for shooting arrows, or a ribbon knot (drew his bow, bow and arrow, tied a bow) - rhymes with GO",
 		"bending at the waist, or the front of a ship (took a bow, a stiff bow, the ship's bow) - rhymes with COW",
 	}},
-	{re: regexp.MustCompile(`\b[Ww]ound\b`), dynamicCandidates: homographCandidates("woond", "wownd"), kind: "wound", senses: []string{
+	{re: regexp.MustCompile(`(?i)\bwound\b`), dynamicCandidates: homographCandidates("woond", "wownd"), kind: "wound", senses: []string{
 		"an injury, or to injure (a deep wound, the wound bled, to wound him) - rhymes with TUNED",
 		"past tense of \"wind\": twisted, coiled, wrapped, or meandered (wound around, wound up, the path wound through, tightly wound) - rhymes with FOUND",
 	}},
-	{re: regexp.MustCompile(`\b[Ll]ive\b`), dynamicCandidates: homographCandidates("liv", "lyve"), kind: "live", senses: []string{
+	{re: regexp.MustCompile(`(?i)\blive\b`), dynamicCandidates: homographCandidates("liv", "lyve"), kind: "live", senses: []string{
 		"to be alive, exist, or dwell (to live, will live, live here, live with it) - rhymes with GIVE",
 		"living, active, loaded, or happening now (a live grenade, live fire, live feed, went live) - rhymes with FIVE",
 	}},
-	{re: regexp.MustCompile(`\b[Ll]ives\b`), dynamicCandidates: homographCandidates("lyves", "livz"), kind: "lives", senses: []string{
+	{re: regexp.MustCompile(`(?i)\blives\b`), dynamicCandidates: homographCandidates("lyves", "livz"), kind: "lives", senses: []string{
 		"more than one life (their lives, saved lives, nine lives) - rhymes with FIVES",
 		"exists or dwells (she lives here, who lives there, it lives on) - rhymes with GIVES",
 	}},
-	{re: regexp.MustCompile(`\b[Mm]inute\b`), dynamicCandidates: homographCandidates("minnit", "my-newt"), kind: "minute", senses: []string{
+	{re: regexp.MustCompile(`(?i)\bminute\b`), dynamicCandidates: homographCandidates("minnit", "my-newt"), kind: "minute", senses: []string{
 		"sixty seconds, a moment (a minute, wait a minute, the minute he left, last-minute) - MIN-it",
 		"tiny, very small, or very precise (minute details, minute adjustments, in minute detail) - my-NEWT",
 	}},
-	{re: regexp.MustCompile(`\b[Tt]ears\b`), dynamicCandidates: homographCandidates("tiers", "tares"), kind: "tears", senses: []string{
+	{re: regexp.MustCompile(`(?i)\btears\b`), dynamicCandidates: homographCandidates("tiers", "tares"), kind: "tears", senses: []string{
 		"teardrops, crying (tears ran down, in tears, burst into tears, tears in her eyes) - rhymes with FEARS",
 		"rips, or rips something (it tears through, she tears the page, tears in the fabric) - rhymes with BEARS",
 	}},
-	{re: regexp.MustCompile(`\b[Cc]lose\b`), dynamicCandidates: homographCandidates("cloce", "cloze"), kind: "close", senses: []string{
+	{re: regexp.MustCompile(`(?i)\bclose\b`), dynamicCandidates: homographCandidates("clohss", "cloze"), kind: "close", senses: []string{
 		"near, nearby, intimate, or narrow (close to, too close, a close friend, came close, close-knit) - rhymes with DOSE",
 		"to shut or end, or an ending (close the door, to close, close your eyes, the close of day) - rhymes with NOSE",
 	}},
 }
 
-// caseMatch title-cases alt to match sample's own leading letter -
-// capitalized if sample starts with an uppercase letter, unchanged
-// (already lowercase) otherwise. Shared by homographCandidates below
+// caseMatch cases alt like sample: all upper case if sample is ("CLOSE"
+// -> "CLOHSS"), capitalized if sample starts with an uppercase letter,
+// unchanged (already lowercase) otherwise. Shared by homographCandidates below
 // (mirroring cmonCandidates' own inline version of the same check above)
 // so a respelled substitution never looks jarringly mismatched in case
 // from the word it's replacing.
@@ -262,6 +266,9 @@ func caseMatch(sample, alt string) string {
 	r := []rune(sample)
 	if len(r) == 0 || !unicode.IsUpper(r[0]) {
 		return alt
+	}
+	if len(r) > 1 && sample == strings.ToUpper(sample) {
+		return strings.ToUpper(alt)
 	}
 	return strings.ToUpper(alt[:1]) + alt[1:]
 }
@@ -569,7 +576,9 @@ const pronunciationMaxTokens = 2048
 // 45%, worse than always taking the default reading (72%): the model
 // couldn't bind a respelling to its sense, and a line containing the same
 // word twice made the id-to-occurrence mapping ambiguous. This shape
-// scored 89% on the same terms.
+// scored 89% on the same terms. (A short paragraph's passage has since
+// been widened with its neighbours - contextSnippet - which that
+// benchmark predates.)
 const pronunciationSystemPrompt = `You decide how an audiobook narrator should pronounce ambiguous words. Each numbered item is a short passage from a novel with one word marked ⟦like this⟧, followed by its possible meanings, lettered A, B, and so on. For each item, decide which meaning the marked word has in that exact spot. Judge each item on its own grammar and context - items are independent.
 
 Reply with ONLY a JSON object mapping each item number to a letter, e.g. {"0": "A", "1": "B"}. Answer every item.`
@@ -610,14 +619,44 @@ func markedSnippet(text string, start, end int) string {
 	return oneLine(pre + "⟦" + text[start:end] + "⟧" + post)
 }
 
-func (c *Client) pronunciationBatch(ctx context.Context, batch []ParagraphInput, terms []pronunciationTerm) (map[int]int, error) {
-	textByIdx := make(map[int]string, len(batch))
-	for _, p := range batch {
+// pronunciationShortParagraph is the paragraph length (bytes) under which
+// a term's passage also shows the paragraphs either side of it - see
+// contextSnippet.
+const pronunciationShortParagraph = 160
+
+// contextSnippet is markedSnippet for the term at text[start:end] of
+// paragraph idx, widened for a short paragraph with the end of the one
+// before and the start of the one after (textByIdx; a missing neighbour is
+// skipped). A short line often can't be judged alone: “Close, close,
+// CLOSE!” is "shut" only because the next paragraph is "...willing the
+// door to close" - and a speech split from its tag is two paragraphs here.
+func contextSnippet(textByIdx map[int]string, idx, start, end int) string {
+	text := textByIdx[idx]
+	snippet := markedSnippet(text, start, end)
+	if len(text) >= pronunciationShortParagraph {
+		return snippet
+	}
+	if prev := textByIdx[idx-1]; prev != "" {
+		// The marker sits at the very end, so only what leads up to it is kept.
+		lead := markedSnippet(prev, len(prev), len(prev))
+		snippet = strings.TrimSuffix(lead, "⟦⟧") + " " + snippet
+	}
+	if next := textByIdx[idx+1]; next != "" {
+		snippet += " " + strings.TrimPrefix(markedSnippet(next, 0, 0), "⟦⟧")
+	}
+	return snippet
+}
+
+// pronunciationBatch asks the model about terms; paragraphs is every
+// paragraph of the run, for contextSnippet's neighbours.
+func (c *Client) pronunciationBatch(ctx context.Context, paragraphs []ParagraphInput, terms []pronunciationTerm) (map[int]int, error) {
+	textByIdx := make(map[int]string, len(paragraphs))
+	for _, p := range paragraphs {
 		textByIdx[p.Idx] = p.Text
 	}
 	var user strings.Builder
 	for _, t := range terms {
-		fmt.Fprintf(&user, "%d. %s\n", t.ID, markedSnippet(textByIdx[t.ParagraphIdx], t.Offset, t.Offset+t.Length))
+		fmt.Fprintf(&user, "%d. %s\n", t.ID, contextSnippet(textByIdx, t.ParagraphIdx, t.Offset, t.Offset+t.Length))
 		for i, cand := range t.Candidates {
 			sense := cand
 			if i < len(t.Senses) {
@@ -759,7 +798,7 @@ func (c *Client) ResolvePronunciation(ctx context.Context, _, _ string, paragrap
 		if len(ambiguous) == 0 {
 			continue
 		}
-		choices, berr := c.pronunciationBatch(ctx, batch, ambiguous)
+		choices, berr := c.pronunciationBatch(ctx, paragraphs, ambiguous)
 		if berr != nil {
 			return out, paragraphs[start:], fmt.Errorf("paragraphs %d-%d: %w", batch[0].Idx, batch[len(batch)-1].Idx, berr)
 		}
