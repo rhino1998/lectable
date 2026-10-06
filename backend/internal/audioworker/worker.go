@@ -138,6 +138,9 @@ type auxEngine struct {
 	modelPath string
 	task      string // audio.cpp session task, e.g. "gen"
 	poolSize  int
+	// sessionOptions are passed to every session this engine creates
+	// (audio.cpp "--session-option"s) - nil for none.
+	sessionOptions map[string]string
 
 	mu       sync.Mutex // guards every field below
 	model    *audiocpp.Model
@@ -815,6 +818,7 @@ func (w *Worker) newDesignSessionLocked(model *audiocpp.Model, engine designEngi
 func registerAuxEngines() map[string]*auxEngine {
 	specs := []*auxEngine{
 		{key: "ace_step", family: "ace_step", modelPath: aceStepModelPath, task: "gen", poolSize: aceStepPoolSize},
+		{key: "yue2", family: "yue2", modelPath: yue2ModelPath, task: "gen", poolSize: 1, sessionOptions: yue2SessionOptions()},
 		{key: "stable_audio_music", family: "stable_audio", modelPath: stableAudioMusicModelPath, task: "gen", poolSize: stableAudioMusicPoolSize},
 		{key: "stable_audio_sfx", family: "stable_audio", modelPath: stableAudioSFXModelPath, task: "gen", poolSize: stableAudioSFXPoolSize},
 		{key: "stable_audio_medium", family: "stable_audio", modelPath: stableAudioMediumModelPath, task: "gen", poolSize: stableAudioMediumPoolSize},
@@ -924,7 +928,18 @@ func (w *Worker) checkoutAuxSession(eng *auxEngine) (*audiocpp.Session, error) {
 
 	eng.mu.Lock()
 	if eng.created < eng.poolSize {
-		session, err := eng.model.Session(eng.task, "offline", audiocpp.BackendConfig{Backend: backendName, Threads: sessionThreads}, nil)
+		var opts *audiocpp.Options
+		if len(eng.sessionOptions) > 0 {
+			var err error
+			if opts, err = audiocpp.NewOptions(eng.sessionOptions); err != nil {
+				eng.mu.Unlock()
+				return nil, fmt.Errorf("build %s session options: %w", eng.family, err)
+			}
+		}
+		session, err := eng.model.Session(eng.task, "offline", audiocpp.BackendConfig{Backend: backendName, Threads: sessionThreads}, opts)
+		if opts != nil {
+			opts.Close()
+		}
 		if err != nil {
 			eng.mu.Unlock()
 			return nil, fmt.Errorf("create %s session %d/%d: %w", eng.family, eng.created+1, eng.poolSize, err)

@@ -680,6 +680,18 @@ func (m *Manager) Music(ctx context.Context, req ttsproto.MusicRequest) ([]byte,
 	return out, err
 }
 
+// YuE2 renders a YuE2 clip, returning WAV bytes; see ttsproto.YuE2Request.
+func (m *Manager) YuE2(ctx context.Context, req ttsproto.YuE2Request) ([]byte, error) {
+	m.restartGate.RLock()
+	defer m.restartGate.RUnlock()
+	jobID := m.beginJob()
+	defer m.endJob(jobID)
+
+	var out []byte
+	err := m.do(ctx, http.MethodPost, "/yue2", req, &out)
+	return out, err
+}
+
 // StableAudioMusic renders a Stable Audio 3 clip via the Small/Music
 // checkpoint, returning WAV bytes - Music's own exact counterpart for a
 // different engine; see ttsproto.StableAudioRequest's own doc comment.

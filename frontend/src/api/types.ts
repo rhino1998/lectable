@@ -37,6 +37,7 @@ export const LIGHT_EFFECT_LABELS: Record<LightEffect, string> = {
 
 export const SFX_ENGINE_LABELS: Record<SFXEngine, string> = {
   ace_step: 'ACE-Step (music)',
+  yue2: 'YuE2 (songs, instrumental without lyrics)',
   stable_audio_sfx: 'Stable Audio 3 (sound effects)',
   stable_audio_music: 'Stable Audio 3 Small (music)',
   stable_audio_medium: 'Stable Audio 3 Medium (music)',

@@ -1,7 +1,13 @@
 import { useEffect, useState } from 'react'
 import { useTestSFX } from '../api/queries'
 import { ApiError } from '../api/client'
-import { SFX_ENGINES, SFX_ENGINE_LABELS, type SFXEngine } from '../api/types'
+import {
+  SFX_ENGINES,
+  SFX_ENGINE_LABELS,
+  SFX_PLANNINGS,
+  type SFXEngine,
+  type SFXPlanning,
+} from '../api/types'
 
 // Standalone sound-effect/music test page (see backend/CLAUDE.md's "SFX
 // sound effects" section) - a faster iteration loop for a prompt/knob/
@@ -19,6 +25,9 @@ export function SFXPage() {
   const [engine, setEngine] = useState<SFXEngine>('stable_audio_music')
   const [prompt, setPrompt] = useState('')
   const [lyrics, setLyrics] = useState('')
+  // '' leaves YuE2's own default planning route.
+  const [planning, setPlanning] = useState<SFXPlanning | ''>('')
+  const takesLyrics = engine === 'ace_step' || engine === 'yue2'
   const [negativePrompt, setNegativePrompt] = useState('')
   // Text, not number, for the optional numeric knobs below - an empty
   // string is exactly "unset, defer to this engine's own default" (see
@@ -45,7 +54,8 @@ export function SFXPage() {
       {
         engine,
         prompt: prompt.trim(),
-        lyrics: engine === 'ace_step' ? lyrics.trim() || undefined : undefined,
+        lyrics: takesLyrics ? lyrics.trim() || undefined : undefined,
+        planning: engine === 'yue2' ? planning || undefined : undefined,
         negativePrompt: negativePrompt.trim() || undefined,
         durationSeconds: durationSeconds ? Number(durationSeconds) : undefined,
         numInferenceSteps: numInferenceSteps ? Number(numInferenceSteps) : undefined,
@@ -89,16 +99,34 @@ export function SFXPage() {
             placeholder={
               engine === 'ace_step'
                 ? 'cinematic synth pop with clear vocals'
-                : engine === 'stable_audio_sfx'
-                  ? 'footsteps on gravel, close perspective, crisp natural stone texture'
-                  : 'uplifting house music with bright synths and festival drums'
+                : engine === 'yue2'
+                  ? 'instrumental, cinematic ambient, slow strings, soft piano, no vocals'
+                  : engine === 'stable_audio_sfx'
+                    ? 'footsteps on gravel, close perspective, crisp natural stone texture'
+                    : 'uplifting house music with bright synths and festival drums'
             }
           />
         </label>
-        {engine === 'ace_step' && (
+        {takesLyrics && (
           <label>
-            Lyrics (optional)
+            {engine === 'yue2' ? 'Lyrics (leave empty for instrumental)' : 'Lyrics (optional)'}
             <textarea value={lyrics} onChange={(e) => setLyrics(e.target.value)} rows={2} />
+          </label>
+        )}
+        {engine === 'yue2' && (
+          <label>
+            Score planning
+            <select
+              value={planning}
+              onChange={(e) => setPlanning(e.target.value as SFXPlanning | '')}
+            >
+              <option value="">Model default (full)</option>
+              {SFX_PLANNINGS.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
           </label>
         )}
         <label>

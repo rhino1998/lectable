@@ -153,6 +153,7 @@ func main() {
 	mux.HandleFunc("POST /align", audioWorker.HandleAlign)
 	mux.HandleFunc("POST /transcribe", audioWorker.HandleTranscribe)
 	mux.HandleFunc("POST /music", audioWorker.HandleMusic)
+	mux.HandleFunc("POST /yue2", audioWorker.HandleYuE2)
 	mux.HandleFunc("POST /stable-audio-music", audioWorker.HandleStableAudioMusic)
 	mux.HandleFunc("POST /stable-audio-sfx", audioWorker.HandleStableAudioSFX)
 	mux.HandleFunc("POST /stable-audio-medium", audioWorker.HandleStableAudioMedium)

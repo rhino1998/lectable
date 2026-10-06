@@ -1037,6 +1037,40 @@ var aceStepModelPath = envOr(
 )
 var aceStepPoolSize = envIntOr("LECTABLE_AUDIOCPP_ACE_STEP_POOL_SIZE", 1)
 
+// yue2ModelPath is the "yue2" auxEngine's model root (a directory: the
+// main GGUF, the VAE GGUF and sidecars/ - see docs/models/yue2.md in the
+// local audio.cpp checkout; `tools/model_manager_v2.py install
+// yue2_main_q8_0` and `yue2_vae_f16` put it there). Wired for the SFX test
+// page only, to try its instrumental output.
+var yue2ModelPath = envOr("LECTABLE_AUDIOCPP_YUE2_MODEL_PATH", modelPath("Yue2-3B-GGUF"))
+
+// yue2DefaultARLora is the AR adapter loaded when it sits in the model
+// root: the instrumental one YuE2's manual names (CC BY-NC 4.0), which
+// wants cot=full.
+const yue2DefaultARLora = "ar_lora_inst_v3abc.safetensors"
+
+// yue2SessionOptions loads an unfused AR LoRA: LECTABLE_AUDIOCPP_YUE2_AR_LORA
+// (absolute or relative to the model root; "off" for none), defaulting to
+// yue2DefaultARLora when that file is there, at
+// LECTABLE_AUDIOCPP_YUE2_AR_LORA_SCALE (default 1).
+func yue2SessionOptions() map[string]string {
+	lora := os.Getenv("LECTABLE_AUDIOCPP_YUE2_AR_LORA")
+	switch lora {
+	case "off":
+		return nil
+	case "":
+		if _, err := os.Stat(filepath.Join(yue2ModelPath, yue2DefaultARLora)); err != nil {
+			return nil
+		}
+		lora = yue2DefaultARLora
+	}
+	opts := map[string]string{"yue2.ar_lora": lora}
+	if scale := os.Getenv("LECTABLE_AUDIOCPP_YUE2_AR_LORA_SCALE"); scale != "" {
+		opts["yue2.ar_lora_scale"] = scale
+	}
+	return opts
+}
+
 // stableAudioMusicModelPath/stableAudioMusicPoolSize configure the
 // "stable_audio_music" auxEngine (Stable Audio 3, registered by
 // registerAuxEngines in worker.go) - see docs/models/stable_audio.md in

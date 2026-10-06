@@ -115,11 +115,33 @@ working tree - check `git diff --stat` in `/home/rhino/audio.cpp` before
 rebuilding; a full copy of every local patch is kept at
 `/home/rhino/audio.cpp/lectable-local-patches.diff`.)
 
-**Patch base.** Rebased 2026-09-29 onto upstream `ed96b730`: `main` there
-sits at that commit with the patch uncommitted, and the same patch is also
-committed as branch `lectable-patches` (the pre-rebase version, on
-`e3de8e3f`, is tag `lectable-patches-e3de8e3` and
-`lectable-local-patches.e3de8e3.diff`). Upstream renamed `HiggsAR*` to
+**Patch base.** Rebased 2026-10-06 onto upstream `6fa5a3c8` (61 commits
+past `ed96b730`): `main` there sits at that commit with the patch
+uncommitted, and the same patch is also committed as branch
+`lectable-patches`. Earlier bases are kept: `ed96b730` (2026-09-29) as tag
+`lectable-patches-ed96b730`, `lectable-local-patches.ed96b730.diff` and the
+built `build-rocm7-bin.ed96b730/`; `e3de8e3f` as tag
+`lectable-patches-e3de8e3` and `lectable-local-patches.e3de8e3.diff`. The
+library is built in `build-rocm7-next/` and its `bin/` copied over
+`build-rocm7/bin/`, so the live path never holds a half-built library.
+
+What the 2026-10-06 rebase changed in the patch:
+- Our `StableAudioSameRuntime::encode` short-window fix is dropped;
+  upstream fixed it (#815).
+- Upstream added a `TurnDetection` task; `Codec` now follows it in the
+  enum and vocabulary.
+- BreezeTTS's default `graph_arena_mb`/`weight_context_mb` fell from
+  1024/2048 to 32/4 (#821); the codec session's shared helpers follow.
+- Upstream renamed several options, keeping the old names as aliases
+  (`duration_seconds` -> `duration_sec`, `inpaint_mask_*_seconds` ->
+  `..._sec`, PocketTTS `language`/`offline_graph_capacity_mode` ->
+  `pocket_tts.*`). `audioworker` still sends the old names.
+- Higgs is untouched upstream. `include/audiocpp.h` and the C API are
+  too, so a `ttsworker` built against the previous library loads this one.
+
+Every model-gated `audiocpp-go` test passes on HIP against it.
+
+From the 2026-09-29 rebase: upstream renamed `HiggsAR*` to
 `HiggsQwen3*` (our own `HiggsARBatchedDecodeGraph` kept its name) and
 `modules::QwenDecoderLayer*` to `modules::DecoderLayer*`. Upstream's
 gallocr prefill (#704/#722, on for HIP) is kept: seeded output is
@@ -256,9 +278,9 @@ existing artifact API.
     before it is kept as `bin/libaudiocpp.so.0.1.0.pre-breeze-latents`.
 - **Exact decode for every latents family:** decoding returned latents/codes
   reproduces the generated audio bit for bit on HIP (`audiocpp-go` tests).
-- **An upstream bug fix:** `StableAudioSameRuntime::encode` wrote before
-  its output buffer (heap corruption) for any window under 128 latent
-  frames (~11.9 s). A short init/inpaint request, or a short codec encode,
-  hit it.
+- **An upstream bug, since fixed there** (#815, so no longer in the
+  patch): `StableAudioSameRuntime::encode` wrote before its output buffer
+  (heap corruption) for any window under 128 latent frames (~11.9 s). A
+  short init/inpaint request, or a short codec encode, hit it.
 - **Status (2026-09-26):** the live `libaudiocpp.so` is rebuilt with this
   patch; the pre-patch build is kept as `bin/libaudiocpp.so.0.1.0.prev`.

@@ -15,30 +15,44 @@ type SFXEngine string
 
 const (
 	sfxACEStep           SFXEngine = "ace_step"
+	sfxYuE2              SFXEngine = "yue2"
 	sfxStableAudioMusic  SFXEngine = "stable_audio_music"
 	sfxStableAudioMedium SFXEngine = "stable_audio_medium"
 	sfxStableAudioSFX    SFXEngine = "stable_audio_sfx"
 )
 
+// SFXPlanning is YuE2's symbolic planning route for a test render: whether
+// it writes an ABC score before the music ("melody", "full") or not ("off").
+type SFXPlanning string
+
+const (
+	sfxPlanningOff    SFXPlanning = "off"
+	sfxPlanningMelody SFXPlanning = "melody"
+	sfxPlanningFull   SFXPlanning = "full"
+)
+
 // generateSFXRequest is POST /api/sfx/generate's body - the standalone
 // test surface for every generation-only "gen task" engine this app
-// wires in (ACE-Step, Stable Audio Music/SFX/Medium), one shared request
+// wires in (ACE-Step, YuE2, Stable Audio Music/SFX/Medium), one shared request
 // shape covering the union of what any of them accept. Engine selects
 // which one actually runs; every field below that engine doesn't use is
-// simply ignored (e.g. Lyrics only means anything for "ace_step"). See
+// simply ignored (e.g. Lyrics only means anything for "ace_step" and
+// "yue2", where Prompt is the style and empty Lyrics means instrumental). See
 // audioworker.Worker.Music/StableAudioMusic/StableAudioSFX/
 // StableAudioMedium's own doc comments for which knobs each engine
 // actually reads and what each defaults to when left zero.
 type generateSFXRequest struct {
 	// Engine defaults to stable_audio_music.
-	Engine            SFXEngine `json:"engine,omitempty"`
-	Prompt            string    `json:"prompt"`
-	Lyrics            string    `json:"lyrics,omitempty"`
-	NegativePrompt    string    `json:"negativePrompt,omitempty"`
-	DurationSeconds   float64   `json:"durationSeconds,omitempty"`
-	NumInferenceSteps int       `json:"numInferenceSteps,omitempty"`
-	GuidanceScale     float64   `json:"guidanceScale,omitempty"`
-	Seed              *int64    `json:"seed,omitempty"`
+	Engine SFXEngine `json:"engine,omitempty"`
+	Prompt string    `json:"prompt"`
+	Lyrics string    `json:"lyrics,omitempty"`
+	// Planning is "yue2" only; unset leaves the model's default (full).
+	Planning          SFXPlanning `json:"planning,omitempty"`
+	NegativePrompt    string      `json:"negativePrompt,omitempty"`
+	DurationSeconds   float64     `json:"durationSeconds,omitempty"`
+	NumInferenceSteps int         `json:"numInferenceSteps,omitempty"`
+	GuidanceScale     float64     `json:"guidanceScale,omitempty"`
+	Seed              *int64      `json:"seed,omitempty"`
 }
 
 // handleGenerateSFX is the standalone SFX/music test page's own backend
@@ -88,6 +102,24 @@ func (s *Server) handleGenerateSFX(w http.ResponseWriter, r *http.Request) {
 				Prompt:            prompt,
 				Lyrics:            strings.TrimSpace(req.Lyrics),
 				NegativePrompt:    strings.TrimSpace(req.NegativePrompt),
+				DurationSeconds:   req.DurationSeconds,
+				NumInferenceSteps: req.NumInferenceSteps,
+				GuidanceScale:     req.GuidanceScale,
+				Seed:              req.Seed,
+			})
+		}
+	case sfxYuE2:
+		switch req.Planning {
+		case "", sfxPlanningOff, sfxPlanningMelody, sfxPlanningFull:
+		default:
+			writeError(w, http.StatusBadRequest, "unknown planning "+string(req.Planning))
+			return
+		}
+		run = func(ctx context.Context) ([]byte, error) {
+			return s.TTS.YuE2(ctx, ttsproto.YuE2Request{
+				Style:             prompt,
+				Lyrics:            strings.TrimSpace(req.Lyrics),
+				COT:               string(req.Planning),
 				DurationSeconds:   req.DurationSeconds,
 				NumInferenceSteps: req.NumInferenceSteps,
 				GuidanceScale:     req.GuidanceScale,

@@ -129,6 +129,25 @@ type MusicRequest struct {
 	Seed              *int64  `json:"seed,omitempty"`
 }
 
+// YuE2Request is POST /yue2's body: render a YuE2 clip in Style (its
+// style/tag prompt), singing Lyrics - or instrumental when Lyrics is empty.
+// COT is YuE2's symbolic planning route ("off", "melody" or "full"; ""
+// leaves audio.cpp's default, full). YuE2 has no duration option - it
+// writes 25 semantic tokens a second until it decides the piece is over -
+// so DurationSeconds caps the token count instead (a clip may end sooner);
+// 0 means audioworker's own default cap. Every other field left at its
+// zero value defers to audio.cpp's default (see docs/models/yue2.md in the
+// audio.cpp checkout).
+type YuE2Request struct {
+	Style             string  `json:"style"`
+	Lyrics            string  `json:"lyrics,omitempty"`
+	COT               string  `json:"cot,omitempty"`
+	DurationSeconds   float64 `json:"durationSeconds,omitempty"`
+	NumInferenceSteps int     `json:"numInferenceSteps,omitempty"`
+	GuidanceScale     float64 `json:"guidanceScale,omitempty"`
+	Seed              *int64  `json:"seed,omitempty"`
+}
+
 // StableAudioRequest is POST /stable-audio's body: render a Stable Audio
 // 3 clip from Prompt. Every field but Prompt left at its zero value defers
 // to audio.cpp's own built-in default (duration 120s, num_inference_steps

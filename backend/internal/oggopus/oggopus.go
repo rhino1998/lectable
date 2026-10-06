@@ -21,10 +21,11 @@ import (
 )
 
 // Bitrates are per clip, VBR. Narration is mono speech from 24kHz models,
-// where 48kbps is transparent; SFX and music are 44.1kHz stereo.
+// where 48kbps is transparent; SFX and music are 44.1kHz stereo, and play
+// under narration, so 64kbps (half the 128 they were first stored at).
 const (
 	monoBitrate   = 48000
-	stereoBitrate = 128000
+	stereoBitrate = 64000
 )
 
 // granuleRate is the rate Ogg Opus granule positions and pre-skip are

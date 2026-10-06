@@ -121,6 +121,22 @@ func (w *Worker) HandleMusic(rw http.ResponseWriter, r *http.Request) {
 	writeWav(rw, audio.Samples, audio.SampleRate, audio.Channels)
 }
 
+// HandleYuE2 serves POST /yue2: render a YuE2 clip.
+func (w *Worker) HandleYuE2(rw http.ResponseWriter, r *http.Request) {
+	var req ttsproto.YuE2Request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+
+	audio, err := w.YuE2(req)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	writeWav(rw, audio.Samples, audio.SampleRate, audio.Channels)
+}
+
 // HandleStableAudioMusic serves POST /stable-audio-music: render a Stable
 // Audio 3 clip via the Small/Music checkpoint.
 func (w *Worker) HandleStableAudioMusic(rw http.ResponseWriter, r *http.Request) {
