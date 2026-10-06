@@ -17,6 +17,10 @@ type Store interface {
 	AddCharacterAliases(characterID string, aliases ...string) error
 	AppendMusicRegions(chapterID string, regions []MusicRegionInput, lastParagraphIdx int) ([]MusicRegion, error)
 	AudioRefs() (AudioRefs, error)
+	ClipUsers(key string) ([]ClipUser, error)
+	ClipKeys() (map[string]bool, error)
+	SetParagraphReadyClip(id, voiceID, key string, durationSeconds float64, wordTimingsJSON string) error
+	SetParagraphClipKey(id, voiceID, key string) error
 	ChapterAudioFingerprints(bookID string) (map[string]string, error)
 	ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error)
 	CharacterVoiceForModel(characterID, cloneModel string) (string, error)

@@ -459,7 +459,8 @@ building/running `ttsworker` does, since both now link into that binary.
   for every paragraph in the series the old or new rule matches; the
   `lexicon` live topic lists rules with per-book match counts.
 - `internal/audiopath/` — computes where generated audio lives from IDs
-  alone (`data/audio/<bookID>/<chapterID>/<voiceID>/<idx>.opus`, plus
+  alone (`data/audio/<bookID>/<chapterID>/<voiceID>/<idx>.opus` - or, for
+  narration on a shared clip, from its row's key, see `internal/clipkey` - plus
   `sfx/`/`music/` beside the voice dirs and a per-book `ambience/`); never
   stored in the DB, just derived. Served clips (narration, SFX, music
   regions) are **Ogg Opus**, written only through `WriteClip` (encode +
@@ -471,6 +472,36 @@ building/running `ttsworker` does, since both now link into that binary.
   each music region's `.seed.wav` (only the music layer's last 10s - all
   `musicgen.GenerateRegion` ever reads of a seed; the full-length stems it
   replaced doubled the music footprint).
+- `internal/clipkey/` + `jobs/sharedclips.go` — **shared narration
+  clips**. A narration clip is stored once, library-wide, under a content
+  key (`clipkey.Recipe`: clone model, reference clip identity, language,
+  clone instruct, the effective spoken text, the plain text it's aligned
+  to) at `LECTABLE_DATA_DIR/clips/<kk>/<key>.opus` (+ `.lat`), and the
+  `paragraph_audio` row of every paragraph it plays for names the key
+  (`clip_key`); `audiopath.NarrationClipFile` is how anything finds a
+  paragraph's clip (its shared clip, else its own `ParagraphFile`). The
+  same line elsewhere (a speech tag, the same narrator line in another
+  book) is put on the existing clip instead of rendered: `generate` looks
+  the key up first (`claimSharedClip`, which also waits out another task
+  rendering the same key). Scare-quote merge groups are keyed by the whole
+  group's spoken text (members stay pointer rows into the anchor's clip)
+  and unvoiced lines by spelling. The key carries a **take**
+  (`clipkey.TakeAt`): identical lines within `RunWindow` (5) paragraphs of
+  each other count 0, 1, 2... so a run of repeats is read differently each
+  time; further apart they share take 0. A clip is only reused while some
+  row is still ready on it, so "clear generation" re-renders;
+  `audiomaint.SweepSharedClips` drops clips no row names. "Regenerate this
+  paragraph" (`task.fresh`) re-renders the shared clip for every paragraph
+  on it. Word timings saved for one row reach every row on its clip
+  (`SetParagraphWordTimings`). The reference identity is preset + render
+  version (`voicerefs.RefIdentity`, `.ver` files stamped on a re-render,
+  not on loudness fixes). Only preset-less voices (`KindVoiceDesign`) still
+  write `audio/.../<idx>.opus`. `Manager.AdoptSharedClips` moves
+  pre-existing clips in once at startup (marker `clips/.adopted`),
+  assuming each matches its paragraph's current state, and drops repeats
+  for the first clip adopted. Exports carry shared clips under `clips/`;
+  import keeps one the library already has. Clients play a shared clip
+  from `/api/clips/{key}` (see `docs/api.md`).
 - `internal/oggopus/` — pure-Go WAV -> Ogg Opus encoder (`EncodeWAV`,
   `Duration`): 48 kbps mono / 128 kbps stereo VBR, 44.1kHz (Stable Audio)
   resampled to 48kHz, 24kHz narration encoded natively, pre-skip and end

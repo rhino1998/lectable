@@ -399,6 +399,23 @@ type task struct {
 	// branches this drives.
 	mergeParagraphs []store.Paragraph
 
+	// shared marks a paragraph whose clip lives in the shared store (see
+	// sharedclips.go), as its take'th reading (clipkey.TakeAt). fresh is
+	// an explicit "regenerate this paragraph": the clip is rendered anew
+	// even though it exists, and replaces it for every paragraph using it.
+	shared bool
+	fresh  bool
+	take   int
+	// clipKey is the paragraph's content key, set by generate once it
+	// knows the reference clip and text it is rendering; clipHit is set
+	// with it when a shared clip already existed and generate skipped
+	// rendering (finishResult then puts the paragraph on that clip).
+	clipKey string
+	clipHit bool
+	// claimed is the content key t is the one task rendering, if any (see
+	// sharedClips.claim).
+	claimed string
+
 	// genLexicon is the pronunciation lexicon generate actually rendered
 	// with (genLexiconSet once it has run) - refreshStaleGeneration
 	// compares the paragraph's current text against *that*, not the

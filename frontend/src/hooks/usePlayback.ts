@@ -548,6 +548,19 @@ export function usePlayback({
       },
       playAt: (ci: number, pi: number, opts?: { autoplay?: boolean }) => {
         pendingAdvanceRef.current = false
+        // A target on the clip already loaded doesn't change the src, so
+        // nothing below would move playback to it: another member of the
+        // playing merge group, or the same line again later (one shared
+        // clip plays for both).
+        const target = stateRef.current.chapters.get(ci)?.paragraphs[pi]
+        const audio = elements[activeIndex]
+        if (
+          target?.audioStatus === 'ready' &&
+          target.audioUrl &&
+          audio.currentSrc.endsWith(target.audioUrl)
+        ) {
+          audio.currentTime = target.audioPointerSeconds ?? 0
+        }
         setChapterIdx(ci)
         setParagraphIdx(pi)
         setCurrentTime(0)

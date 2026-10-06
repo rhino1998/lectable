@@ -257,6 +257,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/jobs/restart-worker", s.handleRestartWorker)
 
 	mux.HandleFunc("GET /api/paragraphs/{id}/audio", s.handleGetAudio)
+	mux.HandleFunc("GET /api/clips/{key}", s.handleGetClip)
 	mux.HandleFunc("GET /api/paragraphs/{id}/sfx-audio", s.handleGetParagraphSFXAudio)
 	mux.HandleFunc("POST /api/sfx/generate", s.handleGenerateSFX)
 	mux.HandleFunc("POST /api/llm/test", s.handleTestLLM)

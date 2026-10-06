@@ -161,7 +161,7 @@ func allowedDataPath(bookID, p string) bool {
 	if p == "" || path.IsAbs(p) || path.Clean(p) != p || strings.HasPrefix(p, "../") || strings.Contains(p, "\\") {
 		return false
 	}
-	for _, prefix := range []string{"audio/" + bookID + "/", "images/" + bookID + "/", voiceRefsDataDir} {
+	for _, prefix := range []string{"audio/" + bookID + "/", "images/" + bookID + "/", voiceRefsDataDir, sharedClipsDataDir} {
 		if strings.HasPrefix(p, prefix) {
 			return true
 		}

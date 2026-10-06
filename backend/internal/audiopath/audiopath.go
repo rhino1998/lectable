@@ -147,6 +147,37 @@ func EnsureVoiceDir(dataDir, bookID, chapterID, voiceID string) error {
 	return os.MkdirAll(VoiceDir(dataDir, bookID, chapterID, voiceID), 0o755)
 }
 
+// SharedClipFile is where the narration clip named by a content key
+// (internal/clipkey) lives: one file per distinct reading, whichever
+// paragraphs, chapters or books use it (paragraph_audio.clip_key), outside
+// audio/ so nothing there mistakes it for a book.
+func SharedClipFile(dataDir, key string) string {
+	return filepath.Join(dataDir, "clips", key[:2], key+ClipExt)
+}
+
+// NarrationClipFile is where the narration clip of the paragraph at idx
+// lives: its shared clip when its paragraph_audio row names one (clipKey),
+// else its own ParagraphFile. A row can name a shared clip a moment before
+// the file is moved there (jobs.Manager.AdoptSharedClips), so while the
+// shared clip is missing and the paragraph's own file isn't, that is the
+// one returned.
+func NarrationClipFile(dataDir, bookID, chapterID, voiceID string, idx int, clipKey string) string {
+	own := ParagraphFile(dataDir, bookID, chapterID, voiceID, idx)
+	if clipKey == "" {
+		return own
+	}
+	shared := SharedClipFile(dataDir, clipKey)
+	for _, p := range []string{shared, latents.Sidecar(shared)} {
+		if _, err := os.Stat(p); err == nil {
+			return shared
+		}
+	}
+	if _, err := os.Stat(Resolve(own)); err == nil {
+		return own
+	}
+	return shared
+}
+
 func CoverFile(dataDir, bookID, ext string) string {
 	return filepath.Join(dataDir, "covers", bookID+ext)
 }
@@ -271,6 +302,13 @@ func VoicePresetRefFile(dataDir, presetID string) string {
 	return filepath.Join(dataDir, "voice-refs", presetID+".wav")
 }
 
+// VoicePresetRefVersionFile names which render presetID's reference clip
+// is (voicerefs.RefVersion): rewritten whenever the clip is rendered anew,
+// absent for a clip from before versions.
+func VoicePresetRefVersionFile(dataDir, presetID string) string {
+	return filepath.Join(dataDir, "voice-refs", presetID+".ver")
+}
+
 func EnsureVoiceRefDir(dataDir string) error {
 	return os.MkdirAll(filepath.Join(dataDir, "voice-refs"), 0o755)
 }
@@ -286,6 +324,12 @@ func VoicePresetVariantDir(dataDir, presetID string) string {
 // internal/emotions id).
 func VoicePresetVariantFile(dataDir, presetID, emotion string) string {
 	return filepath.Join(VoicePresetVariantDir(dataDir, presetID), emotion+".wav")
+}
+
+// VoicePresetVariantVersionFile is VoicePresetRefVersionFile for one
+// emotion variant.
+func VoicePresetVariantVersionFile(dataDir, presetID, emotion string) string {
+	return filepath.Join(VoicePresetVariantDir(dataDir, presetID), emotion+".ver")
 }
 
 // VoicePresetVariantFailedFile marks a variant whose render failed on its

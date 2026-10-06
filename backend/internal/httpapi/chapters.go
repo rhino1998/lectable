@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -293,13 +294,47 @@ func resolveAudioID(p store.Paragraph, state store.AudioState, byIdx map[int]str
 	return p.ID
 }
 
+// narrationClipURL is the URL a ready paragraph's narration plays from:
+// its shared clip's (handleGetClip - the same URL for every paragraph on
+// that clip, in any book) when its row names one, else the paragraph's own
+// (handleGetAudio). paragraphID and idx are the paragraph holding the clip
+// (a merge group's anchor), clipKey that paragraph's row's.
+func (s *Server) narrationClipURL(bookID, chapterID, voiceID, paragraphID string, idx int, clipKey string) string {
+	version := s.audioVersion(bookID, chapterID, voiceID, idx, clipKey)
+	if clipKey == "" {
+		return "/api/paragraphs/" + paragraphID + "/audio" + version
+	}
+	return "/api/clips/" + clipKey + version
+}
+
+// handleGetClip serves a shared narration clip by its content key. A
+// request naming a version ("?v=", as every URL the API hands out does -
+// see audioVersion) is for one specific render, which never changes.
+func (s *Server) handleGetClip(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if !clipKeyRe.MatchString(key) {
+		writeError(w, http.StatusNotFound, "clip not found")
+		return
+	}
+	if r.URL.Query().Get("v") != "" {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	s.serveMaterializedClip(w, r, audiopath.SharedClipFile(s.DataDir, key))
+}
+
+// clipKeyRe matches a clipkey.Recipe.Key.
+var clipKeyRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
 // audioVersion is a "?v=" query suffix naming which render of a
 // paragraph's clip an audioUrl points at (the file's mtime), so a
 // regenerated clip gets a new URL: a player never keeps playing an
 // already-loaded old clip, or a browser a cached one, under an unchanged
 // URL. The endpoint ignores the query. "" if the file can't be stat'd.
-func (s *Server) audioVersion(bookID, chapterID, voiceID string, idx int) string {
-	fi, err := os.Stat(audiopath.Resolve(s.paragraphAudioPath(bookID, chapterID, voiceID, idx)))
+// clipKey is the clip's row's shared clip, if any (store.AudioState.ClipKey).
+func (s *Server) audioVersion(bookID, chapterID, voiceID string, idx int, clipKey string) string {
+	fi, err := os.Stat(audiopath.Resolve(audiopath.NarrationClipFile(s.DataDir, bookID, chapterID, voiceID, idx, clipKey)))
 	if err != nil {
 		return ""
 	}
@@ -454,6 +489,7 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 	}
 
 	dto := chapterDetailDTO{Idx: ch.Idx, Title: ch.Title, Generating: s.Jobs.IsGenerating(ch.ID)}
+	prevAudioURL := ""
 	for _, p := range paragraphs {
 		state, ok := audioStates[p.ID]
 		if !ok {
@@ -498,8 +534,16 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 			pd.Words = json.RawMessage("[]")
 		}
 		if state.Status == store.AudioReady {
-			pd.AudioURL = "/api/paragraphs/" + resolveAudioID(p, state, idByIdx) + "/audio" +
-				s.audioVersion(ch.BookID, ch.ID, voiceIDByParagraph[p.ID], p.Idx-state.PointerOffset)
+			audioID := resolveAudioID(p, state, idByIdx)
+			pd.AudioURL = s.narrationClipURL(ch.BookID, ch.ID, voiceIDByParagraph[p.ID], audioID, p.Idx-state.PointerOffset, audioStates[audioID].ClipKey)
+			// Clients tell a merge group by consecutive paragraphs sharing
+			// a URL, so a paragraph that starts its own clip never has the
+			// URL of the one before it, even on the same shared clip (two
+			// silent lines in a row). The endpoint ignores the extra query.
+			if state.PointerOffset == 0 && pd.AudioURL == prevAudioURL {
+				pd.AudioURL += "&p=" + strconv.Itoa(p.Idx)
+			}
+			prevAudioURL = pd.AudioURL
 			pd.AudioPointerSeconds = state.PointerSeconds
 		}
 		pd.ContentHash = paragraphContentHash(pd)
@@ -1288,12 +1332,13 @@ func (s *Server) handleGetAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	voiceID := v.VoiceID()
 
-	status, err := s.Store.GetParagraphAudioStatus(paragraphID, voiceID)
+	states, err := s.Store.ParagraphAudioStatuses([]string{paragraphID}, voiceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if status != store.AudioReady {
+	state := states[paragraphID]
+	if state.Status != store.AudioReady {
 		writeError(w, http.StatusNotFound, "audio not ready")
 		return
 	}
@@ -1301,7 +1346,7 @@ func (s *Server) handleGetAudio(w http.ResponseWriter, r *http.Request) {
 	// a regenerated clip is written under the same path, so a heuristically
 	// cached copy would replay the old render.
 	w.Header().Set("Cache-Control", "no-cache")
-	s.serveMaterializedClip(w, r, s.paragraphAudioPath(ch.BookID, ch.ID, voiceID, p.Idx))
+	s.serveMaterializedClip(w, r, audiopath.NarrationClipFile(s.DataDir, ch.BookID, ch.ID, voiceID, p.Idx, state.ClipKey))
 }
 
 func (s *Server) handleGetImage(w http.ResponseWriter, r *http.Request) {

@@ -28,6 +28,10 @@ const (
 	manifestFormat   = "lectable-book"
 	manifestVersion  = 1
 	voiceRefsDataDir = "voice-refs/"
+	// sharedClipsDataDir holds narration clips shared across books
+	// (audiopath.SharedClipFile); like voice refs, one already in the
+	// importing library is kept.
+	sharedClipsDataDir = "clips/"
 )
 
 // Lectable is what a full export carries for lectable itself.
@@ -86,5 +90,5 @@ type ManifestFile struct {
 // shared reports whether a data path belongs to the whole library rather
 // than one book - Import never overwrites those.
 func shared(dataPath string) bool {
-	return strings.HasPrefix(dataPath, voiceRefsDataDir)
+	return strings.HasPrefix(dataPath, voiceRefsDataDir) || strings.HasPrefix(dataPath, sharedClipsDataDir)
 }

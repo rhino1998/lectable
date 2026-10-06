@@ -76,6 +76,14 @@ class PlaybackQueueTest {
     }
 
     @Test
+    fun `a later paragraph on the same shared clip is loaded, not sought`() {
+        // Paragraphs 0 and 2 say the same line, so they play the same clip - but 2 isn't part
+        // of a merge group with 0, and what's queued behind 0 isn't what follows 2.
+        val repeated = chapters(chapter(0, ready(0, url = "/clips/k"), ready(1), ready(2, url = "/clips/k")))
+        assertEquals(PlayAction.LOAD, playAction(repeated, 0 to 2, 0 to 0, "/clips/k", true))
+    }
+
+    @Test
     fun `nothing is sought once the player has dropped its clip`() {
         val loaded = chapters(withGroup)
         assertEquals(PlayAction.LOAD, playAction(loaded, 0 to 1, 0 to 1, "/audio/1", false))

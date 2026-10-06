@@ -3446,6 +3446,18 @@ export interface Routes {
     response: VoiceSettings
     errorCode: never
   }
+  /**
+   * handleGetClip serves a shared narration clip by its content key. A
+   * request naming a version ("?v=", as every URL the API hands out does -
+   * see audioVersion) is for one specific render, which never changes.
+   */
+  'GET /api/clips/{key}': {
+    path: { key: string }
+    query: { v?: string | number | boolean }
+    body: never
+    response: Blob
+    errorCode: never
+  }
   'GET /api/images/{id}': {
     path: { id: string }
     query: Record<never, never>
@@ -4021,6 +4033,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/speakers/variants/regenerate': 'json',
   'GET /api/books/{id}/voice': 'json',
   'PUT /api/books/{id}/voice': 'json',
+  'GET /api/clips/{key}': 'binary',
   'GET /api/images/{id}': 'binary',
   'GET /api/instance': 'json',
   'GET /api/jobs': 'json',

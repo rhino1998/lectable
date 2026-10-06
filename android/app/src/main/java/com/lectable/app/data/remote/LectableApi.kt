@@ -1266,6 +1266,18 @@ interface LectableApi {
         @Body body: VoiceSettingsUpdateDto,
     ): VoiceSettingsDto
 
+    /**
+     * handleGetClip serves a shared narration clip by its content key. A
+     * request naming a version ("?v=", as every URL the API hands out does -
+     * see audioVersion) is for one specific render, which never changes.
+     */
+    @Streaming
+    @GET("api/clips/{key}")
+    suspend fun getClip(
+        @Path("key") key: String,
+        @Query("v") v: String? = null,
+    ): ResponseBody
+
     @Streaming
     @GET("api/images/{id}")
     suspend fun getImage(

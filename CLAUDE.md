@@ -209,6 +209,10 @@ client, not a browser.)
   plus `sfx/` and `music/` beside the voice dirs - are Ogg Opus; model inputs
   like `music/<regionID>.seed.wav` and `audio/<bookID>/ambience/*.wav` stay
   WAV; see `backend/CLAUDE.md`'s `internal/audiomaint`),
+  `clips/<kk>/<key>.opus` (narration clips by content key, shared by every
+  paragraph reading the same line the same way and named by their
+  `paragraph_audio` rows - nearly all narration lives here rather than
+  under `audio/`; see `backend/CLAUDE.md`'s `internal/clipkey`),
   latents sidecars beside clips whose model has them
   (`<idx>.lat`: Higgs/BreezeTTS codes, PocketTTS latents, exact - see
   `backend/docs/latents.md`) and music seeds as

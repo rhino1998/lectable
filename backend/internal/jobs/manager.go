@@ -377,6 +377,9 @@ func familyOf(pool poolKey) string {
 }
 
 type Manager struct {
+	// clips guards the shared clip store - see sharedclips.go.
+	clips sharedClips
+
 	// throughput measures recent narration speed - see Throughput.
 	throughput narrationThroughput
 

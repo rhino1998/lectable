@@ -49,6 +49,26 @@ func Run(ctx context.Context, dataDir string, st store.Store) {
 		if s := SweepOrphans(ctx, dataDir, refs, time.Now().Add(-sweepGrace)); s.Removed > 0 {
 			log.Printf("audiomaint: removed %d orphaned audio files/dirs (%s)", s.Removed, mb(s.BytesRemoved))
 		}
+		// After the orphans: deleting a book's audio is what leaves its
+		// shared clips unused.
+		inUse, err := st.ClipKeys()
+		if err != nil {
+			log.Printf("audiomaint: read shared clips in use: %v", err)
+			return
+		}
+		// The list is only a first pass: a clip can gain a user while the
+		// sweep runs (adoption moves in files with old mtimes), so each
+		// candidate is asked about again before it goes.
+		unused := func(key string) bool {
+			if inUse[key] {
+				return false
+			}
+			users, err := st.ClipUsers(key)
+			return err == nil && len(users) == 0
+		}
+		if s := SweepSharedClips(ctx, dataDir, unused, time.Now().Add(-sweepGrace)); s.Removed > 0 {
+			log.Printf("audiomaint: removed %d unused shared clips (%s)", s.Removed, mb(s.BytesRemoved))
+		}
 	}
 	sweep()
 	start := time.Now()
@@ -388,6 +408,42 @@ func sweepOrphans(ctx context.Context, dataDir string, refs store.AudioRefs, cut
 					}
 				}
 			}
+		}
+	}
+	return stats
+}
+
+// SweepSharedClips deletes shared narration clips (audiopath.SharedClipFile)
+// whose key no paragraph_audio row names (unused, asked per file just
+// before deleting it) and that were last modified before cutoff, their
+// latents sidecars with them, and stale temp files. A clip being written
+// has a fresh mtime; one being adopted is named by its row before the
+// file is moved.
+func SweepSharedClips(ctx context.Context, dataDir string, unused func(key string) bool, cutoff time.Time) SweepStats {
+	var stats SweepStats
+	root := filepath.Join(dataDir, "clips")
+	for _, shard := range readDir(root) {
+		if ctx.Err() != nil {
+			return stats
+		}
+		if !shard.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, shard.Name())
+		for _, f := range readDir(dir) {
+			key, _, _ := strings.Cut(f.Name(), ".")
+			isTemp := strings.HasPrefix(f.Name(), ".") && strings.Contains(f.Name(), ".tmp-")
+			if f.IsDir() || !olderThan(f, cutoff) || (!isTemp && !unused(key)) {
+				continue
+			}
+			path := filepath.Join(dir, f.Name())
+			size := diskUsage(path)
+			if err := os.Remove(path); err != nil {
+				log.Printf("audiomaint: remove %s: %v", path, err)
+				continue
+			}
+			stats.Removed++
+			stats.BytesRemoved += size
 		}
 	}
 	return stats

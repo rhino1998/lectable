@@ -116,6 +116,9 @@ func (m *Manager) estimateLength(bookID, chapterID string, wordLimit int) {
 type resolvedParagraph struct {
 	paragraph store.Paragraph
 	voice     narration.ResolvedVoice
+	// fresh asks for a new render of a shared clip, for everyone using it
+	// (see task.fresh).
+	fresh bool
 }
 
 // paragraphsNeedingGeneration resolves each of chapterID's paragraphs to
@@ -243,12 +246,12 @@ func (m *Manager) pushResolvedTask(bookID, chapterID string, chapterIdx, tier in
 		group = m.scareQuoteMergeGroup(chapterID, rp.paragraph)
 	}
 	if len(group) > 1 {
-		return m.pushMergedTask(bookID, chapterID, chapterIdx, tier, rp.voice, group, source)
+		return m.pushMergedTask(bookID, chapterID, chapterIdx, tier, rp.voice, group, rp.fresh, source)
 	}
-	return m.pushSingleTask(bookID, chapterID, chapterIdx, tier, rp, source)
+	return m.pushSingleTask(bookID, chapterID, chapterIdx, tier, rp, chapterParagraphs, source)
 }
 
-func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph, source string) (key string) {
+func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph, chapterParagraphs []store.Paragraph, source string) (key string) {
 	if err := audiopath.EnsureVoiceDir(m.dataDir, bookID, chapterID, rp.voice.VoiceID()); err != nil {
 		log.Printf("jobs: create audio dir: %v", err)
 		return ""
@@ -256,6 +259,15 @@ func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int,
 	kind := KindVoiceClone
 	if rp.voice.PresetID == "" {
 		kind = KindVoiceDesign
+	}
+	shared := sharableParagraph(rp.paragraph, rp.voice.PresetID)
+	take := 0
+	if shared && !rp.paragraph.Unvoiced() {
+		cloneModel := rp.voice.CloneModel
+		if cloneModel == "" {
+			cloneModel = voices.DefaultCloneModel
+		}
+		take = m.clipTake(bookID, chapterID, rp.paragraph, chapterParagraphs, cloneModel)
 	}
 	t := &task{
 		source:          source,
@@ -266,6 +278,9 @@ func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int,
 		chapterID:       chapterID,
 		voiceID:         rp.voice.VoiceID(),
 		paragraph:       rp.paragraph,
+		shared:          shared,
+		fresh:           rp.fresh,
+		take:            take,
 		instruct:        rp.voice.Instruct,
 		presetID:        rp.voice.PresetID,
 		language:        rp.voice.Language,
@@ -287,7 +302,7 @@ func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int,
 // the same group (the common case: enqueueChapter's loop reaches every
 // not-yet-ready member in turn) correctly dedups against the first rather
 // than queuing a second, competing task for the same group.
-func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int, voice narration.ResolvedVoice, members []store.Paragraph, source string) (key string) {
+func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int, voice narration.ResolvedVoice, members []store.Paragraph, fresh bool, source string) (key string) {
 	if err := audiopath.EnsureVoiceDir(m.dataDir, bookID, chapterID, voice.VoiceID()); err != nil {
 		log.Printf("jobs: create audio dir: %v", err)
 		return ""
@@ -306,6 +321,8 @@ func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int,
 		voiceID:         voice.VoiceID(),
 		paragraph:       members[0],
 		mergeParagraphs: members,
+		shared:          voice.PresetID != "",
+		fresh:           fresh,
 		instruct:        voice.Instruct,
 		presetID:        voice.PresetID,
 		language:        voice.Language,
@@ -640,7 +657,7 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 		log.Printf("jobs: reset paragraph %s for regenerate: %v", paragraph.ID, err)
 		return
 	}
-	m.pushResolvedTask(bookID, chapterID, chapterIdx, TierUrgent, resolvedParagraph{paragraph: paragraph, voice: v}, nil, "")
+	m.pushResolvedTask(bookID, chapterID, chapterIdx, TierUrgent, resolvedParagraph{paragraph: paragraph, voice: v, fresh: true}, nil, "")
 }
 
 // EnqueueLookahead generates up to count upcoming paragraphs (count <= 0

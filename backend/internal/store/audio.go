@@ -21,6 +21,9 @@ type AudioState struct {
 	// pointing straight at that other paragraph rather than this one.
 	PointerOffset  int
 	PointerSeconds float64
+	// ClipKey is the shared narration clip this audio is (see
+	// paragraph_audio.clip_key), "" for a clip of the paragraph's own.
+	ClipKey string
 }
 
 // ParagraphAudioStatuses batch-looks-up audio state for paragraphIDs under
@@ -45,7 +48,7 @@ func (s *SQLiteStore) ParagraphAudioStatuses(paragraphIDs []string, voiceID stri
 	args = append(args, voiceID)
 
 	rows, err := s.db.Query(
-		`SELECT paragraph_id, status, error, duration_seconds, word_timings, pointer_offset, pointer_seconds
+		`SELECT paragraph_id, status, error, duration_seconds, word_timings, pointer_offset, pointer_seconds, clip_key
 		 FROM paragraph_audio
 		 WHERE paragraph_id IN (`+placeholders+`) AND voice_id = ?`,
 		args...,
@@ -58,7 +61,7 @@ func (s *SQLiteStore) ParagraphAudioStatuses(paragraphIDs []string, voiceID stri
 	for rows.Next() {
 		var id string
 		var a AudioState
-		if err := rows.Scan(&id, &a.Status, &a.Error, &a.DurationSeconds, &a.WordTimings, &a.PointerOffset, &a.PointerSeconds); err != nil {
+		if err := rows.Scan(&id, &a.Status, &a.Error, &a.DurationSeconds, &a.WordTimings, &a.PointerOffset, &a.PointerSeconds, &a.ClipKey); err != nil {
 			return nil, err
 		}
 		out[id] = a
@@ -142,7 +145,7 @@ func (s *SQLiteStore) GetParagraphAudioStatus(paragraphID, voiceID string) (stri
 // audio of its own again.
 func (s *SQLiteStore) upsertParagraphAudio(paragraphID, voiceID, status, errMsg string, durationSeconds float64) error {
 	res, err := s.db.Exec(
-		`UPDATE paragraph_audio SET status = ?, error = ?, duration_seconds = ?, pointer_offset = 0, pointer_seconds = 0 WHERE paragraph_id = ? AND voice_id = ?`,
+		`UPDATE paragraph_audio SET status = ?, error = ?, duration_seconds = ?, pointer_offset = 0, pointer_seconds = 0, clip_key = '' WHERE paragraph_id = ? AND voice_id = ?`,
 		status, errMsg, durationSeconds, paragraphID, voiceID,
 	)
 	if err != nil {
@@ -187,7 +190,7 @@ func (s *SQLiteStore) SetParagraphReady(id, voiceID string, durationSeconds floa
 // "current" for highlighting/position-reporting).
 func (s *SQLiteStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset int, pointerSeconds, durationSeconds float64) error {
 	res, err := s.db.Exec(
-		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = ?, pointer_offset = ?, pointer_seconds = ? WHERE paragraph_id = ? AND voice_id = ?`,
+		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = ?, pointer_offset = ?, pointer_seconds = ?, clip_key = '' WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioReady, durationSeconds, pointerOffset, pointerSeconds, id, voiceID,
 	)
 	if err != nil {
@@ -211,11 +214,29 @@ func (s *SQLiteStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset
 // audio is already generated and playable (see jobs.Manager.alignParagraph).
 // A no-op if the (paragraph, voice) row doesn't exist yet, which shouldn't
 // happen in practice (SetParagraphReady always runs first) but isn't worth
-// erroring over if it somehow did.
+// erroring over if it somehow did. Timings describe the clip, so every
+// other row sharing this one's clip (paragraph_audio.clip_key) gets them
+// too.
 func (s *SQLiteStore) SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error {
-	_, err := s.db.Exec(
+	if _, err := s.db.Exec(
 		`UPDATE paragraph_audio SET word_timings = ? WHERE paragraph_id = ? AND voice_id = ?`,
 		wordTimingsJSON, id, voiceID,
+	); err != nil {
+		return err
+	}
+	var key string
+	err := s.db.QueryRow(`SELECT clip_key FROM paragraph_audio WHERE paragraph_id = ? AND voice_id = ?`, id, voiceID).Scan(&key)
+	if err != nil || key == "" {
+		if err == sql.ErrNoRows {
+			err = nil
+		}
+		return err
+	}
+	// "clip_key <> ''" is what lets the partial index serve this.
+	_, err = s.db.Exec(
+		`UPDATE paragraph_audio SET word_timings = ?
+		 WHERE clip_key = ? AND clip_key <> '' AND status = ? AND NOT (paragraph_id = ? AND voice_id = ?)`,
+		wordTimingsJSON, key, AudioReady, id, voiceID,
 	)
 	return err
 }
@@ -236,7 +257,7 @@ func (s *SQLiteStore) SetParagraphError(id, voiceID, message string) error {
 // value must never survive past this reset).
 func (s *SQLiteStore) ResetParagraphAudio(id, voiceID string) error {
 	res, err := s.db.Exec(
-		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = 0, word_timings = '[]', pointer_offset = 0, pointer_seconds = 0 WHERE paragraph_id = ? AND voice_id = ?`,
+		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = 0, word_timings = '[]', pointer_offset = 0, pointer_seconds = 0, clip_key = '' WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioPending, id, voiceID,
 	)
 	if err != nil {

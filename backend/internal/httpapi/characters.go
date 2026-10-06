@@ -1258,6 +1258,9 @@ func (s *Server) resolveAppearanceAudioURL(paragraphID, voiceID string) string {
 	if !ok || state.Status != store.AudioReady || state.PointerOffset != 0 {
 		return ""
 	}
+	if state.ClipKey != "" {
+		return "/api/clips/" + state.ClipKey
+	}
 	return "/api/paragraphs/" + paragraphID + "/audio"
 }
 

@@ -159,6 +159,17 @@ func createBookWithBlocks(t *testing.T, s *store.SQLiteStore, blocks ...store.Bl
 // entirely against a fake in-process HTTP server and local disk, so a real
 // completion should show up in well under a second; a generous timeout
 // just guards against this hanging forever if something regresses.
+// narrationClip is where p's clip under voiceID is: its row's shared clip,
+// or its own path.
+func narrationClip(t *testing.T, s *store.SQLiteStore, dataDir, bookID, chapterID, voiceID string, p store.Paragraph) string {
+	t.Helper()
+	states, err := s.ParagraphAudioStatuses([]string{p.ID}, voiceID)
+	if err != nil {
+		t.Fatalf("ParagraphAudioStatuses: %v", err)
+	}
+	return audiopath.NarrationClipFile(dataDir, bookID, chapterID, voiceID, p.Idx, states[p.ID].ClipKey)
+}
+
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -222,7 +233,7 @@ func TestManagerGeneratesChapterEndToEnd(t *testing.T) {
 		t.Fatalf("ListParagraphsRaw: %v", err)
 	}
 	for _, p := range paragraphs {
-		path := audiopath.ParagraphFile(dataDir, book.ID, chapterID, voiceID, p.Idx)
+		path := narrationClip(t, s, dataDir, book.ID, chapterID, voiceID, p)
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected audio file for paragraph %d at %s: %v", p.Idx, path, err)
 		}
@@ -2335,7 +2346,7 @@ func TestManagerMergesScareQuoteGroupIntoOneGenerateCall(t *testing.T) {
 	// out a separate, re-encoded clip per paragraph (see
 	// jobs.Manager.handleMergedResult's own doc comment on why: a real,
 	// observed source of audible artifacts at the cut point).
-	anchorPath := audiopath.ParagraphFile(dataDir, book.ID, chapterID, voiceID, paragraphs[0].Idx)
+	anchorPath := narrationClip(t, s, dataDir, book.ID, chapterID, voiceID, paragraphs[0])
 	anchorData, err := os.ReadFile(anchorPath)
 	if err != nil {
 		t.Fatalf("read anchor audio file: %v", err)
@@ -2420,7 +2431,7 @@ func TestManagerFallsBackToIndependentGenerationWhenAlignmentFails(t *testing.T)
 		t.Fatalf("ListParagraphsRaw: %v", err)
 	}
 	for _, p := range paragraphs {
-		path := audiopath.ParagraphFile(dataDir, book.ID, chapterID, voiceID, p.Idx)
+		path := narrationClip(t, s, dataDir, book.ID, chapterID, voiceID, p)
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected a fallback-generated audio file for paragraph %d: %v", p.Idx, err)
 		}

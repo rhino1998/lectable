@@ -214,6 +214,13 @@ func silentClip() ([]byte, error) {
 
 func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []ttsproto.Word, error) {
 	if unvoicedTask(t) {
+		t.clipKey, t.clipHit = "", false
+		if t.shared {
+			t.clipKey = silenceRecipe(t.paragraph.Text).Key(0)
+			if m.claimSharedClip(ctx, t); t.clipHit {
+				return ttsworker.Audio{}, []ttsproto.Word{}, nil
+			}
+		}
 		clip, err := silentClip()
 		// Empty, not nil, word timings: there is nothing to align.
 		return ttsworker.Audio{WAV: clip}, []ttsproto.Word{}, err
@@ -247,8 +254,9 @@ func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []tts
 		return ttsworker.Audio{}, nil, fmt.Errorf("ensure reference clip: %w", err)
 	}
 	refText := t.refText
-	if path, line, ok := m.emotionVariant(t); ok {
-		refPath, refText = path, line
+	emotion, variantPath, variantLine, ok := m.emotionVariant(t)
+	if ok {
+		refPath, refText = variantPath, variantLine
 	}
 	refAudio, err := os.ReadFile(refPath)
 	if err != nil {
@@ -283,35 +291,46 @@ func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []tts
 	if t.kind == KindLengthEstimate {
 		alignText = ""
 	}
+	t.clipKey, t.clipHit = "", false
+	if t.shared {
+		recipe := m.clipRecipe(cloneModel, t.presetID, emotion, t.language, t.cloneInstruct, text, t.paragraph.Text)
+		if len(t.mergeParagraphs) > 1 {
+			recipe.AlignText = mergedAlignText(t.mergeParagraphs)
+		}
+		t.clipKey = recipe.Key(t.take)
+		if m.claimSharedClip(ctx, t); t.clipHit {
+			return ttsworker.Audio{}, nil, nil
+		}
+	}
 	return m.generateCloneChecked(ctx, cloneModel, refAudio, refText, t.language, text, t.cloneInstruct, alignText)
 }
 
-// emotionVariant returns the emotion-variant reference clip (and the line
-// it speaks, its transcript) t should clone from instead of its preset's
+// emotionVariant returns the emotion-variant reference clip (its emotion,
+// and the line it speaks, its transcript) t should clone from instead of its preset's
 // base clip, if t's paragraph currently has an effective emotion whose
 // variant has been rendered (see variantClipDependency) - re-read from the
 // store rather than trusted from t.paragraph, since a manual override can
 // land between enqueue and dispatch. ok is false for a neutral line, a
 // scare-quote merge group, or a variant that failed to render (the base
 // clip is used then).
-func (m *Manager) emotionVariant(t *task) (path, refLine string, ok bool) {
+func (m *Manager) emotionVariant(t *task) (emotion, path, refLine string, ok bool) {
 	if t.presetID == "" || len(t.mergeParagraphs) > 1 {
-		return "", "", false
+		return "", "", "", false
 	}
 	p, err := m.store.GetParagraph(t.paragraph.ID)
 	if err != nil || p == nil {
-		return "", "", false
+		return "", "", "", false
 	}
 	e, known := emotions.Get(p.EffectiveEmotion())
 	if !known || !voicerefs.VariantExists(m.dataDir, t.presetID, e.ID) {
-		return "", "", false
+		return "", "", "", false
 	}
-	return audiopath.VoicePresetVariantFile(m.dataDir, t.presetID, e.ID), e.RefLine, true
+	return e.ID, audiopath.VoicePresetVariantFile(m.dataDir, t.presetID, e.ID), e.RefLine, true
 }
 
 func (m *Manager) finishResult(t *task, result taskResult) (final bool, err error) {
 	logTaskTiming(t, result.err)
-	if result.err == nil {
+	if result.err == nil && !t.clipHit {
 		// An unparseable clip just counts for no audio (wav.Duration's 0).
 		audio, _ := wav.Duration(result.audio)
 		m.throughput.record(time.Now(), taskChars(t), audio)
@@ -512,6 +531,13 @@ func (m *Manager) finishResult(t *task, result taskResult) (final bool, err erro
 		t.genLexicon, t.genLexiconSet = nil, false
 		return false, sched.ErrYield
 	}
+	if t.clipHit {
+		// The clip generate found may be gone or replaced by now.
+		if !m.useSharedClip(t) {
+			return false, sched.ErrYield
+		}
+		return true, nil
+	}
 	if len(t.mergeParagraphs) > 1 {
 		m.handleMergedResult(t, result.audio, result.latents, result.words)
 		return true, nil
@@ -528,6 +554,10 @@ func (m *Manager) finishResult(t *task, result taskResult) (final bool, err erro
 // waiters and the store only hear of the last attempt.
 func (m *Manager) handleResult(t *task, result taskResult) error {
 	final, err := m.finishResult(t, result)
+	if t.claimed != "" {
+		m.clips.release(t.claimed)
+		t.claimed = ""
+	}
 	if final {
 		m.mu.Lock()
 		t.settled = true
@@ -606,17 +636,37 @@ func (m *Manager) failParagraph(t *task, paragraph store.Paragraph, err error) {
 // directly instead of running alignParagraph.
 func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio []byte, lat *ttsproto.Latents, words []ttsproto.Word) {
 	outPath := audiopath.ParagraphFile(m.dataDir, t.bookID, t.chapterID, t.voiceID, paragraph.Idx)
-	if err := audiopath.WriteClipLatents(outPath, audio, lat); err != nil {
-		log.Printf("jobs: write audio file: %v", err)
-		_ = m.store.SetParagraphError(paragraph.ID, t.voiceID, "failed to save audio: "+err.Error())
-		return
-	}
 	dur, err := wav.Duration(audio)
 	if err != nil {
 		log.Printf("jobs: parse wav duration for %s: %v", paragraph.ID, err)
 	}
-	if err := m.store.SetParagraphReady(paragraph.ID, t.voiceID, dur.Seconds()); err != nil {
-		log.Printf("jobs: mark ready: %v", err)
+	saved := false
+	if t.clipKey != "" && paragraph.ID == t.paragraph.ID && len(t.mergeParagraphs) <= 1 {
+		// "[]" until this clip's own alignment lands (below).
+		part := clipPart{duration: dur.Seconds(), wordTimings: "[]"}
+		if words != nil {
+			if wordsJSON, err := json.Marshal(words); err == nil {
+				part.wordTimings = string(wordsJSON)
+			}
+		}
+		var reused bool
+		if saved, reused = m.saveSharedClip(t, []store.Paragraph{paragraph}, audio, lat, []clipPart{part}); reused {
+			m.MaybeAdvanceChapterMusic(t.bookID, t.chapterID)
+			return
+		}
+	}
+	if !saved {
+		if err := audiopath.WriteClipLatents(outPath, audio, lat); err != nil {
+			log.Printf("jobs: write audio file: %v", err)
+			_ = m.store.SetParagraphError(paragraph.ID, t.voiceID, "failed to save audio: "+err.Error())
+			return
+		}
+		if err := m.store.SetParagraphReady(paragraph.ID, t.voiceID, dur.Seconds()); err != nil {
+			log.Printf("jobs: mark ready: %v", err)
+		}
+		if words != nil {
+			m.saveWordTimings(t, paragraph, words)
+		}
 	}
 	// This paragraph's own narration may be the last piece some chapter
 	// tone region needed before it can start generating - see
@@ -635,7 +685,6 @@ func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio [
 	// independent wav file on disk, so there's no merged-alignment offset
 	// bookkeeping to carry through here.
 	if words != nil {
-		m.saveWordTimings(t, paragraph, words)
 		return
 	}
 	go m.alignParagraph(t, paragraph, audio, dur.Seconds())
@@ -719,15 +768,6 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, mergedLatents 
 		return
 	}
 
-	anchor := t.mergeParagraphs[0]
-	outPath := audiopath.ParagraphFile(m.dataDir, t.bookID, t.chapterID, t.voiceID, anchor.Idx)
-	if err := audiopath.WriteClipLatents(outPath, mergedAudio, mergedLatents); err != nil {
-		log.Printf("jobs: write merged audio file: %v", err)
-		for _, p := range t.mergeParagraphs {
-			m.failParagraph(t, p, fmt.Errorf("failed to save audio: %w", err))
-		}
-		return
-	}
 	totalSeconds := 0.0
 	if dur, err := wav.Duration(mergedAudio); err != nil {
 		log.Printf("jobs: parse wav duration for merged clip (chapter %s): %v", t.chapterID, err)
@@ -735,6 +775,7 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, mergedLatents 
 		totalSeconds = dur.Seconds()
 	}
 
+	parts := make([]clipPart, len(t.mergeParagraphs))
 	wordIdx := 0
 	for i, p := range t.mergeParagraphs {
 		n := len(strings.Fields(texts[i]))
@@ -755,24 +796,30 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, mergedLatents 
 				end = next[0].Start
 			}
 		}
-		duration := end - start
 
 		wordsJSON, err := json.Marshal(memberWords)
 		if err != nil {
 			log.Printf("jobs: marshal word timings for %s: %v", p.ID, err)
 			wordsJSON = []byte("[]")
 		}
+		parts[i] = clipPart{pointerSeconds: start, duration: end - start, wordTimings: string(wordsJSON)}
+	}
 
-		if i == 0 {
-			if err := m.store.SetParagraphReady(p.ID, t.voiceID, duration); err != nil {
-				log.Printf("jobs: mark ready: %v", err)
+	saved := false
+	if t.clipKey != "" {
+		saved, _ = m.saveSharedClip(t, t.mergeParagraphs, mergedAudio, mergedLatents, parts)
+	}
+	if !saved {
+		anchor := t.mergeParagraphs[0]
+		outPath := audiopath.ParagraphFile(m.dataDir, t.bookID, t.chapterID, t.voiceID, anchor.Idx)
+		if err := audiopath.WriteClipLatents(outPath, mergedAudio, mergedLatents); err != nil {
+			log.Printf("jobs: write merged audio file: %v", err)
+			for _, p := range t.mergeParagraphs {
+				m.failParagraph(t, p, fmt.Errorf("failed to save audio: %w", err))
 			}
-		} else if err := m.store.SetParagraphReadyPointer(p.ID, t.voiceID, i, start, duration); err != nil {
-			log.Printf("jobs: mark ready (pointer): %v", err)
+			return
 		}
-		if err := m.store.SetParagraphWordTimings(p.ID, t.voiceID, string(wordsJSON)); err != nil {
-			log.Printf("jobs: save word timings for %s: %v", p.ID, err)
-		}
+		m.applyClipParts(t.mergeParagraphs, t.voiceID, "", parts)
 	}
 	// Same reasoning as saveParagraphAudio's own identical call - any of
 	// this group's members finishing may be the last piece some chapter

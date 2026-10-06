@@ -114,6 +114,7 @@ func EnsureVariantFile(ctx context.Context, tts *ttsworker.Manager, dataDir stri
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return "", err
 	}
+	stampVersion(audiopath.VoicePresetVariantVersionFile(dataDir, base.PresetID, emotion))
 	return path, nil
 }
 
@@ -273,6 +274,7 @@ func DeleteVariant(dataDir, presetID, emotion string) error {
 	for _, p := range []string{
 		audiopath.VoicePresetVariantFile(dataDir, presetID, emotion),
 		audiopath.VoicePresetVariantFailedFile(dataDir, presetID, emotion),
+		audiopath.VoicePresetVariantVersionFile(dataDir, presetID, emotion),
 	} {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			return err

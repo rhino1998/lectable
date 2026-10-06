@@ -7,9 +7,11 @@ package voicerefs
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 
@@ -241,11 +243,40 @@ func save(dataDir, presetID string, data []byte) (string, error) {
 	if err := writeFileAtomic(path, data); err != nil {
 		return "", err
 	}
+	stampVersion(audiopath.VoicePresetRefVersionFile(dataDir, presetID))
 	// Every emotion variant was cloned from the clip just replaced.
 	if err := DeleteVariants(dataDir, presetID); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+// stampVersion records, at path, that the clip it describes was just
+// rendered anew. Loudness fixes to an existing clip (NormalizeAll,
+// ReboundVariants) deliberately don't: narration cloned from it is still
+// the same voice.
+func stampVersion(path string) {
+	var b [6]byte
+	_, _ = rand.Read(b[:])
+	if err := os.WriteFile(path, []byte(hex.EncodeToString(b[:])), 0o644); err != nil {
+		log.Printf("voicerefs: stamp %s: %v", path, err)
+	}
+}
+
+// RefIdentity names the reference clip a line is cloned from - presetID's
+// base clip, or its emotion variant - and which render of it, for
+// clipkey.Recipe.Reference: it changes when the clip is rendered anew and
+// not when its level is corrected.
+func RefIdentity(dataDir, presetID, emotion string) string {
+	version := func(path string) string {
+		v, _ := os.ReadFile(path)
+		return string(v)
+	}
+	id := presetID + "@" + version(audiopath.VoicePresetRefVersionFile(dataDir, presetID))
+	if emotion != "" {
+		id += "/" + emotion + "@" + version(audiopath.VoicePresetVariantVersionFile(dataDir, presetID, emotion))
+	}
+	return id
 }
 
 // DesignConfigHash derives a stable, config-defined key for a raw,
@@ -293,6 +324,7 @@ func Delete(dataDir, presetID string) error {
 	if err := DeleteVariants(dataDir, presetID); err != nil {
 		return err
 	}
+	_ = os.Remove(audiopath.VoicePresetRefVersionFile(dataDir, presetID))
 	err := os.Remove(audiopath.VoicePresetRefFile(dataDir, presetID))
 	if os.IsNotExist(err) {
 		return nil

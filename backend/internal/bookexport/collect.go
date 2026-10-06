@@ -156,7 +156,11 @@ func (c *collector) chapter(ch *store.Chapter) (Chapter, error) {
 		para := &Paragraph{ID: p.ID, Idx: p.Idx, Text: p.Text, Inline: p.Inline, Table: p.Table}
 		v := voiceByParagraph[p.ID]
 		if s, ok := states[p.ID]; ok && s.Status == store.AudioReady && s.DurationSeconds > 0 {
-			para.Audio = c.segment(ch, p, v, s, clips)
+			anchorKey := s.ClipKey
+			if s.PointerOffset > 0 && p.Idx-s.PointerOffset >= 0 && p.Idx-s.PointerOffset < len(paragraphs) {
+				anchorKey = states[paragraphs[p.Idx-s.PointerOffset].ID].ClipKey
+			}
+			para.Audio = c.segment(ch, p, v, s, anchorKey, clips)
 		}
 		if para.Audio == nil {
 			c.missing++
@@ -192,8 +196,11 @@ func (c *collector) chapter(ch *store.Chapter) (Chapter, error) {
 // member (PointerOffset > 0) has no file of its own: its audio is the
 // range of the group anchor's clip starting PointerSeconds in. nil if
 // the clip isn't on disk.
-func (c *collector) segment(ch *store.Chapter, p store.Paragraph, v narration.ResolvedVoice, s store.AudioState, clips map[string]*Clip) *Segment {
-	path := audiopath.ParagraphFile(c.src.DataDir, ch.BookID, ch.ID, v.VoiceID(), p.Idx-s.PointerOffset)
+//
+// clipKey is the shared clip the clip's own row names, if any
+// (store.AudioState.ClipKey - the anchor's, for a merge group member).
+func (c *collector) segment(ch *store.Chapter, p store.Paragraph, v narration.ResolvedVoice, s store.AudioState, clipKey string, clips map[string]*Clip) *Segment {
+	path := audiopath.NarrationClipFile(c.src.DataDir, ch.BookID, ch.ID, v.VoiceID(), p.Idx-s.PointerOffset, clipKey)
 	clip, ok := clips[path]
 	if !ok {
 		resolved := audiopath.Resolve(path)

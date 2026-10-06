@@ -49,8 +49,25 @@ internal fun playAction(
     val paragraph = chapters[target.first]?.paragraphs?.getOrNull(target.second) ?: return PlayAction.NEED_CHAPTER
     if (!paragraph.hasClip()) return PlayAction.PARK
     if (loadedTarget == target && hasMediaItems) return PlayAction.SEEK
-    if (loadedAudioUrl != null && loadedAudioUrl == paragraph.audioUrl && hasMediaItems) return PlayAction.SEEK_IN_GROUP
+    if (loadedAudioUrl != null && loadedAudioUrl == paragraph.audioUrl && hasMediaItems &&
+        loadedTarget != null && sameMergeGroup(chapters, loadedTarget, target)
+    ) {
+        return PlayAction.SEEK_IN_GROUP
+    }
     return PlayAction.LOAD
+}
+
+/**
+ * Whether [a] and [b] are members of one scare-quote merge group: the same chapter, and every
+ * paragraph from one to the other on the same clip. Sharing a URL alone doesn't say so - a line
+ * repeated later in the chapter plays the same shared clip (see the backend's clip store), but
+ * is its own clip start with its own place in the queue.
+ */
+internal fun sameMergeGroup(chapters: Map<Int, ChapterDetailDto>, a: Pair<Int, Int>, b: Pair<Int, Int>): Boolean {
+    if (a.first != b.first) return false
+    val paragraphs = chapters[a.first]?.paragraphs ?: return false
+    val url = paragraphs.getOrNull(a.second)?.audioUrl ?: return false
+    return (minOf(a.second, b.second)..maxOf(a.second, b.second)).all { paragraphs.getOrNull(it)?.audioUrl == url }
 }
 
 /**

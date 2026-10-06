@@ -145,6 +145,15 @@ func main() {
 	// Converts clips from before the switch to Ogg Opus and deletes audio
 	// the library no longer refers to - once now, then sweeping daily.
 	go audiomaint.Run(ctx, dataDir, st)
+	// Moves narration clips from before the shared clip store into it,
+	// once - see jobs.Manager.AdoptSharedClips.
+	go func() {
+		start := time.Now()
+		if s := jobManager.AdoptSharedClips(ctx); s.Adopted+s.Deduplicated > 0 {
+			log.Printf("adopted %d narration clips into the shared store in %s, dropping %d repeats of lines already in it (%.1f MB freed)",
+				s.Adopted, time.Since(start).Round(time.Second), s.Deduplicated, float64(s.BytesFreed)/(1<<20))
+		}
+	}()
 	// Levels reference clips saved before normalization (or restored from
 	// an export) to voicerefs.TargetLUFS; a no-op once they all are.
 	go func() {
