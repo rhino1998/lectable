@@ -100,6 +100,9 @@ func EnsureVariantFile(ctx context.Context, tts *ttsworker.Manager, dataDir stri
 	if err != nil {
 		return "", fmt.Errorf("render %s variant: %w", emotion, err)
 	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	data, err = truncateToMaxDuration(data)
 	if err != nil {
 		return "", err

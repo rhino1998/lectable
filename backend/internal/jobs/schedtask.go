@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/sched"
+	"github.com/rhino1998/lectable/backend/internal/store"
 )
 
 // sourceDirect is the request source of everything asked for outright (a
@@ -95,7 +96,59 @@ func (t *task) Run(ctx context.Context, attempt int) error {
 			return m.handleResult(t, taskResult{})
 		}
 	}
-	return m.handleResult(t, <-m.startTask(ctx, t))
+	err := m.handleResult(t, <-m.startTask(ctx, t))
+	if err == nil && m.runAgain(t) {
+		return sched.ErrYield
+	}
+	return err
+}
+
+// runAgain decides, as a paragraph task finishes, whether a push of its
+// key that arrived while it ran (task.again) still needs it: a "regenerate
+// this paragraph" always does - the render that just finished wasn't the
+// new one asked for - and so does any push whose paragraph isn't ready
+// after all (its audio was cleared between this task writing it and being
+// done). t then takes on what that push carried and runs once more;
+// without this the push was simply dropped with the finished task.
+func (m *Manager) runAgain(t *task) bool {
+	if t.kind != KindVoiceClone && t.kind != KindVoiceDesign {
+		return false
+	}
+	m.mu.Lock()
+	again := t.again
+	t.again = nil
+	m.mu.Unlock()
+	if again == nil {
+		return false
+	}
+	if !again.fresh {
+		states, err := m.store.ParagraphAudioStatuses([]string{again.paragraph.ID}, again.voiceID)
+		if err != nil || states[again.paragraph.ID].Status == store.AudioReady {
+			return false
+		}
+	}
+	t.adopt(again)
+	t.paragraph, t.mergeParagraphs = again.paragraph, again.mergeParagraphs
+	t.shared, t.fresh, t.take = again.shared, again.fresh, again.take
+	m.mu.Lock()
+	t.settled = false
+	m.mu.Unlock()
+	return true
+}
+
+// adopt takes on the voice n would render under.
+func (t *task) adopt(n *task) {
+	t.kind = n.kind
+	t.voiceID = n.voiceID
+	t.instruct = n.instruct
+	t.presetID = n.presetID
+	t.language = n.language
+	t.refText = n.refText
+	t.speedMultiplier = n.speedMultiplier
+	t.seed = n.seed
+	t.cloneModel = n.cloneModel
+	t.designModel = n.designModel
+	t.cloneInstruct = n.cloneInstruct
 }
 
 // Retryable matches retryEligible, which handleResult uses to decide
@@ -155,6 +208,10 @@ func (t *task) Merge(newer sched.Task, running bool) {
 	t.provisionWaiters = append(t.provisionWaiters, n.provisionWaiters...)
 	t.previewWaiters = append(t.previewWaiters, n.previewWaiters...)
 	t.previewTextWaiters = append(t.previewTextWaiters, n.previewTextWaiters...)
+	if running {
+		// Looked at once t is done - see runAgain.
+		t.again = n
+	}
 	t.m.mu.Unlock()
 	if running {
 		return
@@ -164,16 +221,11 @@ func (t *task) Merge(newer sched.Task, running bool) {
 		t.chapterIdx = n.chapterIdx
 	}
 	if t.kind == KindVoiceClone || t.kind == KindVoiceDesign {
-		t.kind = n.kind
-		t.voiceID = n.voiceID
-		t.instruct = n.instruct
-		t.presetID = n.presetID
-		t.language = n.language
-		t.refText = n.refText
-		t.speedMultiplier = n.speedMultiplier
-		t.seed = n.seed
-		t.cloneModel = n.cloneModel
-		t.designModel = n.designModel
-		t.cloneInstruct = n.cloneInstruct
+		t.adopt(n)
+		// A "regenerate this paragraph" joining a queued task makes that
+		// task the regeneration.
+		if n.fresh {
+			t.fresh = true
+		}
 	}
 }

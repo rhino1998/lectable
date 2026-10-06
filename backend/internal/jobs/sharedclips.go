@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/clipkey"
@@ -32,14 +33,21 @@ import (
 // whole group's spoken text, members pointing into the clip as ever) and
 // unvoiced lines (silence, shared by spelling).
 //
-// A shared clip counts as available only while some paragraph is still
-// ready on it, so clearing a chapter's or a book's audio really does
-// render it anew unless the same reading is still in use elsewhere.
-// "Regenerate this paragraph" renders the clip anew for every paragraph
-// using it: whatever was wrong with it is wrong wherever it plays.
+// A clip is found by its key alone. While a paragraph is ready on it, that
+// row supplies its duration and word timings; once the last row is gone (a
+// voice change, a reimport, a re-attribution) the clip is kept for
+// clipkey.OrphanRetention with what that row knew (store.ClipOrphan), so
+// the same reading wanted again - the voice switched back, the chapter
+// reimported unchanged - is still not rendered twice. Explicitly clearing
+// a chapter's or a book's audio is the exception: that asks for new
+// renders, so the clips it leaves unused are deleted on the spot
+// (DiscardOrphanedClips). "Regenerate this paragraph" renders the clip
+// anew for every paragraph using it: whatever was wrong with it is wrong
+// wherever it plays.
 //
-// Only a voice with no preset (KindVoiceDesign) still writes each
-// paragraph's clip to its own path (audiopath.ParagraphFile).
+// Every narration clip is stored this way; nothing is written to a
+// paragraph's own path (audiopath.ParagraphFile) any more except as a
+// fallback when the store can't be written.
 
 // sharedClips is a Manager's hold on the shared store.
 type sharedClips struct {
@@ -88,7 +96,7 @@ func (m *Manager) claimSharedClip(ctx context.Context, t *task) {
 	for {
 		if !t.fresh {
 			m.clips.mu.Lock()
-			t.clipHit = m.sharedClip(t.clipKey, members, t.voiceID) != nil
+			t.clipHit = m.alreadyOn(t.clipKey, members[0], t.voiceID) || m.sharedClip(t.clipKey, members, t.voiceID) != nil
 			m.clips.mu.Unlock()
 			if t.clipHit {
 				return
@@ -105,6 +113,77 @@ func (m *Manager) claimSharedClip(ctx context.Context, t *task) {
 			return
 		}
 	}
+}
+
+// taskClipKey is the content key of the clip t renders, given the lexicon
+// its text is resolved with and the emotion variant it clones from ("" for
+// the base clip - see emotionVariant).
+func (m *Manager) taskClipKey(t *task, lexicon []pronounce.LexiconEntry, emotion string) string {
+	if unvoicedTask(t) {
+		return silenceRecipe(t.paragraph.Text).Key(0)
+	}
+	members := taskMembers(t)
+	alignText := t.paragraph.Text
+	if len(members) > 1 {
+		alignText = mergedAlignText(members)
+	}
+	if t.kind == KindVoiceDesign {
+		text := mergedGenerationText(members, "", lexicon)
+		return designRecipe(t.designModel, t.instruct, t.seed, t.language, text, alignText).Key(t.take)
+	}
+	cloneModel := t.cloneModel
+	if cloneModel == "" {
+		cloneModel = voices.DefaultCloneModel
+	}
+	text := mergedGenerationText(members, cloneModel, lexicon)
+	return m.clipRecipe(cloneModel, t.presetID, emotion, t.language, t.cloneInstruct, text, alignText).Key(t.take)
+}
+
+// resolveAtEnqueue puts t's paragraphs on their clip without queueing t at
+// all, when that clip already exists and t waits on nothing: a repeated
+// line then goes ready the moment it is asked for, instead of taking its
+// turn in the generation queue only to find its clip there. A task with
+// something still to wait for (a pronunciation or emotion pass, a
+// reference clip or emotion variant not rendered yet) is queued as usual -
+// what it would read may still change - and looks again when it runs.
+func (m *Manager) resolveAtEnqueue(t *task) bool {
+	if !t.shared || t.fresh || !m.waitsOnNothing(t) {
+		return false
+	}
+	emotion, _, _, _ := m.emotionVariant(t)
+	t.clipKey = m.taskClipKey(t, m.lexiconFor(t.bookID), emotion)
+	if !m.useSharedClip(t) {
+		t.clipKey = ""
+		return false
+	}
+	return true
+}
+
+// waitsOnNothing reports whether t, queued now, would have no dependency
+// to wait for: none that has to be created, and none already in the queue.
+func (m *Manager) waitsOnNothing(t *task) bool {
+	for _, need := range m.needs(t) {
+		if need.New != nil {
+			return false
+		}
+		if _, queued := m.sched.Priority(need.Key); queued {
+			return false
+		}
+	}
+	return true
+}
+
+// alreadyOn reports whether anchor is ready on the shared clip key under
+// voiceID as it is - which a task finds when its paragraph was put on the
+// clip after it was asked for (another member of its merge group resolved
+// the whole group, say). There is nothing left for it to do.
+func (m *Manager) alreadyOn(key string, anchor store.Paragraph, voiceID string) bool {
+	states, err := m.store.ParagraphAudioStatuses([]string{anchor.ID}, voiceID)
+	if err != nil {
+		return false
+	}
+	st := states[anchor.ID]
+	return st.Status == store.AudioReady && st.ClipKey == key
 }
 
 // clipPart is one paragraph's share of a clip: where its words start in
@@ -136,17 +215,49 @@ func mergedAlignText(members []store.Paragraph) string {
 	return strings.Join(texts, "\n")
 }
 
-// sharableParagraph reports whether p's clip under a voice with presetID
-// is one the shared store holds: a clone of a preset's reference clip, or
-// an unvoiced line's silence, whatever the voice.
-func sharableParagraph(p store.Paragraph, presetID string) bool {
-	return presetID != "" || p.Unvoiced()
+// designRecipe is the recipe of a paragraph rendered straight from a voice
+// instruction, with no preset (KindVoiceDesign).
+func designRecipe(designModel, instruct string, seed int, language, text, alignText string) clipkey.Recipe {
+	return clipkey.Recipe{
+		CloneModel: "design:" + designModel,
+		Reference:  instruct + "\x00" + strconv.Itoa(seed),
+		Language:   language,
+		Text:       text,
+		AlignText:  alignText,
+	}
+}
+
+// voiceRecipe is the recipe of text read in voice v: cloned from its
+// preset's reference clip (its emotion variant when emotion is set), or
+// designed from its instruction when it has no preset.
+func (m *Manager) voiceRecipe(v narration.ResolvedVoice, emotion, text, alignText string) clipkey.Recipe {
+	if v.PresetID == "" {
+		return designRecipe(v.DesignModel, v.Instruct, v.Seed, v.Language, text, alignText)
+	}
+	cloneModel := v.CloneModel
+	if cloneModel == "" {
+		cloneModel = voices.DefaultCloneModel
+	}
+	return m.clipRecipe(cloneModel, v.PresetID, emotion, v.Language, v.CloneInstruct, text, alignText)
 }
 
 // silenceRecipe is an unvoiced line's recipe: its silence is shared by
 // every line spelled the same, in any voice.
 func silenceRecipe(text string) clipkey.Recipe {
 	return clipkey.Recipe{CloneModel: "silence", Text: text, AlignText: text}
+}
+
+// generationTextModel is the clone model a paragraph's generation text is
+// resolved for under voice v (store.Paragraph.ResolveGenerationText): its
+// clone model, or none for a voice designed from an instruction.
+func generationTextModel(v narration.ResolvedVoice) string {
+	if v.PresetID == "" {
+		return ""
+	}
+	if v.CloneModel == "" {
+		return voices.DefaultCloneModel
+	}
+	return v.CloneModel
 }
 
 // clipTake is p's take among chapter's paragraphs (clipkey.TakeAt): which
@@ -213,9 +324,10 @@ func (m *Manager) clipRecipe(cloneModel, presetID, emotion, language, cloneInstr
 }
 
 // sharedClip looks key up for the paragraphs members (a clip's whole
-// group, anchor first) under voiceID: the parts of a clip that is on disk
-// and that some other paragraph is ready on, nil if there is none. The
-// caller holds m.clips.mu.
+// group, anchor first) under voiceID: the parts of a clip that is on disk,
+// read from another paragraph ready on it or, when none is, from what the
+// last one left behind (store.ClipOrphan). nil if there is no such clip.
+// The caller holds m.clips.mu.
 func (m *Manager) sharedClip(key string, members []store.Paragraph, voiceID string) []clipPart {
 	shared := audiopath.SharedClipFile(m.dataDir, key)
 	if _, err := os.Stat(shared); err != nil {
@@ -236,7 +348,186 @@ func (m *Manager) sharedClip(key string, members []store.Paragraph, voiceID stri
 			return parts
 		}
 	}
-	return nil
+	if len(users) > 0 {
+		return nil
+	}
+	// Short of the retention the sweep deletes at, so a clip is never
+	// taken up as it is being swept.
+	orphan, err := m.store.ClipOrphan(key)
+	if err != nil || orphan == nil || time.Since(time.Unix(orphan.OrphanedAt, 0)) > clipkey.OrphanRetention-time.Hour {
+		return nil
+	}
+	// A group's clip needs every member's part to be taken up again.
+	if len(orphan.Parts) != len(members)-1 {
+		return nil
+	}
+	parts := []clipPart{{duration: orphan.DurationSeconds, wordTimings: orphan.WordTimings}}
+	for _, p := range orphan.Parts {
+		parts = append(parts, clipPart{pointerSeconds: p.PointerSeconds, duration: p.DurationSeconds, wordTimings: p.WordTimings})
+	}
+	return parts
+}
+
+// DiscardOrphanedClips deletes the shared clips left without a paragraph
+// since since - what an explicit "clear generation" calls after deleting
+// the rows, so the audio it cleared is rendered anew rather than found
+// again. Returns how many clips it deleted.
+func (m *Manager) DiscardOrphanedClips(since time.Time) int {
+	keys, err := m.store.ClipOrphansSince(since.Unix())
+	if err != nil {
+		log.Printf("jobs: list orphaned clips: %v", err)
+		return 0
+	}
+	m.clips.mu.Lock()
+	defer m.clips.mu.Unlock()
+	removed := 0
+	for _, key := range keys {
+		if users, err := m.store.ClipUsers(key); err != nil || len(users) > 0 {
+			continue
+		}
+		if err := audiopath.RemoveClip(audiopath.SharedClipFile(m.dataDir, key)); err != nil {
+			log.Printf("jobs: remove cleared clip %s: %v", key, err)
+			continue
+		}
+		removed++
+	}
+	if err := m.store.DeleteClipOrphans(keys); err != nil {
+		log.Printf("jobs: forget orphaned clips: %v", err)
+	}
+	return removed
+}
+
+// AdoptStaleClips deals with the clips still sitting at a paragraph's own
+// path. One kept under a voice its paragraph no longer uses - left from
+// before a re-attribution or a multi-voice switch - is dropped, row and
+// file: what it was rendered from isn't known any more, so it can't be
+// given a content key, and it would only play again if that exact voice
+// came back. One under its paragraph's current voice that AdoptSharedClips
+// passed over (its key's clip was unreadable at the time) gets that pass
+// again, chapter by chapter. Cheap when there is nothing to do, so it runs
+// on every startup. Returns how many clips it adopted and how many it
+// dropped.
+func (m *Manager) AdoptStaleClips(ctx context.Context) (adopted, dropped int) {
+	rows, err := m.store.KeylessClips()
+	if err != nil {
+		log.Printf("jobs: adopt stale clips: %v", err)
+		return 0, 0
+	}
+	books := map[string]*store.Book{}
+	current := map[string]string{} // book, speaker, index -> voice id
+	retry := map[string]string{}   // chapter id -> book id
+	var stale []store.ClipUser
+	for _, u := range rows {
+		if ctx.Err() != nil {
+			return 0, 0
+		}
+		book, ok := books[u.BookID]
+		if !ok {
+			book, _ = m.store.GetBook(u.BookID)
+			books[u.BookID] = book
+		}
+		p, err := m.store.GetParagraph(u.ParagraphID)
+		if err != nil || p == nil || book == nil {
+			continue
+		}
+		who := u.BookID + "\x00" + p.Speaker + "\x00" + strconv.Itoa(p.SpeakerIndex)
+		voiceID, ok := current[who]
+		if !ok {
+			v, err := m.narration.ForParagraph(book, p.Speaker, p.SpeakerIndex)
+			if err != nil {
+				continue
+			}
+			voiceID = v.VoiceID()
+			current[who] = voiceID
+		}
+		if voiceID == u.VoiceID {
+			retry[u.ChapterID] = u.BookID
+			continue
+		}
+		stale = append(stale, u)
+	}
+	if err := m.store.DeleteClipRows(stale); err != nil {
+		log.Printf("jobs: drop stale clips: %v", err)
+	} else {
+		for _, u := range stale {
+			_ = audiopath.RemoveClip(audiopath.Resolve(audiopath.ParagraphFile(m.dataDir, u.BookID, u.ChapterID, u.VoiceID, u.Idx)))
+			_ = audiopath.RemoveClip(audiopath.ParagraphFile(m.dataDir, u.BookID, u.ChapterID, u.VoiceID, u.Idx))
+		}
+		dropped = len(stale)
+	}
+	var stats AdoptStats
+	voiceOf := map[string]map[string]narration.ResolvedVoice{}
+	for chapterID, bookID := range retry {
+		ch, err := m.store.GetChapterByID(chapterID)
+		if err != nil || ch == nil || books[bookID] == nil || ctx.Err() != nil {
+			continue
+		}
+		if voiceOf[bookID] == nil {
+			voiceOf[bookID] = map[string]narration.ResolvedVoice{}
+		}
+		if err := m.adoptChapter(books[bookID], ch, voiceOf[bookID], &stats); err != nil {
+			log.Printf("jobs: adopt shared clips in chapter %s: %v", chapterID, err)
+		}
+	}
+	return stats.Adopted + stats.Deduplicated, dropped
+}
+
+// unsharedDroppedMarker is written once DropUnsharedClips has run.
+func unsharedDroppedMarker(dataDir string) string {
+	return filepath.Join(dataDir, "clips", ".unshared-dropped")
+}
+
+// DropUnsharedClips deletes, once, the clips an earlier version moved into
+// the store under a key of their own (unsharedKey) instead of dropping:
+// audio kept under a voice its paragraph no longer uses, whose recipe
+// wasn't known. Rows, files, and the pointer rows of any merge group among
+// them. Returns how many clips it dropped.
+func (m *Manager) DropUnsharedClips(ctx context.Context) int {
+	marker := unsharedDroppedMarker(m.dataDir)
+	if _, err := os.Stat(marker); err == nil {
+		return 0
+	}
+	rows, err := m.store.KeyedClips()
+	if err != nil {
+		log.Printf("jobs: drop unshared clips: %v", err)
+		return 0
+	}
+	var unshared []store.ClipUser
+	var keys []string
+	for _, u := range rows {
+		if u.State.ClipKey == unsharedKey(u.ParagraphID, u.VoiceID) {
+			unshared = append(unshared, u)
+			keys = append(keys, u.State.ClipKey)
+		}
+	}
+	if ctx.Err() != nil {
+		return 0
+	}
+	m.clips.mu.Lock()
+	defer m.clips.mu.Unlock()
+	if err := m.store.DeleteClipRows(unshared); err != nil {
+		log.Printf("jobs: drop unshared clips: %v", err)
+		return 0
+	}
+	for _, key := range keys {
+		if err := audiopath.RemoveClip(audiopath.SharedClipFile(m.dataDir, key)); err != nil {
+			log.Printf("jobs: drop unshared clip %s: %v", key, err)
+		}
+	}
+	// Losing its row recorded each as orphaned; the files are gone.
+	if err := m.store.DeleteClipOrphans(keys); err != nil {
+		log.Printf("jobs: drop unshared clips: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(marker), 0o755); err == nil {
+		_ = os.WriteFile(marker, nil, 0o644)
+	}
+	return len(unshared)
+}
+
+// unsharedKey is the key an earlier version gave a clip whose recipe
+// wasn't known: its own, from which paragraph and voice it was.
+func unsharedKey(paragraphID, voiceID string) string {
+	return clipkey.Recipe{CloneModel: "unshared", Reference: voiceID, Text: paragraphID}.Key(0)
 }
 
 // clipUserGroup is the n paragraphs u's clip plays for: u's own, and the
@@ -300,7 +591,13 @@ func (m *Manager) applyClipParts(members []store.Paragraph, voiceID, key string,
 				err = m.store.SetParagraphWordTimings(p.ID, voiceID, part.wordTimings)
 			}
 		default:
-			err = m.store.SetParagraphReadyClip(p.ID, voiceID, key, part.duration, part.wordTimings)
+			// The members' parts go on the anchor's row too, so the clip
+			// can still be described once their pointer rows are gone.
+			var later []store.ClipPart
+			for _, part := range parts[1:] {
+				later = append(later, store.ClipPart{PointerSeconds: part.pointerSeconds, DurationSeconds: part.duration, WordTimings: part.wordTimings})
+			}
+			err = m.store.SetParagraphReadyClip(p.ID, voiceID, key, part.duration, part.wordTimings, later)
 		}
 		if err != nil {
 			log.Printf("jobs: mark %s ready: %v", p.ID, err)
@@ -321,6 +618,10 @@ func (m *Manager) dropOwnClip(bookID, chapterID, voiceID string, idx int) {
 func (m *Manager) useSharedClip(t *task) bool {
 	members := taskMembers(t)
 	m.clips.mu.Lock()
+	if m.alreadyOn(t.clipKey, members[0], t.voiceID) {
+		m.clips.mu.Unlock()
+		return true
+	}
 	parts := m.sharedClip(t.clipKey, members, t.voiceID)
 	if parts != nil {
 		m.applyClipParts(members, t.voiceID, t.clipKey, parts)
@@ -483,7 +784,7 @@ func (m *Manager) adoptChapter(book *store.Book, ch *store.Chapter, voiceOf map[
 
 	for i, p := range all {
 		v, st := voicesByParagraph[i], states[p.ID]
-		if st.Status != store.AudioReady || st.PointerOffset != 0 || !sharableParagraph(p, v.PresetID) {
+		if st.Status != store.AudioReady || st.PointerOffset != 0 {
 			continue
 		}
 		voiceID := v.VoiceID()
@@ -503,27 +804,20 @@ func (m *Manager) adoptChapter(book *store.Book, ch *store.Chapter, voiceOf map[
 		for j := i + 1; j < len(all) && states[all[j].ID].PointerOffset == j-i && states[all[j].ID].Status == store.AudioReady; j++ {
 			members = append(members, all[j])
 		}
-		cloneModel := v.CloneModel
-		if cloneModel == "" {
-			cloneModel = voices.DefaultCloneModel
-		}
+		textModel := generationTextModel(v)
 		var key string
 		switch {
 		case len(members) > 1:
-			if v.PresetID == "" {
-				continue
-			}
-			recipe := m.clipRecipe(cloneModel, v.PresetID, "", v.Language, v.CloneInstruct, mergedGenerationText(members, cloneModel, lexicon), mergedAlignText(members))
-			key = recipe.Key(0)
+			key = m.voiceRecipe(v, "", mergedGenerationText(members, textModel, lexicon), mergedAlignText(members)).Key(0)
 		case p.Unvoiced():
 			key = silenceRecipe(p.Text).Key(0)
 		default:
 			emotion := ""
-			if e, known := emotions.Get(p.EffectiveEmotion()); known && voicerefs.VariantExists(m.dataDir, v.PresetID, e.ID) {
+			if e, known := emotions.Get(p.EffectiveEmotion()); known && v.PresetID != "" && voicerefs.VariantExists(m.dataDir, v.PresetID, e.ID) {
 				emotion = e.ID
 			}
-			recipe := m.clipRecipe(cloneModel, v.PresetID, emotion, v.Language, v.CloneInstruct, p.ResolveGenerationText(cloneModel, lexicon), p.Text)
-			key = recipe.Key(chapterTake(all, p.Idx, cloneModel, lexicon, book.MultiVoice()))
+			recipe := m.voiceRecipe(v, emotion, p.ResolveGenerationText(textModel, lexicon), p.Text)
+			key = recipe.Key(chapterTake(all, p.Idx, textModel, lexicon, book.MultiVoice()))
 		}
 		m.adoptClip(key, own, members, voiceID, stats)
 	}

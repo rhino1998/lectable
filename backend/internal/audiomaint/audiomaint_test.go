@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/latents"
 	"github.com/rhino1998/lectable/backend/internal/oggopus"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/wav"
@@ -189,6 +190,11 @@ func TestSweepOrphans(t *testing.T) {
 		audiopath.MusicRegionFile(data, "b", "c", "rescored-away"),
 		audiopath.AmbienceLoopFile(data, "b", "a place no longer used"),
 		filepath.Join(filepath.Dir(keep[0]), ".00007.opus.tmp-123"),
+		// In a voice directory that still has rows, but no ready row of
+		// its own: a paragraph whose audio is a shared clip now, or
+		// never finished.
+		audiopath.ParagraphFile(data, "b", "c", liveVoice, 3),
+		latents.Sidecar(audiopath.ParagraphFile(data, "b", "c", liveVoice, 3)),
 	}
 	for _, p := range append(keep, gone...) {
 		write(t, p, []byte("x"))
@@ -205,6 +211,7 @@ func TestSweepOrphans(t *testing.T) {
 		ChapterVoices:  map[string]map[string]bool{"c": {liveVoice: true}},
 		ChapterRegions: map[string]map[string]bool{"c": {"r1": true}},
 		BookAmbience:   map[string]map[string]bool{"b": {"ocean": true}},
+		OwnClips:       map[string]bool{store.OwnClipRef("c", liveVoice, 0): true},
 	}
 	stats := SweepOrphans(context.Background(), data, refs, time.Now().Add(-time.Hour))
 	for _, p := range keep {

@@ -8,7 +8,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/sched"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -239,6 +238,11 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 // paragraph pushed, which with lookahead requests arriving every few
 // seconds kept the store's single DB connection saturated. nil loads it.
 func (m *Manager) pushResolvedTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph, chapterParagraphs []store.Paragraph, source string) (key string) {
+	// An enqueue still walking a book after shutdown has nothing left to
+	// queue for, and would only create audio directories behind it.
+	if m.stopped() {
+		return ""
+	}
 	var group []store.Paragraph
 	if chapterParagraphs != nil {
 		group = scareQuoteRun(inlineParagraphSetIn(chapterParagraphs, rp.paragraph), rp.paragraph)
@@ -252,22 +256,13 @@ func (m *Manager) pushResolvedTask(bookID, chapterID string, chapterIdx, tier in
 }
 
 func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int, rp resolvedParagraph, chapterParagraphs []store.Paragraph, source string) (key string) {
-	if err := audiopath.EnsureVoiceDir(m.dataDir, bookID, chapterID, rp.voice.VoiceID()); err != nil {
-		log.Printf("jobs: create audio dir: %v", err)
-		return ""
-	}
 	kind := KindVoiceClone
 	if rp.voice.PresetID == "" {
 		kind = KindVoiceDesign
 	}
-	shared := sharableParagraph(rp.paragraph, rp.voice.PresetID)
 	take := 0
-	if shared && !rp.paragraph.Unvoiced() {
-		cloneModel := rp.voice.CloneModel
-		if cloneModel == "" {
-			cloneModel = voices.DefaultCloneModel
-		}
-		take = m.clipTake(bookID, chapterID, rp.paragraph, chapterParagraphs, cloneModel)
+	if !rp.paragraph.Unvoiced() {
+		take = m.clipTake(bookID, chapterID, rp.paragraph, chapterParagraphs, generationTextModel(rp.voice))
 	}
 	t := &task{
 		source:          source,
@@ -278,7 +273,7 @@ func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int,
 		chapterID:       chapterID,
 		voiceID:         rp.voice.VoiceID(),
 		paragraph:       rp.paragraph,
-		shared:          shared,
+		shared:          true,
 		fresh:           rp.fresh,
 		take:            take,
 		instruct:        rp.voice.Instruct,
@@ -290,6 +285,9 @@ func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int,
 		cloneModel:      rp.voice.CloneModel,
 		designModel:     rp.voice.DesignModel,
 		cloneInstruct:   rp.voice.CloneInstruct,
+	}
+	if m.resolveAtEnqueue(t) {
+		return ""
 	}
 	m.pushTask(t)
 	return t.Key()
@@ -303,10 +301,6 @@ func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int,
 // not-yet-ready member in turn) correctly dedups against the first rather
 // than queuing a second, competing task for the same group.
 func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int, voice narration.ResolvedVoice, members []store.Paragraph, fresh bool, source string) (key string) {
-	if err := audiopath.EnsureVoiceDir(m.dataDir, bookID, chapterID, voice.VoiceID()); err != nil {
-		log.Printf("jobs: create audio dir: %v", err)
-		return ""
-	}
 	kind := KindVoiceClone
 	if voice.PresetID == "" {
 		kind = KindVoiceDesign
@@ -321,7 +315,7 @@ func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int,
 		voiceID:         voice.VoiceID(),
 		paragraph:       members[0],
 		mergeParagraphs: members,
-		shared:          voice.PresetID != "",
+		shared:          true,
 		fresh:           fresh,
 		instruct:        voice.Instruct,
 		presetID:        voice.PresetID,
@@ -332,6 +326,9 @@ func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int,
 		cloneModel:      voice.CloneModel,
 		designModel:     voice.DesignModel,
 		cloneInstruct:   voice.CloneInstruct,
+	}
+	if m.resolveAtEnqueue(t) {
+		return ""
 	}
 	m.pushTask(t)
 	return t.Key()
@@ -588,7 +585,18 @@ func (m *Manager) enqueueChapter(ctx context.Context, bookID, chapterID string, 
 		resolved = limitResolvedByWordCount(resolved, wordLimit)
 	}
 	for _, rp := range resolved {
-		m.pushResolvedTask(bookID, chapterID, chapterIdx, TierBackground, rp, all, "")
+		m.joinGroup(ctx, m.pushResolvedTask(bookID, chapterID, chapterIdx, TierBackground, rp, all, ""))
+	}
+}
+
+// joinGroup makes the queued task at key a member of the group task ctx
+// runs under, if any (see withParent): it stays queued on its own request,
+// but is as urgent as its group for as long as the group runs - so
+// promoting a "generate" row promotes the audio it asked for, whenever
+// that was queued.
+func (m *Manager) joinGroup(ctx context.Context, key string) {
+	if parent := parentOf(ctx); parent != "" && key != "" {
+		m.sched.Join(parent, key)
 	}
 }
 

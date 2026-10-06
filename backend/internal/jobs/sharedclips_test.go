@@ -19,6 +19,18 @@ var repeatedChapter = []string{
 	"Fritz said.", "One.", "Two.", "Three.", "Four.", "Five.", "Six.", "Fritz said.", "Fritz said.",
 }
 
+// waitIdle waits for mgr to have nothing queued or running. "Generate this
+// chapter" is a task of its own that outlives the chapter's last clip by a
+// moment, and asking for the same chapter again before it is done only
+// joins it.
+func waitIdle(t *testing.T, mgr *Manager) {
+	t.Helper()
+	waitFor(t, 5*time.Second, func() bool {
+		inFlight, queued := mgr.Snapshot()
+		return len(inFlight)+len(queued) == 0
+	})
+}
+
 // clipKeys returns the shared clip each of chapterID's paragraphs is
 // ready on under voiceID, by Idx ("" for none).
 func clipKeys(t *testing.T, s *store.SQLiteStore, chapterID, voiceID string) ([]store.Paragraph, []store.AudioState) {
@@ -98,9 +110,10 @@ func TestRepeatedLinesShareAClipOutsideARun(t *testing.T) {
 	}
 }
 
-// A shared clip is only reused while a paragraph still uses it: clearing
-// the audio renders it again, and the sweep then drops the unused clip.
-func TestClearedSharedClipIsRenderedAgainAndSwept(t *testing.T) {
+// A clip outlives its last paragraph: the same reading wanted again is
+// found, not rendered - unless the audio was cleared on purpose
+// (DiscardOrphanedClips), or the clip has sat unused past its retention.
+func TestOrphanedSharedClipIsReusedUntilDiscarded(t *testing.T) {
 	fake := ttsworkertest.New(t)
 	s := openTestStore(t)
 	dataDir := t.TempDir()
@@ -110,18 +123,18 @@ func TestClearedSharedClipIsRenderedAgainAndSwept(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	mgr.Start(ctx)
-	mgr.EnqueueChapter(book.ID, chapterID, 0)
 	bookVoice, err := mgr.narration.BookVoice(book)
 	if err != nil {
 		t.Fatalf("BookVoice: %v", err)
 	}
 	voiceID := bookVoice.VoiceID()
-	waitFor(t, 5*time.Second, func() bool { return allParagraphsReady(t, s, chapterID, voiceID) })
-
-	_, states := clipKeys(t, s, chapterID, voiceID)
-	key := states[0].ClipKey
-	if key == "" {
-		t.Fatal("the paragraph isn't on a shared clip")
+	narrate := func() store.AudioState {
+		t.Helper()
+		waitIdle(t, mgr)
+		mgr.EnqueueChapter(book.ID, chapterID, 0)
+		waitFor(t, 5*time.Second, func() bool { return allParagraphsReady(t, s, chapterID, voiceID) })
+		_, states := clipKeys(t, s, chapterID, voiceID)
+		return states[0]
 	}
 	sweep := func(cutoff time.Time) int {
 		inUse, err := s.ClipKeys()
@@ -130,33 +143,53 @@ func TestClearedSharedClipIsRenderedAgainAndSwept(t *testing.T) {
 		}
 		return audiomaint.SweepSharedClips(ctx, dataDir, func(key string) bool { return !inUse[key] }, cutoff).Removed
 	}
+
+	first := narrate()
+	if first.ClipKey == "" {
+		t.Fatal("the paragraph isn't on a shared clip")
+	}
 	if n := sweep(time.Now().Add(time.Minute)); n != 0 {
 		t.Errorf("sweep removed %d clips still in use", n)
 	}
 
-	// What "clear generation" does to the rows.
+	// The rows go, as on a voice change or a reimport: the clip stays.
+	if err := s.DeleteChapterAudio(chapterID); err != nil {
+		t.Fatalf("DeleteChapterAudio: %v", err)
+	}
+	calls := len(fake.GenerateCalls())
+	again := narrate()
+	if got := len(fake.GenerateCalls()); got != calls {
+		t.Errorf("got %d Generate calls, want %d: the orphaned clip should have been found", got, calls)
+	}
+	if again.ClipKey != first.ClipKey || again.DurationSeconds != first.DurationSeconds || again.WordTimings != first.WordTimings {
+		t.Errorf("reused clip %q (%vs), want %q (%vs) with its word timings", again.ClipKey, again.DurationSeconds, first.ClipKey, first.DurationSeconds)
+	}
+
+	// An explicit clear discards what it orphaned, so it renders anew.
+	cleared := time.Now().Add(-time.Second)
+	if err := s.DeleteChapterAudio(chapterID); err != nil {
+		t.Fatalf("DeleteChapterAudio: %v", err)
+	}
+	if n := mgr.DiscardOrphanedClips(cleared); n != 1 {
+		t.Errorf("discarded %d clips, want 1", n)
+	}
+	if _, err := os.Stat(audiopath.SharedClipFile(dataDir, first.ClipKey)); !os.IsNotExist(err) {
+		t.Errorf("discarded clip still on disk: %v", err)
+	}
+	narrate()
+	if got := len(fake.GenerateCalls()); got != calls+1 {
+		t.Errorf("got %d Generate calls after an explicit clear, want %d", got, calls+1)
+	}
+
+	// Left unused, the clip is swept once it is old enough.
 	if err := s.DeleteChapterAudio(chapterID); err != nil {
 		t.Fatalf("DeleteChapterAudio: %v", err)
 	}
 	if n := sweep(time.Now().Add(-time.Hour)); n != 0 {
 		t.Errorf("sweep removed %d clips newer than its cutoff", n)
 	}
-
-	calls := len(fake.GenerateCalls())
-	mgr.EnqueueChapter(book.ID, chapterID, 0)
-	waitFor(t, 5*time.Second, func() bool { return allParagraphsReady(t, s, chapterID, voiceID) })
-	if got := len(fake.GenerateCalls()); got != calls+1 {
-		t.Errorf("got %d Generate calls after clearing, want %d: a clip nothing uses must not be reused", got, calls+1)
-	}
-
-	if err := s.DeleteChapterAudio(chapterID); err != nil {
-		t.Fatalf("DeleteChapterAudio: %v", err)
-	}
 	if n := sweep(time.Now().Add(time.Minute)); n == 0 {
-		t.Fatal("sweep left the unused clip")
-	}
-	if _, err := os.Stat(audiopath.SharedClipFile(dataDir, key)); !os.IsNotExist(err) {
-		t.Errorf("swept clip still on disk: %v", err)
+		t.Error("sweep left the unused clip")
 	}
 }
 
@@ -267,5 +300,201 @@ func TestRepeatedMergeGroupsShareAClip(t *testing.T) {
 	}
 	if merged != 1 {
 		t.Errorf("the merged text was generated %d times, want once", merged)
+	}
+}
+
+// A clip kept at its own path under a voice its paragraph no longer uses
+// is dropped; one under the current voice that the first adoption missed
+// gets its content key.
+func TestAdoptStaleClips(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	s := openTestStore(t)
+	dataDir := t.TempDir()
+	mgr := NewManager(s, fake.Manager(), dataDir)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "A line.")
+	bookVoice, err := mgr.narration.BookVoice(book)
+	if err != nil {
+		t.Fatalf("BookVoice: %v", err)
+	}
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatalf("ListParagraphsRaw: %v", err)
+	}
+	p := paragraphs[0]
+	const oldVoice = "0000000000000000"
+	for _, voiceID := range []string{oldVoice, bookVoice.VoiceID()} {
+		own := audiopath.ParagraphFile(dataDir, book.ID, chapterID, voiceID, p.Idx)
+		if err := audiopath.EnsureDir(own); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(own, []byte(voiceID), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetParagraphReady(p.ID, voiceID, 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if adopted, dropped := mgr.AdoptStaleClips(t.Context()); adopted != 1 || dropped != 1 {
+		t.Fatalf("adopted %d and dropped %d, want 1 and 1", adopted, dropped)
+	}
+	states, err := s.ParagraphAudioStatuses([]string{p.ID}, oldVoice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st, ok := states[p.ID]; ok {
+		t.Errorf("the old voice's row is still there (%s)", st.Status)
+	}
+	if _, err := os.Stat(audiopath.ParagraphFile(dataDir, book.ID, chapterID, oldVoice, p.Idx)); !os.IsNotExist(err) {
+		t.Errorf("the old voice's clip is still on disk: %v", err)
+	}
+	_, current := clipKeys(t, s, chapterID, bookVoice.VoiceID())
+	if current[0].Status != store.AudioReady || current[0].ClipKey == "" {
+		t.Errorf("the current voice's clip is %s on %q, want ready on a content key", current[0].Status, current[0].ClipKey)
+	}
+	if adopted, dropped := mgr.AdoptStaleClips(t.Context()); adopted+dropped != 0 {
+		t.Errorf("a second run adopted %d and dropped %d", adopted, dropped)
+	}
+}
+
+// Clips an earlier version keyed privately are dropped, rows and files;
+// content-keyed ones are untouched.
+func TestDropUnsharedClips(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	s := openTestStore(t)
+	dataDir := t.TempDir()
+	mgr := NewManager(s, fake.Manager(), dataDir)
+	_, chapterID := createBookAndChapter(t, s, "", 0, "A line.", "Another line.")
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatalf("ListParagraphsRaw: %v", err)
+	}
+	const voiceID = "0000000000000000"
+	keys := []string{unsharedKey(paragraphs[0].ID, voiceID), "0123456789abcdef0123456789abcdef"}
+	for i, p := range paragraphs {
+		file := audiopath.SharedClipFile(dataDir, keys[i])
+		if err := audiopath.EnsureDir(file); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte{byte(i)}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetParagraphReadyClip(p.ID, voiceID, keys[i], 3, "", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if n := mgr.DropUnsharedClips(t.Context()); n != 1 {
+		t.Fatalf("dropped %d clips, want the 1 keyed privately", n)
+	}
+	_, states := clipKeys(t, s, chapterID, voiceID)
+	if states[0].Status != "" {
+		t.Errorf("the privately keyed row is still there (%s)", states[0].Status)
+	}
+	if _, err := os.Stat(audiopath.SharedClipFile(dataDir, keys[0])); !os.IsNotExist(err) {
+		t.Errorf("the privately keyed clip is still on disk: %v", err)
+	}
+	if orphan, err := s.ClipOrphan(keys[0]); err != nil || orphan != nil {
+		t.Errorf("the dropped clip left an orphan record: %+v, %v", orphan, err)
+	}
+	if states[1].Status != store.AudioReady || states[1].ClipKey != keys[1] {
+		t.Errorf("the content-keyed row is %s on %q, want it untouched", states[1].Status, states[1].ClipKey)
+	}
+	if _, err := os.Stat(audiopath.SharedClipFile(dataDir, keys[1])); err != nil {
+		t.Errorf("the content-keyed clip: %v", err)
+	}
+	if n := mgr.DropUnsharedClips(t.Context()); n != 0 {
+		t.Errorf("a second run dropped %d", n)
+	}
+}
+
+// A paragraph whose clip already exists, and that waits on nothing, is
+// put on it as it is enqueued: no task is queued for it at all.
+func TestExistingClipResolvesAtEnqueue(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	s := openTestStore(t)
+	dataDir := t.TempDir()
+	mgr := NewManager(s, fake.Manager(), dataDir)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "The only paragraph.")
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	mgr.Start(ctx)
+	mgr.EnqueueChapter(book.ID, chapterID, 0)
+	bookVoice, err := mgr.narration.BookVoice(book)
+	if err != nil {
+		t.Fatalf("BookVoice: %v", err)
+	}
+	voiceID := bookVoice.VoiceID()
+	waitFor(t, 5*time.Second, func() bool { return allParagraphsReady(t, s, chapterID, voiceID) })
+	waitIdle(t, mgr)
+	_, before := clipKeys(t, s, chapterID, voiceID)
+
+	if err := s.DeleteChapterAudio(chapterID); err != nil {
+		t.Fatalf("DeleteChapterAudio: %v", err)
+	}
+	pending, all, err := mgr.paragraphsNeedingGeneration(ctx, book, chapterID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("paragraphsNeedingGeneration: %d pending, %v", len(pending), err)
+	}
+	calls := len(fake.GenerateCalls())
+	if key := mgr.pushResolvedTask(book.ID, chapterID, 0, TierBackground, pending[0], all, ""); key != "" {
+		t.Errorf("a task (%s) was queued for a paragraph whose clip exists", key)
+	}
+	_, after := clipKeys(t, s, chapterID, voiceID)
+	if after[0].Status != store.AudioReady || after[0].ClipKey != before[0].ClipKey {
+		t.Errorf("after enqueue the paragraph is %s on %q, want ready on %q", after[0].Status, after[0].ClipKey, before[0].ClipKey)
+	}
+	if got := len(fake.GenerateCalls()); got != calls {
+		t.Errorf("got %d Generate calls, want %d", got, calls)
+	}
+}
+
+// A merge group's clip is found again after its rows are gone, members'
+// pointers and all.
+func TestOrphanedMergeGroupClipIsReused(t *testing.T) {
+	fake := ttsworkertest.New(t)
+	wordConsistentTTS(t, fake)
+	s := openTestStore(t)
+	dataDir := t.TempDir()
+	mgr := NewManager(s, fake.Manager(), dataDir)
+	book, chapterID := createBookWithBlocks(t, s, scareQuoteTestBlocks()...)
+	if err := s.SetParagraphScareQuotes(chapterID, map[int]bool{1: true}); err != nil {
+		t.Fatalf("SetParagraphScareQuotes: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	mgr.Start(ctx)
+	bookVoice, err := mgr.narration.BookVoice(book)
+	if err != nil {
+		t.Fatalf("BookVoice: %v", err)
+	}
+	voiceID := bookVoice.VoiceID()
+	narrate := func() []store.AudioState {
+		t.Helper()
+		waitIdle(t, mgr)
+		mgr.EnqueueChapter(book.ID, chapterID, 0)
+		waitFor(t, 5*time.Second, func() bool { return allParagraphsReady(t, s, chapterID, voiceID) })
+		_, states := clipKeys(t, s, chapterID, voiceID)
+		return states
+	}
+	first := narrate()
+	waitIdle(t, mgr)
+	calls := len(fake.GenerateCalls())
+	if err := s.DeleteChapterAudio(chapterID); err != nil {
+		t.Fatalf("DeleteChapterAudio: %v", err)
+	}
+	again := narrate()
+	waitIdle(t, mgr)
+	if got := len(fake.GenerateCalls()); got != calls {
+		t.Errorf("got %d Generate calls, want %d: the group's clip should have been found", got, calls)
+	}
+	for i := 0; i <= 2; i++ {
+		a, b := first[i], again[i]
+		if b.ClipKey != a.ClipKey || b.PointerOffset != a.PointerOffset || b.PointerSeconds != a.PointerSeconds ||
+			b.DurationSeconds != a.DurationSeconds || b.WordTimings != a.WordTimings {
+			t.Errorf("member %d came back as %+v, want %+v", i, b, a)
+		}
 	}
 }

@@ -68,7 +68,7 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 	}
 	// KindVoiceProvision likewise has no backing paragraph - see
 	// EnqueueVoiceProvision's own doc comment.
-	if t.kind == KindVoiceProvision {
+	if t.kind == KindVoiceProvision || t.kind == KindRecapNarration {
 		go func() {
 			presetID, err := t.runProvision(ctx, t.attempt)
 			ch <- taskResult{presetID: presetID, err: err}
@@ -216,7 +216,7 @@ func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []tts
 	if unvoicedTask(t) {
 		t.clipKey, t.clipHit = "", false
 		if t.shared {
-			t.clipKey = silenceRecipe(t.paragraph.Text).Key(0)
+			t.clipKey = m.taskClipKey(t, nil, "")
 			if m.claimSharedClip(ctx, t); t.clipHit {
 				return ttsworker.Audio{}, []ttsproto.Word{}, nil
 			}
@@ -240,6 +240,13 @@ func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []tts
 		text := t.paragraph.ResolveGenerationText("", lexicon)
 		if len(t.mergeParagraphs) > 1 {
 			text = mergedGenerationText(t.mergeParagraphs, "", lexicon)
+		}
+		t.clipKey, t.clipHit = "", false
+		if t.shared {
+			t.clipKey = m.taskClipKey(t, lexicon, "")
+			if m.claimSharedClip(ctx, t); t.clipHit {
+				return ttsworker.Audio{}, nil, nil
+			}
 		}
 		audio, err := m.tts.Design(ctx, text, t.instruct, t.language, t.designModel, seed)
 		return ttsworker.Audio{WAV: audio}, nil, err
@@ -293,11 +300,7 @@ func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []tts
 	}
 	t.clipKey, t.clipHit = "", false
 	if t.shared {
-		recipe := m.clipRecipe(cloneModel, t.presetID, emotion, t.language, t.cloneInstruct, text, t.paragraph.Text)
-		if len(t.mergeParagraphs) > 1 {
-			recipe.AlignText = mergedAlignText(t.mergeParagraphs)
-		}
-		t.clipKey = recipe.Key(t.take)
+		t.clipKey = m.taskClipKey(t, lexicon, emotion)
 		if m.claimSharedClip(ctx, t); t.clipHit {
 			return ttsworker.Audio{}, nil, nil
 		}
@@ -330,6 +333,15 @@ func (m *Manager) emotionVariant(t *task) (emotion, path, refLine string, ok boo
 
 func (m *Manager) finishResult(t *task, result taskResult) (final bool, err error) {
 	logTaskTiming(t, result.err)
+	if t.kind != KindVoiceClone && t.kind != KindVoiceDesign {
+		ran := t.ranBefore + time.Since(t.startedAt)
+		switch {
+		case result.requeue != nil:
+			t.ranBefore = ran
+		case result.err == nil:
+			m.durations.record(t.kind, ran)
+		}
+	}
 	if result.err == nil && !t.clipHit {
 		// An unparseable clip just counts for no audio (wav.Duration's 0).
 		audio, _ := wav.Duration(result.audio)
@@ -440,9 +452,9 @@ func (m *Manager) finishResult(t *task, result taskResult) (final bool, err erro
 		m.MaybeAdvanceChapterMusic(t.bookID, t.chapterID)
 		return true, result.err
 	}
-	if t.kind == KindVoiceProvision {
+	if t.kind == KindVoiceProvision || t.kind == KindRecapNarration {
 		if retryEligible(t, result.err) {
-			log.Printf("jobs: voice provision task %s failed (attempt %d/%d), retrying via queue: %v", t.dedupKey(), t.attempt+1, maxTaskAttempts, result.err)
+			log.Printf("jobs: %s task %s failed (attempt %d/%d), retrying via queue: %v", t.kind, t.dedupKey(), t.attempt+1, maxTaskAttempts, result.err)
 			return false, result.err
 		}
 		// Deliver to any RunVoiceProvision callers currently waiting
@@ -458,7 +470,7 @@ func (m *Manager) finishResult(t *task, result taskResult) (final bool, err erro
 			waiter <- outcome
 		}
 		if result.err != nil {
-			log.Printf("jobs: voice provision task %s failed: %v", t.dedupKey(), result.err)
+			log.Printf("jobs: %s task %s failed: %v", t.kind, t.dedupKey(), result.err)
 		}
 		return true, result.err
 	}
@@ -524,6 +536,11 @@ func (m *Manager) finishResult(t *task, result taskResult) (final bool, err erro
 		}
 		m.failParagraph(t, t.paragraph, result.err)
 		return true, result.err
+	}
+	// A render that comes back after shutdown isn't saved: the store may
+	// already be closed, and a clip without its row is just a stray file.
+	if m.stopped() {
+		return true, context.Canceled
 	}
 	if fresh, stale := m.refreshStaleGeneration(t); stale {
 		log.Printf("jobs: paragraph %s generation text changed while generating, discarding and requeueing", t.paragraph.ID)
@@ -656,7 +673,12 @@ func (m *Manager) saveParagraphAudio(t *task, paragraph store.Paragraph, audio [
 		}
 	}
 	if !saved {
-		if err := audiopath.WriteClipLatents(outPath, audio, lat); err != nil {
+		// Only when the shared store couldn't take it.
+		err := audiopath.EnsureDir(outPath)
+		if err == nil {
+			err = audiopath.WriteClipLatents(outPath, audio, lat)
+		}
+		if err != nil {
 			log.Printf("jobs: write audio file: %v", err)
 			_ = m.store.SetParagraphError(paragraph.ID, t.voiceID, "failed to save audio: "+err.Error())
 			return
@@ -812,7 +834,11 @@ func (m *Manager) handleMergedResult(t *task, mergedAudio []byte, mergedLatents 
 	if !saved {
 		anchor := t.mergeParagraphs[0]
 		outPath := audiopath.ParagraphFile(m.dataDir, t.bookID, t.chapterID, t.voiceID, anchor.Idx)
-		if err := audiopath.WriteClipLatents(outPath, mergedAudio, mergedLatents); err != nil {
+		err := audiopath.EnsureDir(outPath)
+		if err == nil {
+			err = audiopath.WriteClipLatents(outPath, mergedAudio, mergedLatents)
+		}
+		if err != nil {
 			log.Printf("jobs: write merged audio file: %v", err)
 			for _, p := range t.mergeParagraphs {
 				m.failParagraph(t, p, fmt.Errorf("failed to save audio: %w", err))
@@ -891,7 +917,8 @@ func (m *Manager) generateIndependently(t *task) {
 				m.failParagraph(t, p, err)
 				continue
 			}
-			m.saveParagraphAudio(t, p, audio, nil, nil)
+			recipe := designRecipe(t.designModel, t.instruct, t.seed, t.language, p.Text, p.Text)
+			m.saveIndependent(t, p, recipe.Key(m.clipTake(t.bookID, t.chapterID, p, nil, "")), audio, nil, nil)
 		}
 		return
 	}
@@ -917,6 +944,17 @@ func (m *Manager) generateIndependently(t *task) {
 			m.failParagraph(t, p, err)
 			continue
 		}
-		m.saveParagraphAudio(t, p, audio.WAV, audio.Latents, words)
+		recipe := m.clipRecipe(cloneModel, t.presetID, "", t.language, t.cloneInstruct, text, p.Text)
+		m.saveIndependent(t, p, recipe.Key(m.clipTake(t.bookID, t.chapterID, p, nil, cloneModel)), audio.WAV, audio.Latents, words)
 	}
+}
+
+// saveIndependent saves the clip generateIndependently rendered for one
+// member of t's merge group on its own, under key - that paragraph's own
+// content key, as if it had never been part of a group.
+func (m *Manager) saveIndependent(t *task, p store.Paragraph, key string, audio []byte, lat *ttsproto.Latents, words []ttsproto.Word) {
+	single := *t
+	single.paragraph, single.mergeParagraphs = p, nil
+	single.clipKey, single.clipHit, single.claimed, single.fresh = key, false, "", false
+	m.saveParagraphAudio(&single, p, audio, lat, words)
 }

@@ -870,15 +870,8 @@ func (s *Server) invalidateAudioForVoicePreset(preset store.VoicePreset) {
 			voiceIDs[store.VoiceID(preset.ID, b.VoiceInstruct, b.VoiceLanguage)] = true
 		}
 		for voiceID := range voiceIDs {
-			refs, derr := s.Store.DeleteParagraphAudioByVoiceID(b.ID, voiceID)
-			if derr != nil {
+			if _, derr := s.Store.DeleteParagraphAudioByVoiceID(b.ID, voiceID); derr != nil {
 				log.Printf("httpapi: could not invalidate audio for voice %q in book %s: %v", preset.Name, b.ID, derr)
-				continue
-			}
-			for _, ref := range refs {
-				if rerr := audiopath.RemoveClip(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil {
-					log.Printf("httpapi: remove stale audio file for voice %q: %v", preset.Name, rerr)
-				}
 			}
 		}
 	}

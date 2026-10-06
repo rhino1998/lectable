@@ -17,11 +17,16 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"time"
 )
 
 // RunWindow is how many paragraphs back an identical line still counts as
 // part of the same run, and so gets the next take instead of take 0.
 const RunWindow = 5
+
+// OrphanRetention is how long a clip no paragraph uses any more is kept
+// in case the same reading is wanted again.
+const OrphanRetention = 7 * 24 * time.Hour
 
 // version is hashed into every key: bump it when a Recipe field changes
 // meaning, so clips keyed the old way are never mistaken for the new.

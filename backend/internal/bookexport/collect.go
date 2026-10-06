@@ -261,8 +261,11 @@ func (c *collector) chapterExtras(ch *store.Chapter, paragraphs []store.Paragrap
 		if r.Ambience != "" && !c.ambience[r.Ambience] {
 			c.ambience[r.Ambience] = true
 			loop := audiopath.AmbienceLoopFile(c.src.DataDir, ch.BookID, r.Ambience)
-			if _, err := os.Stat(latents.Sidecar(loop)); err == nil && c.latents {
-				c.addExtra(latents.Sidecar(loop)) // rebuilt when next needed (jobs.ambienceLoop)
+			// As latents wherever it has them - what the library itself
+			// keeps (jobs.ambienceLoop rebuilds the loop when a region
+			// needs it); only a loop from before latents is still a WAV.
+			if _, err := os.Stat(latents.Sidecar(loop)); err == nil {
+				c.addExtra(latents.Sidecar(loop))
 			} else {
 				c.addExtra(loop)
 			}

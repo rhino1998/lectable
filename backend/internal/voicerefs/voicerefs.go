@@ -94,6 +94,11 @@ func Regenerate(ctx context.Context, tts *ttsworker.Manager, dataDir, presetID, 
 	if err != nil {
 		return "", err
 	}
+	// A render that finished as the caller gave up isn't saved: at
+	// shutdown the data dir may be going away under it.
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	return save(dataDir, presetID, data)
 }
 

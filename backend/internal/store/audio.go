@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"strconv"
 	"strings"
 )
 
@@ -145,7 +146,7 @@ func (s *SQLiteStore) GetParagraphAudioStatus(paragraphID, voiceID string) (stri
 // audio of its own again.
 func (s *SQLiteStore) upsertParagraphAudio(paragraphID, voiceID, status, errMsg string, durationSeconds float64) error {
 	res, err := s.db.Exec(
-		`UPDATE paragraph_audio SET status = ?, error = ?, duration_seconds = ?, pointer_offset = 0, pointer_seconds = 0, clip_key = '' WHERE paragraph_id = ? AND voice_id = ?`,
+		`UPDATE paragraph_audio SET status = ?, error = ?, duration_seconds = ?, pointer_offset = 0, pointer_seconds = 0, clip_key = '', clip_parts = '' WHERE paragraph_id = ? AND voice_id = ?`,
 		status, errMsg, durationSeconds, paragraphID, voiceID,
 	)
 	if err != nil {
@@ -190,7 +191,7 @@ func (s *SQLiteStore) SetParagraphReady(id, voiceID string, durationSeconds floa
 // "current" for highlighting/position-reporting).
 func (s *SQLiteStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset int, pointerSeconds, durationSeconds float64) error {
 	res, err := s.db.Exec(
-		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = ?, pointer_offset = ?, pointer_seconds = ?, clip_key = '' WHERE paragraph_id = ? AND voice_id = ?`,
+		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = ?, pointer_offset = ?, pointer_seconds = ?, clip_key = '', clip_parts = '' WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioReady, durationSeconds, pointerOffset, pointerSeconds, id, voiceID,
 	)
 	if err != nil {
@@ -257,7 +258,7 @@ func (s *SQLiteStore) SetParagraphError(id, voiceID, message string) error {
 // value must never survive past this reset).
 func (s *SQLiteStore) ResetParagraphAudio(id, voiceID string) error {
 	res, err := s.db.Exec(
-		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = 0, word_timings = '[]', pointer_offset = 0, pointer_seconds = 0, clip_key = '' WHERE paragraph_id = ? AND voice_id = ?`,
+		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = 0, word_timings = '[]', pointer_offset = 0, pointer_seconds = 0, clip_key = '', clip_parts = '' WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioPending, id, voiceID,
 	)
 	if err != nil {
@@ -329,6 +330,19 @@ type AudioRefs struct {
 	// BookAmbience holds, per book, every non-empty ambience prompt a
 	// region uses (see audiopath.AmbienceLoopFile).
 	BookAmbience map[string]map[string]bool
+	// OwnClips holds every (chapter, voice, paragraph idx) with a ready
+	// paragraph_audio row that isn't a merge group's pointer, as
+	// OwnClipRef gives it - the only slots a file at a paragraph's own
+	// path (audiopath.ParagraphFile) can still be the audio of. Nearly all
+	// of those rows name a shared clip instead, but one may still be
+	// served from its own path (audiopath.NarrationClipFile), so none of
+	// their files are orphans.
+	OwnClips map[string]bool
+}
+
+// OwnClipRef is AudioRefs.OwnClips' key.
+func OwnClipRef(chapterID, voiceID string, idx int) string {
+	return chapterID + "/" + voiceID + "/" + strconv.Itoa(idx)
 }
 
 // AudioRefs reads the whole library's AudioRefs in four scans.
@@ -339,6 +353,7 @@ func (s *SQLiteStore) AudioRefs() (AudioRefs, error) {
 		ChapterVoices:  map[string]map[string]bool{},
 		ChapterRegions: map[string]map[string]bool{},
 		BookAmbience:   map[string]map[string]bool{},
+		OwnClips:       map[string]bool{},
 	}
 	addTo := func(m map[string]map[string]bool, k, v string) {
 		if m[k] == nil {
@@ -378,6 +393,14 @@ func (s *SQLiteStore) AudioRefs() (AudioRefs, error) {
 	}
 	if err := scan(`SELECT DISTINCT chapter_id, voice_id FROM paragraph_audio WHERE chapter_id <> ''`, func(chapterID, voiceID, _ string) {
 		addTo(refs.ChapterVoices, chapterID, voiceID)
+	}); err != nil {
+		return refs, err
+	}
+	if err := scan(`SELECT p.chapter_id, pa.voice_id, p.idx FROM paragraph_audio pa JOIN paragraphs p ON p.id = pa.paragraph_id
+		WHERE pa.status = 'ready' AND pa.pointer_offset = 0`, func(chapterID, voiceID, idx string) {
+		if n, err := strconv.Atoi(idx); err == nil {
+			refs.OwnClips[OwnClipRef(chapterID, voiceID, n)] = true
+		}
 	}); err != nil {
 		return refs, err
 	}
@@ -598,7 +621,9 @@ func (s *SQLiteStore) DeleteParagraphAudioByVoiceID(bookID, voiceID string) ([]S
 // known and can be extrapolated across the rest of the (mostly ungenerated)
 // text.
 type NarrationStats struct {
-	TotalChars   int64
+	TotalChars int64
+	// TotalWords counts the text's words as its space-separated runs.
+	TotalWords   int64
 	ReadyChars   int64
 	ReadySeconds float64
 }

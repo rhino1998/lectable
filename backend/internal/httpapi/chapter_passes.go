@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -742,9 +741,8 @@ func (s *Server) invalidateParagraphAudio(book *store.Book, paragraphs []store.P
 			continue
 		}
 		voiceID := voice.VoiceID()
-		if err := audiopath.RemoveClip(audiopath.ParagraphFile(s.DataDir, book.ID, p.ChapterID, voiceID, p.Idx)); err != nil {
-			log.Printf("invalidateParagraphAudio: remove audio file for paragraph %s: %v", p.ID, err)
-		}
+		// The row is all there is to reset: its clip is a shared one,
+		// kept or swept by the store (see jobs' sharedclips.go).
 		if err := s.Store.ResetParagraphAudio(p.ID, voiceID); err != nil {
 			log.Printf("invalidateParagraphAudio: reset paragraph %s: %v", p.ID, err)
 		}
@@ -988,14 +986,8 @@ func (s *Server) pronounceChapterRange(ctx context.Context, book *store.Book, ch
 		return 0, nil, serr
 	}
 	if len(touched) > 0 {
-		refs, derr := s.Store.DeleteParagraphAudioForIdxs(book.ID, ch.ID, touched)
-		if derr != nil {
+		if _, derr := s.Store.DeleteParagraphAudioForIdxs(book.ID, ch.ID, touched); derr != nil {
 			log.Printf("pronounceChapter: invalidate audio for chapter %s: %v", ch.ID, derr)
-		}
-		for _, ref := range refs {
-			if rerr := audiopath.RemoveClip(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil {
-				log.Printf("pronounceChapter: remove stale audio file: %v", rerr)
-			}
 		}
 	}
 	if resolveErr != nil {

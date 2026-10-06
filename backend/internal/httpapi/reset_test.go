@@ -2,10 +2,14 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/store"
 )
 
 // TestResetAttributionClearsSpeakersAndStaleAudio checks POST
@@ -31,10 +35,11 @@ func TestResetAttributionClearsSpeakersAndStaleAudio(t *testing.T) {
 	}
 	files := make([]string, len(paragraphs))
 	for i, p := range paragraphs {
-		if err := s.SetParagraphReady(p.ID, "voice-x", 1); err != nil {
-			t.Fatalf("SetParagraphReady: %v", err)
+		key := fmt.Sprintf("%032x", i+1)
+		if err := s.SetParagraphReadyClip(p.ID, "voice-x", key, 1, "", nil); err != nil {
+			t.Fatalf("SetParagraphReadyClip: %v", err)
 		}
-		files[i] = srv.paragraphAudioPath(bookID, ch.ID, "voice-x", p.Idx)
+		files[i] = audiopath.SharedClipFile(srv.DataDir, key)
 		if err := os.MkdirAll(filepath.Dir(files[i]), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -63,11 +68,22 @@ func TestResetAttributionClearsSpeakersAndStaleAudio(t *testing.T) {
 	if p0.Speaker != "" {
 		t.Fatalf("speaker %q after reset, want \"\"", p0.Speaker)
 	}
-	if _, err := os.Stat(files[0]); !os.IsNotExist(err) {
-		t.Fatalf("expected Alice's audio file removed, stat err %v", err)
+	states, err := s.ParagraphAudioStatuses([]string{paragraphs[0].ID, paragraphs[1].ID}, "voice-x")
+	if err != nil {
+		t.Fatalf("ParagraphAudioStatuses: %v", err)
 	}
-	if _, err := os.Stat(files[1]); err != nil {
-		t.Fatalf("expected narration audio file kept: %v", err)
+	if st, ok := states[paragraphs[0].ID]; ok {
+		t.Fatalf("Alice's line still has audio (%s) after the reset", st.Status)
+	}
+	if states[paragraphs[1].ID].Status != store.AudioReady {
+		t.Fatalf("the narration's audio is %q, want it kept", states[paragraphs[1].ID].Status)
+	}
+	// Neither clip is deleted with its row: an unused one is kept a while
+	// in case the same reading is wanted again, then swept.
+	for i, file := range files {
+		if _, err := os.Stat(file); err != nil {
+			t.Fatalf("clip %d: %v", i, err)
+		}
 	}
 	ch, err = s.GetChapterByID(ch.ID)
 	if err != nil {

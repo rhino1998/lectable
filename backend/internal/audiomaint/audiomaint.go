@@ -14,11 +14,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
+	"github.com/rhino1998/lectable/backend/internal/clipkey"
 	"github.com/rhino1998/lectable/backend/internal/latents"
 	"github.com/rhino1998/lectable/backend/internal/musicgen"
 	"github.com/rhino1998/lectable/backend/internal/oggopus"
@@ -59,18 +61,41 @@ func Run(ctx context.Context, dataDir string, st store.Store) {
 		// The list is only a first pass: a clip can gain a user while the
 		// sweep runs (adoption moves in files with old mtimes), so each
 		// candidate is asked about again before it goes.
+		// A clip its last paragraph left behind is kept for
+		// clipkey.OrphanRetention in case that reading is wanted again.
+		var expired []string
 		unused := func(key string) bool {
 			if inUse[key] {
 				return false
 			}
-			users, err := st.ClipUsers(key)
-			return err == nil && len(users) == 0
+			if users, err := st.ClipUsers(key); err != nil || len(users) > 0 {
+				return false
+			}
+			orphan, err := st.ClipOrphan(key)
+			if err != nil {
+				return false
+			}
+			if orphan == nil {
+				return true
+			}
+			if time.Since(time.Unix(orphan.OrphanedAt, 0)) < clipkey.OrphanRetention {
+				return false
+			}
+			expired = append(expired, key)
+			return true
 		}
-		if s := SweepSharedClips(ctx, dataDir, unused, time.Now().Add(-sweepGrace)); s.Removed > 0 {
+		s := SweepSharedClips(ctx, dataDir, unused, time.Now().Add(-sweepGrace))
+		if err := st.DeleteClipOrphans(expired); err != nil {
+			log.Printf("audiomaint: forget swept clips: %v", err)
+		}
+		if s.Removed > 0 {
 			log.Printf("audiomaint: removed %d unused shared clips (%s)", s.Removed, mb(s.BytesRemoved))
 		}
 	}
 	sweep()
+	if n, freed := DropRebuildableAmbienceLoops(dataDir); n > 0 {
+		log.Printf("audiomaint: dropped %d ambience loop WAVs kept as latents (%s)", n, mb(freed))
+	}
 	start := time.Now()
 	m := MigrateLegacyWAV(ctx, dataDir, max(1, runtime.NumCPU()/4))
 	if m.Converted+m.Failed > 0 {
@@ -96,6 +121,10 @@ type MigrateStats struct {
 // clipName matches a paragraph or SFX clip's file name (audiopath's
 // "%05d" + extension).
 var clipName = regexp.MustCompile(`^\d{5}\.wav$`)
+
+// ownClipName matches a file at a paragraph's own clip path: the clip, its
+// legacy WAV or its latents sidecar.
+var ownClipName = regexp.MustCompile(`^(\d{5})\.(?:opus|wav|lat)$`)
 
 // voiceDirName matches a voice directory (store.VoiceID's 16 hex chars).
 var voiceDirName = regexp.MustCompile(`^[0-9a-f]{16}$`)
@@ -403,14 +432,58 @@ func sweepOrphans(ctx context.Context, dataDir string, refs store.AudioRefs, cut
 				case voiceDirName.MatchString(sub.Name()):
 					if !refs.ChapterVoices[ch.Name()][sub.Name()] {
 						remove(subDir, sub)
-					} else {
-						removeStaleTemps(subDir)
+						continue
+					}
+					removeStaleTemps(subDir)
+					// A clip file here is only still audio where a ready
+					// row could be served from it; narration lives in
+					// the shared store now, so the rest - and the
+					// directory, once nothing is in it - are leftovers.
+					files := readDir(subDir)
+					for _, f := range files {
+						m := ownClipName.FindStringSubmatch(f.Name())
+						if m == nil {
+							continue
+						}
+						idx, _ := strconv.Atoi(m[1])
+						if !refs.OwnClips[store.OwnClipRef(ch.Name(), sub.Name(), idx)] {
+							remove(filepath.Join(subDir, f.Name()), f)
+						}
+					}
+					if len(files) == 0 {
+						remove(subDir, sub)
 					}
 				}
 			}
 		}
 	}
 	return stats
+}
+
+// DropRebuildableAmbienceLoops deletes every ambience loop WAV that has a
+// readable latents sidecar beside it: jobs.ambienceLoop rebuilds a loop
+// from its latents when a region needs it, and the library keeps loops as
+// latents alone (a 60s loop is ~10 MB as WAV, ~0.4 MB as latents). A loop
+// with no sidecar - one from before latents - keeps its WAV. Returns how
+// many it deleted and their size.
+func DropRebuildableAmbienceLoops(dataDir string) (dropped int, freed int64) {
+	loops, _ := filepath.Glob(filepath.Join(dataDir, "audio", "*", "ambience", "*.wav"))
+	for _, loop := range loops {
+		if _, err := latents.ReadFile(latents.Sidecar(loop)); err != nil {
+			continue
+		}
+		info, err := os.Stat(loop)
+		if err != nil {
+			continue
+		}
+		if err := os.Remove(loop); err != nil {
+			log.Printf("audiomaint: remove %s: %v", loop, err)
+			continue
+		}
+		dropped++
+		freed += info.Size()
+	}
+	return dropped, freed
 }
 
 // SweepSharedClips deletes shared narration clips (audiopath.SharedClipFile)

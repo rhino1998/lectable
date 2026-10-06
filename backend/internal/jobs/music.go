@@ -758,19 +758,21 @@ func (m *Manager) musicRegionSeeds(bookID, chapterID string, region store.MusicR
 	return seeds
 }
 
-// ambienceLoop reads a setting's loop WAV, rebuilding it first from its
-// latents sidecar when only that exists (a book imported from a
-// latent-only export): one codec decode plus the loop recipe
-// (musicgen.LoopFromDecoded), cached as the WAV. An error means neither is
-// usable - the caller renders the loop afresh.
+// ambienceLoop returns a setting's loop: rebuilt from its latents sidecar
+// (one codec decode plus the loop recipe, musicgen.LoopFromDecoded), which
+// is all a loop is kept as - the 60s WAV is ~10 MB, its latents ~0.4 MB,
+// and it is only ever needed while a region in that place renders - or
+// read from its WAV, for a loop from before latents. The last few rebuilt
+// are remembered (ambienceCache), since a chapter's regions tend to share
+// a place. An error means neither form is usable - the caller renders the
+// loop afresh.
 func (m *Manager) ambienceLoop(ctx context.Context, loopPath string) ([]byte, error) {
-	data, err := os.ReadFile(loopPath)
-	if err == nil {
-		return data, nil
+	if loop := m.ambienceCache.get(loopPath); loop != nil {
+		return loop, nil
 	}
 	lat, lerr := latents.ReadFile(latents.Sidecar(loopPath))
 	if lerr != nil {
-		return nil, err
+		return os.ReadFile(loopPath)
 	}
 	decoded, err := m.tts.CodecDecode(ctx, "stable_audio_medium", lat)
 	if err != nil {
@@ -781,10 +783,42 @@ func (m *Manager) ambienceLoop(ctx context.Context, loopPath string) ([]byte, er
 	if err != nil {
 		return nil, err
 	}
-	if err := audiopath.WriteFileAtomic(loopPath, loop); err != nil {
-		log.Printf("jobs: cache rebuilt ambience loop %s: %v", loopPath, err)
-	}
+	m.ambienceCache.put(loopPath, loop)
 	return loop, nil
+}
+
+// ambienceCacheSize is how many rebuilt loops ambienceCache holds, ~10 MB
+// each.
+const ambienceCacheSize = 4
+
+// ambienceCache remembers the loops ambienceLoop rebuilt most recently, by
+// path.
+type ambienceCache struct {
+	mu    sync.Mutex
+	paths []string // oldest first
+	loops map[string][]byte
+}
+
+func (c *ambienceCache) get(path string) []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.loops[path]
+}
+
+func (c *ambienceCache) put(path string, loop []byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.loops == nil {
+		c.loops = map[string][]byte{}
+	}
+	if _, ok := c.loops[path]; !ok {
+		c.paths = append(c.paths, path)
+		if len(c.paths) > ambienceCacheSize {
+			delete(c.loops, c.paths[0])
+			c.paths = c.paths[1:]
+		}
+	}
+	c.loops[path] = loop
 }
 
 // saveMusicSeed keeps what a following continuation region seeds from:
@@ -878,14 +912,21 @@ func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID str
 	if res.AmbienceLoop != nil {
 		loop = res.AmbienceLoop
 		if err := os.MkdirAll(audiopath.AmbienceDir(m.dataDir, bookID), 0o755); err == nil {
-			if err := os.WriteFile(loopPath, loop, 0o644); err != nil {
-				log.Printf("jobs: save ambience loop for region %s: %v", region.ID, err)
-			}
-			// The loop's latents, for latent-only exports (f16: a transfer
-			// decodes on other hardware anyway, so exactness buys nothing).
+			// Kept as its latents alone (f16 - see ambienceLoop), as the
+			// WAV only when the render came with none.
+			saved := false
 			if res.AmbienceLoopLatents != nil {
 				if err := latents.WriteFile(latents.Sidecar(loopPath), res.AmbienceLoopLatents, "f16"); err != nil {
 					log.Printf("jobs: save ambience loop latents for region %s: %v", region.ID, err)
+				} else {
+					saved = true
+					_ = os.Remove(loopPath)
+					m.ambienceCache.put(loopPath, loop)
+				}
+			}
+			if !saved {
+				if err := os.WriteFile(loopPath, loop, 0o644); err != nil {
+					log.Printf("jobs: save ambience loop for region %s: %v", region.ID, err)
 				}
 			}
 		}

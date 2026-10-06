@@ -40,7 +40,7 @@ func TestSharedClipURLs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, i := range []int{0, 1, 3} {
-		if err := s.SetParagraphReadyClip(paragraphs[i].ID, voice.VoiceID(), key, 1, ""); err != nil {
+		if err := s.SetParagraphReadyClip(paragraphs[i].ID, voice.VoiceID(), key, 1, "", nil); err != nil {
 			t.Fatal(err)
 		}
 	}

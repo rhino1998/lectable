@@ -1071,15 +1071,9 @@ func (s *Server) recharacterizeAndInvalidate(ctx context.Context, book *store.Bo
 		for i, b := range bookScope {
 			bookIDs[i] = b.ID
 		}
-		refs, derr := s.Store.DeleteParagraphAudioForSpeaker(bookIDs, fresh.Name)
-		if derr != nil {
+		if _, derr := s.Store.DeleteParagraphAudioForSpeaker(bookIDs, fresh.Name); derr != nil {
 			log.Printf("httpapi: could not invalidate %q's existing audio: %v", fresh.Name, derr)
 			return fresh.Summary, invalidated, nil
-		}
-		for _, ref := range refs {
-			if rerr := audiopath.RemoveClip(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil {
-				log.Printf("httpapi: remove stale audio file for %q: %v", fresh.Name, rerr)
-			}
 		}
 	}
 

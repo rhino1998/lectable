@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
@@ -653,12 +654,15 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 	invalidated := 0
 	switch pass {
 	case resetGenerate:
+		cleared := time.Now()
 		err = s.Store.DeleteBookAudio(book.ID)
 		if err == nil {
 			err = s.Store.ResetAllChapterMusicAudioForBook(book.ID)
 		}
 		if err == nil {
 			_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s", s.DataDir, book.ID))
+			// Asked for new renders - see handleDeleteBookAudio.
+			s.Jobs.DiscardOrphanedClips(cleared)
 		}
 	case resetMusicGeneration:
 		err = s.Store.ResetAllChapterMusicAudioForBook(book.ID)
@@ -686,11 +690,6 @@ func (s *Server) handleResetPass(w http.ResponseWriter, r *http.Request) {
 			refs, derr := s.Store.DeleteParagraphAudioForIdxs(book.ID, chapterID, idxs)
 			if derr != nil {
 				log.Printf("httpapi: reset %s for book %s: invalidate audio for chapter %s: %v", pass, book.ID, chapterID, derr)
-			}
-			for _, ref := range refs {
-				if rerr := audiopath.RemoveClip(s.paragraphAudioPath(ref.BookID, ref.ChapterID, ref.VoiceID, ref.Idx)); rerr != nil {
-					log.Printf("httpapi: reset %s for book %s: remove stale audio file: %v", pass, book.ID, rerr)
-				}
 			}
 			invalidated += len(refs)
 		}
