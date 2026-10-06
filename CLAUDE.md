@@ -117,6 +117,14 @@ attribution takes as given and never asks about) plus an unspoken display
 stage directions stay narration. See "Plays" under `internal/epub` in
 `backend/CLAUDE.md`.
 
+A **table** in the source book is read row by row: each row is one
+paragraph (its cells joined with " | ", plus where each cell sits in the
+grid), so a stat block is a handful of clips rather than one per cell.
+The clients lay a table's paragraphs back out as a grid; narration reads a
+row as sentences and speaks each cell's column heading before it
+("Rarity: Rare. Durability: 72/100."), the heading row itself staying
+silent. See "Tables" under `internal/epub` in `backend/CLAUDE.md`.
+
 The **ambience pass** (formerly "music scoring") splits each chapter into
 tone regions and gives each one a background-music/soundscape prompt and,
 in its **lighting sub-pass**, a room-lighting cue (color, accent,

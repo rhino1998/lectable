@@ -70,6 +70,9 @@ import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.unit.sp
 import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.ParagraphDto
@@ -95,8 +98,18 @@ internal fun ParagraphRow(
     onSetEmotion: (paragraphIndices: List<Int>, emotion: String) -> Unit,
     // See ParagraphBodyText.
     onActiveLine: (fraction: Float) -> Unit,
+    // Set for a paragraph inside a table from the book (see TableBlock in ReaderTable.kt): the
+    // table's column shares, for laying a row's cells out in their columns.
+    tableColumns: List<Float>? = null,
 ) {
     val isActive = activeSegmentIdx >= 0
+    // A table row of several cells (ParagraphDto.table): each cell's text goes in its own
+    // column rather than showing the " | " the row's text joins them with.
+    val rowCells = remember(segments, tableColumns) {
+        val table = segments.singleOrNull()?.table
+        if (tableColumns == null || table == null || table.cells.size < 2) null else cellSlices(segments[0].text, table)
+    }
+    val soleCellHeader = tableColumns != null && rowCells == null && segments[0].table?.cells?.firstOrNull()?.header == true
     val background = if (isActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
     var showMenu by remember { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
@@ -160,20 +173,49 @@ internal fun ParagraphRow(
     var showEmotionMenu by remember { mutableStateOf(false) }
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(background)
-            .padding(12.dp),
+        modifier = if (tableColumns != null) {
+            // The table draws the frame; a row only tints itself while it plays.
+            Modifier.fillMaxWidth().background(if (isActive) background else Color.Transparent).padding(horizontal = 8.dp, vertical = 6.dp)
+        } else {
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .background(background)
+                .padding(12.dp)
+        },
     ) {
         Box {
-            ParagraphBodyText(
+            val bodyActiveSegmentIdx = if (isActive && segments[activeSegmentIdx].audioStatus == AudioStatuses.READY) activeSegmentIdx else -1
+            if (rowCells != null && tableColumns != null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    var col = rowCells.first().col
+                    rowCells.forEachIndexed { i, cell ->
+                        if (cell.col > col) Spacer(Modifier.weight(tableColumns.span(col, cell.col)))
+                        Box(Modifier.weight(tableColumns.span(cell.col, cell.col + cell.colSpan))) {
+                            ParagraphBodyText(
+                                segments = segments,
+                                activeSegmentIdx = bodyActiveSegmentIdx,
+                                playbackSeconds = playbackSeconds,
+                                fontSizeSp = fontSizeSp,
+                                fontFamily = fontFamily,
+                                annotationsMode = annotationsMode,
+                                onWordTap = onWordTap,
+                                onLongPress = { paragraphIdx -> pressedIdx = paragraphIdx; showMenu = true },
+                                onActiveLine = onActiveLine,
+                                cell = CellView(rowCells, i),
+                            )
+                        }
+                        col = cell.col + cell.colSpan
+                    }
+                }
+            } else ParagraphBodyText(
                 segments = segments,
+                bold = soleCellHeader,
                 // The pill background above still lights up for a *targeted* paragraph even before
                 // it's generated (see ParagraphPlayer.playParagraph's not-ready branch), so the tap
                 // visibly registered - but word-level highlighting needs real elapsed playback time
                 // to mean anything, which a paragraph with no audio yet doesn't have.
-                activeSegmentIdx = if (isActive && segments[activeSegmentIdx].audioStatus == AudioStatuses.READY) activeSegmentIdx else -1,
+                activeSegmentIdx = bodyActiveSegmentIdx,
                 playbackSeconds = playbackSeconds,
                 fontSizeSp = fontSizeSp,
                 fontFamily = fontFamily,
@@ -355,7 +397,27 @@ private data class SegmentSpan(
     val textOffset: Int,
     val tokens: List<WordToken>,
     val startTimes: List<Double>,
+    // The text shown for this segment: all of it, or one table cell's span (see CellView).
+    val text: String,
+    // Where [text] starts in the segment's own text - what a mark's offset is measured from.
+    val sliceStart: Int = 0,
+    // For a table cell: every word's start time across the whole row, and where this cell's
+    // first word falls among them - the word being spoken is found over the row, so a cell the
+    // voice has left doesn't keep its last word lit.
+    val rowStartTimes: List<Double>? = null,
+    val firstWord: Int = 0,
 )
+
+/** One cell of a table row, for rendering just that cell's span of the row's text: every cell
+ *  of the row ([slices], see cellSlices) and which one this is. */
+internal data class CellView(val slices: List<CellSlice>, val index: Int)
+
+/** A table row's words: only the cells hold any. The " | " between cells is never shown, and
+ *  the aligner gives a bar on its own no timing, so counting it would put the word count off. */
+internal fun rowTokens(text: String, slices: List<CellSlice>): List<WordToken> =
+    slices.flatMap { s ->
+        tokenizeWords(text.substring(s.start, s.end)).map { it.copy(start = it.start + s.start, end = it.end + s.start) }
+    }
 
 /**
  * Renders one or more paragraphs' text joined into a single flowing block of text - a lone
@@ -390,7 +452,11 @@ internal fun ParagraphBodyText(
     // reported each time the word moves to another line, so auto-follow can track the line
     // rather than the whole block when the block is too tall to centre (see centerItem).
     onActiveLine: (fraction: Float) -> Unit,
+    // Render only this table cell's span of the (single) segment's text - see CellView.
+    cell: CellView? = null,
+    bold: Boolean = false,
 ) {
+    val slice = cell?.let { it.slices[it.index] }
     // A dialogue segment's emotion, shown in annotations mode as a small inline icon right at
     // the start of the segment it applies to - per segment, not per block, since a block with
     // several dialogue segments can carry a different emotion on each (mirrors frontend
@@ -399,20 +465,38 @@ internal fun ParagraphBodyText(
     val segmentEmotions = remember(segments, annotationsMode) {
         segments.map { seg -> seg.emotion?.takeIf { annotationsMode && it.isNotEmpty() } }
     }
-    val spans = remember(segments, segmentEmotions) {
+    val spans = remember(segments, segmentEmotions, cell) {
         val list = mutableListOf<SegmentSpan>()
         var offset = 0
         segments.forEachIndexed { i, seg ->
             if (segmentEmotions[i] != null) offset += 1 // the emotion icon's placeholder char
             seg.label?.takeIf { it.isNotEmpty() }?.let { offset += it.length + 1 } // the label and its space
-            val tokens = tokenizeWords(seg.text)
-            val startTimes = wordStartTimes(tokens, seg.words, seg.text.length, seg.durationSeconds ?: 0.0, seg.audioPointerSeconds)
-            list.add(SegmentSpan(seg.idx, offset, tokens, startTimes))
-            offset += seg.text.length + 1 // +1 for the joining space below
+            if (cell != null && slice != null) {
+                val rowWords = rowTokens(seg.text, cell.slices)
+                val rowTimes = wordStartTimes(rowWords, seg.words, seg.text.length, seg.durationSeconds ?: 0.0, seg.audioPointerSeconds)
+                val mine = rowWords.indices.filter { rowWords[it].start >= slice.start && rowWords[it].end <= slice.end }
+                list.add(
+                    SegmentSpan(
+                        paragraphIdx = seg.idx,
+                        textOffset = offset,
+                        tokens = mine.map { rowWords[it].copy(start = rowWords[it].start - slice.start, end = rowWords[it].end - slice.start) },
+                        startTimes = mine.map { rowTimes[it] },
+                        text = seg.text.substring(slice.start, slice.end),
+                        sliceStart = slice.start,
+                        rowStartTimes = rowTimes,
+                        firstWord = mine.firstOrNull() ?: 0,
+                    ),
+                )
+            } else {
+                val tokens = tokenizeWords(seg.text)
+                val startTimes = wordStartTimes(tokens, seg.words, seg.text.length, seg.durationSeconds ?: 0.0, seg.audioPointerSeconds)
+                list.add(SegmentSpan(seg.idx, offset, tokens, startTimes, seg.text))
+            }
+            offset += list.last().text.length + 1 // +1 for the joining space below
         }
         list
     }
-    val baseText = remember(segments, segmentEmotions) {
+    val baseText = remember(segments, segmentEmotions, spans, bold, slice) {
         buildAnnotatedString {
             segments.forEachIndexed { i, seg ->
                 if (i > 0) append(" ")
@@ -423,7 +507,11 @@ internal fun ParagraphBodyText(
                     withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(label) }
                     append(" ")
                 }
-                append(seg.text)
+                if (bold || slice?.header == true) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(spans[i].text) }
+                } else {
+                    append(spans[i].text)
+                }
             }
         }
     }
@@ -431,7 +519,14 @@ internal fun ParagraphBodyText(
 
     val activeSpan = spans.getOrNull(activeSegmentIdx)
     val activeLocalIdx = if (activeSpan != null) {
-        remember(activeSpan, playbackSeconds) { activeWordIndex(activeSpan.startTimes, playbackSeconds) }
+        remember(activeSpan, playbackSeconds) {
+            val rowTimes = activeSpan.rowStartTimes
+            if (rowTimes == null) {
+                activeWordIndex(activeSpan.startTimes, playbackSeconds)
+            } else {
+                (activeWordIndex(rowTimes, playbackSeconds) - activeSpan.firstWord).takeIf { it in activeSpan.tokens.indices } ?: -1
+            }
+        }
     } else {
         -1
     }
@@ -488,7 +583,7 @@ internal fun ParagraphBodyText(
             segments.forEachIndexed { i, segment ->
                 if (segment.audioStatus != AudioStatuses.READY) {
                     val span = spans[i]
-                    val end = (span.textOffset + segment.text.length).coerceAtMost(combinedText.length)
+                    val end = (span.textOffset + span.text.length).coerceAtMost(combinedText.length)
                     addStyle(SpanStyle(color = dimColor), span.textOffset, end)
                 }
             }
@@ -570,28 +665,33 @@ internal fun ParagraphBodyText(
                             AnnotationKind.NARRATOR -> null
                         }
                         if (underlineColor != null) {
-                            val segToken = WordToken(segment.text, segSpan.textOffset, segSpan.textOffset + segment.text.length)
+                            val segToken = WordToken(segSpan.text, segSpan.textOffset, segSpan.textOffset + segSpan.text.length)
                             for (bounds in wordLineBounds(layout, segToken)) {
                                 drawAnnotationUnderline(bounds, underlineColor)
                             }
                         }
                         if (segment.scareQuote) {
-                            val segToken = WordToken(segment.text, segSpan.textOffset, segSpan.textOffset + segment.text.length)
+                            val segToken = WordToken(segSpan.text, segSpan.textOffset, segSpan.textOffset + segSpan.text.length)
                             for (bounds in wordLineBounds(layout, segToken)) {
                                 drawScareQuoteUnderline(bounds, scareQuoteMarkColor)
                             }
                         }
+                        // A mark's offset is into the segment's whole text; a table cell shows
+                        // only its own span of it.
+                        val shown = segSpan.sliceStart until segSpan.sliceStart + segSpan.text.length
                         for (mark in segment.directionMarks) {
-                            val charIndex = (segSpan.textOffset + mark.offset)
-                                .coerceIn(segSpan.textOffset, segSpan.textOffset + segment.text.length)
+                            if (mark.offset !in shown) continue
+                            val charIndex = (segSpan.textOffset + mark.offset - segSpan.sliceStart)
+                                .coerceIn(segSpan.textOffset, segSpan.textOffset + segSpan.text.length)
                             val line = layout.getLineForOffset(charIndex)
                             val x = layout.getHorizontalPosition(charIndex, usePrimaryDirection = true)
                             drawDirectionCaret(x, layout.getLineBottom(line), directionTagColor(mark.tag, isDarkTheme, dimColor))
                         }
                         for (mark in segment.pronunciationMarks) {
-                            val start = (segSpan.textOffset + mark.offset)
-                                .coerceIn(segSpan.textOffset, segSpan.textOffset + segment.text.length)
-                            val end = (start + mark.length).coerceIn(start, segSpan.textOffset + segment.text.length)
+                            if (mark.offset !in shown) continue
+                            val start = (segSpan.textOffset + mark.offset - segSpan.sliceStart)
+                                .coerceIn(segSpan.textOffset, segSpan.textOffset + segSpan.text.length)
+                            val end = (start + mark.length).coerceIn(start, segSpan.textOffset + segSpan.text.length)
                             val token = WordToken(mark.original, start, end)
                             for (bounds in wordLineBounds(layout, token)) {
                                 drawPronunciationStrike(bounds, pronunciationCaretColor)

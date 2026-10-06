@@ -1,4 +1,5 @@
-import { Fragment, createElement, memo, useState } from 'react'
+import { Fragment, createElement, memo, useMemo, useState } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import {
   RiBookmarkFill,
   RiBookmarkLine,
@@ -32,7 +33,9 @@ import { hasActiveTextSelection } from '../utils/selection'
 import { emotionIcon, emotionLabel } from '../utils/emotions'
 import { annotationKind, annotationTitle, matchesSelectedSpeaker } from '../utils/annotations'
 import { resolveGenerationText } from '../utils/resolveGenerationText'
+import { cellRanges, tableColumnEnd, tableGenerationMarks } from '../utils/table'
 import { ParagraphText } from './ParagraphText'
+import type { TextCell } from './ParagraphText'
 import { ChapterNotesBlock } from './ChapterNotesBlock'
 import { LightingSwatch } from './LightingSwatch'
 import { MusicRegionPreviewButton } from './MusicRegionPreviewButton'
@@ -73,6 +76,11 @@ function groupContent(content: ContentItem[], paragraphs: Paragraph[]): ContentG
     }
   })
   return groups
+}
+
+// The table a group's paragraphs belong to, if any.
+function groupTable(group: ContentGroup) {
+  return group.kind === 'text' ? group.paragraphs[0].table : undefined
 }
 
 interface ParagraphGroupProps {
@@ -180,6 +188,29 @@ const ParagraphGroup = memo(function ParagraphGroup({
   const [sfxBusy, setSFXBusy] = useState(false)
   const [sfxLocalError, setSFXLocalError] = useState('')
 
+  // A paragraph from a table in the book (Paragraph.table) is laid out on
+  // the grid ChapterSection wraps the table's paragraphs in (see
+  // .chapter-table): it spans its cells' columns, and a row of several
+  // cells puts each one's text in its own column (tableCells) rather
+  // than showing the " | " they're joined with.
+  const first = group.kind === 'text' ? group.paragraphs[0] : undefined
+  const table = first?.table
+  const rowOfCells = group.kind === 'text' && group.paragraphs.length === 1 && !!table
+  const tableText = first?.text ?? ''
+  const tableCells = useMemo((): TextCell[] | undefined => {
+    if (!rowOfCells || !table || table.cells.length < 2) return undefined
+    const firstCol = table.cells[0].col
+    return cellRanges(tableText, table).map((c) => ({
+      start: c.start,
+      end: c.end,
+      className: 'table-cell' + (c.header ? ' table-cell-header' : ''),
+      style: { gridColumn: `${c.col - firstCol + 1} / span ${c.colSpan}` },
+    }))
+  }, [rowOfCells, table, tableText])
+  const tableStyle: CSSProperties | undefined = table
+    ? { gridColumn: `${table.cells[0].col + 1} / ${tableColumnEnd(table) + 1}` }
+    : undefined
+
   if (group.kind === 'image') {
     return <img className="chapter-image" src={group.imageUrl} alt="" loading="lazy" />
   }
@@ -203,14 +234,27 @@ const ParagraphGroup = memo(function ParagraphGroup({
   ].map(emotionLabel)
   const regenerating = segments.some((p) => p.audioStatus === 'generating')
 
+  // A row of cells is a grid itself, so what trails a paragraph's text
+  // (badges, the hover buttons) would each land in a cell: it sits over
+  // the row's end instead.
+  const trailing = (children: ReactNode) =>
+    tableCells ? <span className="table-row-actions">{children}</span> : children
+
   return (
     <>
       <p
         className={
           'paragraph' +
           (groupActive ? ' paragraph-active' : '') +
-          (groupError ? ' paragraph-error' : '')
+          (groupError ? ' paragraph-error' : '') +
+          (table ? ' table-paragraph' : '') +
+          (tableCells ? ' table-row' : '') +
+          (table && !tableCells && table.cells[0].header ? ' table-cell-header' : '')
         }
+        style={tableStyle}
+        // The row's one segment has no box of its own to scroll to (see
+        // .table-row-segment), so the row stands in for it.
+        ref={tableCells ? (el) => registerParagraphRef(`${chapterIdx}:${firstIdx}`, el) : undefined}
       >
         {segments.map((p, segIdx) => {
           const isActive = isActiveChapter && p.idx === activeParagraphIdx
@@ -225,8 +269,11 @@ const ParagraphGroup = memo(function ParagraphGroup({
           return (
             <span
               key={p.idx}
-              ref={(el) => registerParagraphRef(`${chapterIdx}:${p.idx}`, el)}
+              ref={
+                tableCells ? undefined : (el) => registerParagraphRef(`${chapterIdx}:${p.idx}`, el)
+              }
               className={
+                (tableCells ? 'table-row-segment ' : '') +
                 (segmentPending ? 'segment-pending ' : '') +
                 (annotationsView
                   ? `annotation-${annotationKind(p)}` +
@@ -274,6 +321,7 @@ const ParagraphGroup = memo(function ParagraphGroup({
                 onSeek={onSeek}
                 marks={annotationsView ? (p.directionMarks ?? []) : []}
                 pronunciationMarks={annotationsView ? (p.pronunciationMarks ?? []) : []}
+                cells={tableCells}
               />
               {p.audioStatus === 'error' && (
                 <span className="error-text"> (audio failed: {p.audioError})</span>
@@ -281,91 +329,105 @@ const ParagraphGroup = memo(function ParagraphGroup({
             </span>
           )
         })}
-        {speakers.length > 0 && (
-          <span
-            className={
-              'paragraph-speaker-hint' + (annotationsView ? ' paragraph-speaker-hint-visible' : '')
-            }
-            title={`Speaker: ${speakers.join(', ')}`}
-          >
-            <RiUser3Line /> {speakers.join(', ')}
-          </span>
+        {trailing(
+          <>
+            {speakers.length > 0 && (
+              <span
+                className={
+                  'paragraph-speaker-hint' +
+                  (annotationsView ? ' paragraph-speaker-hint-visible' : '')
+                }
+                title={`Speaker: ${speakers.join(', ')}`}
+              >
+                <RiUser3Line /> {speakers.join(', ')}
+              </span>
+            )}
+            {/* Hover-only summary outside annotations view - annotations view
+                shows each segment's own EmotionIcon instead. */}
+            {!annotationsView && emotionLabels.length > 0 && (
+              <span
+                className="paragraph-direction-hint"
+                title={`Emotion: ${emotionLabels.join(', ')}`}
+              >
+                <RiEmotionLine /> {emotionLabels.join(', ')}
+              </span>
+            )}
+            <button
+              className={
+                'paragraph-bookmark-toggle' +
+                (bookmarked ? ' paragraph-bookmark-toggle-active' : '')
+              }
+              onClick={(e) => {
+                e.stopPropagation()
+                onToggleBookmark(chapterIdx, firstIdx)
+              }}
+              title={bookmarked ? 'Remove bookmark' : 'Bookmark this paragraph'}
+            >
+              {bookmarked ? <RiBookmarkFill /> : <RiBookmarkLine />}
+            </button>
+            <button
+              className="paragraph-regenerate-toggle"
+              disabled={regenerating}
+              onClick={(e) => {
+                e.stopPropagation()
+                for (const p of segments) onRegenerate(chapterIdx, p.idx)
+              }}
+              title={regenerating ? 'Already generating…' : 'Regenerate this paragraph'}
+            >
+              <RiRefreshLine />
+            </button>
+            {annotationsView && (
+              <button
+                className={
+                  'paragraph-generation-toggle' +
+                  (showGenerationText ? ' paragraph-generation-toggle-active' : '')
+                }
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setShowGenerationText((v) => !v)
+                }}
+                title={
+                  showGenerationText
+                    ? 'Hide the exact text sent to the voice clone'
+                    : 'Show the exact text sent to the voice clone'
+                }
+              >
+                <RiCodeSSlashLine />
+              </button>
+            )}
+            <button
+              className={
+                'paragraph-sfx-toggle' +
+                (sfxOpen ? ' paragraph-sfx-toggle-active' : '') +
+                (segments[0].sfxStatus === 'ready' ? ' paragraph-sfx-toggle-ready' : '')
+              }
+              onClick={(e) => {
+                e.stopPropagation()
+                setSFXOpen((v) => !v)
+              }}
+              title={
+                segments[0].sfxStatus === 'ready'
+                  ? 'SFX test: sound effect ready'
+                  : 'SFX test: generate a sound effect for this paragraph'
+              }
+            >
+              <RiVolumeUpLine />
+            </button>
+          </>,
         )}
-        {/* Hover-only summary outside annotations view - annotations view
-            shows each segment's own EmotionIcon instead. */}
-        {!annotationsView && emotionLabels.length > 0 && (
-          <span className="paragraph-direction-hint" title={`Emotion: ${emotionLabels.join(', ')}`}>
-            <RiEmotionLine /> {emotionLabels.join(', ')}
-          </span>
-        )}
-        <button
-          className={
-            'paragraph-bookmark-toggle' + (bookmarked ? ' paragraph-bookmark-toggle-active' : '')
-          }
-          onClick={(e) => {
-            e.stopPropagation()
-            onToggleBookmark(chapterIdx, firstIdx)
-          }}
-          title={bookmarked ? 'Remove bookmark' : 'Bookmark this paragraph'}
-        >
-          {bookmarked ? <RiBookmarkFill /> : <RiBookmarkLine />}
-        </button>
-        <button
-          className="paragraph-regenerate-toggle"
-          disabled={regenerating}
-          onClick={(e) => {
-            e.stopPropagation()
-            for (const p of segments) onRegenerate(chapterIdx, p.idx)
-          }}
-          title={regenerating ? 'Already generating…' : 'Regenerate this paragraph'}
-        >
-          <RiRefreshLine />
-        </button>
-        {annotationsView && (
-          <button
-            className={
-              'paragraph-generation-toggle' +
-              (showGenerationText ? ' paragraph-generation-toggle-active' : '')
-            }
-            onClick={(e) => {
-              e.stopPropagation()
-              setShowGenerationText((v) => !v)
-            }}
-            title={
-              showGenerationText
-                ? 'Hide the exact text sent to the voice clone'
-                : 'Show the exact text sent to the voice clone'
-            }
-          >
-            <RiCodeSSlashLine />
-          </button>
-        )}
-        <button
-          className={
-            'paragraph-sfx-toggle' +
-            (sfxOpen ? ' paragraph-sfx-toggle-active' : '') +
-            (segments[0].sfxStatus === 'ready' ? ' paragraph-sfx-toggle-ready' : '')
-          }
-          onClick={(e) => {
-            e.stopPropagation()
-            setSFXOpen((v) => !v)
-          }}
-          title={
-            segments[0].sfxStatus === 'ready'
-              ? 'SFX test: sound effect ready'
-              : 'SFX test: generate a sound effect for this paragraph'
-          }
-        >
-          <RiVolumeUpLine />
-        </button>
       </p>
       {annotationsView && showGenerationText && (
         <pre className="paragraph-generation-text">
-          {segments.map((p) => (
-            <div key={p.idx} className="paragraph-generation-text-segment">
-              {resolveGenerationText(p.text, p.directionMarks, p.pronunciationMarks)}
-            </div>
-          ))}
+          {segments.map((p) => {
+            const marks = tableGenerationMarks(p)
+            return (
+              <div key={p.idx} className="paragraph-generation-text-segment">
+                {p.table?.heading
+                  ? '(silent: these headings are read with each row under them)'
+                  : resolveGenerationText(p.text, marks.directionMarks, marks.pronunciationMarks)}
+              </div>
+            )
+          })}
         </pre>
       )}
       {sfxOpen && (
@@ -814,6 +876,91 @@ export const ChapterSection = memo(function ChapterSection({
   // paragraph (see backend speakerattr.sceneStarts), so at a group's first.
   const scenesByStartIdx = new Map((notes?.scenes ?? []).map((sc) => [sc.startIdx, sc]))
 
+  // One group with whatever annotations start at it.
+  const renderGroup = (group: ContentGroup) => {
+    const startingRegion =
+      group.kind === 'text' ? musicRegionsByStartIdx.get(group.paragraphs[0].idx) : undefined
+    const startingScene =
+      group.kind === 'text' ? scenesByStartIdx.get(group.paragraphs[0].idx) : undefined
+    return (
+      <Fragment key={group.key}>
+        {annotationsView && startingScene && <SceneBoundary scene={startingScene} />}
+        {annotationsView && startingRegion && (
+          <MusicRegionBoundary
+            region={startingRegion}
+            onShowTooltip={onShowTooltip}
+            onHideTooltip={onHideTooltip}
+            onRegenerate={(regionId) => onRegenerateMusic(idx, regionId)}
+          />
+        )}
+        <ParagraphGroup
+          group={group}
+          chapterIdx={idx}
+          annotationsView={annotationsView}
+          selectedSpeaker={selectedSpeaker}
+          isActiveChapter={isActiveChapter}
+          activeParagraphIdx={
+            isActiveChapter &&
+            group.kind === 'text' &&
+            group.paragraphs.some((p) => p.idx === activeParagraphIdx)
+              ? activeParagraphIdx
+              : null
+          }
+          audioElement={audioElement}
+          bookmarked={
+            group.kind === 'text' ? bookmarkByKey.has(`${idx}:${group.paragraphs[0].idx}`) : false
+          }
+          onSeek={onSeek}
+          onPlayAt={onPlayAt}
+          onToggleBookmark={onToggleBookmark}
+          onRegenerate={onRegenerate}
+          onOpenSpeakerMenu={onOpenSpeakerMenu}
+          onShowTooltip={onShowTooltip}
+          onHideTooltip={onHideTooltip}
+          registerParagraphRef={registerParagraphRef}
+          onSetSFXPrompt={onSetSFXPrompt}
+          onGenerateSFX={onGenerateSFX}
+        />
+      </Fragment>
+    )
+  }
+  // A table's paragraphs go in one grid, a rule between its rows. Placing
+  // is left to the grid: each paragraph names only its columns, so a
+  // cell's second paragraph drops under its first while the next cell
+  // along sits beside it, and the rule (full width) starts each new row.
+  const rendered: ReactNode[] = []
+  for (let i = 0; i < groups.length;) {
+    const table = groupTable(groups[i])
+    if (!table) {
+      rendered.push(renderGroup(groups[i]))
+      i++
+      continue
+    }
+    const items: ReactNode[] = []
+    let columns = 0
+    let row = table.row
+    const start = i
+    for (; i < groups.length; i++) {
+      const t = groupTable(groups[i])
+      if (!t || t.table !== table.table) break
+      columns = Math.max(columns, tableColumnEnd(t))
+      if (t.row !== row) {
+        items.push(<span key={`rule-${groups[i].key}`} className="chapter-table-rule" />)
+        row = t.row
+      }
+      items.push(renderGroup(groups[i]))
+    }
+    rendered.push(
+      <div
+        key={`table-${groups[start].key}`}
+        className="chapter-table"
+        style={{ gridTemplateColumns: `repeat(${columns}, auto)` }}
+      >
+        {items}
+      </div>,
+    )
+  }
+
   return (
     <section
       className="chapter-block"
@@ -949,57 +1096,7 @@ export const ChapterSection = memo(function ChapterSection({
         />
       )}
       {!chapter && <p className="muted">Loading chapter…</p>}
-      <div className="paragraph-list">
-        {groups.map((group) => {
-          const startingRegion =
-            group.kind === 'text' ? musicRegionsByStartIdx.get(group.paragraphs[0].idx) : undefined
-          const startingScene =
-            group.kind === 'text' ? scenesByStartIdx.get(group.paragraphs[0].idx) : undefined
-          return (
-            <Fragment key={group.key}>
-              {annotationsView && startingScene && <SceneBoundary scene={startingScene} />}
-              {annotationsView && startingRegion && (
-                <MusicRegionBoundary
-                  region={startingRegion}
-                  onShowTooltip={onShowTooltip}
-                  onHideTooltip={onHideTooltip}
-                  onRegenerate={(regionId) => onRegenerateMusic(idx, regionId)}
-                />
-              )}
-              <ParagraphGroup
-                group={group}
-                chapterIdx={idx}
-                annotationsView={annotationsView}
-                selectedSpeaker={selectedSpeaker}
-                isActiveChapter={isActiveChapter}
-                activeParagraphIdx={
-                  isActiveChapter &&
-                  group.kind === 'text' &&
-                  group.paragraphs.some((p) => p.idx === activeParagraphIdx)
-                    ? activeParagraphIdx
-                    : null
-                }
-                audioElement={audioElement}
-                bookmarked={
-                  group.kind === 'text'
-                    ? bookmarkByKey.has(`${idx}:${group.paragraphs[0].idx}`)
-                    : false
-                }
-                onSeek={onSeek}
-                onPlayAt={onPlayAt}
-                onToggleBookmark={onToggleBookmark}
-                onRegenerate={onRegenerate}
-                onOpenSpeakerMenu={onOpenSpeakerMenu}
-                onShowTooltip={onShowTooltip}
-                onHideTooltip={onHideTooltip}
-                registerParagraphRef={registerParagraphRef}
-                onSetSFXPrompt={onSetSFXPrompt}
-                onGenerateSFX={onGenerateSFX}
-              />
-            </Fragment>
-          )
-        })}
-      </div>
+      <div className="paragraph-list">{rendered}</div>
     </section>
   )
 })

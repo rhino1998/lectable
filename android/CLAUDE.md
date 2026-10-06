@@ -161,7 +161,7 @@ compiled-in default in place if nothing answers in time.
   (`books`, built-in/custom presets, default voice) are **eager**: kept
   subscribed while the app is in the foreground (`MainActivity.onStart`/
   `onStop` -> `setForeground`) whether or not a screen shows them;
-  per-book/per-chapter topics and `jobs` are live only while read (each
+  per-book/per-chapter topics and `jobsQueue` (the Jobs screen: in-flight tasks plus the first 200 queued, never the full `jobs` topic) are live only while read (each
   subscription costs a backend rebuild on every relevant write), then
   linger 5s; at most 64 non-eager instances are cached (LRU).
 - **Offline first**: the library and the reader show downloaded copies
@@ -463,6 +463,19 @@ compiled-in default in place if nothing answers in time.
   with two speakers, or real dialogue beside a scare quote, can have each
   set right - or on every quote in the block when the press landed on
   narration ("Set speaker for all", "Mark/Unmark all as scare quotes").
+- **Tables render as a grid.** Paragraphs carrying `ParagraphDto.table`
+  (one row of a source table, its cells joined with " | " - see "Tables"
+  in `backend/CLAUDE.md`) are grouped by `groupContent` into one
+  `ReaderListEntry.TableItem` and drawn by `TableBlockView`
+  (`ReaderTable.kt`): `tableLines` arranges the blocks into lines,
+  `columnWeights` shares the width by each column's longest cell (rows are
+  separate composables, so nothing is measured across them), and
+  `ParagraphRow(tableColumns = ...)` renders a row's cells as one
+  `ParagraphBodyText` per cell (`CellView`). A row's words are its cells'
+  only (`rowTokens`) - counting the separators would break the 1:1 match
+  with the aligner's timings. Auto-follow centres on the playing row by
+  its place among the table's blocks. Stored offline too
+  (`OfflineParagraph.table`).
 - **Emotions, pause tags and pronunciation fixes all display; emotions
   can also be set here.** `ParagraphDto.emotion` is a dialogue line's
   emotion (backend `internal/emotions` id, null for neutral), shown as an

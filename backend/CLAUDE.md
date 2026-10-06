@@ -216,6 +216,38 @@ building/running `ttsworker` does, since both now link into that binary.
   some epubs put a whole scene in one `<p>` with `<br/><br/>` between its
   real paragraphs, which merged every turn of dialogue into one paragraph
   and threw off speaker attribution. `readZipFile` caps each entry at 64 MiB decompressed (`maxEntrySize`), so a malformed epub or zip bomb fails the upload instead of exhausting memory.
+  Text loose beside a block's block children (`<div>Note <p>...</p></div>`)
+  is a paragraph of its own (`walkChildren`), as are `<th>`, `<caption>`,
+  `<dt>`/`<dd>` - all of which used to vanish; `<head>`, `<script>`,
+  `<style>` and `<svg>` are skipped.
+  **Tables** (`table.go`): a `<table>` is read row by row - a row's leaf
+  cells are joined into one paragraph with `CellSeparator` (" | "), never
+  quote-split, with `Block.Table` (`TablePos`: table, row, each cell's
+  byte span of the text and its grid column/colspan/rowspan) saying how to
+  lay it back out; a cell holding blocks of its own keeps them as separate
+  paragraphs, each placed in that cell. One paragraph per cell (the old
+  behavior) made a 5-column spell list 5 clips a row, each read with no
+  context. A table of a single cell is a layout wrapper and reads as
+  ordinary blocks. **Heading rows** (`table.headings`) are `<thead>`/all-
+  `<th>` rows, or - most epubs use plain `<td>` - the first row of a table
+  3+ columns wide that reads like headings (a few words a cell, no digits,
+  no "Key:"), a row of "Key:" cells over a row laid out the same
+  ("Rarity: | Durability:" over "Rare | 72/100"), or a heading-like row
+  where the layout changes (a character sheet's "Stat | Points | Effect").
+  Each cell under one carries its column heading as `TableCell.Label`,
+  which `store.Paragraph.ResolveGenerationText` speaks before the cell
+  ("Rarity: Rare. Durability: 72/100." - cell separators become sentence
+  breaks either way), and the heading row itself (`TablePos.Heading`) is
+  `Unvoiced`, a silent clip. The spoken headings aren't in the text:
+  alignment still runs on the plain text (the aligner stretches a
+  neighbouring word over them) and the completeness check already compares
+  against the generation text too. Clients must not count the " | "
+  separators as words - the aligner returns no timing for a bar on its
+  own - so each tokenizes a row's cells only. Measured on the library:
+  ~250 tables, 5,600 cells; two-column tables never get first-row headings
+  ("Name | Jack" over "Class | None"). Stored as `paragraphs.table_pos`
+  (JSON, migration 00008); books imported before it keep one paragraph per
+  cell until a chapter is reimported.
   **Plays** (`play.go`): a play names the speaker before each speech
   instead of quoting it, so as prose it had no dialogue at all and the
   narrator read every label (A Midsummer Night's Dream: 0 quotes).
@@ -246,7 +278,8 @@ building/running `ttsworker` does, since both now link into that binary.
   X"/"-ing"/"-ly") joins the next speech block's `Label` and isn't
   narrated. Whole-paragraph directions, scene descriptions and front
   matter stay narration as parsed. Not handled: Standard Ebooks'
-  table-based plays, merging name variants ("Rank"/"Doctor Rank"), and
+  table-based plays (their rows are table paragraphs, which the play pass
+  leaves alone), merging name variants ("Rank"/"Doctor Rank"), and
   group labels ("All", "Both") are ordinary characters.
 - `internal/store/` — SQLite persistence (`books` → `chapters` →
   `paragraphs`, plus `characters`/`character_voices`, book-scoped), through

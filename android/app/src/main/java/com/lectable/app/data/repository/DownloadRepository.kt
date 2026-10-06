@@ -49,15 +49,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -79,6 +84,9 @@ data class DownloadKey(val libraryId: String, val bookId: String, val chapterIdx
 private const val AMBIENCE_WINDOW = 8
 private const val AMBIENCE_POLL_MS = 20_000L
 private const val AMBIENCE_STALL_MS = 4 * 60_000L
+// Chapter downloads holding a live chapter at once - see DownloadRepository.withChapterSlot.
+private const val MAX_READY_CHAPTER_DOWNLOADS = 3
+private const val MAX_WAITING_CHAPTER_DOWNLOADS = 2
 
 /** One chapter's download state as the UI needs it - see [DownloadRepository.observeChapterStatuses].
  *  [ambience] is null until the chapter has any ambience stored. */
@@ -145,6 +153,10 @@ class DownloadRepository @Inject constructor(
     private val lightingSettings: LightingSettingsRepository,
 ) {
     private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Every downloadChapter call currently running, as (bookId, chapterIdx) - see withChapterSlot.
+    private val activeDownloads = MutableStateFlow<Set<Pair<String, Int>>>(emptySet())
+    private val readyChapterSlots = Semaphore(MAX_READY_CHAPTER_DOWNLOADS)
 
     init {
         // Clips downloaded before they were given a format-neutral name - see renameLegacyClips.
@@ -582,167 +594,170 @@ class DownloadRepository @Inject constructor(
         runCatching { api.generateChapter(bookId, chapterIdx) }
 
         try {
-            // The audio each local file (committed or staged) holds, per paragraph - seeded from
-            // the existing copy's stored paragraphs on a same-voice refresh, then from the live
-            // paragraph each fetch came from. A paragraph whose audio changes again mid-download
-            // (re-attributed, re-merged) gets fetched again.
-            val fetched = mutableMapOf<Int, OfflineParagraph>()
-            if (reusable != null) {
-                runCatching { json.decodeFromString<List<OfflineParagraph>>(reusable.paragraphsJson) }.getOrDefault(emptyList())
-                    .filter { clipFile(dir, it.idx).exists() }
-                    .associateByTo(fetched) { it.idx }
-            }
-            // Paragraphs a regenerate has already been requested for, this attempt - guards
-            // against asking again on every live update while it's re-generating.
-            val regeneratedIdx = mutableSetOf<Int>()
-            // The local file already holding each clip fetched this attempt, by audioUrl. A
-            // scare-quote merge group's members all point at their anchor's one clip, so without
-            // this every member downloaded the same file again.
-            val clipFiles = mutableMapOf<String, File>()
-            var fetchedBytes = 0L
-            var lastChapter: ChapterDetailDto? = null
-            // The chapter's live topic (see LiveStore) delivers a fresh value every time one of
-            // its paragraphs changes; each is scanned for newly-ready audio until everything's
-            // fetched. An error only arrives before any value did (backend unreachable, chapter
-            // gone) - thrown so the worker fails the same way a failed fetch always has.
-            liveStore.chapter(bookId, chapterIdx).first { result ->
-                result.error?.let { e -> if (result.data == null) throw IOException(e.message) }
-                val chapter = result.data ?: return@first false
-                lastChapter = chapter
-                val total = chapter.paragraphs.size
-                for (p in chapter.paragraphs) {
-                    val f = fetched[p.idx]
-                    if (f != null) {
-                        if (f.hasAudioOf(p)) continue
-                        fetched.remove(p.idx)
-                    }
-                    if (p.audioStatus == AudioStatuses.ERROR) {
-                        // A paragraph that failed generation isn't given up on - request it be
-                        // regenerated (same mechanism ReaderViewModel.regenerateParagraph uses)
-                        // and keep polling like any other not-yet-ready paragraph, rather than
-                        // abandoning the whole chapter's download over one bad paragraph.
-                        if (regeneratedIdx.add(p.idx)) {
-                            runCatching { api.lookahead(bookId, LookaheadRequestDto(chapterIdx, p.idx)) }
+            withChapterSlot(bookId, chapterIdx) {
+                // The audio each local file (committed or staged) holds, per paragraph - seeded from
+                // the existing copy's stored paragraphs on a same-voice refresh, then from the live
+                // paragraph each fetch came from. A paragraph whose audio changes again mid-download
+                // (re-attributed, re-merged) gets fetched again.
+                val fetched = mutableMapOf<Int, OfflineParagraph>()
+                if (reusable != null) {
+                    runCatching { json.decodeFromString<List<OfflineParagraph>>(reusable.paragraphsJson) }.getOrDefault(emptyList())
+                        .filter { clipFile(dir, it.idx).exists() }
+                        .associateByTo(fetched) { it.idx }
+                }
+                // Paragraphs a regenerate has already been requested for, this attempt - guards
+                // against asking again on every live update while it's re-generating.
+                val regeneratedIdx = mutableSetOf<Int>()
+                // The local file already holding each clip fetched this attempt, by audioUrl. A
+                // scare-quote merge group's members all point at their anchor's one clip, so without
+                // this every member downloaded the same file again.
+                val clipFiles = mutableMapOf<String, File>()
+                var fetchedBytes = 0L
+                var lastChapter: ChapterDetailDto? = null
+                // The chapter's live topic (see LiveStore) delivers a fresh value every time one of
+                // its paragraphs changes; each is scanned for newly-ready audio until everything's
+                // fetched. An error only arrives before any value did (backend unreachable, chapter
+                // gone) - thrown so the worker fails the same way a failed fetch always has.
+                liveStore.chapter(bookId, chapterIdx).first { result ->
+                    result.error?.let { e -> if (result.data == null) throw IOException(e.message) }
+                    val chapter = result.data ?: return@first false
+                    lastChapter = chapter
+                    val total = chapter.paragraphs.size
+                    for (p in chapter.paragraphs) {
+                        val f = fetched[p.idx]
+                        if (f != null) {
+                            if (f.hasAudioOf(p)) continue
+                            fetched.remove(p.idx)
                         }
-                        continue
-                    }
-                    val url = p.audioUrl ?: continue
-                    if (p.audioStatus != AudioStatuses.READY) continue
-                    val target = stagedClipFile(dir, p.idx)
-                    val sameClip = clipFiles[url]?.takeIf { it.exists() }
-                    if (sameClip != null) {
-                        reuseClip(sameClip, target)
-                    } else {
-                        fetchedBytes += mediaApi.downloadFile(url).use { body ->
-                            target.outputStream().use { out -> body.byteStream().copyTo(out) }
+                        if (p.audioStatus == AudioStatuses.ERROR) {
+                            // A paragraph that failed generation isn't given up on - request it be
+                            // regenerated (same mechanism ReaderViewModel.regenerateParagraph uses)
+                            // and keep polling like any other not-yet-ready paragraph, rather than
+                            // abandoning the whole chapter's download over one bad paragraph.
+                            if (regeneratedIdx.add(p.idx)) {
+                                runCatching { api.lookahead(bookId, LookaheadRequestDto(chapterIdx, p.idx)) }
+                            }
+                            continue
+                        }
+                        val url = p.audioUrl ?: continue
+                        if (p.audioStatus != AudioStatuses.READY) continue
+                        val target = stagedClipFile(dir, p.idx)
+                        val sameClip = clipFiles[url]?.takeIf { it.exists() }
+                        if (sameClip != null) {
+                            reuseClip(sameClip, target)
+                        } else {
+                            fetchedBytes += mediaApi.downloadFile(url).use { body ->
+                                target.outputStream().use { out -> body.byteStream().copyTo(out) }
+                            }
+                        }
+                        clipFiles[url] = target
+                        fetched[p.idx] = OfflineParagraph(
+                            idx = p.idx,
+                            text = p.text,
+                            durationSeconds = p.durationSeconds ?: 0.0,
+                            audioPointerSeconds = p.audioPointerSeconds,
+                            audioHash = p.audioHash,
+                        )
+                        val ready = fetchedCount(chapter.paragraphs, fetched)
+                        onProgress(ready, total)
+                        // A refresh leaves the COMPLETE row alone until the swap below - it's what
+                        // keeps the old copy playable offline meanwhile.
+                        if (existing == null) {
+                            dao.upsert(
+                                DownloadedChapter(
+                                    libraryId = libraryId,
+                                    bookId = bookId,
+                                    chapterIdx = chapterIdx,
+                                    voiceKey = voiceKey,
+                                    pinned = pinned,
+                                    status = DownloadStatus.DOWNLOADING,
+                                    readyParagraphs = ready,
+                                    totalParagraphs = total,
+                                    totalBytes = fetchedBytes,
+                                    localDir = dir.path,
+                                ),
+                            )
                         }
                     }
-                    clipFiles[url] = target
-                    fetched[p.idx] = OfflineParagraph(
+                    // No timeout here, deliberately: a background-tier chapter can sit behind a lot
+                    // of other generation work on a single-GPU backend and legitimately take a long
+                    // time - the ring should just keep reflecting real progress for as long as that
+                    // takes, not flip back to "not downloaded" because it was slow. WorkManager
+                    // itself is what actually stops this running if the app process is killed.
+                    total > 0 && fetchedCount(chapter.paragraphs, fetched) == total
+                }
+                val chapter = lastChapter ?: throw IOException("chapter $chapterIdx never loaded")
+
+                // Images don't depend on voice/generation the way paragraph audio does - they're
+                // already fully available the moment the chapter's own content is - so this only
+                // needs to run once, here, after the paragraph loop above already confirms the
+                // chapter is fully generated. Stored under the book's own dir (see imagesDir), not
+                // this chapterDir, since the same image would otherwise be duplicated once per
+                // downloaded voice for no benefit. Best-effort per image: one failing (network drop
+                // mid-download) shouldn't fail the whole chapter download over an illustration.
+                val imgDir = imagesDir(libraryId, bookId).apply { mkdirs() }
+                for (item in chapter.content) {
+                    if (item.kind != "image") continue
+                    val url = item.imageUrl ?: continue
+                    val id = url.substringAfterLast('/').takeIf { it.isNotBlank() } ?: continue
+                    val file = File(imgDir, id)
+                    if (file.exists()) continue
+                    runCatching {
+                        mediaApi.downloadFile(url).use { body -> file.outputStream().use { out -> body.byteStream().copyTo(out) } }
+                    }
+                }
+
+                // The swap: staged clips replace their committed counterparts, and files for
+                // paragraphs the chapter no longer has are dropped.
+                commitStagedClips(dir, chapter.paragraphs.map { it.idx })
+
+                val offlineParagraphs = chapter.paragraphs.map { p ->
+                    val f = fetched.getValue(p.idx)
+                    OfflineParagraph(
                         idx = p.idx,
                         text = p.text,
-                        durationSeconds = p.durationSeconds ?: 0.0,
-                        audioPointerSeconds = p.audioPointerSeconds,
+                        durationSeconds = f.durationSeconds,
+                        inline = p.inline,
+                        speaker = p.speaker,
+                        label = p.label,
+                        table = p.table,
+                        directionMarks = p.directionMarks,
+                        pronunciationMarks = p.pronunciationMarks,
+                        isQuote = p.isQuote,
+                        scareQuote = p.scareQuote,
+                        emotion = p.emotion,
+                        audioPointerSeconds = f.audioPointerSeconds,
+                        contentHash = p.contentHash,
                         audioHash = p.audioHash,
                     )
-                    val ready = fetchedCount(chapter.paragraphs, fetched)
-                    onProgress(ready, total)
-                    // A refresh leaves the COMPLETE row alone until the swap below - it's what
-                    // keeps the old copy playable offline meanwhile.
-                    if (existing == null) {
-                        dao.upsert(
-                            DownloadedChapter(
-                                libraryId = libraryId,
-                                bookId = bookId,
-                                chapterIdx = chapterIdx,
-                                voiceKey = voiceKey,
-                                pinned = pinned,
-                                status = DownloadStatus.DOWNLOADING,
-                                readyParagraphs = ready,
-                                totalParagraphs = total,
-                                totalBytes = fetchedBytes,
-                                localDir = dir.path,
-                            ),
-                        )
-                    }
                 }
-                // No timeout here, deliberately: a background-tier chapter can sit behind a lot
-                // of other generation work on a single-GPU backend and legitimately take a long
-                // time - the ring should just keep reflecting real progress for as long as that
-                // takes, not flip back to "not downloaded" because it was slow. WorkManager
-                // itself is what actually stops this running if the app process is killed.
-                total > 0 && fetchedCount(chapter.paragraphs, fetched) == total
-            }
-            val chapter = lastChapter ?: throw IOException("chapter $chapterIdx never loaded")
-
-            // Images don't depend on voice/generation the way paragraph audio does - they're
-            // already fully available the moment the chapter's own content is - so this only
-            // needs to run once, here, after the paragraph loop above already confirms the
-            // chapter is fully generated. Stored under the book's own dir (see imagesDir), not
-            // this chapterDir, since the same image would otherwise be duplicated once per
-            // downloaded voice for no benefit. Best-effort per image: one failing (network drop
-            // mid-download) shouldn't fail the whole chapter download over an illustration.
-            val imgDir = imagesDir(libraryId, bookId).apply { mkdirs() }
-            for (item in chapter.content) {
-                if (item.kind != "image") continue
-                val url = item.imageUrl ?: continue
-                val id = url.substringAfterLast('/').takeIf { it.isNotBlank() } ?: continue
-                val file = File(imgDir, id)
-                if (file.exists()) continue
-                runCatching {
-                    mediaApi.downloadFile(url).use { body -> file.outputStream().use { out -> body.byteStream().copyTo(out) } }
-                }
-            }
-
-            // The swap: staged clips replace their committed counterparts, and files for
-            // paragraphs the chapter no longer has are dropped.
-            commitStagedClips(dir, chapter.paragraphs.map { it.idx })
-
-            val offlineParagraphs = chapter.paragraphs.map { p ->
-                val f = fetched.getValue(p.idx)
-                OfflineParagraph(
-                    idx = p.idx,
-                    text = p.text,
-                    durationSeconds = f.durationSeconds,
-                    inline = p.inline,
-                    speaker = p.speaker,
-                    label = p.label,
-                    directionMarks = p.directionMarks,
-                    pronunciationMarks = p.pronunciationMarks,
-                    isQuote = p.isQuote,
-                    scareQuote = p.scareQuote,
-                    emotion = p.emotion,
-                    audioPointerSeconds = f.audioPointerSeconds,
-                    contentHash = p.contentHash,
-                    audioHash = p.audioHash,
+                val total = chapter.paragraphs.size
+                dao.upsert(
+                    DownloadedChapter(
+                        libraryId = libraryId,
+                        bookId = bookId,
+                        chapterIdx = chapterIdx,
+                        voiceKey = voiceKey,
+                        pinned = pinned,
+                        status = DownloadStatus.COMPLETE,
+                        title = chapter.title,
+                        paragraphsJson = json.encodeToString(offlineParagraphs),
+                        contentJson = json.encodeToString(chapter.content),
+                        readyParagraphs = total,
+                        totalParagraphs = total,
+                        totalBytes = clipFiles(dir).sumOf { it.length() },
+                        lastAccessedAt = System.currentTimeMillis(),
+                        hash = chapter.hash,
+                        // Ambience isn't part of this download (see downloadBookAmbience) - a
+                        // refresh keeps whatever is stored, re-read since it may have moved.
+                        musicJson = dao.get(libraryId, bookId, chapterIdx)?.musicJson.orEmpty(),
+                        localDir = dir.path,
+                    ),
                 )
+                // A voice change downloaded into a fresh directory - the old voice's copy is only
+                // dropped now that the new one has replaced it.
+                if (existing != null && existing.localDir != dir.path) File(existing.localDir).deleteRecursively()
             }
-            val total = chapter.paragraphs.size
-            dao.upsert(
-                DownloadedChapter(
-                    libraryId = libraryId,
-                    bookId = bookId,
-                    chapterIdx = chapterIdx,
-                    voiceKey = voiceKey,
-                    pinned = pinned,
-                    status = DownloadStatus.COMPLETE,
-                    title = chapter.title,
-                    paragraphsJson = json.encodeToString(offlineParagraphs),
-                    contentJson = json.encodeToString(chapter.content),
-                    readyParagraphs = total,
-                    totalParagraphs = total,
-                    totalBytes = clipFiles(dir).sumOf { it.length() },
-                    lastAccessedAt = System.currentTimeMillis(),
-                    hash = chapter.hash,
-                    // Ambience isn't part of this download (see downloadBookAmbience) - a
-                    // refresh keeps whatever is stored, re-read since it may have moved.
-                    musicJson = dao.get(libraryId, bookId, chapterIdx)?.musicJson.orEmpty(),
-                    localDir = dir.path,
-                ),
-            )
-            // A voice change downloaded into a fresh directory - the old voice's copy is only
-            // dropped now that the new one has replaced it.
-            if (existing != null && existing.localDir != dir.path) File(existing.localDir).deleteRecursively()
         } catch (e: Exception) {
             // A genuine failure (network drop, disk write error, cancellation) rather than a
             // recoverable per-paragraph generation error (handled above without throwing) - mark
@@ -758,6 +773,35 @@ class DownloadRepository @Inject constructor(
                 dir.deleteRecursively()
             }
             throw e
+        }
+    }
+
+    /**
+     * Runs [block] - the part of [downloadChapter] that holds the chapter's live topic - once
+     * this chapter has a turn. A whole-book download starts every chapter's worker at once, and
+     * each open chapter is its full text and word timings held in memory until its audio is
+     * generated, which behind a long queue is hours: 139 of them ran the app out of memory at
+     * launch. So a chapter waits here, watching only the book's one shared topic, until either
+     * its audio is fully generated (then at most [MAX_READY_CHAPTER_DOWNLOADS] fetch at a time)
+     * or it is among the book's first [MAX_WAITING_CHAPTER_DOWNLOADS] downloads still waiting on
+     * generation (those stay open, so the next chapters to generate show paragraph progress and
+     * get their failed paragraphs re-requested).
+     */
+    private suspend fun <T> withChapterSlot(bookId: String, chapterIdx: Int, block: suspend () -> T): T {
+        val key = bookId to chapterIdx
+        activeDownloads.update { it + key }
+        try {
+            val generated = combine(liveStore.book(bookId), activeDownloads) { book, active ->
+                // Unreachable backend or unknown chapter: let the chapter topic report it.
+                val chapters = book.data?.chapters ?: return@combine if (book.error != null) false else null
+                val unready = chapters.filter { it.paragraphCount == 0 || it.readyCount < it.paragraphCount }.map { it.idx }.toSet()
+                if (chapters.any { it.idx == chapterIdx } && chapterIdx !in unready) return@combine true
+                val ahead = active.count { it.first == bookId && it.second < chapterIdx && it.second in unready }
+                if (ahead < MAX_WAITING_CHAPTER_DOWNLOADS) false else null
+            }.filterNotNull().first()
+            return if (generated) readyChapterSlots.withPermit { block() } else block()
+        } finally {
+            activeDownloads.update { it - key }
         }
     }
 

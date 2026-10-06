@@ -22,6 +22,7 @@ package bookexport
 
 import (
 	"fmt"
+	"github.com/rhino1998/lectable/backend/internal/store"
 	"slices"
 	"strconv"
 	"strings"
@@ -285,6 +286,9 @@ type Paragraph struct {
 	Idx    int
 	Text   string
 	Inline bool
+	// Table places the paragraph in a table from the source book (see
+	// store.Paragraph.Table); the zero value outside one.
+	Table store.TablePos
 	// Audio is nil when the paragraph has no ready narration.
 	Audio *Segment
 }

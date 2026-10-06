@@ -85,6 +85,19 @@ object LiveTopics {
     fun jobs(): LiveTopic<JobsSnapshotDto> =
         LiveTopic("jobs", emptyMap(), serializer<JobsSnapshotDto>())
 
+    fun jobsQueue(): LiveTopic<JobsSnapshotDto> =
+        LiveTopic("jobsQueue", emptyMap(), serializer<JobsSnapshotDto>())
+
+    /**
+     * buildBookJobs is buildJobsSnapshot for one book without its narration
+     * tasks (one per paragraph, so tens of thousands for a book queued for
+     * generation): the attribution, summary, ambience, bulk and other rows a
+     * book's pages show as "still running". QueuedTotal and NarrationLeft
+     * leave narration out too.
+     */
+    fun bookJobs(bookId: String): LiveTopic<JobsSnapshotDto> =
+        LiveTopic("bookJobs", mapOf("bookId" to bookId), serializer<JobsSnapshotDto>())
+
     /**
      * buildJobsSummary is buildJobsSnapshot without the task lists.
      */

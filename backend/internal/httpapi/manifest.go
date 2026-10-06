@@ -78,6 +78,10 @@ func paragraphContentHash(p paragraphDTO) string {
 		// paragraph's hash stays what clients already hold.
 		p.Label, p.Text = "", p.Label+"\x00"+p.Text
 	}
+	if p.Table != nil {
+		// Likewise only a table's paragraphs.
+		p.Text = hashJSON(p.Table) + "\x00" + p.Text
+	}
 	return hashJSON(struct {
 		Text       string
 		Speaker    string

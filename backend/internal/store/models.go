@@ -4,6 +4,8 @@ import (
 	"database/sql/driver"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode"
 
 	"github.com/rhino1998/lectable/backend/internal/deliverytags"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
@@ -601,6 +603,37 @@ type Paragraph struct {
 	// nil/empty (the common case) means no emphasis markup was found in
 	// this paragraph's own source HTML.
 	Emphasis PronunciationList
+	// Table places this paragraph in a source <table>: one row's cells
+	// joined into Text (epub.CellSeparator), or one paragraph of a cell
+	// holding several - set at import (internal/epub's table.go), the zero
+	// value outside a table. The clients lay a table's paragraphs out as
+	// a grid; ResolveGenerationText reads a row as sentences, each cell
+	// introduced by its column heading.
+	Table TablePos
+}
+
+// Unvoiced reports whether p is a beat of silence rather than something
+// said: nothing but an ellipsis ("…", "...", "“…”", ". . ."), or a table's
+// heading row, whose headings are spoken with each row under it instead
+// (TablePos.Heading). It gets no speaker and no emotion, and its clip is
+// silence written directly (jobs.silentClip) rather than a TTS render.
+func (p Paragraph) Unvoiced() bool {
+	if p.Table.Heading {
+		return true
+	}
+	dots := 0
+	for _, r := range p.Text {
+		switch {
+		case r == '…':
+			dots += 3
+		case r == '.':
+			dots++
+		case unicode.IsSpace(r) || strings.ContainsRune("\"“”„«»'‘’", r):
+		default:
+			return false
+		}
+	}
+	return dots >= 2
 }
 
 // EffectiveEmotion is the emotion this paragraph actually generates with:
@@ -609,7 +642,7 @@ type Paragraph struct {
 // stays neutral - the narrator keeps one consistent delivery - and so does
 // a stale id no longer in emotions.All.
 func (p Paragraph) EffectiveEmotion() string {
-	if !p.IsQuote || p.ScareQuote || !emotions.Valid(p.Emotion) {
+	if !p.IsQuote || p.ScareQuote || p.Unvoiced() || !emotions.Valid(p.Emotion) {
 		return emotions.Neutral
 	}
 	return p.Emotion
@@ -626,7 +659,9 @@ func (p Paragraph) EffectiveEmotion() string {
 // stored: they're a pure function of the text, so there's nothing to
 // persist or invalidate. Formatting characters (list bullets, box and
 // rule glyphs - pronounce.FormattingSubstitutions) are stripped the same
-// way, giving way to a pronunciation fix over the same span. Never used for forced alignment/word timing,
+// way, giving way to a pronunciation fix over the same span. A table row
+// (Table) is read as sentences, each cell introduced by its column
+// heading (TablePos.spoken). Never used for forced alignment/word timing,
 // which always uses p.Text untouched. lexicon is the book's scope's
 // listener-authored rules (ListLexicon), applied as EffectivePronunciation
 // describes.
@@ -635,7 +670,9 @@ func (p Paragraph) ResolveGenerationText(cloneModel string, lexicon []pronounce.
 	if cloneModel == voices.HiggsCloneModel {
 		insertions = deliverytags.PauseInsertions(p.Text)
 	}
-	pron := pronounce.MergeLexicon(p.EffectivePronunciation(lexicon), pronounce.FormattingSubstitutions(p.Text))
+	labels, cellBreaks := p.Table.spoken(p.Text)
+	insertions = append(insertions, labels...)
+	pron := pronounce.MergeLexicon(pronounce.MergeLexicon(p.EffectivePronunciation(lexicon), cellBreaks), pronounce.FormattingSubstitutions(p.Text))
 	if len(insertions) == 0 && len(pron) == 0 && len(p.Emphasis) == 0 {
 		return p.Text
 	}

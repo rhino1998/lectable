@@ -676,10 +676,12 @@ func (r Roster) WithCast(cast []CastMember) Roster {
 	out.Descriptions = cloneMap(r.Descriptions)
 	out.Pronouns = cloneMap(r.Pronouns)
 	out.Roles = cloneMap(r.Roles)
-	out.Cast = cast
+	out.Cast = append([]CastMember(nil), cast...)
 	resolver := NewSpeakerNameResolver(r.Names, r.Aliases)
-	for _, m := range cast {
+	for i, m := range cast {
 		m.Refs = mergeRefs(nil, m.Refs) // notes stored before a filter was added
+		m.Refs = resolver.dropOthersNames(m.Name, m.Refs)
+		out.Cast[i] = m
 		out.Names = addKnown(out.Names, m.Name)
 		out.Prominent = addKnown(out.Prominent, m.Name)
 		if m.Role {
@@ -709,6 +711,26 @@ func (r Roster) WithCast(cast []CastMember) Roster {
 		}
 	}
 	return out
+}
+
+// dropOthersNames removes the refs that are a known character's own name
+// or alias - someone other than name. The summary pass sometimes files one
+// character under another ("Seneschal" as what Brightblade's chapter 26
+// calls Bob, a skeleton who never speaks), and every line the model then
+// gave Seneschal was moved to Bob.
+func (r *SpeakerNameResolver) dropOthersNames(name string, refs []string) []string {
+	if r == nil {
+		return refs
+	}
+	self := r.Canonical(name)
+	var keep []string
+	for _, ref := range refs {
+		if c, known := r.exact[strings.ToLower(ref)]; known && !strings.EqualFold(c, self) {
+			continue
+		}
+		keep = append(keep, ref)
+	}
+	return keep
 }
 
 // ResolveCastRefs maps an attribution answer that is one of a cast

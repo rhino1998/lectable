@@ -1522,6 +1522,72 @@ label {
 .paragraph-error {
   color: var(--error);
 }
+/* A table from the book (Paragraph.table): its paragraphs sit on one
+   grid, one column per table column. A paragraph names only the columns
+   it spans (inline style) and the grid places it, so a cell's second
+   paragraph drops under its first; .chapter-table-rule, full width,
+   starts each new row. Anything else in here (an annotation boundary, a
+   paragraph's own panels) takes the full width. */
+.chapter-table {
+  display: grid;
+  align-self: stretch;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+.chapter-table > * {
+  grid-column: 1 / -1;
+}
+.chapter-table-rule {
+  height: 0;
+  border-top: 1px solid var(--border);
+}
+.chapter-table .paragraph {
+  padding: 0.35rem 0.6rem;
+  border-left: 0;
+  border-radius: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* A row of several cells: a grid on the table's own columns, each cell's
+   text in its column. The padding moves to the cells so they line up with
+   a paragraph that fills one cell by itself. */
+.chapter-table .table-row {
+  display: grid;
+  grid-template-columns: subgrid;
+  padding: 0;
+  position: relative;
+}
+/* The row's one segment contributes no box: its cells are the grid's. */
+.table-row-segment {
+  display: contents;
+}
+.table-cell {
+  padding: 0.35rem 0.6rem;
+  min-width: 0;
+}
+.table-cell-header {
+  font-weight: 600;
+}
+/* What trails a paragraph's text - badges, the hover buttons - laid over
+   the row's end rather than taking a cell. */
+.table-row-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.3rem;
+  pointer-events: none;
+}
+.table-row-actions > * {
+  pointer-events: auto;
+}
+.table-row:hover .table-row-actions {
+  background: var(--bg-subtle);
+  border-radius: 6px;
+}
+
 /* Per-segment, not per-paragraph (see ChapterSection.tsx's own
    segments.map): a merged/inline paragraph's own segments can each be at a
    different audioStatus, so only the not-yet-generated span itself dims -

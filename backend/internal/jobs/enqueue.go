@@ -941,7 +941,7 @@ func (m *Manager) notePushed(t *task) {
 // either way. Called when t is queued and again whenever what it was
 // waiting for has ended, never in between.
 func (m *Manager) needs(t *task) []sched.Need {
-	if t.skipDependencies {
+	if t.skipDependencies || unvoicedTask(t) {
 		return nil
 	}
 	var needs []sched.Need

@@ -8,6 +8,7 @@ import com.lectable.app.data.download.DownloadedChapter
 import com.lectable.app.data.download.DownloadedChapterDao
 import com.lectable.app.data.download.OfflineParagraph
 import com.lectable.app.data.live.LiveStore
+import com.lectable.app.data.remote.dto.ChapterSummaryDto
 import com.lectable.app.data.remote.BackendIdentityRepository
 import com.lectable.app.data.remote.LectableApi
 import com.lectable.app.data.remote.LiveError
@@ -108,8 +109,25 @@ class DownloadChapterTest {
     private val bookDao = FakeBookDao()
     private val media = FakeMediaApi()
     private val live = MutableStateFlow(LiveResult<ChapterDetailDto>())
+    private val chapterTopics = java.util.concurrent.ConcurrentHashMap<Int, MutableStateFlow<LiveResult<ChapterDetailDto>>>().apply { put(0, live) }
+
+    /** The book topic: five chapters, none generated ([generated] marks some as fully ready). */
+    private val liveBook = MutableStateFlow(LiveResult<BookDetailDto>())
+    private fun generated(vararg idx: Int) {
+        liveBook.value = LiveResult(
+            data = BookDetailDto(
+                id = BOOK,
+                chapters = (0 until 5).map { ChapterSummaryDto(idx = it, paragraphCount = 4, readyCount = if (it in idx) 4 else 1) },
+            ),
+            loading = false,
+        )
+    }
     private val api = mockk<LectableApi>(relaxed = true) {
         coEvery { getBook(BOOK) } returns BookDetailDto(id = BOOK, title = "The Book", author = "A. Writer", chapterCount = 3)
+    }
+
+    init {
+        generated()
     }
 
     private val repo by lazy {
@@ -125,7 +143,10 @@ class DownloadChapterTest {
                 coEvery { currentLibraryId() } returns LIB
             },
             json = json,
-            liveStore = mockk<LiveStore> { every { chapter(BOOK, 0) } returns live },
+            liveStore = mockk<LiveStore> {
+                every { chapter(BOOK, any()) } answers { chapterTopics.getOrPut(secondArg()) { MutableStateFlow(LiveResult()) } }
+                every { book(BOOK) } returns liveBook
+            },
             lightingSettings = mockk(relaxed = true),
         )
     }
@@ -168,6 +189,27 @@ class DownloadChapterTest {
         } catch (e: Exception) {
             fail("timed out waiting for $what; row = ${row()}")
         }
+    }
+
+    // A whole-book download starts every chapter at once; each open chapter topic is the whole
+    // chapter held in memory, so only the first two still waiting on generation, and ones
+    // already generated, may open theirs.
+    @Test
+    fun `chapters waiting on generation do not all open their chapter topic`() = runBlocking {
+        val jobs = (0 until 5).map { idx -> async(Dispatchers.IO) { repo.downloadChapter(BOOK, idx, VOICE, pinned = true) } }
+        fun open() = (0 until 5).filter { (chapterTopics[it]?.subscriptionCount?.value ?: 0) > 0 }
+        suspend fun awaitOpen(want: List<Int>) = try {
+            withTimeout(5_000) { while (open() != want) delay(10) }
+        } catch (e: Exception) {
+            fail("open chapter topics ${open()}, want $want")
+        }
+        awaitOpen(listOf(0, 1))
+        delay(200)
+        assertEquals(listOf(0, 1), open())
+
+        generated(4)
+        awaitOpen(listOf(0, 1, 4))
+        jobs.forEach { it.cancel() }
     }
 
     @Test

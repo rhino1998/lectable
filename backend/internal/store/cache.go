@@ -180,6 +180,7 @@ func clonePtr[T any](p *T) *T {
 func cloneParagraph(p Paragraph) Paragraph {
 	p.Pronunciation = slices.Clone(p.Pronunciation)
 	p.Emphasis = slices.Clone(p.Emphasis)
+	p.Table.Cells = slices.Clone(p.Table.Cells)
 	return p
 }
 

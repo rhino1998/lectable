@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -306,6 +307,51 @@ func TestJobsSnapshotAndCancelAll(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/jobs: status %d", resp.StatusCode)
 	}
+
+	// Filters narrow the listing; the capped build lists fewer queued tasks
+	// than it counts and still sums every task's narration.
+	var other jobsSnapshotDTO
+	doJSON(t, http.MethodGet, ts.URL+"/api/jobs?bookId=nope", nil, &other)
+	if n := len(other.InFlight) + len(other.Queued) + other.QueuedTotal; n != 0 {
+		t.Fatalf("another book's snapshot lists %d tasks, want 0", n)
+	}
+	var kind jobsSnapshotDTO
+	doJSON(t, http.MethodGet, ts.URL+"/api/jobs?bookId="+bookID+"&kind=ambience", nil, &kind)
+	if n := len(kind.InFlight) + len(kind.Queued); n != 0 {
+		t.Fatalf("kind=ambience lists %d tasks, want 0", n)
+	}
+	srv.Jobs.Pause()
+	big := createTestBook(t, s, "", 0, "one", "two", "three", "four", "five", "six")
+	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+big+"/chapters/0/generate", nil, nil)
+	// Enqueued from a detached goroutine - see TestSetJobTier.
+	var full jobsSnapshotDTO
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		full = srv.buildJobsSnapshot(0, func(q jobs.QueueTask) bool { return q.BookID == big })
+		if full.QueuedTotal >= 6 {
+			break
+		}
+	}
+	capped := srv.buildJobsSnapshot(2, func(q jobs.QueueTask) bool { return q.BookID == big })
+	if full.QueuedTotal < 3 || len(full.Queued) != full.QueuedTotal {
+		t.Fatalf("full snapshot: %d listed of %d", len(full.Queued), full.QueuedTotal)
+	}
+	if len(capped.Queued) != 2 || capped.QueuedTotal != full.QueuedTotal {
+		t.Fatalf("capped snapshot: %d listed of %d, want 2 of %d", len(capped.Queued), capped.QueuedTotal, full.QueuedTotal)
+	}
+	if len(capped.NarrationLeft) != 1 || !slices.Equal(capped.NarrationLeft, full.NarrationLeft) || capped.NarrationLeft[0].BookID != big {
+		t.Fatalf("capped narrationLeft %+v, full %+v", capped.NarrationLeft, full.NarrationLeft)
+	}
+	// The per-book topic leaves the book's narration tasks out.
+	bookJobs, _ := srv.buildBookJobs(big)
+	for _, q := range append(bookJobs.InFlight, bookJobs.Queued...) {
+		if q.BookID != big || q.Kind == string(jobs.KindVoiceClone) || q.Kind == string(jobs.KindVoiceDesign) {
+			t.Fatalf("bookJobs lists %+v", q)
+		}
+	}
+	if bookJobs.QueuedTotal >= full.QueuedTotal {
+		t.Fatalf("bookJobs counts %d queued, the book's full queue %d", bookJobs.QueuedTotal, full.QueuedTotal)
+	}
+	srv.Jobs.Resume()
 
 	var cancelResult map[string]int
 	resp = doJSON(t, http.MethodDelete, ts.URL+"/api/jobs", nil, &cancelResult)

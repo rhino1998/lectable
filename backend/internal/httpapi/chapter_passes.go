@@ -160,7 +160,7 @@ func (s *Server) runAttribution(ctx context.Context, book *store.Book, ch *store
 		if inline && (i == 0 || paragraphs[i-1].Idx != p.Idx-1) {
 			inline = false
 		}
-		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: inline, IsQuote: p.IsQuote && !p.ScareQuote}
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: inline, IsQuote: p.IsQuote && !p.ScareQuote && !p.Unvoiced()}
 		if inputs[i].IsQuote {
 			inputs[i].Known = given[p.Idx]
 			if inputs[i].Known != "" && knownRoles[inputs[i].Known] {
@@ -301,7 +301,7 @@ func (s *Server) attributeChapter(ctx context.Context, book *store.Book, ch *sto
 		// model's own prompt adherence (see speakerattr's own system
 		// prompt, which already asks for this but can't guarantee it).
 		if name != "Narrator" {
-			if p, ok := paragraphByIdx[idx]; ok && (!p.IsQuote || p.ScareQuote) {
+			if p, ok := paragraphByIdx[idx]; ok && (!p.IsQuote || p.ScareQuote || p.Unvoiced()) {
 				name = "Narrator"
 			}
 		}
@@ -523,12 +523,12 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	inputs := make([]speakerattr.ParagraphInput, len(all))
 	paragraphByIdx := make(map[int]store.Paragraph, len(all))
 	for i, p := range all {
-		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote && !p.Unvoiced()}
 		paragraphByIdx[p.Idx] = p
 	}
 	isDialogue := func(idx int) bool {
 		p, ok := paragraphByIdx[idx]
-		return ok && p.IsQuote && !p.ScareQuote
+		return ok && p.IsQuote && !p.ScareQuote && !p.Unvoiced()
 	}
 	rejected := func(name string) bool {
 		return name == "" || name == excludeName || invalid.has(name) || speakerattr.IsGroupSpeaker(name)
@@ -814,7 +814,7 @@ func (s *Server) directChapterRange(ctx context.Context, book *store.Book, ch *s
 
 	inputs := make([]speakerattr.ParagraphInput, len(paragraphs))
 	for i, p := range paragraphs {
-		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote && !p.Unvoiced()}
 	}
 	labels, remaining, labelErr := s.Speaker.EmotionChapter(ctx, book.Title, ch.Title, inputs, nil)
 
@@ -955,7 +955,7 @@ func (s *Server) pronounceChapterRange(ctx context.Context, book *store.Book, ch
 	}
 	inputs := make([]speakerattr.ParagraphInput, len(paragraphs))
 	for i, p := range paragraphs {
-		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote && !p.Unvoiced()}
 	}
 
 	pronunciation, remaining, resolveErr := s.Speaker.ResolvePronunciation(ctx, book.Title, ch.Title, inputs, nil)

@@ -1,5 +1,6 @@
 package com.lectable.app.ui.jobs
 
+import com.lectable.app.data.remote.dto.BookNarrationDto
 import com.lectable.app.data.remote.dto.JobsSnapshotDto
 import com.lectable.app.data.remote.dto.QueueTaskDto
 import org.junit.Assert.assertEquals
@@ -7,28 +8,29 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class NarrationEtaTest {
-    private fun task(book: String = "a", chars: Int? = null, kind: String = "voice_clone") =
-        QueueTaskDto(kind = kind, bookId = book, bookTitle = book.uppercase(), chars = chars)
+    private fun left(book: String, chars: Int) = BookNarrationDto(bookId = book, bookTitle = book.uppercase(), chars = chars)
 
     @Test
     fun nullWithoutRateOrNarration() {
         assertNull(narrationEta(null))
-        assertNull(narrationEta(JobsSnapshotDto(queued = listOf(task(chars = 100)))))
+        assertNull(narrationEta(JobsSnapshotDto(narrationLeft = listOf(left("a", 100)))))
         assertNull(
             narrationEta(
-                JobsSnapshotDto(narrationCharsPerSecond = 10.0, queued = listOf(task(kind = "ambience"))),
+                JobsSnapshotDto(narrationCharsPerSecond = 10.0, queued = listOf(QueueTaskDto(kind = "ambience"))),
             ),
         )
     }
 
+    // The queue's task list is capped, so the estimate reads the backend's per-book sums.
     @Test
     fun sumsPerBookAtRate() {
         val eta = narrationEta(
             JobsSnapshotDto(
                 narrationCharsPerSecond = 20.0,
                 narrationRealtimeFactor = 1.5,
-                inFlight = listOf(task(chars = 200)),
-                queued = listOf(task(chars = 400), task(book = "b", chars = 1200)),
+                queued = listOf(QueueTaskDto(kind = "voice_clone", bookId = "a", chars = 400)),
+                queuedTotal = 30_000,
+                narrationLeft = listOf(left("a", 600), left("b", 1200)),
             ),
         )!!
         assertEquals(90.0, eta.totalSeconds, 1e-9)

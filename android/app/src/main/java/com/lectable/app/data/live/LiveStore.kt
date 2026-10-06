@@ -93,11 +93,14 @@ class LiveStore @Inject constructor(
 
     fun defaultVoice(): StateFlow<LiveResult<VoiceSettingsDto>> = topic(LiveTopics.defaultVoice(), eager = true)
 
-    fun jobs(): StateFlow<LiveResult<JobsSnapshotDto>> = topic(LiveTopics.jobs())
+    /** The job queue for the Jobs screen: everything in flight, the first couple of hundred
+     *  queued tasks, and totals for the rest. Deliberately not the "jobs" topic, which lists
+     *  every queued task - tens of megabytes with a few books queued for generation, held as
+     *  a JSON tree and decoded again on every patch, which ran the app out of memory. */
+    fun jobsQueue(): StateFlow<LiveResult<JobsSnapshotDto>> = topic(LiveTopics.jobsQueue())
 
-    /** The queue's counts and narration rates without its task list - what anything but the
-     *  Jobs screen should read: [jobs] carries every queued task, tens of megabytes with a few
-     *  books queued for generation. */
+    /** The queue's counts and narration rates without any task list - what anything but the
+     *  Jobs screen should read. */
     fun jobsSummary(): StateFlow<LiveResult<JobsSummaryDto>> = topic(LiveTopics.jobsSummary())
 
     fun book(bookId: String): StateFlow<LiveResult<BookDetailDto>> = topic(LiveTopics.book(bookId))

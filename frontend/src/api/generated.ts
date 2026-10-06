@@ -310,6 +310,19 @@ export interface BookManifest {
 }
 
 /**
+ * bookNarrationDTO is one book's entry in jobsSnapshotDTO.NarrationLeft.
+ */
+export interface BookNarration {
+  bookId: string
+  bookTitle: string
+  /**
+   * Chars is the paragraph text its queued and in-flight narration tasks
+   * still have to render.
+   */
+  chars: number
+}
+
+/**
  * bookSettingDTO is a book's setting profile (store.BookSetting) - the world
  * its story takes place in, which the ambience, lighting and
  * characterization prompts are shown. Field-for-field store.BookSetting, so
@@ -835,7 +848,19 @@ export interface JobTierRequest {
 
 export interface JobsSnapshot {
   inFlight: QueueTask[]
+  /**
+   * Queued is the waiting tasks in dispatch order - all of them from GET
+   * /api/jobs and the "jobs" topic, only the first jobsQueueLimit from the
+   * "jobsQueue" topic. QueuedTotal counts them all either way.
+   */
   queued: QueueTask[]
+  queuedTotal: number
+  /**
+   * NarrationLeft sums queueTaskDTO.Chars per book over every in-flight
+   * and queued task, listed or not, most left first - the "time left"
+   * estimate's input for a client holding a capped Queued.
+   */
+  narrationLeft?: BookNarration[]
   /**
    * Paused mirrors jobs.Manager.Paused() - see handlePauseJobs/
    * handleResumeJobs, the Jobs dashboard's own pause/resume button.
@@ -1170,6 +1195,10 @@ export interface Paragraph {
    * found in this paragraph).
    */
   pronunciationMarks?: PronunciationMark[]
+  /**
+   * Table is set for a paragraph read from a table in the source book.
+   */
+  table?: Table | null
   /**
    * Words is a [{text,start,end}] array from the ttsworker's
    * forced alignment (see ttsworker.Manager.Align), or "[]" before
@@ -1757,6 +1786,58 @@ export interface SummaryScene {
   present: string[]
 }
 
+/**
+ * tableDTO places a paragraph in a table from the source book: a row whose
+ * cells are joined into the paragraph's text with " | ", or one paragraph
+ * of a cell holding several. Consecutive paragraphs sharing Table are one
+ * table, laid out as a grid by each cell's row and column; the separators
+ * between cells aren't shown.
+ */
+export interface Table {
+  /**
+   * Table tells the chapter's tables apart.
+   */
+  table: number
+  row: number
+  /**
+   * Cells is in column order.
+   */
+  cells: TableCell[]
+  /**
+   * Heading marks a row of column headings that narration speaks with
+   * each row under it rather than on its own (its clip is silence).
+   */
+  heading?: boolean
+}
+
+/**
+ * tableCellDTO is one cell's span of its paragraph's text.
+ */
+export interface TableCell {
+  /**
+   * Start and End are offsets into the paragraph's text in code points
+   * (not UTF-16 units), like pronunciationMarkDTO.Offset.
+   */
+  start: number
+  end: number
+  /**
+   * Col is the first grid column the cell occupies, from 0.
+   */
+  col: number
+  colSpan: number
+  rowSpan: number
+  /**
+   * Header marks a heading cell.
+   */
+  header?: boolean
+  /**
+   * Label is the cell's column heading when narration speaks it before
+   * the cell ("Rarity: Rare") - not shown in the grid, where the heading
+   * row already is.
+   */
+  label?: string
+}
+
 export interface TestCloneInstructRequest {
   /**
    * BaseID is an existing voice (built-in or custom) whose already-
@@ -2031,6 +2112,15 @@ export interface LiveTopics {
   lexiconSuggestions: { params: { bookId: string }; data: LexiconSuggestion[] }
   bookExports: { params: { bookId: string }; data: BookExport[] }
   jobs: { params: Record<never, never>; data: JobsSnapshot }
+  jobsQueue: { params: Record<never, never>; data: JobsSnapshot }
+  /**
+   * buildBookJobs is buildJobsSnapshot for one book without its narration
+   * tasks (one per paragraph, so tens of thousands for a book queued for
+   * generation): the attribution, summary, ambience, bulk and other rows a
+   * book's pages show as "still running". QueuedTotal and NarrationLeft
+   * leave narration out too.
+   */
+  bookJobs: { params: { bookId: string }; data: JobsSnapshot }
   /**
    * buildJobsSummary is buildJobsSnapshot without the task lists.
    */
@@ -3380,11 +3470,14 @@ export interface Routes {
     errorCode: never
   }
   /**
-   * handleJobsSnapshot is buildJobsSnapshot over HTTP - GET /api/jobs.
+   * handleJobsSnapshot is buildJobsSnapshot over HTTP - GET /api/jobs, every
+   * task. ?bookId= and ?kind= narrow it to one book's tasks and/or one kind's
+   * (queueTaskDTO.Kind) - what a client asking "is this already queued?"
+   * should pass rather than downloading the whole queue.
    */
   'GET /api/jobs': {
     path: Record<never, never>
-    query: Record<never, never>
+    query: { bookId?: string | number | boolean; kind?: string | number | boolean }
     body: never
     response: JobsSnapshot
     errorCode: never

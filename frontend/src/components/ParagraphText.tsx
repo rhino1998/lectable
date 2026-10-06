@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { RiArrowDropUpLine } from 'react-icons/ri'
 import type { DirectionMark, PronunciationMark, WordTiming } from '../api/types'
 import { hasActiveTextSelection } from '../utils/selection'
@@ -15,14 +15,33 @@ interface WordToken {
 // re-rendering the original text (whitespace/punctuation intact) as
 // per-word spans - not itself a source of timing. See wordStartTimes for
 // where each token's start time actually comes from.
-function tokenize(text: string): WordToken[] {
+//
+// A table row's text is its cells joined with " | " (see TextCell): only
+// the cells hold words. The separators aren't shown, and the aligner
+// gives a bar on its own no timing, so counting them would put the word
+// count off by one a cell.
+function tokenize(text: string, cells?: TextCell[]): WordToken[] {
   const tokens: WordToken[] = []
   const regex = /\S+/g
-  let match: RegExpExecArray | null
-  while ((match = regex.exec(text)) !== null) {
-    tokens.push({ word: match[0], start: match.index, end: match.index + match[0].length })
+  for (const range of cells ?? [{ start: 0, end: text.length }]) {
+    const part = text.slice(range.start, range.end)
+    regex.lastIndex = 0
+    let match: RegExpExecArray | null
+    while ((match = regex.exec(part)) !== null) {
+      const start = range.start + match.index
+      tokens.push({ word: match[0], start, end: start + match[0].length })
+    }
   }
   return tokens
+}
+
+// One cell of a table row: its span of the row's text, and the element it
+// is laid out in (ChapterSection places it on the table's grid).
+export interface TextCell {
+  start: number
+  end: number
+  className: string
+  style: CSSProperties
 }
 
 // tts-service's forced aligner (words) is given the paragraph's exact
@@ -118,9 +137,13 @@ function renderWithMarks(
   marksByOffset: Map<number, DirectionMark[]>,
   pronunciationByOffset: Map<number, PronunciationMark>,
   renderToken: (t: WordToken, i: number) => ReactNode,
+  // The span of text to render - one table cell's, or all of it. A
+  // token's index stays its place among every token either way.
+  from = 0,
+  to = text.length,
 ): ReactNode[] {
   const nodes: ReactNode[] = []
-  let cursor = 0
+  let cursor = from
   const emitMarksAt = (offset: number) => {
     const marks = marksByOffset.get(offset)
     if (!marks) return
@@ -128,6 +151,7 @@ function renderWithMarks(
       nodes.push(<DirectionCaret key={`mark-${offset}-${m.tag}`} tag={m.tag} />)
   }
   tokens.forEach((t, i) => {
+    if (t.start < from || t.end > to) return
     if (t.start > cursor) nodes.push(text.slice(cursor, t.start))
     emitMarksAt(t.start)
     const rendered = renderToken(t, i)
@@ -143,8 +167,8 @@ function renderWithMarks(
     )
     cursor = t.end
   })
-  if (cursor < text.length) nodes.push(text.slice(cursor))
-  emitMarksAt(text.length)
+  if (cursor < to) nodes.push(text.slice(cursor, to))
+  if (to === text.length) emitMarksAt(text.length)
   return nodes
 }
 
@@ -156,8 +180,10 @@ function renderWithHighlight(
   onSeek: (seconds: number) => void,
   marksByOffset: Map<number, DirectionMark[]>,
   pronunciationByOffset: Map<number, PronunciationMark>,
+  from?: number,
+  to?: number,
 ): ReactNode[] {
-  return renderWithMarks(text, tokens, marksByOffset, pronunciationByOffset, (t, i) => (
+  const renderToken = (t: WordToken, i: number) => (
     <span
       key={i}
       className={'word' + (i === activeIdx ? ' word-active' : '')}
@@ -169,7 +195,8 @@ function renderWithHighlight(
     >
       {t.word}
     </span>
-  ))
+  )
+  return renderWithMarks(text, tokens, marksByOffset, pronunciationByOffset, renderToken, from, to)
 }
 
 function renderPlainWithMarks(
@@ -177,8 +204,18 @@ function renderPlainWithMarks(
   tokens: WordToken[],
   marksByOffset: Map<number, DirectionMark[]>,
   pronunciationByOffset: Map<number, PronunciationMark>,
+  from?: number,
+  to?: number,
 ): ReactNode[] {
-  return renderWithMarks(text, tokens, marksByOffset, pronunciationByOffset, (t) => t.word)
+  return renderWithMarks(
+    text,
+    tokens,
+    marksByOffset,
+    pronunciationByOffset,
+    (t) => t.word,
+    from,
+    to,
+  )
 }
 
 export function ParagraphText({
@@ -190,6 +227,7 @@ export function ParagraphText({
   onSeek,
   marks = [],
   pronunciationMarks = [],
+  cells,
 }: {
   text: string
   active: boolean
@@ -215,8 +253,11 @@ export function ParagraphText({
   // exact word each one applies to (PronunciationStrike). Defaults to
   // none, gated the same way marks is.
   pronunciationMarks?: PronunciationMark[]
+  // Set for a table row: each cell's span of text is rendered in an
+  // element of its own, and the " | " between them isn't rendered at all.
+  cells?: TextCell[]
 }) {
-  const tokens = useMemo(() => tokenize(text), [text])
+  const tokens = useMemo(() => tokenize(text, cells), [text, cells])
   const times = useMemo(
     () => wordStartTimes(tokens, words, text.length, duration),
     [tokens, words, text.length, duration],
@@ -256,15 +297,13 @@ export function ParagraphText({
     return () => cancelAnimationFrame(frame)
   }, [active, audioElement])
 
-  if (!active || duration <= 0) {
-    if (marksByOffset.size === 0 && pronunciationByOffset.size === 0) return <>{text}</>
-    return <>{renderPlainWithMarks(text, tokens, marksByOffset, pronunciationByOffset)}</>
-  }
-
-  const activeIdx = activeWordIndex(times, currentTime + HIGHLIGHT_LOOKAHEAD_SECONDS)
-  return (
-    <>
-      {renderWithHighlight(
+  const highlighting = active && duration > 0
+  const activeIdx = highlighting
+    ? activeWordIndex(times, currentTime + HIGHLIGHT_LOOKAHEAD_SECONDS)
+    : -1
+  const renderRange = (from: number, to: number): ReactNode => {
+    if (highlighting) {
+      return renderWithHighlight(
         text,
         tokens,
         times,
@@ -272,7 +311,24 @@ export function ParagraphText({
         onSeek,
         marksByOffset,
         pronunciationByOffset,
-      )}
-    </>
-  )
+        from,
+        to,
+      )
+    }
+    if (marksByOffset.size === 0 && pronunciationByOffset.size === 0) return text.slice(from, to)
+    return renderPlainWithMarks(text, tokens, marksByOffset, pronunciationByOffset, from, to)
+  }
+
+  if (cells) {
+    return (
+      <>
+        {cells.map((c, i) => (
+          <span key={i} className={c.className} style={c.style}>
+            {renderRange(c.start, c.end)}
+          </span>
+        ))}
+      </>
+    )
+  }
+  return <>{renderRange(0, text.length)}</>
 }

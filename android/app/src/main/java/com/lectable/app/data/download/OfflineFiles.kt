@@ -107,6 +107,7 @@ internal fun List<OfflineParagraph>.toCachedParagraphs(clipUrl: (anchorIdx: Int)
             durationSeconds = p.durationSeconds,
             speaker = p.speaker,
             label = p.label,
+            table = p.table,
             inline = p.inline,
             directionMarks = p.directionMarks,
             pronunciationMarks = p.pronunciationMarks,

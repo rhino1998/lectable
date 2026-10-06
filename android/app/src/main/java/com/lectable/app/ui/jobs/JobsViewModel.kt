@@ -56,7 +56,7 @@ class JobsViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            liveStore.jobs().collect { result ->
+            liveStore.jobsQueue().collect { result ->
                 _uiState.update {
                     it.copy(
                         snapshot = result.data ?: it.snapshot,

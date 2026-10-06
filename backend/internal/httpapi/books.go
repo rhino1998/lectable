@@ -434,10 +434,22 @@ func chapterBlockInputs(ch epub.Chapter) (blocks []store.BlockInput, imageBytes 
 		case epub.BlockBreak:
 			blocks[j] = store.BlockInput{Kind: store.BlockBreak}
 		default:
-			blocks[j] = store.BlockInput{Kind: store.BlockText, Text: b.Text, Inline: b.Inline, IsQuote: b.IsQuote, Emphasis: b.Emphasis, Speaker: b.Speaker, Label: b.Label}
+			blocks[j] = store.BlockInput{Kind: store.BlockText, Text: b.Text, Inline: b.Inline, IsQuote: b.IsQuote, Emphasis: b.Emphasis, Speaker: b.Speaker, Label: b.Label, Table: tableInput(b.Table)}
 		}
 	}
 	return blocks, imageBytes
+}
+
+// tableInput converts a parsed block's table position for the store.
+func tableInput(t *epub.TablePos) store.TablePos {
+	if t == nil {
+		return store.TablePos{}
+	}
+	cells := make([]store.TableCell, len(t.Cells))
+	for i, c := range t.Cells {
+		cells[i] = store.TableCell{Start: c.Start, End: c.End, Col: c.Col, ColSpan: c.ColSpan, RowSpan: c.RowSpan, Header: c.Header, Label: c.Label}
+	}
+	return store.TablePos{Table: t.Table, Row: t.Row, Cells: cells, Heading: t.Heading}
 }
 
 // saveSourceEpub writes r to bookID's kept source epub

@@ -66,6 +66,8 @@ func withDeps(base []string, extra ...string) []string {
 //	lexiconSuggestions {bookId}           GET /api/books/{id}/lexicon/suggestions
 //	bookExports    {bookId}               GET /api/books/{id}/exports
 //	jobs                                  GET /api/jobs
+//	jobsQueue
+//	bookJobs       {bookId}
 //	jobsSummary
 //	voicePresets                          GET /api/voices/presets
 //	customVoicePresets                    GET /api/voices/custom-presets
@@ -101,8 +103,16 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	// every couple of seconds.
 	h.Register("bookExports", bookTopic("bookExports", exportDeps, 2*time.Second, s.buildExports))
 	h.Register("jobs", noParams("jobs", withDeps(dbDeps("books", "chapters"), DepJobs), 250*time.Millisecond, func() (jobsSnapshotDTO, error) {
-		return s.buildJobsSnapshot(), nil
+		return s.buildJobsSnapshot(0, nil), nil
 	}))
+	// The same, listing only the head of the queue - what the Android Jobs
+	// screen reads.
+	h.Register("jobsQueue", noParams("jobsQueue", withDeps(dbDeps("books", "chapters"), DepJobs), 250*time.Millisecond, func() (jobsSnapshotDTO, error) {
+		return s.buildJobsSnapshot(jobsQueueLimit, nil), nil
+	}))
+	// One book's tasks other than narration, for its pages' "still running"
+	// indicators.
+	h.Register("bookJobs", bookTopic("bookJobs", withDeps(dbDeps("books", "chapters"), DepJobs), 250*time.Millisecond, s.buildBookJobs))
 	// The queue in a few numbers, for screens that don't list its tasks.
 	h.Register("jobsSummary", noParams("jobsSummary", []string{DepJobs}, 2*time.Second, s.buildJobsSummary))
 	// Built-in presets are compiled in, so nothing ever invalidates this -

@@ -6,14 +6,16 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /** Thin wrapper over [LectableApi]'s job-queue endpoints - mirrors client.ts. The live queue
- *  comes from the "jobs" topic ([com.lectable.app.data.live.LiveStore]), not this
+ *  comes from the "jobsQueue" topic ([com.lectable.app.data.live.LiveStore]), not this
  *  repository; these are the mutating actions (cancel one/all, pause/resume, restart worker)
  *  plus a one-off [snapshot] for point-in-time checks. */
 @Singleton
 class JobsRepository @Inject constructor(
     private val api: LectableApi,
 ) {
-    suspend fun snapshot(): JobsSnapshotDto = api.jobsSnapshot()
+    /** One book's queued and in-flight tasks of one kind - never the whole queue, which can
+     *  be tens of megabytes. */
+    suspend fun snapshot(bookId: String, kind: String): JobsSnapshotDto = api.jobsSnapshot(bookId = bookId, kind = kind)
 
     suspend fun cancelJob(id: String) {
         api.cancelJob(id)

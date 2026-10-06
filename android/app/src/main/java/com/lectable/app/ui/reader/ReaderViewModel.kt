@@ -887,8 +887,8 @@ class ReaderViewModel @Inject constructor(
         // The ambience pass is done once its music is scored and its lighting sub-pass has lit
         // every region - a chapter scored before lighting existed still gets (just) lit.
         if ((dto.scored && dto.lit) || idx in scoringMusicChapters) return
-        val alreadyInFlight = runCatching { jobsRepository.snapshot() }.getOrNull()?.let { snapshot ->
-            (snapshot.inFlight + snapshot.queued).any { it.kind == "ambience" && it.bookId == bookId && it.chapterIdx == idx }
+        val alreadyInFlight = runCatching { jobsRepository.snapshot(bookId, "ambience") }.getOrNull()?.let { snapshot ->
+            (snapshot.inFlight + snapshot.queued).any { it.chapterIdx == idx }
         } ?: false
         if (alreadyInFlight) {
             // Someone else (another instance, or this book open elsewhere) already has this

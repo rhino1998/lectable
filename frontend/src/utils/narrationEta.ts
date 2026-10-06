@@ -1,4 +1,4 @@
-import type { JobsSnapshot } from '../api/types'
+import type { JobsSnapshot, JobsSummary } from '../api/types'
 
 export interface BookEta {
   bookId: string
@@ -17,7 +17,9 @@ export interface NarrationEta {
 }
 
 // Time left for the narration already queued or in flight: every
-// voice_clone/voice_design task's paragraph text (QueueTask.chars), at the
+// voice_clone/voice_design task's paragraph text, summed per book by the
+// backend (JobsSnapshot.narrationLeft - the snapshot's own task list is
+// only the head of the queue), at the
 // backend's recently measured rate (JobsSnapshot.narrationCharsPerSecond,
 // every generation slot together). Only covers what's enqueued - reading
 // ahead or a bulk "Generate" adds more as it goes - and null while the
@@ -25,22 +27,11 @@ export interface NarrationEta {
 export function narrationEta(snapshot: JobsSnapshot | undefined): NarrationEta | null {
   const rate = snapshot?.narrationCharsPerSecond ?? 0
   if (!snapshot || rate <= 0) return null
-  const byBook = new Map<string, BookEta>()
-  for (const t of [...snapshot.inFlight, ...snapshot.queued]) {
-    if (!t.chars) continue
-    const b = byBook.get(t.bookId) ?? {
-      bookId: t.bookId,
-      bookTitle: t.bookTitle,
-      chars: 0,
-      seconds: 0,
-    }
-    b.chars += t.chars
-    byBook.set(t.bookId, b)
-  }
-  if (byBook.size === 0) return null
-  const books = [...byBook.values()]
-  for (const b of books) b.seconds = b.chars / rate
-  books.sort((a, b) => b.chars - a.chars)
+  const books = (snapshot.narrationLeft ?? [])
+    .filter((b) => b.chars > 0)
+    .map((b) => ({ ...b, seconds: b.chars / rate }))
+    .sort((a, b) => b.chars - a.chars)
+  if (books.length === 0) return null
   const totalChars = books.reduce((n, b) => n + b.chars, 0)
   return {
     charsPerSecond: rate,
@@ -53,7 +44,7 @@ export function narrationEta(snapshot: JobsSnapshot | undefined): NarrationEta |
 // narrationRate is the speed to estimate not-yet-queued work at: the live
 // rate while narration is running, else the last run's (the backend keeps
 // it after the run ends); 0 when nothing has been measured since startup.
-export function narrationRate(snapshot: JobsSnapshot | undefined): number {
+export function narrationRate(snapshot: JobsSnapshot | JobsSummary | undefined): number {
   return snapshot?.narrationCharsPerSecond || snapshot?.lastNarrationCharsPerSecond || 0
 }
 

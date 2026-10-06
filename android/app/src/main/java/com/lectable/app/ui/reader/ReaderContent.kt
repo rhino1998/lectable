@@ -65,6 +65,14 @@ internal sealed class ReaderListEntry {
     // (see ParagraphDto.inline) is grouped together, mirroring
     // frontend/src/pages/ReaderPage.tsx's groupContent. Always non-empty.
     data class ParagraphItem(val chapterIdx: Int, val segments: List<ParagraphDto>) : ReaderListEntry()
+    // A table from the book: every visual block (as ParagraphItem.segments) whose paragraphs
+    // carry the same ParagraphDto.table, laid out as one grid (see TableBlockView). One list
+    // entry rather than one per row, so the rows sit flush inside a shared frame. Always
+    // non-empty.
+    data class TableItem(val chapterIdx: Int, val blocks: List<List<ParagraphDto>>) : ReaderListEntry() {
+        val key get() = "table-$chapterIdx-${blocks.first().first().idx}"
+        fun blockIndexOf(paragraphIdx: Int) = blocks.indexOfFirst { b -> b.any { it.idx == paragraphIdx } }
+    }
     // A standalone image between/around paragraphs (backend's contentItemDTO kind "image"),
     // e.g. an illustration or figure embedded in the original epub - imageUrl is still the raw
     // relative path (`/api/images/{id}`); resolved against the current server at render time,
@@ -122,10 +130,19 @@ internal fun groupContent(
         } else {
             val newGroup = mutableListOf(p)
             currentGroup = newGroup
-            musicRegionsByStartIdx[p.idx]?.let { region ->
+            val boundary = musicRegionsByStartIdx[p.idx]
+            boundary?.let { region ->
                 entries.add(ReaderListEntry.MusicBoundary(chapterIdx, "music-$chapterIdx-${region.id}", region))
             }
-            entries.add(ReaderListEntry.ParagraphItem(chapterIdx, newGroup))
+            val table = p.table
+            val last = entries.lastOrNull()
+            when {
+                table == null -> entries.add(ReaderListEntry.ParagraphItem(chapterIdx, newGroup))
+                // The table's next block. (A music boundary in between has just ended it.)
+                last is ReaderListEntry.TableItem && last.blocks.first().first().table?.table == table.table ->
+                    entries[entries.lastIndex] = last.copy(blocks = last.blocks + listOf(newGroup))
+                else -> entries.add(ReaderListEntry.TableItem(chapterIdx, listOf(newGroup)))
+            }
         }
     }
     return entries
@@ -207,14 +224,73 @@ internal fun InfiniteChapterContent(
     LaunchedEffect(playback.chapterIdx, playback.paragraphIdx, autoFollow, entries, activeLine) {
         if (!autoFollow) return@LaunchedEffect
         val itemIndex = entries.indexOfFirst {
-            it is ReaderListEntry.ParagraphItem && it.chapterIdx == playback.chapterIdx &&
-                it.segments.any { s -> s.idx == playback.paragraphIdx }
+            when (it) {
+                is ReaderListEntry.ParagraphItem ->
+                    it.chapterIdx == playback.chapterIdx && it.segments.any { s -> s.idx == playback.paragraphIdx }
+                is ReaderListEntry.TableItem ->
+                    it.chapterIdx == playback.chapterIdx && it.blockIndexOf(playback.paragraphIdx) >= 0
+                else -> false
+            }
         }
         if (itemIndex < 0) return@LaunchedEffect
-        val item = entries[itemIndex] as ReaderListEntry.ParagraphItem
-        val line = activeLine?.takeIf { it.first == item.chapterIdx && it.second == item.segments.first().idx }?.third
-        listState.centerItem(itemIndex, line)
+        val line = when (val item = entries[itemIndex]) {
+            is ReaderListEntry.ParagraphItem ->
+                activeLine?.takeIf { it.first == item.chapterIdx && it.second == item.segments.first().idx }?.third
+            // A table is followed by the row being read, wherever TableBlockView measures it.
+            // Until it has (the table isn't on screen yet), its place among the blocks is a
+            // near enough guess to bring the table in; a laid-out table waits for the measure
+            // rather than scrolling twice.
+            is ReaderListEntry.TableItem -> {
+                val block = item.blockIndexOf(playback.paragraphIdx)
+                val firstIdx = item.blocks[block].first().idx
+                activeLine?.takeIf { it.first == item.chapterIdx && it.second == firstIdx }?.third
+                    ?: if (listState.layoutInfo.visibleItemsInfo.any { it.index == itemIndex }) {
+                        return@LaunchedEffect
+                    } else {
+                        (block + 0.5f) / item.blocks.size
+                    }
+            }
+            else -> null
+        }
+        listState.centerItem(itemIndex, line, followLine = entries[itemIndex] is ReaderListEntry.TableItem)
     }
+
+    // One visual block of paragraphs - by itself, or (tableColumns set) inside a table.
+    val paragraphBlock: @Composable (chapterIdx: Int, segments: List<ParagraphDto>, tableColumns: List<Float>?) -> Unit =
+        { chapterIdx, segments, tableColumns ->
+        val activeSegmentIdx = if (playback.chapterIdx == chapterIdx) {
+            segments.indexOfFirst { it.idx == playback.paragraphIdx }
+        } else {
+            -1
+        }
+        val firstIdx = segments.first().idx
+        ParagraphRow(
+            segments = segments,
+            activeSegmentIdx = activeSegmentIdx,
+            isBookmarked = bookmarksByKey.containsKey(chapterIdx to firstIdx),
+            playbackSeconds = if (activeSegmentIdx >= 0) playbackSeconds else 0.0,
+            fontSizeSp = fontSizeSp,
+            fontFamily = fontFamily,
+            annotationsMode = annotationsMode,
+            onWordTap = { paragraphIdx, startSeconds -> onParagraphClick(chapterIdx, paragraphIdx, startSeconds) },
+            // A reader regenerating "this paragraph" means the whole visual block
+            // they're looking at, inline segments included - mirrors
+            // ReaderPage.tsx's own regenerate button.
+            onRegenerate = { segments.forEach { onRegenerateParagraph(chapterIdx, it.idx) } },
+            onToggleBookmark = { onToggleBookmark(chapterIdx, firstIdx) },
+            onActiveLine = { fraction -> if (tableColumns == null) activeLine = Triple(chapterIdx, firstIdx, fraction) },
+            tableColumns = tableColumns,
+            onOpenSpeakerPicker = { paragraphIndices, currentSpeaker ->
+                onOpenSpeakerPicker(chapterIdx, paragraphIndices, currentSpeaker)
+            },
+            onToggleScareQuote = { paragraphIndices, scareQuote ->
+                onSetScareQuote(chapterIdx, paragraphIndices, scareQuote)
+            },
+            onSetEmotion = { paragraphIndices, emotion ->
+                onSetEmotion(chapterIdx, paragraphIndices, emotion)
+            },
+        )
+        }
 
     LazyColumn(
         state = listState,
@@ -228,6 +304,7 @@ internal fun InfiniteChapterContent(
                 when (entry) {
                     is ReaderListEntry.ChapterHeader -> "header-${entry.chapterIdx}"
                     is ReaderListEntry.ParagraphItem -> "p-${entry.chapterIdx}-${entry.segments.first().idx}"
+                    is ReaderListEntry.TableItem -> entry.key
                     is ReaderListEntry.ImageItem -> entry.key
                     is ReaderListEntry.BreakItem -> entry.key
                     is ReaderListEntry.MusicBoundary -> entry.key
@@ -245,38 +322,15 @@ internal fun InfiniteChapterContent(
                         ),
                     )
                 }
-                is ReaderListEntry.ParagraphItem -> {
-                    val activeSegmentIdx = if (playback.chapterIdx == entry.chapterIdx) {
-                        entry.segments.indexOfFirst { it.idx == playback.paragraphIdx }
-                    } else {
-                        -1
-                    }
-                    val firstIdx = entry.segments.first().idx
-                    ParagraphRow(
-                        segments = entry.segments,
-                        activeSegmentIdx = activeSegmentIdx,
-                        isBookmarked = bookmarksByKey.containsKey(entry.chapterIdx to firstIdx),
-                        playbackSeconds = if (activeSegmentIdx >= 0) playbackSeconds else 0.0,
-                        fontSizeSp = fontSizeSp,
-                        fontFamily = fontFamily,
-                        annotationsMode = annotationsMode,
-                        onWordTap = { paragraphIdx, startSeconds -> onParagraphClick(entry.chapterIdx, paragraphIdx, startSeconds) },
-                        // A reader regenerating "this paragraph" means the whole visual block
-                        // they're looking at, inline segments included - mirrors
-                        // ReaderPage.tsx's own regenerate button.
-                        onRegenerate = { entry.segments.forEach { onRegenerateParagraph(entry.chapterIdx, it.idx) } },
-                        onToggleBookmark = { onToggleBookmark(entry.chapterIdx, firstIdx) },
-                        onActiveLine = { fraction -> activeLine = Triple(entry.chapterIdx, firstIdx, fraction) },
-                        onOpenSpeakerPicker = { paragraphIndices, currentSpeaker ->
-                            onOpenSpeakerPicker(entry.chapterIdx, paragraphIndices, currentSpeaker)
-                        },
-                        onToggleScareQuote = { paragraphIndices, scareQuote ->
-                            onSetScareQuote(entry.chapterIdx, paragraphIndices, scareQuote)
-                        },
-                        onSetEmotion = { paragraphIndices, emotion ->
-                            onSetEmotion(entry.chapterIdx, paragraphIndices, emotion)
-                        },
-                    )
+                is ReaderListEntry.ParagraphItem -> paragraphBlock(entry.chapterIdx, entry.segments, null)
+                is ReaderListEntry.TableItem -> TableBlockView(
+                    blocks = entry.blocks,
+                    activeBlock = if (playback.chapterIdx == entry.chapterIdx) entry.blockIndexOf(playback.paragraphIdx) else -1,
+                    onActiveRow = { blockIdx, fraction ->
+                        activeLine = Triple(entry.chapterIdx, entry.blocks[blockIdx].first().idx, fraction)
+                    },
+                ) { segments, tableColumns ->
+                    paragraphBlock(entry.chapterIdx, segments, tableColumns)
                 }
                 is ReaderListEntry.ImageItem -> {
                     AsyncImage(
@@ -478,15 +532,17 @@ private fun lightEffectLabel(effect: String): String = when (effect) {
  * again while it played. It's followed by the line being read instead: [activeLine] (the line's
  * position as a fraction of the item's height, null until known - then the item's first line)
  * is what gets centered, so the text scrolls a line at a time under a fixed reading position.
+ * [followLine] does that whatever the item's height: a table's rows are read one at a time, so
+ * the row is what belongs in the middle, not the table.
  */
-private suspend fun LazyListState.centerItem(index: Int, activeLine: Float?) {
+private suspend fun LazyListState.centerItem(index: Int, activeLine: Float?, followLine: Boolean = false) {
     if (layoutInfo.visibleItemsInfo.none { it.index == index }) {
         animateScrollToItem(index)
     }
     val info = layoutInfo.visibleItemsInfo.find { it.index == index } ?: return
     val viewportHeight = layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset
     val viewportCenter = (layoutInfo.viewportStartOffset + layoutInfo.viewportEndOffset) / 2
-    val target = if (info.size > viewportHeight * TALL_ITEM_VIEWPORT_FRACTION) {
+    val target = if (followLine || info.size > viewportHeight * TALL_ITEM_VIEWPORT_FRACTION) {
         info.offset + (info.size * (activeLine ?: 0f)).toInt()
     } else {
         info.offset + info.size / 2

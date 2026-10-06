@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/rhino1998/lectable/backend/internal/store"
 	"hash/crc32"
 	"io"
 	"maps"
@@ -266,7 +267,21 @@ func (ew *epubWriter) chapter(ctx context.Context, c *Chapter) error {
 			open = false
 		}
 	}
-	for _, blk := range c.Content {
+	// narrate adds p's overlay entry and its clip.
+	narrate := func(p *Paragraph, words []wordSpan) error {
+		if p.Audio == nil || ew.opts.Latents {
+			return nil // a latent transfer's clips travel as data instead
+		}
+		href, err := ew.clip(ctx, p.Audio.Clip)
+		if err != nil {
+			return err
+		}
+		duration += p.Audio.End - p.Audio.Begin
+		writeOverlay(&smil, textHref, href, p, words)
+		return nil
+	}
+	for i := 0; i < len(c.Content); i++ {
+		blk := c.Content[i]
 		switch blk.Kind {
 		case BlockImage:
 			closeP()
@@ -281,6 +296,23 @@ func (ew *epubWriter) chapter(ctx context.Context, c *Chapter) error {
 			body.WriteString("<hr class=\"break\"/>\n")
 		case BlockParagraph:
 			p := blk.Paragraph
+			if p.Table.InTable() && !p.Inline {
+				// The table's paragraphs, up to whatever ends it.
+				closeP()
+				var rows []*Paragraph
+				for ; i < len(c.Content); i++ {
+					next := c.Content[i]
+					if next.Kind != BlockParagraph || !next.Paragraph.Table.InTable() || next.Paragraph.Table.Table != p.Table.Table {
+						break
+					}
+					rows = append(rows, next.Paragraph)
+				}
+				i--
+				if err := ew.table(&body, rows, narrate); err != nil {
+					return err
+				}
+				continue
+			}
 			if !p.Inline || !open {
 				closeP()
 				body.WriteString("<p>")
@@ -289,23 +321,10 @@ func (ew *epubWriter) chapter(ctx context.Context, c *Chapter) error {
 				body.WriteString(" ")
 			}
 			words := ew.wordSpans(p)
-			id := "p-" + p.ID
-			fmt.Fprintf(&body, "<span id=\"%s\">", id)
-			if words == nil {
-				body.WriteString(xmlEscape(p.Text))
-			} else {
-				writeWordSpans(&body, p, words)
-			}
-			body.WriteString("</span>")
-			if p.Audio == nil || ew.opts.Latents {
-				continue // a latent transfer's clips travel as data instead
-			}
-			href, err := ew.clip(ctx, p.Audio.Clip)
-			if err != nil {
+			writeParagraphSpan(&body, p, words)
+			if err := narrate(p, words); err != nil {
 				return err
 			}
-			duration += p.Audio.End - p.Audio.Begin
-			writeOverlay(&smil, textHref, href, p, words)
 		}
 	}
 	closeP()
@@ -350,7 +369,7 @@ func (ew *epubWriter) wordSpans(p *Paragraph) []wordSpan {
 		return nil
 	}
 	seg := p.Audio
-	locs := wordRe.FindAllStringIndex(p.Text, -1)
+	locs := wordLocs(p)
 	if len(locs) < 2 || len(locs) != len(seg.Words) {
 		return nil
 	}
@@ -405,14 +424,179 @@ func groupPhrases(text string, words []wordSpan, minSeconds float64) []wordSpan 
 	return out
 }
 
-func writeWordSpans(b *strings.Builder, p *Paragraph, words []wordSpan) {
-	cursor := 0
+// wordLocs is where each word of p's text sits. A table row's words are
+// its cells' alone: the separators between cells aren't shown, and the
+// aligner gives a bar by itself no timing.
+func wordLocs(p *Paragraph) [][]int {
+	if len(p.Table.Cells) < 2 {
+		return wordRe.FindAllStringIndex(p.Text, -1)
+	}
+	var locs [][]int
+	for _, c := range p.Table.Cells {
+		from, to := cellBounds(p, c)
+		for _, loc := range wordRe.FindAllStringIndex(p.Text[from:to], -1) {
+			locs = append(locs, []int{from + loc[0], from + loc[1]})
+		}
+	}
+	return locs
+}
+
+// cellBounds is c's span of p's text, clamped to it.
+func cellBounds(p *Paragraph, c store.TableCell) (from, to int) {
+	from = min(max(c.Start, 0), len(p.Text))
+	return from, min(max(c.End, from), len(p.Text))
+}
+
+// writeParagraphSpan writes p's text as the element its overlay points at.
+func writeParagraphSpan(b *strings.Builder, p *Paragraph, words []wordSpan) {
+	fmt.Fprintf(b, "<span id=\"p-%s\">", p.ID)
+	writeWordSpans(b, p, words, 0, len(p.Text))
+	b.WriteString("</span>")
+}
+
+// writeWordSpans writes p's text from byte from to byte to, each of words
+// inside it as its own overlay target (none when words is nil).
+func writeWordSpans(b *strings.Builder, p *Paragraph, words []wordSpan, from, to int) {
+	cursor := from
 	for i, w := range words {
+		if w.from < from || w.to > to {
+			continue
+		}
 		b.WriteString(xmlEscape(p.Text[cursor:w.from]))
 		fmt.Fprintf(b, "<span id=\"w-%s-%d\">%s</span>", p.ID, i, xmlEscape(p.Text[w.from:w.to]))
 		cursor = w.to
 	}
-	b.WriteString(xmlEscape(p.Text[cursor:]))
+	b.WriteString(xmlEscape(p.Text[cursor:to]))
+}
+
+// tableChunk is paragraphs stacked in the same columns of a table: the
+// visual paragraphs of one cell, or a single row of several cells.
+type tableChunk struct {
+	col, end int
+	blocks   [][]*Paragraph // each a paragraph and its inline continuations
+}
+
+// tableLines arranges a table's paragraphs into <tr>s of chunks, in
+// reading order: a paragraph sits beside the one before it when it starts
+// past its columns, joins it when it covers the same ones (a cell's second
+// paragraph), and otherwise starts a line - always, for a new table row.
+func tableLines(rows []*Paragraph) [][]tableChunk {
+	var lines [][]tableChunk
+	row := -1
+	for _, p := range rows {
+		if p.Inline && len(lines) > 0 {
+			last := &lines[len(lines)-1][len(lines[len(lines)-1])-1]
+			last.blocks[len(last.blocks)-1] = append(last.blocks[len(last.blocks)-1], p)
+			continue
+		}
+		col, end := p.Table.Cells[0].Col, 0
+		for _, c := range p.Table.Cells {
+			end = max(end, c.Col+max(c.ColSpan, 1))
+		}
+		chunk := tableChunk{col: col, end: end, blocks: [][]*Paragraph{{p}}}
+		n := len(lines) - 1
+		switch {
+		case n < 0 || p.Table.Row != row:
+			lines = append(lines, []tableChunk{chunk})
+		default:
+			last := &lines[n][len(lines[n])-1]
+			switch {
+			case last.col == col && last.end == end:
+				last.blocks = append(last.blocks, chunk.blocks[0])
+			case col >= last.end:
+				lines[n] = append(lines[n], chunk)
+			default:
+				lines = append(lines, []tableChunk{chunk})
+			}
+		}
+		row = p.Table.Row
+	}
+	return lines
+}
+
+// table writes a table's paragraphs (one source <table>'s, in order) as a
+// <table>. A row of several cells is a <tr> of them - the row's overlay
+// target, or its first cell when the <tr> holds other paragraphs too; a
+// cell holding whole paragraphs gets a <p> for each.
+func (ew *epubWriter) table(body *strings.Builder, rows []*Paragraph, narrate func(*Paragraph, []wordSpan) error) error {
+	cellTag := func(header bool, span int) (open, close string) {
+		tag := "td"
+		if header {
+			tag = "th"
+		}
+		if span > 1 {
+			return fmt.Sprintf("<%s colspan=\"%d\">", tag, span), "</" + tag + ">"
+		}
+		return "<" + tag + ">", "</" + tag + ">"
+	}
+	gap := func(from, to int) {
+		if to > from {
+			open, end := cellTag(false, to-from)
+			body.WriteString(open + end)
+		}
+	}
+	body.WriteString("<table class=\"table\">\n")
+	for _, line := range tableLines(rows) {
+		first := line[0].blocks[0][0]
+		rowOfCells := func(c tableChunk) bool {
+			return len(c.blocks) == 1 && len(c.blocks[0]) == 1 && len(c.blocks[0][0].Table.Cells) > 1
+		}
+		wholeRow := len(line) == 1 && rowOfCells(line[0])
+		if wholeRow {
+			fmt.Fprintf(body, "<tr id=\"p-%s\">", first.ID)
+		} else {
+			body.WriteString("<tr>")
+		}
+		col := 0
+		for _, chunk := range line {
+			gap(col, chunk.col)
+			col = chunk.end
+			if !rowOfCells(chunk) {
+				open, end := cellTag(chunk.blocks[0][0].Table.Cells[0].Header, chunk.end-chunk.col)
+				body.WriteString(open)
+				for _, block := range chunk.blocks {
+					body.WriteString("<p>")
+					for i, p := range block {
+						if i > 0 {
+							body.WriteString(" ")
+						}
+						words := ew.wordSpans(p)
+						writeParagraphSpan(body, p, words)
+						if err := narrate(p, words); err != nil {
+							return err
+						}
+					}
+					body.WriteString("</p>")
+				}
+				body.WriteString(end)
+				continue
+			}
+			p := chunk.blocks[0][0]
+			words := ew.wordSpans(p)
+			at := chunk.col
+			for i, c := range p.Table.Cells {
+				gap(at, c.Col)
+				at = c.Col + max(c.ColSpan, 1)
+				open, end := cellTag(c.Header, c.ColSpan)
+				body.WriteString(open)
+				from, to := cellBounds(p, c)
+				if i == 0 && !wholeRow {
+					fmt.Fprintf(body, "<span id=\"p-%s\">", p.ID)
+					writeWordSpans(body, p, words, from, to)
+					body.WriteString("</span>")
+				} else {
+					writeWordSpans(body, p, words, from, to)
+				}
+				body.WriteString(end)
+			}
+			if err := narrate(p, words); err != nil {
+				return err
+			}
+		}
+		body.WriteString("</tr>\n")
+	}
+	body.WriteString("</table>\n")
+	return nil
 }
 
 // writeOverlay adds p's overlay entry: one <par> for the paragraph, or a
@@ -690,5 +874,8 @@ hr.break { border: none; text-align: center; margin: 1.2em 0; }
 hr.break::after { content: "* * *"; }
 figure.image { margin: 1em 0; text-align: center; }
 figure.image img { max-width: 100%; }
+table.table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+table.table td, table.table th { border: 1px solid; padding: 0.2em 0.5em; vertical-align: top; text-align: left; }
+table.table p { margin: 0 0 0.4em; text-indent: 0; }
 .` + activeClass + ` { background-color: rgba(255, 213, 79, 0.45); border-radius: 2px; }
 `

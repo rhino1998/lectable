@@ -14,6 +14,8 @@ const task = (over: Partial<QueueTask>): QueueTask =>
 const snap = (over: Partial<JobsSnapshot>): JobsSnapshot => ({
   inFlight: [],
   queued: [],
+  queuedTotal: 0,
+  drained: false,
   paused: false,
   ...over,
 })
@@ -21,7 +23,9 @@ const snap = (over: Partial<JobsSnapshot>): JobsSnapshot => ({
 describe('narrationEta', () => {
   it('is null without a measured rate or narration work', () => {
     expect(narrationEta(undefined)).toBeNull()
-    expect(narrationEta(snap({ queued: [task({ chars: 100 })] }))).toBeNull()
+    expect(
+      narrationEta(snap({ narrationLeft: [{ bookId: 'a', bookTitle: 'A', chars: 100 }] })),
+    ).toBeNull()
     expect(
       narrationEta(
         snap({ narrationCharsPerSecond: 10, queued: [task({ kind: 'speaker_attribution' })] }),
@@ -29,16 +33,17 @@ describe('narrationEta', () => {
     ).toBeNull()
   })
 
-  it('sums in-flight and queued narration per book at the measured rate', () => {
+  // The task list is capped, so the estimate reads the backend's sums.
+  it("turns the backend's per-book narration sums into time at the measured rate", () => {
     const eta = narrationEta(
       snap({
         narrationCharsPerSecond: 20,
         narrationRealtimeFactor: 1.5,
-        inFlight: [task({ chars: 200 })],
-        queued: [
-          task({ chars: 400 }),
-          task({ bookId: 'b', bookTitle: 'B', chars: 1200 }),
-          task({ kind: 'ambience' }),
+        queued: [task({ chars: 400 })],
+        queuedTotal: 30000,
+        narrationLeft: [
+          { bookId: 'a', bookTitle: 'A', chars: 600 },
+          { bookId: 'b', bookTitle: 'B', chars: 1200 },
         ],
       }),
     )

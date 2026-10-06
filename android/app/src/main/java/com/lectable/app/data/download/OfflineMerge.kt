@@ -28,6 +28,7 @@ fun DownloadedChapter.mergedWith(chapter: ChapterDetailDto, json: Json): Downloa
             inline = p.inline,
             speaker = p.speaker,
             label = p.label,
+            table = p.table,
             directionMarks = p.directionMarks,
             pronunciationMarks = p.pronunciationMarks,
             isQuote = p.isQuote,

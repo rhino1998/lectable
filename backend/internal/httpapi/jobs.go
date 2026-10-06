@@ -1,10 +1,12 @@
 package httpapi
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"math"
 	"net/http"
+	"slices"
 
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 )
@@ -76,7 +78,15 @@ type queueTaskDTO struct {
 
 type jobsSnapshotDTO struct {
 	InFlight []queueTaskDTO `json:"inFlight"`
-	Queued   []queueTaskDTO `json:"queued"`
+	// Queued is the waiting tasks in dispatch order - all of them from GET
+	// /api/jobs and the "jobs" topic, only the first jobsQueueLimit from the
+	// "jobsQueue" topic. QueuedTotal counts them all either way.
+	Queued      []queueTaskDTO `json:"queued"`
+	QueuedTotal int            `json:"queuedTotal"`
+	// NarrationLeft sums queueTaskDTO.Chars per book over every in-flight
+	// and queued task, listed or not, most left first - the "time left"
+	// estimate's input for a client holding a capped Queued.
+	NarrationLeft []bookNarrationDTO `json:"narrationLeft,omitempty"`
 	// Paused mirrors jobs.Manager.Paused() - see handlePauseJobs/
 	// handleResumeJobs, the Jobs dashboard's own pause/resume button.
 	Paused bool `json:"paused"`
@@ -101,6 +111,21 @@ type jobsSnapshotDTO struct {
 	// rounded to 0.1. Omitted (0) whenever that is.
 	NarrationRealtimeFactor float64 `json:"narrationRealtimeFactor,omitempty"`
 }
+
+// bookNarrationDTO is one book's entry in jobsSnapshotDTO.NarrationLeft.
+type bookNarrationDTO struct {
+	BookID    string `json:"bookId"`
+	BookTitle string `json:"bookTitle"`
+	// Chars is the paragraph text its queued and in-flight narration tasks
+	// still have to render.
+	Chars int `json:"chars"`
+}
+
+// jobsQueueLimit is how many queued tasks the "jobsQueue" topic lists. A
+// few books queued for generation is tens of thousands of tasks, and the
+// whole list is 20 MB of JSON re-sent on every change - more than the
+// Android app can decode without running out of memory.
+const jobsQueueLimit = 200
 
 // jobsSummaryDTO is the job queue in a few numbers: what a screen that
 // only wants the narration rate or a queue count reads instead of
@@ -140,12 +165,19 @@ func (s *Server) buildJobsSummary() (jobsSummaryDTO, error) {
 // to a worker slot right now (voice cloning/design generation, or a
 // speaker-attribution/characterization/provision run - see
 // internal/jobs.Kind) and what's still waiting - as the same DTO shape
-// both handleJobsSnapshot (GET /api/jobs) and the "jobs" live topic (see
-// registerLiveTopics) use, so the two can never silently drift apart. Book/chapter titles are resolved once per unique
+// handleJobsSnapshot (GET /api/jobs) and the "jobs" and "jobsQueue" live
+// topics (see registerLiveTopics) use, so they can never silently drift
+// apart. keep, if not nil, picks the tasks to report at all; queuedLimit,
+// if positive, caps how many queued tasks are listed (QueuedTotal and
+// NarrationLeft still cover the rest). Book/chapter titles are resolved once per unique
 // id seen (cached within one call), not once per task, since the same
 // book and chapter often account for most of a lookahead burst.
-func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
+func (s *Server) buildJobsSnapshot(queuedLimit int, keep func(jobs.QueueTask) bool) jobsSnapshotDTO {
 	inFlight, queued := s.Jobs.Snapshot()
+	if keep != nil {
+		inFlight = slices.DeleteFunc(inFlight, func(t jobs.QueueTask) bool { return !keep(t) })
+		queued = slices.DeleteFunc(queued, func(t jobs.QueueTask) bool { return !keep(t) })
+	}
 
 	bookTitles := map[string]string{}
 	resolveBook := func(id string) string {
@@ -201,7 +233,10 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 		}
 	}
 
-	out := jobsSnapshotDTO{InFlight: []queueTaskDTO{}, Queued: []queueTaskDTO{}, Paused: s.Jobs.Paused(), Drained: s.Jobs.Drained()}
+	out := jobsSnapshotDTO{
+		InFlight: []queueTaskDTO{}, Queued: []queueTaskDTO{}, QueuedTotal: len(queued),
+		Paused: s.Jobs.Paused(), Drained: s.Jobs.Drained(),
+	}
 	if rate, ok := s.Jobs.Throughput(); ok {
 		out.NarrationCharsPerSecond = math.Round(rate*10) / 10
 	}
@@ -211,8 +246,28 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 	if rate, ok := s.Jobs.LastThroughput(); ok {
 		out.LastNarrationCharsPerSecond = math.Round(rate*10) / 10
 	}
+
+	charsLeft := map[string]int{}
+	for _, t := range inFlight {
+		charsLeft[t.BookID] += t.Chars
+	}
+	for _, t := range queued {
+		charsLeft[t.BookID] += t.Chars
+	}
+	for id, chars := range charsLeft {
+		if chars > 0 {
+			out.NarrationLeft = append(out.NarrationLeft, bookNarrationDTO{BookID: id, BookTitle: resolveBook(id), Chars: chars})
+		}
+	}
+	slices.SortFunc(out.NarrationLeft, func(a, b bookNarrationDTO) int {
+		return cmp.Or(cmp.Compare(b.Chars, a.Chars), cmp.Compare(a.BookID, b.BookID))
+	})
+
 	for _, t := range inFlight {
 		out.InFlight = append(out.InFlight, toDTO(t))
+	}
+	if queuedLimit > 0 && len(queued) > queuedLimit {
+		queued = queued[:queuedLimit]
 	}
 	for _, t := range queued {
 		out.Queued = append(out.Queued, toDTO(t))
@@ -220,9 +275,31 @@ func (s *Server) buildJobsSnapshot() jobsSnapshotDTO {
 	return out
 }
 
-// handleJobsSnapshot is buildJobsSnapshot over HTTP - GET /api/jobs.
+// buildBookJobs is buildJobsSnapshot for one book without its narration
+// tasks (one per paragraph, so tens of thousands for a book queued for
+// generation): the attribution, summary, ambience, bulk and other rows a
+// book's pages show as "still running". QueuedTotal and NarrationLeft
+// leave narration out too.
+func (s *Server) buildBookJobs(bookID string) (jobsSnapshotDTO, error) {
+	return s.buildJobsSnapshot(0, func(t jobs.QueueTask) bool {
+		return t.BookID == bookID && t.Kind != jobs.KindVoiceClone && t.Kind != jobs.KindVoiceDesign
+	}), nil
+}
+
+// handleJobsSnapshot is buildJobsSnapshot over HTTP - GET /api/jobs, every
+// task. ?bookId= and ?kind= narrow it to one book's tasks and/or one kind's
+// (queueTaskDTO.Kind) - what a client asking "is this already queued?"
+// should pass rather than downloading the whole queue.
 func (s *Server) handleJobsSnapshot(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.buildJobsSnapshot())
+	bookID := r.URL.Query().Get("bookId")
+	kind := r.URL.Query().Get("kind")
+	var keep func(jobs.QueueTask) bool
+	if bookID != "" || kind != "" {
+		keep = func(t jobs.QueueTask) bool {
+			return (bookID == "" || t.BookID == bookID) && (kind == "" || string(t.Kind) == kind)
+		}
+	}
+	writeJSON(w, http.StatusOK, s.buildJobsSnapshot(0, keep))
 }
 
 // handleCancelJob cancels one job-queue task by its id (queueTaskDTO.ID,

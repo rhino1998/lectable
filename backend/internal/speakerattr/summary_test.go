@@ -364,3 +364,26 @@ func TestWithCastChapterPronouns(t *testing.T) {
 		t.Fatal("WithCast changed the roster it was called on")
 	}
 }
+
+func TestWithCastDropsRefsNamingSomeoneElse(t *testing.T) {
+	r := Roster{
+		Names:   []string{"Bob", "Seneschal", "Oracle"},
+		Aliases: map[string][]string{"Oracle": {"Hellenica"}},
+	}.WithCast([]CastMember{
+		{Name: "Bob", Refs: []string{"Seneschal", "bone minion"}},
+		{Name: "Oracle", Refs: []string{"Hellenica"}},
+	})
+	if got := r.Cast[0].Refs; !reflect.DeepEqual(got, []string{"bone minion"}) {
+		t.Fatalf("Bob's refs = %v", got)
+	}
+	if got := r.Cast[1].Refs; !reflect.DeepEqual(got, []string{"Hellenica"}) {
+		t.Fatalf("Oracle's refs = %v", got)
+	}
+	if d := r.Descriptions["Bob"]; strings.Contains(d, "Seneschal") {
+		t.Fatalf("Bob's description = %q", d)
+	}
+	got := ResolveCastRefs(map[int]string{1: "Seneschal", 2: "the bone minion"}, r.Cast)
+	if got[1] != "Seneschal" || got[2] != "Bob" {
+		t.Fatalf("ResolveCastRefs = %v", got)
+	}
+}

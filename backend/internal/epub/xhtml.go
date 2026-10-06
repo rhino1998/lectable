@@ -12,8 +12,12 @@ import (
 var blockTags = map[string]bool{
 	"p": true, "div": true, "li": true, "blockquote": true,
 	"h1": true, "h2": true, "h3": true, "h4": true, "h5": true, "h6": true,
-	"pre": true, "td": true, "figcaption": true,
+	"pre": true, "td": true, "th": true, "caption": true, "figcaption": true,
+	"dt": true, "dd": true,
 }
+
+// skipTags are elements whose text is never content.
+var skipTags = map[string]bool{"head": true, "script": true, "style": true, "svg": true}
 
 var headingTags = map[string]bool{"h1": true, "h2": true, "h3": true}
 
@@ -60,18 +64,171 @@ func extractChapter(
 		blocks = append(blocks, Block{Kind: BlockImage, ImageData: data, ImageExt: ext})
 	}
 
-	var walk func(n *html.Node)
-	walk = func(n *html.Node) {
-		if n.Type == html.ElementNode && len(anchorIDs) > 0 {
-			id := attr(n, "id")
-			if id == "" {
-				id = attr(n, "name") // old-style <a name="..."> anchors
+	noteAnchor := func(n *html.Node) {
+		if n.Type != html.ElementNode || len(anchorIDs) == 0 {
+			return
+		}
+		id := attr(n, "id")
+		if id == "" {
+			id = attr(n, "name") // old-style <a name="..."> anchors
+		}
+		if id != "" && anchorIDs[id] {
+			if _, seen := boundaries[id]; !seen {
+				boundaries[id] = len(blocks)
 			}
-			if id != "" && anchorIDs[id] {
-				if _, seen := boundaries[id]; !seen {
-					boundaries[id] = len(blocks)
+		}
+	}
+
+	// emitText turns one leaf block's marked-up text (collectText's
+	// output) into paragraphs. Two <br>s in a row split it into separate
+	// paragraphs (see paragraphBreak); each piece is then split into its
+	// narration/dialogue segments.
+	emitText := func(raw string, src blockSource) {
+		for _, piece := range strings.Split(raw, string(paragraphBreak)) {
+			text := plainText(piece)
+			if text == "" {
+				continue
+			}
+			if isSceneBreakText(text) {
+				// A scene break spelled out as text rather than a real
+				// <hr/> - "* * *", "***", a lone "⁂" asterism, and so
+				// on. Previously sailed straight through as an ordinary
+				// BlockText paragraph, so the TTS worker read it
+				// literally aloud ("star star star" for "* * *").
+				blocks = append(blocks, Block{Kind: BlockBreak})
+				continue
+			}
+			first := len(blocks)
+			for i, seg := range splitQuoteSegments(text) {
+				cleanText, emphasis := extractEmphasis(seg.Text)
+				blocks = append(blocks, Block{Kind: BlockText, Text: cleanText, Inline: i > 0, IsQuote: seg.IsQuote, Emphasis: emphasis})
+			}
+			pieceSrc := src
+			pieceSrc.raw = piece
+			blocks[first].src = &pieceSrc
+		}
+	}
+
+	var walk func(n *html.Node)
+	// walkChildren walks a container's children. Text sitting loose beside
+	// its block children ("<td>Details: <p>...</p></td>", "<div>Note
+	// <p>...</p></div>") is a paragraph of its own - it used to belong to
+	// no leaf block and vanish.
+	walkChildren := func(n *html.Node) {
+		var run []*html.Node
+		flush := func() {
+			if len(run) == 0 {
+				return
+			}
+			raw := collectText(run...)
+			if plainText(strings.ReplaceAll(raw, string(paragraphBreak), " ")) == "" {
+				// Nothing to read: walk the run for what else it may
+				// hold (anchors, images).
+				for _, c := range run {
+					walk(c)
+				}
+			} else {
+				for _, c := range run {
+					eachElement(c, noteAnchor)
+					for _, src := range findImageSrcs(c) {
+						addImage(src)
+					}
+				}
+				emitText(raw, blockSource{})
+			}
+			run = nil
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if isInlineContent(c) {
+				run = append(run, c)
+				continue
+			}
+			flush()
+			walk(c)
+		}
+		flush()
+	}
+	// emitTable appends a table's paragraphs: one per run of leaf cells in
+	// a row (see TablePos), plus whatever a cell with blocks of its own
+	// holds - walked as usual, then placed in that cell.
+	nextTable := 0
+	emitTable := func(t table) {
+		id := nextTable
+		nextTable++
+		for _, o := range t.other {
+			walk(o)
+		}
+		texts := make([][]string, len(t.rows))
+		emphases := make([][][]pronounce.Substitution, len(t.rows))
+		for i, r := range t.rows {
+			texts[i] = make([]string, len(r.cells))
+			emphases[i] = make([][]pronounce.Substitution, len(r.cells))
+			for j, c := range r.cells {
+				if !c.blocks {
+					texts[i][j], emphases[i][j] = cellText(c.node)
 				}
 			}
+		}
+		heading, labels := t.headings(texts)
+		for i, r := range t.rows {
+			var text strings.Builder
+			var cells []TableCell
+			var emphasis []pronounce.Substitution
+			flush := func() {
+				if len(cells) == 0 {
+					return
+				}
+				blocks = append(blocks, Block{
+					Kind: BlockText, Text: text.String(), Emphasis: emphasis,
+					Table: &TablePos{Table: id, Row: i, Cells: cells, Heading: heading[i]},
+				})
+				text.Reset()
+				cells, emphasis = nil, nil
+			}
+			for j, c := range r.cells {
+				pos := TableCell{Col: c.col, ColSpan: c.colSpan, RowSpan: c.rowSpan, Header: c.th || r.head || heading[i]}
+				if c.blocks {
+					flush()
+					noteAnchor(c.node)
+					start := len(blocks)
+					walkChildren(c.node)
+					for k := start; k < len(blocks); k++ {
+						// A table nested in this cell has placed its own.
+						if blocks[k].Kind == BlockText && blocks[k].Table == nil {
+							cell := pos
+							cell.End = len(blocks[k].Text)
+							blocks[k].Table = &TablePos{Table: id, Row: i, Cells: []TableCell{cell}}
+						}
+					}
+					continue
+				}
+				eachElement(c.node, noteAnchor)
+				for _, src := range findImageSrcs(c.node) {
+					addImage(src)
+				}
+				if texts[i][j] == "" {
+					continue
+				}
+				pos.Label = labels[i][c.col]
+				if text.Len() > 0 {
+					text.WriteString(CellSeparator)
+				}
+				pos.Start = text.Len()
+				text.WriteString(texts[i][j])
+				pos.End = text.Len()
+				for _, e := range emphases[i][j] {
+					e.Offset += pos.Start
+					emphasis = append(emphasis, e)
+				}
+				cells = append(cells, pos)
+			}
+			flush()
+		}
+	}
+	walk = func(n *html.Node) {
+		noteAnchor(n)
+		if n.Type == html.ElementNode && skipTags[n.Data] {
+			return
 		}
 		if n.Type == html.ElementNode && n.Data == "img" {
 			addImage(attr(n, "src"))
@@ -86,11 +243,16 @@ func extractChapter(
 			blocks = append(blocks, Block{Kind: BlockBreak})
 			return
 		}
+		if n.Type == html.ElementNode && n.Data == "table" {
+			if t := readTable(n); t.isGrid() {
+				emitTable(t)
+				return
+			}
+			// One cell or none: a layout wrapper, read as ordinary blocks.
+		}
 		if n.Type == html.ElementNode && blockTags[n.Data] {
 			if containsBlockDescendant(n) {
-				for c := n.FirstChild; c != nil; c = c.NextSibling {
-					walk(c)
-				}
+				walkChildren(n)
 				return
 			}
 			// A leaf block can still directly contain <img> alongside (or
@@ -100,37 +262,10 @@ func extractChapter(
 				addImage(src)
 			}
 			raw := collectText(n)
-			src := blockSource{heading: isHeadingTag(n.Data), hint: classHintOf(attr(n, "class"))}
-			// Two <br>s in a row split the block into separate paragraphs (see
-			// paragraphBreak); each piece is then split into its narration/
-			// dialogue segments.
-			pieces := strings.Split(raw, string(paragraphBreak))
-			for _, piece := range pieces {
-				text := plainText(piece)
-				if text == "" {
-					continue
-				}
-				if isSceneBreakText(text) {
-					// A scene break spelled out as text rather than a real
-					// <hr/> - "* * *", "***", a lone "⁂" asterism, and so
-					// on. Previously sailed straight through as an ordinary
-					// BlockText paragraph, so the TTS worker read it
-					// literally aloud ("star star star" for "* * *").
-					blocks = append(blocks, Block{Kind: BlockBreak})
-					continue
-				}
-				first := len(blocks)
-				for i, seg := range splitQuoteSegments(text) {
-					cleanText, emphasis := extractEmphasis(seg.Text)
-					blocks = append(blocks, Block{Kind: BlockText, Text: cleanText, Inline: i > 0, IsQuote: seg.IsQuote, Emphasis: emphasis})
-				}
-				pieceSrc := src
-				pieceSrc.raw = piece
-				blocks[first].src = &pieceSrc
-			}
+			emitText(raw, blockSource{heading: isHeadingTag(n.Data), hint: classHintOf(attr(n, "class"))})
 			if title == "" && headingTags[n.Data] {
 				text := plainText(strings.ReplaceAll(raw, string(paragraphBreak), " "))
-				if text != "" && (len(pieces) > 1 || !isSceneBreakText(text)) {
+				if text != "" && (strings.ContainsRune(raw, paragraphBreak) || !isSceneBreakText(text)) {
 					// Discard any emphasis spans here - a heading used as
 					// a chapter title has nothing to apply them to.
 					cleanTitle, _ := extractEmphasis(text)
@@ -138,6 +273,10 @@ func extractChapter(
 					titleFromHeading = true
 				}
 			}
+			return
+		}
+		if n.Type == html.ElementNode {
+			walkChildren(n)
 			return
 		}
 		for c := n.FirstChild; c != nil; c = c.NextSibling {
@@ -150,6 +289,47 @@ func extractChapter(
 		title = findTitleTag(doc)
 	}
 	return title, titleFromHeading, blocks, boundaries
+}
+
+// isInlineContent reports whether n is text or inline markup with no
+// block, image, rule or table of its own anywhere inside - what
+// walkChildren gathers into a paragraph when it sits beside blocks.
+func isInlineContent(n *html.Node) bool {
+	switch n.Type {
+	case html.TextNode:
+		return true
+	case html.ElementNode:
+		if blockTags[n.Data] || skipTags[n.Data] || structuralTags[n.Data] {
+			return false
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			if !isInlineContent(c) {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// structuralTags never join a run of loose text: each is handled by the
+// walk itself or only holds blocks.
+var structuralTags = map[string]bool{
+	"html": true, "body": true, "img": true, "hr": true,
+	"table": true, "thead": true, "tbody": true, "tfoot": true, "tr": true,
+	"colgroup": true, "col": true, "ul": true, "ol": true, "dl": true,
+	"section": true, "article": true, "aside": true, "nav": true,
+	"header": true, "footer": true, "main": true, "figure": true,
+}
+
+// eachElement calls fn on n and every element under it.
+func eachElement(n *html.Node, fn func(*html.Node)) {
+	if n.Type == html.ElementNode {
+		fn(n)
+	}
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		eachElement(c, fn)
+	}
 }
 
 func attr(n *html.Node, name string) string {
@@ -245,7 +425,7 @@ var paragraphBreak = rune(0xE004)
 // (<strong><em>word</em></strong>) - see extractEmphasis's own doc
 // comment for how the two are then merged into one "both" treatment
 // rather than one silently overriding the other.
-func collectText(n *html.Node) string {
+func collectText(nodes ...*html.Node) string {
 	var b strings.Builder
 	boldDepth, italicDepth := 0, 0
 	// lastBr is b.Len() just after the most recent single <br>'s space, or
@@ -308,7 +488,9 @@ func collectText(n *html.Node) string {
 			walk(c)
 		}
 	}
-	walk(n)
+	for _, n := range nodes {
+		walk(n)
+	}
 	return b.String()
 }
 

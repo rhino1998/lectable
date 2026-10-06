@@ -522,6 +522,20 @@ data class BookManifestDto(
 )
 
 /**
+ * bookNarrationDTO is one book's entry in jobsSnapshotDTO.NarrationLeft.
+ */
+@Serializable
+data class BookNarrationDto(
+    val bookId: String = "",
+    val bookTitle: String = "",
+    /**
+     * Chars is the paragraph text its queued and in-flight narration tasks
+     * still have to render.
+     */
+    val chars: Int = 0,
+)
+
+/**
  * bookSettingDTO is a book's setting profile (store.BookSetting) - the world
  * its story takes place in, which the ambience, lighting and
  * characterization prompts are shown. Field-for-field store.BookSetting, so
@@ -1114,7 +1128,19 @@ data class JobTierRequestDto(
 @Serializable
 data class JobsSnapshotDto(
     val inFlight: List<QueueTaskDto> = emptyList(),
+    /**
+     * Queued is the waiting tasks in dispatch order - all of them from GET
+     * /api/jobs and the "jobs" topic, only the first jobsQueueLimit from the
+     * "jobsQueue" topic. QueuedTotal counts them all either way.
+     */
     val queued: List<QueueTaskDto> = emptyList(),
+    val queuedTotal: Int = 0,
+    /**
+     * NarrationLeft sums queueTaskDTO.Chars per book over every in-flight
+     * and queued task, listed or not, most left first - the "time left"
+     * estimate's input for a client holding a capped Queued.
+     */
+    val narrationLeft: List<BookNarrationDto> = emptyList(),
     /**
      * Paused mirrors jobs.Manager.Paused() - see handlePauseJobs/
      * handleResumeJobs, the Jobs dashboard's own pause/resume button.
@@ -1460,6 +1486,10 @@ data class ParagraphDto(
      * found in this paragraph).
      */
     val pronunciationMarks: List<PronunciationMarkDto> = emptyList(),
+    /**
+     * Table is set for a paragraph read from a table in the source book.
+     */
+    val table: TableDto? = null,
     /**
      * Words is a [{text,start,end}] array from the ttsworker's
      * forced alignment (see ttsworker.Manager.Align), or "[]" before
@@ -2078,6 +2108,60 @@ data class SummarySceneDto(
     val location: String = "",
     val time: String = "",
     val present: List<String> = emptyList(),
+)
+
+/**
+ * tableDTO places a paragraph in a table from the source book: a row whose
+ * cells are joined into the paragraph's text with " | ", or one paragraph
+ * of a cell holding several. Consecutive paragraphs sharing Table are one
+ * table, laid out as a grid by each cell's row and column; the separators
+ * between cells aren't shown.
+ */
+@Serializable
+data class TableDto(
+    /**
+     * Table tells the chapter's tables apart.
+     */
+    val table: Int = 0,
+    val row: Int = 0,
+    /**
+     * Cells is in column order.
+     */
+    val cells: List<TableCellDto> = emptyList(),
+    /**
+     * Heading marks a row of column headings that narration speaks with
+     * each row under it rather than on its own (its clip is silence).
+     */
+    val heading: Boolean = false,
+)
+
+/**
+ * tableCellDTO is one cell's span of its paragraph's text.
+ */
+@Serializable
+data class TableCellDto(
+    /**
+     * Start and End are offsets into the paragraph's text in code points
+     * (not UTF-16 units), like pronunciationMarkDTO.Offset.
+     */
+    val start: Int = 0,
+    val end: Int = 0,
+    /**
+     * Col is the first grid column the cell occupies, from 0.
+     */
+    val col: Int = 0,
+    val colSpan: Int = 0,
+    val rowSpan: Int = 0,
+    /**
+     * Header marks a heading cell.
+     */
+    val header: Boolean = false,
+    /**
+     * Label is the cell's column heading when narration speaks it before
+     * the cell ("Rarity: Rare") - not shown in the grid, where the heading
+     * row already is.
+     */
+    val label: String? = null,
 )
 
 @Serializable

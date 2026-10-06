@@ -153,7 +153,7 @@ func (c *collector) chapter(ch *store.Chapter) (Chapter, error) {
 	}
 	items := make([]positioned, 0, len(paragraphs)+len(images)+len(breaks))
 	for _, p := range paragraphs {
-		para := &Paragraph{ID: p.ID, Idx: p.Idx, Text: p.Text, Inline: p.Inline}
+		para := &Paragraph{ID: p.ID, Idx: p.Idx, Text: p.Text, Inline: p.Inline, Table: p.Table}
 		v := voiceByParagraph[p.ID]
 		if s, ok := states[p.ID]; ok && s.Status == store.AudioReady && s.DurationSeconds > 0 {
 			para.Audio = c.segment(ch, p, v, s, clips)

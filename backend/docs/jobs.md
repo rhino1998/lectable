@@ -144,7 +144,14 @@ The kinds:
     failed check) still aligns as a detached follow-up. Each paragraph resolves its own voice via
     `internal/narration.Resolver` before being queued, so a chapter's
     paragraphs can dispatch to, and cache audio under, several different
-    `voice_id`s in one generation run.
+    `voice_id`s in one generation run. An **unvoiced** paragraph -
+    nothing but an ellipsis (`store.Paragraph.Unvoiced`: "…", "“...”") -
+    is a beat of silence, not a line: its task waits on nothing and
+    `generate` returns 0.8s of silence made in Go (`silentClip`), with
+    empty word timings, instead of calling the worker. Attribution and
+    the emotion pass treat it as narration (speaker `Narrator`, no
+    emotion), so Brightblade's "…" replies no longer land on whoever
+    spoke last; migration `00007` cleared the ones already attributed.
   - `KindScareQuote` (`poolLLM`) runs one chapter's scare-quote
     tagging - `KindSpeechDirection`'s shape (`EnqueueScareQuote`/
     `RunScareQuote`). `KindSpeakerAttribution` depends on the chapter's

@@ -6,6 +6,7 @@ import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.DirectionMarkDto
 import com.lectable.app.data.remote.dto.ParagraphDto
 import com.lectable.app.data.remote.dto.PronunciationMarkDto
+import com.lectable.app.data.remote.dto.TableDto
 import kotlinx.serialization.Serializable
 
 /**
@@ -56,6 +57,8 @@ data class OfflineParagraph(
     val speaker: String? = null,
     // Mirrors ParagraphDto.label: a play's speaker label, shown before the text, never spoken.
     val label: String? = null,
+    // Mirrors ParagraphDto.table: where the paragraph sits in a table from the book.
+    val table: TableDto? = null,
     val directionMarks: List<DirectionMarkDto> = emptyList(),
     val pronunciationMarks: List<PronunciationMarkDto> = emptyList(),
     val isQuote: Boolean = false,

@@ -82,6 +82,11 @@ type Block struct {
 	// ("[Calling.]"). "" outside a play.
 	Label string
 
+	// Table places this BlockText block in a source <table> (see
+	// table.go): which table and row, and where each of the row's cells
+	// sits in Text. Nil outside a table.
+	Table *TablePos
+
 	ImageData []byte // BlockImage
 	ImageExt  string // BlockImage, e.g. ".jpg" (lowercase, includes the dot)
 
@@ -185,6 +190,7 @@ func ParseAs(r io.ReaderAt, size int64, play PlayMode) (*Book, error) {
 	tocEntries := loadTocEntries(pkg, files, opfDir)
 	tocByPath := groupTocEntries(tocEntries)
 	hasToc := len(tocEntries) > 0
+	tableBase := 0 // tables seen in earlier spine files
 
 	// appendChapter applies the title-fallback and narrate-the-title rules
 	// shared by every path below, then adds the chapter.
@@ -234,6 +240,16 @@ func ParseAs(r io.ReaderAt, size int64, play PlayMode) (*Book, error) {
 		if len(blocks) == 0 {
 			continue
 		}
+		// extractChapter numbers each file's tables from 0; keep them
+		// apart when files are folded into one chapter.
+		fileTables := 0
+		for i := range blocks {
+			if t := blocks[i].Table; t != nil {
+				fileTables = max(fileTables, t.Table+1)
+				t.Table += tableBase
+			}
+		}
+		tableBase += fileTables
 
 		switch {
 		case len(entries) == 0:

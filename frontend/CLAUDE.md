@@ -64,8 +64,10 @@ byte-for-byte.
   backs the infinite-scroll reader, one subscription per loaded chapter);
   mutations are plain TanStack `useMutation`s with no `onSuccess`
   invalidation. "Is chapter N still attributing/directing/generating"
-  hooks (`useAttributingChapters` etc.) are pure derivations from the live
-  jobs topic.
+  hooks (`useAttributingChapters` etc.) are pure derivations from the
+  book's live `bookJobs` topic (its queue without narration tasks); the
+  Jobs page reads `jobsQueue` (head of the queue plus totals) and the
+  library `jobsSummary` - nothing subscribes to the full `jobs` topic.
 - `src/hooks/usePlayback.ts` — the sequential-chunk audio player. A book
   has one clip (Ogg Opus) per paragraph, not one per chapter; this hook owns a
   single `<audio>` element and advances to the next paragraph's URL on
@@ -214,3 +216,19 @@ for type errors, `npm run build` for a production build sanity check, and
 — since this is a UI —
 actually load it in a browser and click through upload → pick a chapter →
 play, rather than trusting the build alone.
+
+## Tables
+
+Paragraphs carrying `table` (one row of a table in the book, its cells
+joined with " | " - see "Tables" in `backend/CLAUDE.md`) render as a grid:
+`ChapterSection` wraps a table's consecutive groups in `.chapter-table`
+(CSS grid, one column per table column) and each `ParagraphGroup` names
+only the columns it spans, leaving row placement to the grid - a cell's
+second paragraph drops under its first, and a full-width
+`.chapter-table-rule` starts each new row. A row of several cells is a
+subgrid whose one segment is `display: contents`, with `ParagraphText`
+(`cells`) rendering each cell's span of the text in its own element; its
+words are the cells' only, since the aligner gives the separators no
+timing. `utils/table.ts` converts the backend's code-point offsets and
+mirrors how narration reads a row (spoken column headings) for the
+"text sent to the voice clone" view.

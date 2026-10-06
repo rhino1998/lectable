@@ -8,8 +8,9 @@ data class BookEta(val bookId: String, val bookTitle: String, val chars: Int, va
 
 /**
  * Time left for the narration already queued or in flight - mirrors frontend's
- * utils/narrationEta.ts: every voice_clone/voice_design task's paragraph text
- * ([com.lectable.app.data.remote.dto.QueueTaskDto.chars]) at the backend's recently
+ * utils/narrationEta.ts: every voice_clone/voice_design task's paragraph text, summed per book
+ * by the backend ([JobsSnapshotDto.narrationLeft] - the snapshot here lists only the head of
+ * the queue) at the backend's recently
  * measured rate ([JobsSnapshotDto.narrationCharsPerSecond], all generation slots
  * together). Only covers what's enqueued. [realtimeFactor] is that same rate in seconds of audio
  * per wall-clock second ([JobsSnapshotDto.narrationRealtimeFactor]), 0 if unknown.
@@ -25,16 +26,10 @@ data class NarrationEta(
 fun narrationEta(snapshot: JobsSnapshotDto?): NarrationEta? {
     val rate = snapshot?.narrationCharsPerSecond ?: 0.0
     if (snapshot == null || rate <= 0.0) return null
-    val byBook = LinkedHashMap<String, Pair<String, Int>>()
-    for (t in snapshot.inFlight + snapshot.queued) {
-        val chars = t.chars ?: 0
-        if (chars <= 0) continue
-        val (title, sum) = byBook[t.bookId] ?: (t.bookTitle to 0)
-        byBook[t.bookId] = title to sum + chars
-    }
-    if (byBook.isEmpty()) return null
-    val books = byBook.map { (id, v) -> BookEta(id, v.first, v.second, v.second / rate) }
+    val books = snapshot.narrationLeft.filter { it.chars > 0 }
+        .map { BookEta(it.bookId, it.bookTitle, it.chars, it.chars / rate) }
         .sortedByDescending { it.chars }
+    if (books.isEmpty()) return null
     return NarrationEta(rate, snapshot.narrationRealtimeFactor ?: 0.0, books.sumOf { it.chars } / rate, books)
 }
 

@@ -14,7 +14,7 @@ import {
   useDeleteBook,
   useGenerateBook,
   useGenerateRemaining,
-  useJobsSnapshot,
+  useJobsSummary,
   usePreprocessBook,
   useUploadBook,
 } from '../api/queries'
@@ -217,7 +217,7 @@ function BookCard({
 export function LibraryPage() {
   const booksQuery = useBooks()
   // Only the rate is read - for each card's "to go" estimate.
-  const rate = measuredNarrationRate(useJobsSnapshot().data)
+  const rate = measuredNarrationRate(useJobsSummary().data)
   const uploadBook = useUploadBook()
   const deleteBook = useDeleteBook()
   const fileInputRef = useRef<HTMLInputElement>(null)

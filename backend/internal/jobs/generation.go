@@ -191,7 +191,33 @@ func mergedGenerationText(members []store.Paragraph, cloneModel string, lexicon 
 	return strings.Join(texts, " ")
 }
 
+// unvoicedSeconds is how long an ellipsis-only line's silence lasts.
+const unvoicedSeconds = 0.8
+
+// unvoicedSampleRate matches the narration models' own output.
+const unvoicedSampleRate = 24000
+
+// unvoicedTask reports whether t renders one ellipsis-only paragraph
+// (store.Paragraph.Unvoiced): its clip is silence, made here with no
+// model, reference clip or pass behind it.
+func unvoicedTask(t *task) bool {
+	if t.kind != KindVoiceClone && t.kind != KindVoiceDesign {
+		return false
+	}
+	return len(t.mergeParagraphs) <= 1 && t.paragraph.Unvoiced()
+}
+
+// silentClip is an unvoiced paragraph's audio.
+func silentClip() ([]byte, error) {
+	return wav.Encode(make([]float32, int(unvoicedSeconds*unvoicedSampleRate)), unvoicedSampleRate, 1)
+}
+
 func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []ttsproto.Word, error) {
+	if unvoicedTask(t) {
+		clip, err := silentClip()
+		// Empty, not nil, word timings: there is nothing to align.
+		return ttsworker.Audio{WAV: clip}, []ttsproto.Word{}, err
+	}
 	if t.kind == KindVoiceDesign {
 		var seed *int64
 		// 0 means no seed anchor (see httpapi.resolveVoiceSeed) - leave nil

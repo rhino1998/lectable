@@ -18,6 +18,7 @@ import type {
   CustomVoicePreset,
   CustomVoicePresetInput,
   JobsSnapshot,
+  JobsSummary,
   LexiconEntry,
   LexiconSuggestion,
   UpsertLexiconRequest,
@@ -437,28 +438,27 @@ export function useResetPass(bookId: string) {
 // Which bulk actions currently have a row queued/in flight for bookId.
 // "generate" maps to the pipeline_generate_book row it queues.
 export function useBulkActionsRunning(bookId: string): Set<BulkAction> {
-  const jobs = useJobsSnapshot().data
+  const jobs = useLive('bookJobs', { bookId }).data
   return useMemo(() => {
     const running = new Set<BulkAction>()
     for (const t of [...(jobs?.inFlight ?? []), ...(jobs?.queued ?? [])]) {
-      if (t.bookId !== bookId) continue
       if (t.kind === 'pipeline_generate_book') running.add('generate')
       else if (t.kind.startsWith('pipeline_bulk_'))
         running.add(t.kind.slice('pipeline_bulk_'.length) as BulkAction)
     }
     return running
-  }, [jobs, bookId])
+  }, [jobs])
 }
 
 // Every queued/in-flight task of `kind` for bookId in the live job queue.
+// Reads the book's own bookJobs topic, which has no narration tasks
+// (voice_clone/voice_design) - the whole queue is tens of megabytes with a
+// few books queued for generation.
 function useBookJobs(bookId: string, kind: QueueTask['kind']): QueueTask[] {
-  const jobs = useJobsSnapshot().data
+  const jobs = useLive('bookJobs', { bookId }).data
   return useMemo(
-    () =>
-      [...(jobs?.inFlight ?? []), ...(jobs?.queued ?? [])].filter(
-        (t) => t.kind === kind && t.bookId === bookId,
-      ),
-    [jobs, bookId, kind],
+    () => [...(jobs?.inFlight ?? []), ...(jobs?.queued ?? [])].filter((t) => t.kind === kind),
+    [jobs, kind],
   )
 }
 
@@ -945,11 +945,16 @@ export function useTestCloneInstruct() {
   })
 }
 
-// The shared backend job queue. Mounted by the Jobs page and, indirectly
-// (useAttributingChapters and friends), by the reader and Speakers page -
-// they all share one subscription.
-export function useJobsSnapshot(): LiveResult<JobsSnapshot> {
-  return useLive('jobs', {})
+// The shared backend job queue for the Jobs page: everything in flight, the
+// head of the queue (JobsSnapshot.queuedTotal counts the rest), and
+// per-book narration sums. Never the "jobs" topic, which lists every task.
+export function useJobsQueue(): LiveResult<JobsSnapshot> {
+  return useLive('jobsQueue', {})
+}
+
+// The queue's counts, pause state and narration rates, without any tasks.
+export function useJobsSummary(): LiveResult<JobsSummary> {
+  return useLive('jobsSummary', {})
 }
 
 // Jobs dashboard's per-row "Cancel" button.

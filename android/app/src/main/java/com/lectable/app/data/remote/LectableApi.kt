@@ -1285,10 +1285,16 @@ interface LectableApi {
     suspend fun getInstance(): InstanceDto
 
     /**
-     * handleJobsSnapshot is buildJobsSnapshot over HTTP - GET /api/jobs.
+     * handleJobsSnapshot is buildJobsSnapshot over HTTP - GET /api/jobs, every
+     * task. ?bookId= and ?kind= narrow it to one book's tasks and/or one kind's
+     * (queueTaskDTO.Kind) - what a client asking "is this already queued?"
+     * should pass rather than downloading the whole queue.
      */
     @GET("api/jobs")
-    suspend fun jobsSnapshot(): JobsSnapshotDto
+    suspend fun jobsSnapshot(
+        @Query("bookId") bookId: String? = null,
+        @Query("kind") kind: String? = null,
+    ): JobsSnapshotDto
 
     /**
      * handleCancelAllJobs cancels every queued and in-flight task at once - the

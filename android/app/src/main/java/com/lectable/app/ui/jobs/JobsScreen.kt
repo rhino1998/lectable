@@ -66,7 +66,9 @@ fun JobsScreen(
     }
 
     val snapshot = uiState.snapshot
-    val totalCount = (snapshot?.inFlight?.size ?: 0) + (snapshot?.queued?.size ?: 0)
+    // The topic lists only the head of the queue; queuedTotal counts all of it.
+    val queuedTotal = snapshot?.let { maxOf(it.queuedTotal, it.queued.size) } ?: 0
+    val totalCount = (snapshot?.inFlight?.size ?: 0) + queuedTotal
     val paused = snapshot?.paused ?: false
     val eta = remember(snapshot) { narrationEta(snapshot) }
 
@@ -176,7 +178,7 @@ fun JobsScreen(
                     }
                     item {
                         Text(
-                            "Queued (${snapshot.queued.size})",
+                            "Queued ($queuedTotal)",
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
                         )
@@ -198,6 +200,16 @@ fun JobsScreen(
                                 canceling = uiState.cancelingId == task.id,
                                 onCancel = { viewModel.cancelJob(task) },
                             )
+                        }
+                        if (queuedTotal > snapshot.queued.size) {
+                            item {
+                                Text(
+                                    "Showing first ${snapshot.queued.size} of $queuedTotal queued.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+                                )
+                            }
                         }
                     }
                 }

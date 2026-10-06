@@ -9,7 +9,7 @@ import {
 import {
   useCancelAllJobs,
   useCancelJob,
-  useJobsSnapshot,
+  useJobsQueue,
   usePauseJobs,
   useResumeJobs,
   useRestartWorker,
@@ -23,7 +23,6 @@ import type { QueueTask } from '../api/types'
 import { emotionLabel } from '../utils/emotions'
 import { formatEta, narrationEta } from '../utils/narrationEta'
 
-const QUEUED_DISPLAY_LIMIT = 200
 // A raw instruct string can be a full sentence or two - too long for a
 // table cell, so it's shown as a short preview rather than the whole thing.
 const INSTRUCT_PREVIEW_LENGTH = 40
@@ -315,12 +314,12 @@ function TaskTable({
 // through one tier-ordered priority queue (see internal/jobs.Kind) - what's
 // actually dispatched to a worker slot right now (at most maxInFlight, see
 // manager.go) vs. everything still waiting, pushed live as it changes
-// (the jobs topic - see api/live.ts). Useful for
+// (the jobsQueue topic - see api/live.ts). Useful for
 // seeing whether a big "generate this chapter" job is actually moving, or
 // to check what a burst of lookahead work looks like as you jump around a
 // book.
 export function JobsPage() {
-  const jobsQuery = useJobsSnapshot()
+  const jobsQuery = useJobsQueue()
   const builtinsQuery = useVoicePresets()
   const customPresetsQuery = useCustomVoicePresets()
   const cancelJob = useCancelJob()
@@ -331,7 +330,9 @@ export function JobsPage() {
   const restartWorker = useRestartWorker()
   const snapshot = jobsQuery.data
   const queued = snapshot?.queued ?? []
-  const totalCount = (snapshot?.inFlight.length ?? 0) + queued.length
+  // The topic lists only the head of the queue; queuedTotal counts all of it.
+  const queuedTotal = Math.max(snapshot?.queuedTotal ?? 0, queued.length)
+  const totalCount = (snapshot?.inFlight.length ?? 0) + queuedTotal
   const paused = snapshot?.paused ?? false
   const eta = useMemo(() => narrationEta(snapshot), [snapshot])
 
@@ -537,13 +538,13 @@ export function JobsPage() {
           </section>
 
           <section className="jobs-section">
-            <h2>Queued ({queued.length})</h2>
+            <h2>Queued ({queuedTotal})</h2>
             {queued.length === 0 ? (
               <p className="muted">Nothing waiting.</p>
             ) : (
               <>
                 <TaskTable
-                  tasks={queued.slice(0, QUEUED_DISPLAY_LIMIT)}
+                  tasks={queued}
                   voiceName={voiceName}
                   inFlight={false}
                   onCancel={runCancel}
@@ -551,9 +552,9 @@ export function JobsPage() {
                   onPromote={runPromote}
                   promotingId={promotingId}
                 />
-                {queued.length > QUEUED_DISPLAY_LIMIT && (
+                {queuedTotal > queued.length && (
                   <p className="muted jobs-truncated">
-                    Showing first {QUEUED_DISPLAY_LIMIT} of {queued.length} queued.
+                    Showing first {queued.length} of {queuedTotal} queued.
                   </p>
                 )}
               </>

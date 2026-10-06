@@ -110,6 +110,64 @@ func pronunciationMarksFor(p store.Paragraph, lexicon []pronounce.LexiconEntry) 
 	return out
 }
 
+// tableDTO places a paragraph in a table from the source book: a row whose
+// cells are joined into the paragraph's text with " | ", or one paragraph
+// of a cell holding several. Consecutive paragraphs sharing Table are one
+// table, laid out as a grid by each cell's row and column; the separators
+// between cells aren't shown.
+type tableDTO struct {
+	// Table tells the chapter's tables apart.
+	Table int `json:"table"`
+	Row   int `json:"row"`
+	// Cells is in column order.
+	Cells []tableCellDTO `json:"cells"`
+	// Heading marks a row of column headings that narration speaks with
+	// each row under it rather than on its own (its clip is silence).
+	Heading bool `json:"heading,omitempty"`
+}
+
+// tableCellDTO is one cell's span of its paragraph's text.
+type tableCellDTO struct {
+	// Start and End are offsets into the paragraph's text in code points
+	// (not UTF-16 units), like pronunciationMarkDTO.Offset.
+	Start int `json:"start"`
+	End   int `json:"end"`
+	// Col is the first grid column the cell occupies, from 0.
+	Col     int `json:"col"`
+	ColSpan int `json:"colSpan"`
+	RowSpan int `json:"rowSpan"`
+	// Header marks a heading cell.
+	Header bool `json:"header,omitempty"`
+	// Label is the cell's column heading when narration speaks it before
+	// the cell ("Rarity: Rare") - not shown in the grid, where the heading
+	// row already is.
+	Label string `json:"label,omitempty"`
+}
+
+// tableFor converts p's table position for the clients, nil outside a
+// table.
+func tableFor(p store.Paragraph) *tableDTO {
+	if !p.Table.InTable() {
+		return nil
+	}
+	out := &tableDTO{Table: p.Table.Table, Row: p.Table.Row, Heading: p.Table.Heading, Cells: make([]tableCellDTO, 0, len(p.Table.Cells))}
+	for _, c := range p.Table.Cells {
+		if c.Start < 0 || c.End < c.Start || c.End > len(p.Text) {
+			return nil
+		}
+		out.Cells = append(out.Cells, tableCellDTO{
+			Start:   utf8.RuneCountInString(p.Text[:c.Start]),
+			End:     utf8.RuneCountInString(p.Text[:c.End]),
+			Col:     c.Col,
+			ColSpan: max(c.ColSpan, 1),
+			RowSpan: max(c.RowSpan, 1),
+			Header:  c.Header,
+			Label:   c.Label,
+		})
+	}
+	return out
+}
+
 type paragraphDTO struct {
 	Idx             int         `json:"idx"`
 	Text            string      `json:"text"`
@@ -179,6 +237,8 @@ type paragraphDTO struct {
 	// doc comment. Empty for the common case (no ambiguous abbreviation
 	// found in this paragraph).
 	PronunciationMarks []pronunciationMarkDTO `json:"pronunciationMarks,omitempty"`
+	// Table is set for a paragraph read from a table in the source book.
+	Table *tableDTO `json:"table,omitempty"`
 	// Words is a [{text,start,end}] array from the ttsworker's
 	// forced alignment (see ttsworker.Manager.Align), or "[]" before
 	// alignment has run - always present (unlike the websocket push's
@@ -414,6 +474,7 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 			Emotion:            p.EffectiveEmotion(),
 			DirectionMarks:     directionMarksFor(p, cloneModelByParagraph[p.ID]),
 			PronunciationMarks: pronunciationMarksFor(p, lexicon),
+			Table:              tableFor(p),
 			AudioStatus:        audioStatus(state.Status),
 			AudioError:         state.Error,
 			DurationSeconds:    state.DurationSeconds,
