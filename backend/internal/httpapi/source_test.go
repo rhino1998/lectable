@@ -8,9 +8,10 @@ import (
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
-	"github.com/rhino1998/lectable/backend/internal/royalroad"
 	"github.com/rhino1998/lectable/backend/internal/royalroad/royalroadtest"
 	"github.com/rhino1998/lectable/backend/internal/store"
+	"github.com/rhino1998/lectable/backend/internal/wanderinginn/wanderinginntest"
+	"github.com/rhino1998/lectable/backend/internal/websource"
 )
 
 // fictionLink is what a user pastes: the test site's one fiction as a
@@ -60,7 +61,7 @@ func chapterTexts(t *testing.T, s *store.SQLiteStore, bookID string, idx int) (t
 func TestImportBookURL(t *testing.T) {
 	srv, s, _, ts := newTestServer(t)
 	site := royalroadtest.New(t)
-	srv.RoyalRoad = site.Client()
+	srv.Sources = []websource.Source{site.Source()}
 	site.AddChapter("1. Setting Out", `<p>The road was long.</p><p>“Are we there yet?” Sam asked.</p><p><img src="/img/pixel.png"></p>`)
 	site.AddChapter("2. The Inn", `<p>The inn was warm.</p>`)
 	site.AddChapter("3. Onward", `<p>They left at dawn.</p>`)
@@ -74,12 +75,13 @@ func TestImportBookURL(t *testing.T) {
 	if created.Title != "The Long Road" || created.Author != "A. Writer" || created.CoverURL == "" {
 		t.Errorf("created = %+v", created)
 	}
-	if created.Source == nil || created.Source.Kind != sourceRoyalRoad || created.Source.URL != site.URL() || created.Source.RemoteChapters != 3 {
+	if created.Source == nil || created.Source.Kind != sourceRoyalRoad || created.Source.Name != "Royal Road" || created.Source.URL != site.URL() || created.Source.RemoteChapters != 4 {
 		t.Fatalf("created source = %+v", created.Source)
 	}
 
 	book := waitSourceSynced(t, ts.URL, created.ID)
-	if book.ChapterCount != 3 || book.Source.RemoteChapters != 3 || book.Source.Error != "" || book.Source.CheckedAt == 0 {
+	// The check stops at the locked chapter and says which.
+	if book.ChapterCount != 3 || book.Source.RemoteChapters != 3 || book.Source.Error != "" || book.Source.CheckedAt == 0 || book.Source.Blocked != "4. Early Access" {
 		t.Fatalf("after import: %d chapters, source %+v", book.ChapterCount, book.Source)
 	}
 	title, texts := chapterTexts(t, s, book.ID, 0)
@@ -114,7 +116,7 @@ func TestImportBookURL(t *testing.T) {
 	}
 	resp.Body.Close()
 	book = waitSourceSynced(t, ts.URL, book.ID)
-	if book.ChapterCount != 5 || book.Source.RemoteChapters != 5 || book.Source.Error != "" {
+	if book.ChapterCount != 5 || book.Source.RemoteChapters != 5 || book.Source.Error != "" || book.Source.Blocked != "" {
 		t.Fatalf("after sync: %d chapters, source %+v", book.ChapterCount, book.Source)
 	}
 	if again, _ := s.GetChapterByIdx(book.ID, 0); again.ID != ch0.ID {
@@ -129,7 +131,7 @@ func TestImportBookURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids, err := royalroad.ChapterIDs(&zr.Reader)
+	ids, err := websource.ChapterIDs(&zr.Reader)
 	zr.Close()
 	if err != nil || len(ids) != 5 {
 		t.Fatalf("kept epub chapters = %v, %v", ids, err)
@@ -150,7 +152,7 @@ func TestImportBookURL(t *testing.T) {
 func TestSyncBookSourceFailure(t *testing.T) {
 	srv, _, _, ts := newTestServer(t)
 	site := royalroadtest.New(t)
-	srv.RoyalRoad = site.Client()
+	srv.Sources = []websource.Source{site.Source()}
 	site.AddChapter("1. One", `<p>One.</p>`)
 
 	var created sourceTestBook
@@ -192,4 +194,56 @@ func TestSyncBookSourceNeedsSource(t *testing.T) {
 		t.Errorf("sync of a missing book: %d", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+// TestImportWanderingInnVolume: the link picks the site; a volume comes in
+// as a book of the series, stops at a chapter that is for patrons only,
+// and carries on from it once it opens. The site's own address imports the
+// next volume the library doesn't have.
+func TestImportWanderingInnVolume(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	inn := wanderinginntest.New(t)
+	srv.Sources = []websource.Source{royalroadtest.New(t).Source(), inn.Source()}
+	inn.AddChapter(1, "rw1-00", "1.00", `<p>The inn was dark.</p>`)
+	locked := inn.AddChapter(1, "rw1-01", "1.01", `<p>Now open.</p>`)
+	inn.AddChapter(1, "rw1-02", "1.02", `<p>After the wall.</p>`)
+	inn.SetLocked(locked, true)
+	inn.AddChapter(2, "2-00", "2.00", `<p>Volume two.</p>`)
+
+	var created sourceTestBook
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: "wanderinginn.com"}, &created)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("import: %d", resp.StatusCode)
+	}
+	if created.Title != "The Wandering Inn: Volume 1" || created.Author != "pirateaba" || created.Source.Kind != sourceWanderingInn || created.Source.Name != "The Wandering Inn" {
+		t.Errorf("created = %+v, source %+v", created, created.Source)
+	}
+	if b, _ := s.GetBook(created.ID); b == nil || b.SeriesName != "The Wandering Inn" || b.SeriesIndex != 1 {
+		t.Errorf("series = %+v", b)
+	}
+	book := waitSourceSynced(t, ts.URL, created.ID)
+	if book.ChapterCount != 1 || book.Source.Blocked != "1.01" || book.Source.RemoteChapters != 1 || book.Source.Error != "" {
+		t.Fatalf("behind the wall: %d chapters, source %+v", book.ChapterCount, book.Source)
+	}
+
+	inn.SetLocked(locked, false)
+	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/sync", nil, nil).Body.Close()
+	book = waitSourceSynced(t, ts.URL, book.ID)
+	if book.ChapterCount != 3 || book.Source.Blocked != "" {
+		t.Fatalf("after it opened: %d chapters, source %+v", book.ChapterCount, book.Source)
+	}
+	if title, texts := chapterTexts(t, s, book.ID, 1); title != "1.01" || texts[len(texts)-1] != "Now open." {
+		t.Errorf("chapter 1 = %q %q", title, texts)
+	}
+
+	// The site's address again: volume 1 is here, so volume 2.
+	var second sourceTestBook
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: "https://wanderinginn.com/table-of-contents/"}, &second)
+	if resp.StatusCode != http.StatusCreated || second.Title != "The Wandering Inn: Volume 2" {
+		t.Fatalf("second import: %d %+v", resp.StatusCode, second)
+	}
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: "https://wanderinginn.com/"}, nil)
+	if code := respErrorCode(t, resp); resp.StatusCode != http.StatusConflict || code != string(errBookExists) {
+		t.Errorf("third import: %d %q", resp.StatusCode, code)
+	}
 }

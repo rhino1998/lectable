@@ -20,7 +20,7 @@ export type BookSettingSource = (typeof BOOK_SETTING_SOURCES)[number]
 /**
  * bookSourceKind names the website a book was imported from.
  */
-export const BOOK_SOURCE_KINDS = ['royalroad'] as const
+export const BOOK_SOURCE_KINDS = ['royalroad', 'wanderinginn', 'wayback'] as const
 export type BookSourceKind = (typeof BOOK_SOURCE_KINDS)[number]
 
 /**
@@ -372,6 +372,10 @@ export interface BookSettingResponse {
 export interface BookSource {
   kind: BookSourceKind
   /**
+   * Name is the site's name, for display ("Royal Road").
+   */
+  name: string
+  /**
    * URL is the work's page at the source.
    */
   url: string
@@ -391,6 +395,12 @@ export interface BookSource {
    * Error is why the last check stopped early, absent if it finished.
    */
   error?: string
+  /**
+   * Blocked is the title of the chapter the last check stopped at
+   * because the source lists it but doesn't serve it yet (early access,
+   * patrons only); absent if none. The book never skips past one.
+   */
+  blocked?: string
   /**
    * Syncing is true while chapters are being fetched.
    */
@@ -873,7 +883,7 @@ export interface IdResponse {
 
 export interface ImportBookURLRequest {
   /**
-   * URL is a link to a Royal Road fiction or any of its chapters.
+   * URL is a link to a work at a supported site, or one of its chapters.
    */
   url: string
 }
@@ -2222,10 +2232,14 @@ export interface Routes {
     errorCode: never
   }
   /**
-   * handleImportBookURL imports a Royal Road fiction as a new book: its
-   * first chapter now, the rest in the background (the book's source.syncing
-   * / remoteChapters show the progress). 409 book_exists if the library
-   * already has that fiction - check it for new chapters instead.
+   * handleImportBookURL imports a work from a website as a new book - a
+   * Royal Road fiction, a volume of The Wandering Inn, either of them as a
+   * Wayback Machine link - picking the site by the link: its first chapter
+   * now, the rest in the background (the book's source.syncing /
+   * remoteChapters show the progress). 409 book_exists if the library
+   * already has that work - check it for new chapters instead. A link to an
+   * archive.org item instead downloads its epub and imports that, as an
+   * upload would.
    */
   'POST /api/books/import-url': {
     path: Record<never, never>
@@ -3402,6 +3416,22 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleBackfillBookSource takes an epub (multipart "file") and checks the
+   * book's source with it at hand: chapters the site lists but won't serve
+   * are filled from the epub's, matched by title, and the rest come from the
+   * site as usual - in the background, like any check. Answers 202 with how
+   * many of the chapters the book is still missing the epub could stand in
+   * for; 422 if none, 409 for a book with no source or with a check already
+   * running.
+   */
+  'POST /api/books/{id}/source/backfill': {
+    path: { id: string }
+    query: Record<never, never>
+    body: FormData
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
    * handleSyncBookSource checks a book's source for chapters it doesn't have
    * and appends them, in the background (joining a check already running).
    * 409 for a book that wasn't imported from a website.
@@ -4104,6 +4134,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/setting': 'json',
   'PUT /api/books/{id}/setting': 'json',
   'POST /api/books/{id}/setting/derive': 'json',
+  'POST /api/books/{id}/source/backfill': 'json',
   'POST /api/books/{id}/source/sync': 'json',
   'GET /api/books/{id}/speakers': 'json',
   'DELETE /api/books/{id}/speakers': 'none',

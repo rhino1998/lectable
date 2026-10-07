@@ -133,12 +133,17 @@ Philips Hue lights themselves over the bridge's local v1 API (HTTPS)
 (`frontend/src/lighting`, android `playback/lighting`), configured
 per device. See the `run-ambience` entry in `backend/docs/api.md`.
 
-A book can also be **imported from Royal Road** by link instead of an
-epub: the backend fetches the fiction chapter by chapter (the book is
+A book can also be **imported from a website** by link instead of an
+epub - a Royal Road fiction, or The Wandering Inn (one volume per book,
+as a series): the backend fetches it chapter by chapter (the book is
 readable from its first chapter while the rest arrive), remembers where
 it came from, and "Check for new chapters" later appends whatever has
-been published since without touching what's there. See the `import-url`
-entry in `backend/docs/api.md`.
+been published since without touching what's there. A chapter the site
+lists but won't serve is read from the Internet Archive's last public
+copy of it, or from an epub of that stretch the reader uploads; with
+neither, the book stops there rather than skip it. A Wayback Machine link
+imports a work as archived, and an archive.org item link imports the
+item's epub. See the `import-url` entry in `backend/docs/api.md`.
 
 A per-book **setting profile** (era, technology, place, accent, genre)
 is written once per book by one LLM call over excerpts from across it, the first time a pass needs it, and shown to the ambience,
@@ -228,7 +233,7 @@ client, not a browser.)
   `backups/library-<timestamp>.sqlite` (rolling daily copies of the
   database, see `backend/CLAUDE.md`'s `internal/dbbackup`),
   `covers/<bookID>.<ext>`, `epubs/<bookID>.epub` (the source epub, kept for
-  single-chapter re-import; for a book imported from Royal Road, an epub
+  single-chapter re-import; for a book imported from a website, an epub
   written from the fetched chapters and added to as new ones arrive), `exports/<bookID>/<exportID>.epub` + `.json`
   (built book exports - EPUB 3 with read-aloud; a whole-book one also
   restores the book into another library when uploaded there, see

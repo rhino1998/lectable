@@ -97,6 +97,13 @@ fun LibraryScreen(
             ?.maxByOrNull { it.summary.lastReadAt ?: 0 }
     }
 
+    // The book whose "Fill locked chapters from an epub" is waiting on the file picker.
+    var backfillBookId by remember { mutableStateOf<String?>(null) }
+    val pickBackfillLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val bookId = backfillBookId
+        backfillBookId = null
+        if (uri != null && bookId != null) viewModel.backfillBookSource(bookId, context.contentResolver, uri, context.cacheDir)
+    }
     var showAddMenu by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
 
@@ -123,7 +130,8 @@ fun LibraryScreen(
             )
         },
         floatingActionButton = {
-            // "Add book" offers both ways in: an epub from the device, or a Royal Road link.
+            // "Add book" offers both ways in: an epub from the device, or a link to a work on a
+            // supported site.
             Box {
                 ExtendedFloatingActionButton(
                     text = { Text(if (uiState.isUploading) "Adding…" else "Add book") },
@@ -137,7 +145,7 @@ fun LibraryScreen(
                         onClick = { showAddMenu = false; pickEpubLauncher.launch("application/epub+zip") },
                     )
                     DropdownMenuItem(
-                        text = { Text("Import from Royal Road") },
+                        text = { Text("Import from a link") },
                         leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null) },
                         onClick = { showAddMenu = false; showImportDialog = true },
                     )
@@ -170,7 +178,7 @@ fun LibraryScreen(
                         item {
                             Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
                                 Text(
-                                    "No books yet - tap \"Add book\" to upload an epub or import a Royal Road fiction.",
+                                    "No books yet - tap \"Add book\" to upload an epub or import from a link.",
                                     modifier = Modifier.padding(32.dp),
                                 )
                             }
@@ -202,6 +210,10 @@ fun LibraryScreen(
                                 onDownload = { viewModel.downloadBook(item.summary.id) },
                                 onDownloadRemaining = { viewModel.downloadBookRemaining(item.summary.id) },
                                 onSyncSource = { viewModel.syncBookSource(item.summary.id) },
+                                onBackfill = {
+                                    backfillBookId = item.summary.id
+                                    pickBackfillLauncher.launch("application/epub+zip")
+                                },
                                 onDeleteLocal = { pendingDeleteLocal = item.summary },
                                 onDelete = { pendingDelete = item.summary },
                             )
@@ -321,6 +333,7 @@ private fun BookRow(
     onDownload: () -> Unit,
     onDownloadRemaining: () -> Unit,
     onSyncSource: () -> Unit,
+    onBackfill: () -> Unit,
     onDeleteLocal: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -485,6 +498,15 @@ private fun BookRow(
                     enabled = !source.syncing,
                     onClick = { onSyncSource(); showMenu = false },
                 )
+                // Stopped at a chapter the site won't serve: an epub of that stretch can fill it.
+                if (!source.blocked.isNullOrEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("Fill locked chapters from an epub") },
+                        leadingIcon = { Icon(Icons.Filled.UploadFile, contentDescription = null) },
+                        enabled = !source.syncing,
+                        onClick = { onBackfill(); showMenu = false },
+                    )
+                }
             }
             if (isDownloaded) {
                 DropdownMenuItem(
@@ -535,29 +557,32 @@ private fun sourceStatus(book: BookSummaryDto): String? {
             if (failed) "$n not fetched - check again" else "$n left to fetch - check again"
         }
         failed -> "Last check for new chapters failed"
+        // The source lists the next chapter but won't serve it yet; the book never skips past one.
+        !source.blocked.isNullOrEmpty() -> "Next chapter “${source.blocked}” is locked at ${source.name}"
         else -> null
     }
 }
 
-/** "Add book" -> "Import from Royal Road": asks for the fiction's link. */
+/** "Add book" -> "Import from a link": asks for the link - a Royal Road fiction, or a chapter
+ *  or the table of contents of The Wandering Inn (imported one volume per book). */
 @Composable
 private fun ImportLinkDialog(onDismiss: () -> Unit, onImport: (String) -> Unit) {
     var link by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Import from Royal Road") },
+        title = { Text("Import from a link") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = link,
                     onValueChange = { link = it },
-                    label = { Text("Fiction link") },
-                    placeholder = { Text("https://www.royalroad.com/fiction/…") },
+                    label = { Text("Link") },
+                    placeholder = { Text("royalroad.com, wanderinginn.com, archive.org…") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "The first chapter is ready in a few seconds; the rest arrive in the background.",
+                    "Royal Road and The Wandering Inn (one volume per book), live or as a Wayback Machine link; or an archive.org item with an epub. The first chapter is ready in a few seconds; the rest arrive in the background.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

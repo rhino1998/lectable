@@ -63,6 +63,13 @@ export function useImportBookUrl() {
   return useMutation({ mutationFn: (url: string) => api.importBookUrl(url) })
 }
 
+export function useBackfillBookSource() {
+  return useMutation({
+    mutationFn: (args: { bookId: string; file: File }) =>
+      api.backfillBookSource(args.bookId, args.file),
+  })
+}
+
 export function useSyncBookSource() {
   return useMutation({ mutationFn: (bookId: string) => api.syncBookSource(bookId) })
 }

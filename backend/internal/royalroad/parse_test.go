@@ -2,6 +2,7 @@ package royalroad
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -124,7 +125,7 @@ func TestParseFiction(t *testing.T) {
 				t.Fatalf("chapters = %+v\nwant %+v", got.Chapters, tt.chapters)
 			}
 			for i, c := range got.Chapters {
-				if c != tt.chapters[i] {
+				if !reflect.DeepEqual(c, tt.chapters[i]) {
 					t.Errorf("chapter %d = %+v\nwant %+v", i, c, tt.chapters[i])
 				}
 			}

@@ -26,7 +26,7 @@ func TestBookSourceAndAppendChapters(t *testing.T) {
 	if src, err := s.GetBookSource(bookID); err != nil || src != nil {
 		t.Fatalf("new book's source = %+v, %v; want none", src, err)
 	}
-	want := BookSource{Kind: "royalroad", SourceID: "7", URL: "https://example.test/fiction/7", CheckedAt: 123, RemoteChapters: 3, Error: "boom"}
+	want := BookSource{Kind: "royalroad", SourceID: "7", URL: "https://example.test/fiction/7", CheckedAt: 123, RemoteChapters: 3, Error: "boom", Blocked: "Four"}
 	if err := s.SetBookSource(bookID, want); err != nil {
 		t.Fatal(err)
 	}

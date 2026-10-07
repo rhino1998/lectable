@@ -19,10 +19,10 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/live"
 	"github.com/rhino1998/lectable/backend/internal/narration"
-	"github.com/rhino1998/lectable/backend/internal/royalroad"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
+	"github.com/rhino1998/lectable/backend/internal/websource"
 )
 
 type Server struct {
@@ -62,9 +62,13 @@ type Server struct {
 	// InstanceID is for. "" (the default) means the deployer never set one.
 	LibraryName string
 
-	// RoyalRoad fetches fictions for import-by-link (see source.go); nil
-	// uses a shared default client.
-	RoyalRoad *royalroad.Client
+	// Sources are the websites books can be imported from by link (see
+	// source.go, internal/websource); nil uses the built-in set.
+	Sources []websource.Source
+	// Wayback reads the Internet Archive's Wayback Machine, for archived
+	// links and for chapters a site no longer serves; nil uses a shared
+	// default.
+	Wayback *websource.Wayback
 	// sourceImportMu serializes handleImportBookURL; sourceSyncs holds the
 	// ids of books whose source is being checked right now
 	// (startSourceSync).
@@ -169,6 +173,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books", s.handleUploadBook)
 	mux.HandleFunc("POST /api/books/import-url", s.handleImportBookURL)
 	mux.HandleFunc("POST /api/books/{id}/source/sync", s.handleSyncBookSource)
+	mux.HandleFunc("POST /api/books/{id}/source/backfill", s.handleBackfillBookSource)
 	mux.HandleFunc("GET /api/books", s.handleListBooks)
 	mux.HandleFunc("GET /api/books/{id}", s.handleGetBook)
 	mux.HandleFunc("DELETE /api/books/{id}", s.handleDeleteBook)

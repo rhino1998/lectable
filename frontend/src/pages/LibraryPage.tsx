@@ -4,6 +4,7 @@ import {
   RiAddLine,
   RiDeleteBinLine,
   RiDownload2Line,
+  RiFileUploadLine,
   RiHeadphoneLine,
   RiLinksLine,
   RiLoader4Line,
@@ -13,6 +14,7 @@ import {
   RiUserVoiceLine,
 } from 'react-icons/ri'
 import {
+  useBackfillBookSource,
   useBooks,
   useDeleteBook,
   useGenerateBook,
@@ -123,6 +125,20 @@ function BookCard({
     })
   }
   const sourceNote = book.source && sourceStatus(book)
+  // A book stopped at a chapter its source won't serve can take that
+  // stretch from an epub of it.
+  const backfill = useBackfillBookSource()
+  const backfillInputRef = useRef<HTMLInputElement>(null)
+  const handleBackfill = (file: File | undefined) => {
+    if (!file) return
+    backfill.mutate(
+      { bookId: book.id, file },
+      {
+        onError: (err) =>
+          alert(err instanceof ApiError ? err.message : 'Could not fill chapters from the epub'),
+      },
+    )
+  }
 
   return (
     <div className="book-card">
@@ -234,14 +250,36 @@ function BookCard({
           className="icon-button icon-button-source"
           title={
             book.source.syncing
-              ? 'Fetching chapters from Royal Road…'
-              : 'Check Royal Road for new chapters'
+              ? `Fetching chapters from ${book.source.name}…`
+              : `Check ${book.source.name} for new chapters`
           }
           onClick={handleSyncSource}
           disabled={book.source.syncing || syncSource.isPending}
         >
           <RiRefreshLine className={book.source.syncing ? 'spin' : undefined} />
         </button>
+      )}
+      {book.source?.blocked && (
+        <>
+          <button
+            className="icon-button icon-button-backfill"
+            title={`Fill the chapters ${book.source.name} won't serve from an epub of them`}
+            onClick={() => backfillInputRef.current?.click()}
+            disabled={book.source.syncing || backfill.isPending}
+          >
+            <RiFileUploadLine />
+          </button>
+          <input
+            ref={backfillInputRef}
+            type="file"
+            accept=".epub"
+            hidden
+            onChange={(e) => {
+              handleBackfill(e.target.files?.[0])
+              e.target.value = ''
+            }}
+          />
+        </>
       )}
       <button className="icon-button" title="Delete book" onClick={onDelete}>
         <RiDeleteBinLine />
@@ -267,7 +305,10 @@ function sourceStatus(book: BookSummary): string | null {
     const n = `${outstanding} chapter${outstanding === 1 ? '' : 's'}`
     return source.error ? `${n} not fetched - check again` : `${n} left to fetch - check again`
   }
-  return source.error ? 'Last check for new chapters failed' : null
+  if (source.error) return 'Last check for new chapters failed'
+  // The source lists the next chapter but won't serve it yet; the book
+  // never skips past one.
+  return source.blocked ? `Next chapter “${source.blocked}” is locked at ${source.name}` : null
 }
 
 export function LibraryPage() {
@@ -282,8 +323,8 @@ export function LibraryPage() {
   const importUrl = useImportBookUrl()
   const [importOpen, setImportOpen] = useState(false)
   const [importLink, setImportLink] = useState('')
-  // "Add book" lists the ways in: an epub from disk, or a Royal Road link
-  // (which opens the link field under the header).
+  // "Add book" lists the ways in: an epub from disk, or a link to a work
+  // on a supported site (which opens the link field under the header).
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addMenuRef = useRef<HTMLDivElement>(null)
   useClickOutside([addMenuRef], () => setAddMenuOpen(false), addMenuOpen)
@@ -373,13 +414,13 @@ export function LibraryPage() {
               </button>
               <button
                 role="menuitem"
-                title="Import a Royal Road fiction by its link"
+                title="Import by link: Royal Road, The Wandering Inn, a Wayback Machine copy of either, or an archive.org item with an epub"
                 onClick={() => {
                   setAddMenuOpen(false)
                   setImportOpen(true)
                 }}
               >
-                <RiLinksLine /> Import from Royal Road
+                <RiLinksLine /> Import from a link
               </button>
             </div>
           )}
@@ -408,8 +449,8 @@ export function LibraryPage() {
           <input
             type="url"
             autoFocus
-            placeholder="https://www.royalroad.com/fiction/…"
-            aria-label="Royal Road fiction link"
+            placeholder="Royal Road, Wandering Inn, web.archive.org or archive.org link"
+            aria-label="Link to import"
             value={importLink}
             onChange={(e) => setImportLink(e.target.value)}
             disabled={importUrl.isPending}
@@ -425,7 +466,9 @@ export function LibraryPage() {
             Cancel
           </button>
           <span className="muted">
-            The first chapter is ready in a few seconds; the rest arrive in the background.
+            Royal Road and The Wandering Inn (one volume per book), live or as a Wayback Machine
+            link; or an archive.org item with an epub. The first chapter is ready in a few seconds;
+            the rest arrive in the background.
           </span>
         </form>
       )}
@@ -437,7 +480,7 @@ export function LibraryPage() {
 
       {booksQuery.data && booksQuery.data.length === 0 && (
         <p className="muted">
-          No books yet. Use “Add book” to upload an .epub or import a Royal Road fiction.
+          No books yet. Use “Add book” to upload an .epub or import from a link.
         </p>
       )}
 

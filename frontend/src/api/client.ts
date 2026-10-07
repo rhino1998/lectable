@@ -105,10 +105,21 @@ export const api = {
     return call('POST /api/books', { body })
   },
 
-  // Imports a Royal Road fiction by link: answers with the new book once
-  // its first chapter is in, the rest arriving in the background (see
-  // httpapi.handleImportBookURL).
+  // Imports by link: a work at a supported site (a Royal Road fiction, a
+  // volume of The Wandering Inn - also as Wayback Machine links), answering
+  // with the new book once its first chapter is in, the rest arriving in
+  // the background; or an archive.org item's epub, imported like an upload
+  // (see httpapi.handleImportBookURL).
   importBookUrl: (url: string) => call('POST /api/books/import-url', { body: { url } }),
+
+  // Checks a book's source with an epub at hand: chapters the site lists
+  // but won't serve are filled from the epub's, matched by title (see
+  // httpapi.handleBackfillBookSource). Answers with how many it could fill.
+  backfillBookSource: (id: string, file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return call('POST /api/books/{id}/source/backfill', { path: { id }, body })
+  },
 
   // "Check for new chapters" on a book imported from a website - appends
   // whatever its source has published since (httpapi.handleSyncBookSource).

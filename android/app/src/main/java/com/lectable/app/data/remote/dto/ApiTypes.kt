@@ -58,7 +58,9 @@ typealias BookSourceKind = String
  */
 object BookSourceKinds {
     const val ROYALROAD: BookSourceKind = "royalroad"
-    val VALUES: List<BookSourceKind> = listOf(ROYALROAD)
+    const val WANDERINGINN: BookSourceKind = "wanderinginn"
+    const val WAYBACK: BookSourceKind = "wayback"
+    val VALUES: List<BookSourceKind> = listOf(ROYALROAD, WANDERINGINN, WAYBACK)
 }
 
 /**
@@ -604,6 +606,10 @@ data class BookSettingResponseDto(
 data class BookSourceDto(
     val kind: BookSourceKind = "",
     /**
+     * Name is the site's name, for display ("Royal Road").
+     */
+    val name: String = "",
+    /**
      * URL is the work's page at the source.
      */
     val url: String = "",
@@ -623,6 +629,12 @@ data class BookSourceDto(
      * Error is why the last check stopped early, absent if it finished.
      */
     val error: String? = null,
+    /**
+     * Blocked is the title of the chapter the last check stopped at
+     * because the source lists it but doesn't serve it yet (early access,
+     * patrons only); absent if none. The book never skips past one.
+     */
+    val blocked: String? = null,
     /**
      * Syncing is true while chapters are being fetched.
      */
@@ -1167,7 +1179,7 @@ data class IdResponseDto(
 @Serializable
 data class ImportBookURLRequestDto(
     /**
-     * URL is a link to a Royal Road fiction or any of its chapters.
+     * URL is a link to a work at a supported site, or one of its chapters.
      */
     val url: String = "",
 )

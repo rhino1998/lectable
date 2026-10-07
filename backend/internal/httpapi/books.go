@@ -277,15 +277,28 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "play must be auto, on or off")
 		return
 	}
-	book, err := epub.ParseAs(tmp, size, playMode)
+	summary, err := s.importEpub(tmp, size, strings.TrimSuffix(header.Filename, ".epub"), playMode)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "could not parse epub: "+err.Error())
+		writeBuildError(w, err)
 		return
 	}
-	if book.Title == "Untitled" {
-		if base := strings.TrimSuffix(header.Filename, ".epub"); base != "" {
-			book.Title = base
-		}
+	writeJSON(w, http.StatusCreated, summary)
+}
+
+// importEpub creates a book from an epub: its text, cover and images, the
+// epub itself kept for chapter re-import, and the first samples queued.
+// fallbackTitle names a book whose epub has no title. Errors carry their
+// HTTP status (httpError).
+func (s *Server) importEpub(src interface {
+	io.ReaderAt
+	io.ReadSeeker
+}, size int64, fallbackTitle string, playMode epub.PlayMode) (bookSummaryDTO, error) {
+	book, err := epub.ParseAs(src, size, playMode)
+	if err != nil {
+		return bookSummaryDTO{}, httpError(http.StatusBadRequest, "could not parse epub: "+err.Error())
+	}
+	if book.Title == "Untitled" && fallbackTitle != "" {
+		book.Title = fallbackTitle
 	}
 
 	// imageBytes runs parallel to the image blocks across all chapters, in
@@ -306,16 +319,15 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 
 	bookID, createdImages, err := s.Store.CreateBook(book.Title, book.Author, book.Language, coverExt, book.SeriesName, book.SeriesIndex, chapterInputs)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
-		return
+		return bookSummaryDTO{}, httpError(http.StatusInternalServerError, "failed to save book: "+err.Error())
 	}
 
 	// Keep the original epub so single chapters can be re-imported from
 	// it later (handleReimportChapter) - best-effort, like the cover and
 	// images below: a book without it can still be re-imported by
 	// uploading the epub again.
-	if _, err := tmp.Seek(0, io.SeekStart); err == nil {
-		_ = saveSourceEpub(s.DataDir, bookID, tmp)
+	if _, err := src.Seek(0, io.SeekStart); err == nil {
+		_ = saveSourceEpub(s.DataDir, bookID, src)
 	}
 
 	if coverExt != "" {
@@ -334,18 +346,15 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 
 	b, err := s.Store.GetBook(bookID)
 	if err != nil || b == nil {
-		writeError(w, http.StatusInternalServerError, "book saved but could not be reloaded")
-		return
+		return bookSummaryDTO{}, httpError(http.StatusInternalServerError, "book saved but could not be reloaded")
 	}
 	if err := s.addPlayCharacters(b, book.Chapters); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to save characters: "+err.Error())
-		return
+		return bookSummaryDTO{}, httpError(http.StatusInternalServerError, "failed to save characters: "+err.Error())
 	}
 
 	summary, chapters, err := s.buildBookSummary(*b)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return bookSummaryDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 
 	if len(chapters) > 0 {
@@ -364,7 +373,7 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 		s.Jobs.EnqueueLengthEstimate(bookID, chapters[0].ID, 300)
 	}
 
-	writeJSON(w, http.StatusCreated, summary)
+	return summary, nil
 }
 
 // handleImportExport restores an uploaded whole-book export (see

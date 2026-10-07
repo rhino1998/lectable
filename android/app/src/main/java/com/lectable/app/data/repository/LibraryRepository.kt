@@ -63,11 +63,30 @@ class LibraryRepository @Inject constructor(
         }
     }
 
-    /** Imports a Royal Road fiction by its link (backend handleImportBookURL): returns once the
-     *  first chapter is in, the rest arriving in the background. A refusal - not a Royal Road
-     *  link, already in the library, the site unreachable - throws with the server's explanation. */
+    /** Imports a work from a supported site by its link (backend handleImportBookURL): returns
+     *  once the first chapter is in, the rest arriving in the background. A refusal - a site the
+     *  backend can't read, already in the library, the site unreachable - throws with the
+     *  server's explanation. */
     suspend fun importBookUrl(url: String): BookSummaryDto =
         withServerMessage("Import failed") { api.importBookURL(ImportBookURLRequestDto(url = url)) }
+
+    /** Checks a book's source with an epub at hand (backend handleBackfillBookSource): chapters
+     *  the site lists but won't serve are filled from the epub's, matched by title. Returns how
+     *  many it could fill; a refusal (nothing in the epub matches) throws with the server's
+     *  explanation. */
+    suspend fun backfillBookSource(id: String, contentResolver: ContentResolver, uri: Uri, cacheDir: File): Int {
+        val tempFile = File(cacheDir, "backfill-${System.currentTimeMillis()}.epub")
+        contentResolver.openInputStream(uri)?.use { input ->
+            tempFile.outputStream().use { output -> input.copyTo(output) }
+        } ?: error("Could not open picked file")
+        return try {
+            val body = tempFile.asRequestBody("application/epub+zip".toMediaType())
+            val part = MultipartBody.Part.createFormData("file", contentResolver.displayNameFor(uri), body)
+            withServerMessage("Could not fill chapters from the epub") { api.backfillBookSource(id, file = part).queued }
+        } finally {
+            tempFile.delete()
+        }
+    }
 
     /** "Check for new chapters" on a book imported from a website (backend handleSyncBookSource):
      *  the new chapters show up on the live books topic as they're fetched. */

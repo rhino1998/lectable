@@ -292,7 +292,7 @@ label {
 .library-add-menu-panel button:hover {
   background: var(--border);
 }
-/* The "Import from Royal Road" link field, shown under the header. */
+/* The "Import from a link" field, shown under the header. */
 .library-import {
   display: flex;
   flex-wrap: wrap;
@@ -475,6 +475,9 @@ label {
 }
 .icon-button-source {
   top: 8.65rem;
+}
+.icon-button-backfill {
+  top: 10.3rem;
 }
 .icon-button-source:disabled {
   cursor: default;

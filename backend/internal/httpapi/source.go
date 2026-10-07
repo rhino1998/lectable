@@ -9,36 +9,58 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/epub"
 	"github.com/rhino1998/lectable/backend/internal/royalroad"
 	"github.com/rhino1998/lectable/backend/internal/store"
+	"github.com/rhino1998/lectable/backend/internal/wanderinginn"
+	"github.com/rhino1998/lectable/backend/internal/websource"
 )
 
-// A book can be imported from a website instead of an uploaded epub - for
-// now Royal Road (internal/royalroad). The book is created from the
-// fiction's first chapter, so it is in the library and readable at once,
-// and the rest are fetched in the background and appended in order
+// A book can be imported from a website instead of an uploaded epub: any
+// site with a websource.Source (Server.sources - Royal Road, The Wandering
+// Inn), picked by the link itself. The book is created from the work's
+// first chapter, so it is in the library and readable at once, and the
+// rest are fetched in the background and appended in order
 // (syncBookSource). It remembers its source (store.BookSource), so the
 // same pass run again later - "check for new chapters" - adds whatever has
 // been published since; chapters the book already has are never touched.
 //
 // What is fetched is also kept as the book's source epub, one spine file
 // per chapter, so re-importing a single chapter works as for any book.
+//
+// A site can also be read as the Internet Archive saved it: a Wayback
+// Machine link imports a work as it stood then (sourceReader), and a
+// chapter the live site lists but no longer serves is looked for among its
+// archived copies before the check gives up on it (see syncBookSource,
+// and source_fill.go for filling such chapters from an uploaded epub). An
+// archive.org item link is something else - a file to download, imported
+// like an upload (source_archiveorg.go).
 
 // bookSourceKind names the website a book was imported from.
 type bookSourceKind string
 
-const sourceRoyalRoad bookSourceKind = royalroad.Kind
+const (
+	sourceRoyalRoad    bookSourceKind = royalroad.Kind
+	sourceWanderingInn bookSourceKind = wanderinginn.Kind
+	// sourceWayback is a work imported from a Wayback Machine link: a
+	// supported site as archived at one time. Its stored id is
+	// "<site kind>:<time>:<work id>".
+	sourceWayback bookSourceKind = "wayback"
+)
 
 // bookSourceDTO is where a book imported from a website came from, and
 // the state of fetching its chapters.
 type bookSourceDTO struct {
 	Kind bookSourceKind `json:"kind"`
+	// Name is the site's name, for display ("Royal Road").
+	Name string `json:"name"`
 	// URL is the work's page at the source.
 	URL string `json:"url"`
 	// CheckedAt is when the source was last checked for chapters (unix
@@ -51,12 +73,16 @@ type bookSourceDTO struct {
 	RemoteChapters int `json:"remoteChapters"`
 	// Error is why the last check stopped early, absent if it finished.
 	Error string `json:"error,omitempty"`
+	// Blocked is the title of the chapter the last check stopped at
+	// because the source lists it but doesn't serve it yet (early access,
+	// patrons only); absent if none. The book never skips past one.
+	Blocked string `json:"blocked,omitempty"`
 	// Syncing is true while chapters are being fetched.
 	Syncing bool `json:"syncing"`
 }
 
 type importBookURLRequest struct {
-	// URL is a link to a Royal Road fiction or any of its chapters.
+	// URL is a link to a work at a supported site, or one of its chapters.
 	URL string `json:"url"`
 }
 
@@ -70,15 +96,139 @@ const (
 	sourceSyncTimeout = 3 * time.Hour
 )
 
-// defaultRoyalRoad is the client used when Server.RoyalRoad is unset; one
-// for the process, so every import shares its request pacing.
-var defaultRoyalRoad = &royalroad.Client{}
+// defaultSources is every site books can be imported from, used when
+// Server.Sources is unset; one set for the process, so every import from
+// a site shares its request pacing.
+var defaultSources = []websource.Source{&royalroad.Source{}, &wanderinginn.Source{}}
 
-func (s *Server) royalRoad() *royalroad.Client {
-	if s.RoyalRoad != nil {
-		return s.RoyalRoad
+func (s *Server) sources() []websource.Source {
+	if s.Sources != nil {
+		return s.Sources
 	}
-	return defaultRoyalRoad
+	return defaultSources
+}
+
+// sourceOfKind returns the source books of that kind came from, nil if
+// this build has none (a book restored from another library's export).
+func (s *Server) sourceOfKind(kind string) websource.Source {
+	for _, src := range s.sources() {
+		if src.Kind() == kind {
+			return src
+		}
+	}
+	return nil
+}
+
+// defaultWayback reads the Wayback Machine when Server.Wayback is unset.
+var defaultWayback = &websource.Wayback{}
+
+func (s *Server) wayback() *websource.Wayback {
+	if s.Wayback != nil {
+		return s.Wayback
+	}
+	return defaultWayback
+}
+
+// sourceReader is a site read one particular way: live, or as the Wayback
+// Machine has it at one time.
+type sourceReader struct {
+	site  websource.Source
+	fetch websource.Fetcher
+	// timestamp is the archived time read at, "" for the live site.
+	timestamp string
+	wayback   *websource.Wayback
+}
+
+func (r sourceReader) archived() bool { return r.timestamp != "" }
+
+// kind and storedID are what a book read this way records as its source.
+func (r sourceReader) kind() string {
+	if r.archived() {
+		return string(sourceWayback)
+	}
+	return r.site.Kind()
+}
+
+func (r sourceReader) storedID(workID string) string {
+	if r.archived() {
+		return r.site.Kind() + ":" + r.timestamp + ":" + workID
+	}
+	return workID
+}
+
+func (r sourceReader) name() string {
+	if r.archived() {
+		return r.site.Name() + " (Wayback Machine)"
+	}
+	return r.site.Name()
+}
+
+// workURL is the page a book read this way links back to.
+func (r sourceReader) workURL(work *websource.Work) string {
+	if r.archived() {
+		return r.wayback.LinkAt(r.timestamp, work.URL)
+	}
+	return work.URL
+}
+
+func (r sourceReader) meta(work *websource.Work) websource.Meta {
+	return websource.Meta{Kind: r.kind(), WorkID: r.storedID(work.ID), URL: r.workURL(work), Title: work.Title, Author: work.Author}
+}
+
+// readerForLink parses a pasted link and finds the site it belongs to; a
+// Wayback Machine link to a supported site reads that site as archived.
+func (s *Server) readerForLink(raw string) (sourceReader, *url.URL, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return sourceReader{}, nil, errors.New("no link given")
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Hostname() == "" {
+		return sourceReader{}, nil, errors.New("that isn't a link")
+	}
+	timestamp, original, archived := websource.ParseWaybackLink(u)
+	if archived {
+		u = original
+	}
+	names := make([]string, 0, len(s.sources()))
+	for _, src := range s.sources() {
+		if !src.Match(u) {
+			names = append(names, src.Name())
+			continue
+		}
+		if archived {
+			return sourceReader{site: src, fetch: s.wayback().At(timestamp), timestamp: timestamp, wayback: s.wayback()}, u, nil
+		}
+		return sourceReader{site: src, fetch: src.Fetch()}, u, nil
+	}
+	return sourceReader{}, nil, fmt.Errorf("can't import from %s - supported sites: %s (also as Wayback Machine links), and archive.org items with an epub", u.Hostname(), strings.Join(names, ", "))
+}
+
+// readerForBook returns how a book's stored source is read, and the work's
+// id at the site; ok is false when this build has no reader for it (a book
+// restored from another library's export).
+func (s *Server) readerForBook(src *store.BookSource) (r sourceReader, workID string, ok bool) {
+	kind, workID := src.Kind, src.SourceID
+	if src.Kind == string(sourceWayback) {
+		parts := strings.SplitN(src.SourceID, ":", 3)
+		if len(parts) != 3 {
+			return sourceReader{}, "", false
+		}
+		kind, workID = parts[0], parts[2]
+		r.timestamp = parts[1]
+		r.wayback = s.wayback()
+	}
+	if r.site = s.sourceOfKind(kind); r.site == nil {
+		return sourceReader{}, "", false
+	}
+	r.fetch = r.site.Fetch()
+	if r.archived() {
+		r.fetch = r.wayback.At(r.timestamp)
+	}
+	return r, workID, true
 }
 
 // bookSource builds bookID's source DTO, nil for a book from an epub.
@@ -88,41 +238,81 @@ func (s *Server) bookSource(bookID string) (*bookSourceDTO, error) {
 		return nil, err
 	}
 	_, syncing := s.sourceSyncs.Load(bookID)
+	name := src.Kind
+	if r, _, ok := s.readerForBook(src); ok {
+		name = r.name()
+	}
 	return &bookSourceDTO{
 		Kind:           bookSourceKind(src.Kind),
+		Name:           name,
 		URL:            src.URL,
 		CheckedAt:      src.CheckedAt,
 		RemoteChapters: src.RemoteChapters,
 		Error:          src.Error,
+		Blocked:        src.Blocked,
 		Syncing:        syncing,
 	}, nil
 }
 
-// handleImportBookURL imports a Royal Road fiction as a new book: its
-// first chapter now, the rest in the background (the book's source.syncing
-// / remoteChapters show the progress). 409 book_exists if the library
-// already has that fiction - check it for new chapters instead.
+// handleImportBookURL imports a work from a website as a new book - a
+// Royal Road fiction, a volume of The Wandering Inn, either of them as a
+// Wayback Machine link - picking the site by the link: its first chapter
+// now, the rest in the background (the book's source.syncing /
+// remoteChapters show the progress). 409 book_exists if the library
+// already has that work - check it for new chapters instead. A link to an
+// archive.org item instead downloads its epub and imports that, as an
+// upload would.
 func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 	var req importBookURLRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	fictionID, err := royalroad.ParseFictionURL(req.URL)
+	if item, ok := archiveOrgItem(req.URL); ok {
+		summary, err := s.importArchiveOrgItem(r.Context(), item)
+		if err != nil {
+			writeBuildError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, summary)
+		return
+	}
+	reader, link, err := s.readerForLink(req.URL)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	site := reader.site
 
 	// One import at a time, so the same link sent twice can't make two books.
 	s.sourceImportMu.Lock()
 	defer s.sourceImportMu.Unlock()
 
-	if existing, err := s.Store.FindBookBySource(royalroad.Kind, fictionID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	ctx := r.Context()
+	candidates, err := site.Resolve(ctx, reader.fetch, link)
+	if err != nil {
+		writeSourceError(w, site, err, http.StatusBadRequest)
 		return
-	} else if existing != "" {
-		title := "This fiction"
+	}
+	// A link to a whole site names several works (a serial's volumes):
+	// take the first the library doesn't have.
+	workID, existing := "", ""
+	for _, id := range candidates {
+		found, err := s.Store.FindBookBySource(reader.kind(), reader.storedID(id))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if found == "" {
+			workID = id
+			break
+		}
+		if existing == "" {
+			existing = found
+		}
+	}
+	if workID == "" {
+		title := "This"
 		if b, _ := s.Store.GetBook(existing); b != nil {
 			title = "\"" + b.Title + "\""
 		}
@@ -130,27 +320,28 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx := r.Context()
-	rr := s.royalRoad()
-	fic, err := rr.Fiction(ctx, fictionID)
+	work, err := site.Work(ctx, reader.fetch, workID)
 	if err != nil {
-		writeSourceError(w, err)
+		writeSourceError(w, site, err, http.StatusBadGateway)
 		return
 	}
-	refs := unlockedChapters(fic.Chapters)
-	if len(refs) == 0 {
-		writeError(w, http.StatusUnprocessableEntity, "\""+fic.Title+"\" has no chapters to read yet")
+	if len(work.Chapters) == 0 {
+		writeError(w, http.StatusUnprocessableEntity, "\""+work.Title+"\" has no chapters to read yet")
 		return
 	}
-	first, err := rr.Chapter(ctx, refs[0])
+	first, err := s.readChapter(ctx, reader, work.Chapters[0])
+	if errors.Is(err, websource.ErrLocked) {
+		writeError(w, http.StatusUnprocessableEntity, "\""+work.Title+"\" can't be read yet: its first chapter is locked at "+site.Name())
+		return
+	}
 	if err != nil {
-		writeSourceError(w, err)
+		writeSourceError(w, site, err, http.StatusBadGateway)
 		return
 	}
-	meta := royalroad.Meta{FictionID: fic.ID, URL: fic.URL, Title: fic.Title, Author: fic.Author}
-	if fic.CoverURL != "" {
+	meta := reader.meta(work)
+	if work.CoverURL != "" {
 		// Best-effort, like an epub's cover.
-		if data, ext, err := rr.Cover(ctx, fic.CoverURL); err == nil && ext != "" {
+		if data, ext, err := websource.Cover(ctx, reader.fetch, work.CoverURL); err == nil && ext != "" {
 			meta.Cover, meta.CoverExt = data, ext
 		}
 	}
@@ -160,18 +351,23 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	bookID, createdImages, err := s.Store.CreateBook(fic.Title, fic.Author, "en", meta.CoverExt, "", 0, []store.ChapterInput{input})
+	title := work.Title
+	if reader.archived() {
+		// Beside the live work's book, if both are in the library.
+		title += " (archived " + archiveDate(reader.timestamp) + ")"
+	}
+	bookID, createdImages, err := s.Store.CreateBook(title, work.Author, "en", meta.CoverExt, work.SeriesName, work.SeriesIndex, []store.ChapterInput{input})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
 	}
 	if err := s.Store.SetBookSource(bookID, store.BookSource{
-		Kind: royalroad.Kind, SourceID: fic.ID, URL: fic.URL, CheckedAt: time.Now().Unix(), RemoteChapters: len(refs),
+		Kind: reader.kind(), SourceID: reader.storedID(work.ID), URL: reader.workURL(work), CheckedAt: time.Now().Unix(), RemoteChapters: len(work.Chapters),
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
 	}
-	if err := s.writeSourceEpub(bookID, meta, []*royalroad.Chapter{first}, true); err != nil {
+	if err := s.writeSourceEpub(bookID, meta, []*websource.Chapter{first}, true); err != nil {
 		log.Printf("source: keeping epub of %s: %v", bookID, err)
 	}
 	if meta.CoverExt != "" {
@@ -186,8 +382,8 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "book saved but could not be reloaded")
 		return
 	}
-	if len(refs) > 1 {
-		s.startSourceSync(bookID)
+	if len(work.Chapters) > 1 {
+		s.startSourceSync(bookID, nil)
 	}
 	summary, chapters, err := s.buildBookSummary(*b)
 	if err != nil {
@@ -200,6 +396,48 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		s.Jobs.EnqueueLengthEstimate(bookID, chapters[0].ID, 300)
 	}
 	writeJSON(w, http.StatusCreated, summary)
+}
+
+// archiveDate formats a Wayback Machine timestamp's date (2024-05-16),
+// as much of it as the timestamp gives.
+func archiveDate(timestamp string) string {
+	switch {
+	case len(timestamp) >= 8:
+		return timestamp[:4] + "-" + timestamp[4:6] + "-" + timestamp[6:8]
+	case len(timestamp) >= 6:
+		return timestamp[:4] + "-" + timestamp[4:6]
+	}
+	return timestamp
+}
+
+// readChapter fetches one chapter through r. One the live site lists but
+// doesn't serve to the public is looked for in the Wayback Machine before
+// answering ErrLocked (archivedChapter).
+func (s *Server) readChapter(ctx context.Context, r sourceReader, ref websource.ChapterRef) (*websource.Chapter, error) {
+	ch, err := r.site.Chapter(ctx, r.fetch, ref)
+	if errors.Is(err, websource.ErrLocked) {
+		return s.archivedChapter(ctx, r, ref)
+	}
+	return ch, err
+}
+
+// archivedChapter reads a chapter the live site won't serve from the
+// Wayback Machine: the last copy of its page saved while it was readable.
+// ErrLocked when there is none - and without looking for a chapter the
+// site's own list marks locked, which was never public (early access).
+func (s *Server) archivedChapter(ctx context.Context, r sourceReader, ref websource.ChapterRef) (*websource.Chapter, error) {
+	if r.archived() || !ref.Unlocked {
+		return nil, websource.ErrLocked
+	}
+	ch, err := s.wayback().ArchivedChapter(ctx, r.site, ref)
+	if err != nil {
+		if !errors.Is(err, websource.ErrLocked) {
+			log.Printf("source: looking for %q in the Wayback Machine: %v", ref.Title, err)
+		}
+		return nil, websource.ErrLocked
+	}
+	log.Printf("source: %q is locked at %s; read from the Wayback Machine", ref.Title, r.site.Name())
+	return ch, nil
 }
 
 // handleSyncBookSource checks a book's source for chapters it doesn't have
@@ -221,38 +459,38 @@ func (s *Server) handleSyncBookSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if src == nil || src.Kind != royalroad.Kind {
+	if src == nil {
 		writeError(w, http.StatusConflict, "this book wasn't imported from a website, so there is nowhere to check for new chapters")
 		return
 	}
-	s.startSourceSync(bookID)
+	if _, _, ok := s.readerForBook(src); !ok {
+		writeError(w, http.StatusConflict, "this server can't read the site this book came from ("+src.Kind+")")
+		return
+	}
+	s.startSourceSync(bookID, nil)
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
-// writeSourceError answers for a failed fetch from the source.
-func writeSourceError(w http.ResponseWriter, err error) {
-	if errors.Is(err, royalroad.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "Royal Road has no such fiction (it may have been removed)")
+// writeSourceError answers for a failed read from site; status is what a
+// failure other than "no such work" answers with.
+func writeSourceError(w http.ResponseWriter, site websource.Source, err error, status int) {
+	if errors.Is(err, websource.ErrNotFound) {
+		writeError(w, http.StatusNotFound, site.Name()+" has no such work (it may have been removed)")
 		return
 	}
-	writeError(w, http.StatusBadGateway, "could not read from Royal Road: "+err.Error())
-}
-
-func unlockedChapters(refs []royalroad.ChapterRef) []royalroad.ChapterRef {
-	out := make([]royalroad.ChapterRef, 0, len(refs))
-	for _, ref := range refs {
-		if ref.Unlocked {
-			out = append(out, ref)
-		}
+	if status == http.StatusBadGateway {
+		writeError(w, status, "could not read from "+site.Name()+": "+err.Error())
+		return
 	}
-	return out
+	writeError(w, status, err.Error())
 }
 
 // startSourceSync runs syncBookSource for bookID in the background, unless
-// one is already running.
-func (s *Server) startSourceSync(bookID string) {
+// one is already running (false). fill, if not nil, is an uploaded epub to
+// take chapters from where the site won't serve them.
+func (s *Server) startSourceSync(bookID string, fill *epubFill) bool {
 	if _, running := s.sourceSyncs.LoadOrStore(bookID, struct{}{}); running {
-		return
+		return false
 	}
 	// A write, so the book's live topics show it syncing (and drop the
 	// last check's error) right away.
@@ -263,7 +501,7 @@ func (s *Server) startSourceSync(bookID string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), sourceSyncTimeout)
 		defer cancel()
-		added, err := s.syncBookSource(ctx, bookID)
+		added, err := s.syncBookSource(ctx, bookID, fill)
 		if err != nil {
 			log.Printf("source: checking %s stopped after %d new chapters: %v", bookID, added, err)
 		} else if added > 0 {
@@ -281,15 +519,23 @@ func (s *Server) startSourceSync(bookID string) {
 			_ = s.Store.SetBookSource(bookID, *src)
 		}
 	}()
+	return true
 }
 
 // syncBookSource fetches every chapter bookID's source offers that the
 // book doesn't have, in the source's order, and appends them. Chapters are
 // matched by the source's own ids, so a retitled or reordered one isn't
 // fetched again; one published in between chapters the book already has is
-// still added at the end. A chapter the source lists but no longer serves
-// is skipped; any other failure stops the check, keeping what was added.
-func (s *Server) syncBookSource(ctx context.Context, bookID string) (added int, err error) {
+// still added at the end.
+//
+// A chapter the source lists but doesn't serve to the public is taken, in
+// this order, from fill (an uploaded epub, if this check was given one)
+// or from the Wayback Machine's last readable copy of it (readChapter).
+// With neither, the check stops there (store.BookSource.Blocked), so the
+// book never skips ahead of a chapter - it carries on from it once it
+// opens. A chapter the source no longer has at all is passed over; any
+// other failure stops the check, keeping what was added.
+func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFill) (added int, err error) {
 	src, err := s.Store.GetBookSource(bookID)
 	if err != nil {
 		return 0, err
@@ -297,8 +543,11 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string) (added int, 
 	if src == nil {
 		return 0, errors.New("book has no source")
 	}
-	rr := s.royalRoad()
-	fic, err := rr.Fiction(ctx, src.SourceID)
+	reader, workID, ok := s.readerForBook(src)
+	if !ok {
+		return 0, fmt.Errorf("no reader for source %q", src.Kind)
+	}
+	work, err := reader.site.Work(ctx, reader.fetch, workID)
 	if err != nil {
 		return 0, err
 	}
@@ -310,42 +559,66 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string) (added int, 
 	for _, id := range haveIDs {
 		have[id] = true
 	}
-	var missing []royalroad.ChapterRef
-	for _, ref := range unlockedChapters(fic.Chapters) {
-		if !have[ref.ID] {
-			missing = append(missing, ref)
+	src.Blocked = ""
+	var missing []websource.ChapterRef
+	for _, ref := range work.Chapters {
+		if have[ref.ID] {
+			continue
 		}
+		// A chapter the list itself marks locked still gets its turn below:
+		// the epub or the archive may have it.
+		missing = append(missing, ref)
 	}
 	count, err := s.Store.CountChapters(bookID)
 	if err != nil {
 		return 0, err
 	}
 	src.RemoteChapters = count + len(missing)
-	src.URL = fic.URL
+	src.URL = reader.workURL(work)
 	src.Error = ""
 	if err := s.Store.SetBookSource(bookID, *src); err != nil {
 		return 0, err
 	}
 
-	meta := royalroad.Meta{FictionID: fic.ID, URL: fic.URL, Title: fic.Title, Author: fic.Author}
+	meta := reader.meta(work)
 	for len(missing) > 0 {
 		batch := missing[:min(sourceBatch, len(missing))]
 		missing = missing[len(batch):]
 
-		var fetched []*royalroad.Chapter
+		var fetched []*websource.Chapter
 		var fetchErr error
-		gone := 0
-		for _, ref := range batch {
-			ch, err := rr.Chapter(ctx, ref)
-			if errors.Is(err, royalroad.ErrNotFound) {
-				gone++
+		dropped := 0 // chapters that won't be appended after all
+		for i, ref := range batch {
+			// covered: the epub chapter standing in for this one was
+			// already taken for the chapter before it.
+			chapters, covered, err := s.readOrFill(ctx, reader, ref, fill)
+			if errors.Is(err, websource.ErrNotFound) {
+				dropped++
 				continue
+			}
+			if errors.Is(err, websource.ErrLocked) {
+				// It and everything after it wait.
+				src.Blocked = ref.Title
+				dropped += len(batch) - i + len(missing)
+				missing = nil
+				break
 			}
 			if err != nil {
 				fetchErr = err
 				break
 			}
-			fetched = append(fetched, ch)
+			if covered {
+				dropped++
+				if n := len(fetched); n > 0 {
+					fetched[n-1].ID += " " + ref.ID
+				} else if err := s.Store.AddLastChapterSourceID(bookID, ref.ID); err != nil {
+					return added, err
+				}
+				continue
+			}
+			fetched = append(fetched, chapters...)
+			// One web chapter that is several ebook chapters.
+			src.RemoteChapters += len(chapters) - 1
 		}
 		if len(fetched) > 0 {
 			if err := s.appendSourceChapters(bookID, meta, fetched); err != nil {
@@ -353,11 +626,9 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string) (added int, 
 			}
 			added += len(fetched)
 		}
-		if gone > 0 {
-			src.RemoteChapters -= gone
-			if err := s.Store.SetBookSource(bookID, *src); err != nil {
-				return added, err
-			}
+		src.RemoteChapters -= dropped
+		if err := s.Store.SetBookSource(bookID, *src); err != nil {
+			return added, err
 		}
 		if fetchErr != nil {
 			return added, fetchErr
@@ -366,9 +637,35 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string) (added int, 
 	return added, nil
 }
 
+// readOrFill gets one chapter for a check: from the site, and when the
+// site won't serve it, from the uploaded epub (which may give several
+// chapters for it, or report it covered by ones already given) or the
+// Wayback Machine.
+func (s *Server) readOrFill(ctx context.Context, r sourceReader, ref websource.ChapterRef, fill *epubFill) (chapters []*websource.Chapter, covered bool, err error) {
+	ch, err := r.site.Chapter(ctx, r.fetch, ref)
+	if err == nil {
+		return []*websource.Chapter{ch}, false, nil
+	}
+	if !errors.Is(err, websource.ErrLocked) {
+		return nil, false, err
+	}
+	if fill != nil {
+		if filled, ok := fill.take(ref); ok {
+			return filled, len(filled) == 0, nil
+		}
+	}
+	ch, err = s.archivedChapter(ctx, r, ref)
+	if err != nil {
+		return nil, false, err
+	}
+	return []*websource.Chapter{ch}, false, nil
+}
+
 // appendSourceChapters parses fetched chapters and adds them to the end of
-// bookID: rows, images, and the kept epub.
-func (s *Server) appendSourceChapters(bookID string, meta royalroad.Meta, chapters []*royalroad.Chapter) error {
+// bookID: rows, images, and the kept epub. A chapter's ID is its source
+// id - several, space-separated, when it stands for more than one of the
+// source's chapters.
+func (s *Server) appendSourceChapters(bookID string, meta websource.Meta, chapters []*websource.Chapter) error {
 	inputs := make([]store.ChapterInput, 0, len(chapters))
 	var imageBytes [][]byte
 	for _, ch := range chapters {
@@ -386,7 +683,7 @@ func (s *Server) appendSourceChapters(bookID string, meta royalroad.Meta, chapte
 	s.writeChapterImages(bookID, created, imageBytes)
 	// Best-effort, like the copy kept at upload: without it a chapter
 	// re-import asks for a file.
-	if err := s.writeSourceEpub(bookID, meta, chapters, false); err != nil && !errors.Is(err, royalroad.ErrForeignEpub) {
+	if err := s.writeSourceEpub(bookID, meta, chapters, false); err != nil && !errors.Is(err, websource.ErrForeignEpub) {
 		log.Printf("source: adding to the epub of %s: %v", bookID, err)
 	}
 	return nil
@@ -396,10 +693,10 @@ func (s *Server) appendSourceChapters(bookID string, meta royalroad.Meta, chapte
 // will be read if the chapter is ever re-imported from it: laid out as an
 // epub of that one chapter and put through the epub parser. Never as a
 // play - a web serial's stat blocks and chat logs aren't speeches.
-func sourceChapterInput(meta royalroad.Meta, ch *royalroad.Chapter) (store.ChapterInput, [][]byte, error) {
+func sourceChapterInput(meta websource.Meta, ch *websource.Chapter) (store.ChapterInput, [][]byte, error) {
 	var buf bytes.Buffer
 	meta.Cover, meta.CoverExt = nil, ""
-	if err := royalroad.WriteEPUB(&buf, meta, nil, []*royalroad.Chapter{ch}); err != nil {
+	if err := websource.WriteEPUB(&buf, meta, nil, []*websource.Chapter{ch}); err != nil {
 		return store.ChapterInput{}, nil, fmt.Errorf("chapter %q: %w", ch.Title, err)
 	}
 	parsed, err := epub.ParseAs(bytes.NewReader(buf.Bytes()), int64(buf.Len()), epub.PlayOff)
@@ -429,9 +726,9 @@ func (s *Server) writeChapterImages(bookID string, images []store.CreatedImage, 
 // writeSourceEpub adds chapters to bookID's kept source epub, rewriting it
 // via a temp file. fresh starts a new one (a new book); otherwise the
 // existing file is extended, and one that is missing or was replaced by an
-// uploaded epub (royalroad.ErrForeignEpub) is left as it is - it couldn't
+// uploaded epub (websource.ErrForeignEpub) is left as it is - it couldn't
 // be completed anyway.
-func (s *Server) writeSourceEpub(bookID string, meta royalroad.Meta, chapters []*royalroad.Chapter, fresh bool) error {
+func (s *Server) writeSourceEpub(bookID string, meta websource.Meta, chapters []*websource.Chapter, fresh bool) error {
 	if err := audiopath.EnsureSourceEpubDir(s.DataDir); err != nil {
 		return err
 	}
@@ -440,7 +737,7 @@ func (s *Server) writeSourceEpub(bookID string, meta royalroad.Meta, chapters []
 	if !fresh {
 		old, err := zip.OpenReader(dst)
 		if err != nil {
-			return royalroad.ErrForeignEpub
+			return websource.ErrForeignEpub
 		}
 		defer old.Close()
 		prev = &old.Reader
@@ -449,7 +746,7 @@ func (s *Server) writeSourceEpub(bookID string, meta royalroad.Meta, chapters []
 	if err != nil {
 		return err
 	}
-	err = royalroad.WriteEPUB(f, meta, prev, chapters)
+	err = websource.WriteEPUB(f, meta, prev, chapters)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

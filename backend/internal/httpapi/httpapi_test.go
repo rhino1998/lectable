@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker/ttsworkertest"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
+	"github.com/rhino1998/lectable/backend/internal/websource"
 )
 
 // newTestServer wires a full httpapi.Server against a temp SQLite store, a
@@ -29,6 +31,13 @@ import (
 // deployment with LECTABLE_SPEAKER_LLM_MODEL_PATH unset (see Server.Speaker's own
 // doc comment) - LLM-backed endpoints are expected to report 503 in this
 // configuration, exercised explicitly below rather than left untested.
+// noNetwork fails every request.
+type noNetwork struct{}
+
+func (noNetwork) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("no network in tests")
+}
+
 func newTestServer(t *testing.T) (*Server, *store.SQLiteStore, *ttsworkertest.Server, *httptest.Server) {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "library.sqlite"))
@@ -53,6 +62,8 @@ func newTestServer(t *testing.T) (*Server, *store.SQLiteStore, *ttsworkertest.Se
 		AllowOrigin: "http://localhost:5173",
 		Narration:   narration.NewResolver(cached),
 		InstanceID:  "test-instance",
+		// Never the real archive: a test that wants one sets its own.
+		Wayback: &websource.Wayback{Client: websource.Client{HTTP: &http.Client{Transport: noNetwork{}}, MinInterval: -1}},
 	}
 	router := NewRouter(srv)
 	ts := httptest.NewServer(router)

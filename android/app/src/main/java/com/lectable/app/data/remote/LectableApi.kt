@@ -50,10 +50,14 @@ interface LectableApi {
     suspend fun listBooks(): List<BookSummaryDto>
 
     /**
-     * handleImportBookURL imports a Royal Road fiction as a new book: its
-     * first chapter now, the rest in the background (the book's source.syncing
-     * / remoteChapters show the progress). 409 book_exists if the library
-     * already has that fiction - check it for new chapters instead.
+     * handleImportBookURL imports a work from a website as a new book - a
+     * Royal Road fiction, a volume of The Wandering Inn, either of them as a
+     * Wayback Machine link - picking the site by the link: its first chapter
+     * now, the rest in the background (the book's source.syncing /
+     * remoteChapters show the progress). 409 book_exists if the library
+     * already has that work - check it for new chapters instead. A link to an
+     * archive.org item instead downloads its epub and imports that, as an
+     * upload would.
      */
     @POST("api/books/import-url")
     suspend fun importBookURL(
@@ -1175,6 +1179,22 @@ interface LectableApi {
     @POST("api/books/{id}/setting/derive")
     suspend fun deriveBookSetting(
         @Path("id") id: String,
+    ): QueuedResponseDto
+
+    /**
+     * handleBackfillBookSource takes an epub (multipart "file") and checks the
+     * book's source with it at hand: chapters the site lists but won't serve
+     * are filled from the epub's, matched by title, and the rest come from the
+     * site as usual - in the background, like any check. Answers 202 with how
+     * many of the chapters the book is still missing the epub could stand in
+     * for; 422 if none, 409 for a book with no source or with a check already
+     * running.
+     */
+    @Multipart
+    @POST("api/books/{id}/source/backfill")
+    suspend fun backfillBookSource(
+        @Path("id") id: String,
+        @Part file: MultipartBody.Part? = null,
     ): QueuedResponseDto
 
     /**

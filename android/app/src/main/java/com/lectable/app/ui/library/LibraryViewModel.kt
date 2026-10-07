@@ -161,7 +161,7 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
-    /** "Add book" -> "Import from Royal Road": the book appears on the live books topic as soon
+    /** "Add book" -> "Import from a link": the book appears on the live books topic as soon
      *  as its first chapter is in, and keeps growing from there (see BookSummaryDto.source). */
     fun importBookUrl(url: String) {
         viewModelScope.launch {
@@ -169,6 +169,15 @@ class LibraryViewModel @Inject constructor(
             runCatching { repository.importBookUrl(url.trim()) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             _uiState.update { it.copy(isUploading = false) }
+        }
+    }
+
+    /** Long-press menu's "Fill locked chapters from an epub", for a book whose source stopped at
+     *  a chapter it won't serve. The chapters arrive via the live topic like any check's. */
+    fun backfillBookSource(bookId: String, contentResolver: ContentResolver, uri: Uri, cacheDir: File) {
+        viewModelScope.launch {
+            runCatching { repository.backfillBookSource(bookId, contentResolver, uri, cacheDir) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
 

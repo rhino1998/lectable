@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/rhino1998/lectable/backend/internal/royalroad"
+	"github.com/rhino1998/lectable/backend/internal/websource"
 )
 
 // FictionID is the id of the one fiction a Site serves.
@@ -57,9 +58,9 @@ func New(t *testing.T) *Site {
 	return s
 }
 
-// Client returns a client reading from the site, with no pacing.
-func (s *Site) Client() *royalroad.Client {
-	return &royalroad.Client{HTTP: s.Server.Client(), BaseURL: s.Server.URL, MinInterval: -1}
+// Source returns a source reading from the site, with no pacing.
+func (s *Site) Source() *royalroad.Source {
+	return &royalroad.Source{Client: websource.Client{HTTP: s.Server.Client(), MinInterval: -1}, BaseURL: s.Server.URL}
 }
 
 // URL is the fiction's page.

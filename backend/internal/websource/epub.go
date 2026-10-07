@@ -1,4 +1,4 @@
-package royalroad
+package websource
 
 import (
 	"archive/zip"
@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// A fetched fiction is kept as an epub - the book's source epub, like an
+// A fetched work is kept as an epub - the book's source epub, like an
 // uploaded one - with one spine file per chapter, so the ordinary parser
 // reads it and a single chapter can be re-imported from it later. Its
 // index (indexPath) lists the chapters by their site ids, which is what
@@ -36,14 +36,17 @@ const (
 // ErrForeignEpub is an epub this package didn't write (no index) - a
 // book's kept source replaced by an uploaded file - which can't be added
 // to.
-var ErrForeignEpub = errors.New("not an epub written from Royal Road")
+var ErrForeignEpub = errors.New("not an epub written from a website")
 
 // Meta is the book-level half of a written epub.
 type Meta struct {
-	FictionID string
-	URL       string
-	Title     string
-	Author    string
+	// Kind and WorkID name the source and the work there (Source.Kind,
+	// Work.ID).
+	Kind   string
+	WorkID string
+	URL    string
+	Title  string
+	Author string
 	// Cover is the cover image and CoverExt its extension (".jpg"); both
 	// empty for none. When adding to an existing epub, an empty Cover
 	// keeps the one it has.
@@ -52,7 +55,9 @@ type Meta struct {
 }
 
 type epubIndex struct {
-	FictionID string         `json:"fictionId"`
+	Kind string `json:"kind,omitempty"`
+	// WorkID keeps the name it had when Royal Road was the only source.
+	WorkID    string         `json:"fictionId"`
 	URL       string         `json:"url"`
 	Title     string         `json:"title"`
 	Author    string         `json:"author"`
@@ -61,9 +66,33 @@ type epubIndex struct {
 }
 
 type indexChapter struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// File is the chapter's file name without its extension (FileKey of
+	// its id); absent in an index from when that was always the id.
+	File   string   `json:"file,omitempty"`
 	Images []string `json:"images,omitempty"`
+}
+
+func (c indexChapter) file() string {
+	if c.File != "" {
+		return c.File
+	}
+	return c.ID
+}
+
+// FileKey turns a chapter id into a name safe for a file in the epub: a
+// source's ids may be paths ("2017/03/03/1-00"). Letters, digits, '-' and
+// '_' are kept and anything else becomes '_'; ids that differ only in
+// those characters would collide, which no source's do.
+func FileKey(id string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		}
+		return '_'
+	}, id)
 }
 
 // WriteEPUB writes an epub of prev's chapters (nil for a new book)
@@ -71,7 +100,7 @@ type indexChapter struct {
 // skipped. prev's chapter and image entries are copied as they are, not
 // recompressed.
 func WriteEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter) error {
-	idx := epubIndex{FictionID: meta.FictionID, URL: meta.URL, Title: meta.Title, Author: meta.Author}
+	idx := epubIndex{Kind: meta.Kind, WorkID: meta.WorkID, URL: meta.URL, Title: meta.Title, Author: meta.Author}
 	prevFiles := map[string]*zip.File{}
 	have := map[string]bool{}
 	if prev != nil {
@@ -122,7 +151,7 @@ func WriteEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter) er
 		}
 	}
 	for _, c := range idx.Chapters {
-		if err := copyEntry(zw, prevFiles, contentDir+chapterDir+c.ID+".xhtml"); err != nil {
+		if err := copyEntry(zw, prevFiles, contentDir+chapterDir+c.file()+".xhtml"); err != nil {
 			return fmt.Errorf("chapter %q: %w", c.Title, err)
 		}
 		for _, name := range c.Images {
@@ -136,8 +165,8 @@ func WriteEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter) er
 			continue
 		}
 		have[ch.ID] = true
-		ic := indexChapter{ID: ch.ID, Title: ch.Title}
-		if err := write(contentDir+chapterDir+ch.ID+".xhtml", chapterXHTML(ch)); err != nil {
+		ic := indexChapter{ID: ch.ID, Title: ch.Title, File: FileKey(ch.ID)}
+		if err := write(contentDir+chapterDir+ic.File+".xhtml", chapterXHTML(ch)); err != nil {
 			return err
 		}
 		for _, img := range ch.Images {
@@ -228,7 +257,7 @@ func navXHTML(idx epubIndex) []byte {
 	b.WriteString(`<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>` + html.EscapeString(idx.Title) + "</title></head><body>\n")
 	b.WriteString(`<nav epub:type="toc"><ol>` + "\n")
 	for _, c := range idx.Chapters {
-		fmt.Fprintf(&b, `<li><a href="%s%s.xhtml">%s</a></li>`+"\n", chapterDir, c.ID, html.EscapeString(c.Title))
+		fmt.Fprintf(&b, `<li><a href="%s%s.xhtml">%s</a></li>`+"\n", chapterDir, c.file(), html.EscapeString(c.Title))
 	}
 	b.WriteString("</ol></nav>\n</body></html>\n")
 	return b.Bytes()
@@ -239,7 +268,7 @@ func packageOPF(idx epubIndex) []byte {
 	b.WriteString(`<?xml version="1.0" encoding="utf-8"?>` + "\n")
 	b.WriteString(`<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">` + "\n")
 	b.WriteString(`<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">` + "\n")
-	fmt.Fprintf(&b, "<dc:identifier id=\"id\">royalroad:%s</dc:identifier>\n", html.EscapeString(idx.FictionID))
+	fmt.Fprintf(&b, "<dc:identifier id=\"id\">%s:%s</dc:identifier>\n", html.EscapeString(idx.Kind), html.EscapeString(idx.WorkID))
 	fmt.Fprintf(&b, "<dc:title>%s</dc:title>\n", html.EscapeString(idx.Title))
 	if idx.Author != "" {
 		fmt.Fprintf(&b, "<dc:creator>%s</dc:creator>\n", html.EscapeString(idx.Author))
@@ -256,15 +285,16 @@ func packageOPF(idx epubIndex) []byte {
 	if idx.CoverFile != "" {
 		fmt.Fprintf(&b, `<item id="cover" href="%s" media-type="%s" properties="cover-image"/>`+"\n", idx.CoverFile, imageMIME(idx.CoverFile))
 	}
-	for _, c := range idx.Chapters {
-		fmt.Fprintf(&b, `<item id="c%s" href="%s%s.xhtml" media-type="%s"/>`+"\n", c.ID, chapterDir, c.ID, xhtmlMIME)
-		for _, name := range c.Images {
-			fmt.Fprintf(&b, `<item id="i%s" href="%s%s" media-type="%s"/>`+"\n", strings.ReplaceAll(name, ".", "-"), imageDir, name, imageMIME(name))
+	// Item ids are positions: a chapter's own id needn't be a valid one.
+	for n, c := range idx.Chapters {
+		fmt.Fprintf(&b, `<item id="c%d" href="%s%s.xhtml" media-type="%s"/>`+"\n", n, chapterDir, c.file(), xhtmlMIME)
+		for m, name := range c.Images {
+			fmt.Fprintf(&b, `<item id="c%di%d" href="%s%s" media-type="%s"/>`+"\n", n, m, imageDir, name, imageMIME(name))
 		}
 	}
 	b.WriteString("</manifest>\n<spine>\n")
-	for _, c := range idx.Chapters {
-		fmt.Fprintf(&b, `<itemref idref="c%s"/>`+"\n", c.ID)
+	for n := range idx.Chapters {
+		fmt.Fprintf(&b, `<itemref idref="c%d"/>`+"\n", n)
 	}
 	b.WriteString("</spine>\n</package>\n")
 	return b.Bytes()

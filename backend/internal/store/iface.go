@@ -34,6 +34,12 @@ type Store interface {
 	CoSpeakersForBooks(bookIDs []string, characterName string, limit int) ([]string, error)
 	CountChapters(bookID string) (int, error)
 	CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int, error)
+	AddLastChapterSourceID(bookID, sourceID string) error
+	AppendChapters(bookID string, chapters []ChapterInput) (images []CreatedImage, err error)
+	ChapterSourceIDs(bookID string) ([]string, error)
+	FindBookBySource(kind, sourceID string) (string, error)
+	GetBookSource(bookID string) (*BookSource, error)
+	SetBookSource(bookID string, src BookSource) error
 	CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error)
 	CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error)
 	DeleteBook(id string) error
@@ -41,11 +47,6 @@ type Store interface {
 	DeleteBookAudio(bookID string) error
 	DeleteBookmark(id string) error
 	DeleteLexiconEntry(id string) (*LexiconEntry, error)
-	AppendChapters(bookID string, chapters []ChapterInput) (images []CreatedImage, err error)
-	ChapterSourceIDs(bookID string) ([]string, error)
-	FindBookBySource(kind, sourceID string) (string, error)
-	GetBookSource(bookID string) (*BookSource, error)
-	SetBookSource(bookID string, src BookSource) error
 	DeleteChapterAudio(chapterID string) error
 	DeleteCharacter(id string) error
 	DeleteParagraphAudioByVoiceID(bookID, voiceID string) ([]SpeakerAudioRef, error)
