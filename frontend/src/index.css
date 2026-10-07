@@ -398,6 +398,20 @@ label {
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+/* New entries in a book's source, waiting for a say (SourceReviewPanel.tsx);
+   shares the picker's list and button rows. */
+.source-review {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.9rem;
+  margin-bottom: 1.5rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.source-review .import-preview-list input {
+  flex: none;
+}
 .import-preview-head {
   display: flex;
   justify-content: space-between;
@@ -533,6 +547,25 @@ label {
   background: var(--bg-subtle);
   border: 1px solid var(--border);
 }
+/* New entries at the book's source waiting for review (BookCard): a bell
+   and how many, on the cover's top-left corner - the right is the action
+   buttons'. */
+.book-new-badge {
+  position: absolute;
+  top: 0.4rem;
+  left: 0.4rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  background: var(--accent);
+  color: white;
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+
 .book-finished-badge {
   position: absolute;
   bottom: 0.4rem;

@@ -244,6 +244,9 @@ func main() {
 	// has been away as long as the offer threshold, so it is ready when
 	// they come back.
 	tasks.Add(cron.Task{Name: "idle-recaps", Every: httpapi.RecapCheckEvery, Run: server.PrepareIdleRecaps})
+	// Checks books imported from websites for new entries, each as often
+	// as the library's setting says.
+	tasks.Add(cron.Task{Name: "source-checks", Every: httpapi.SourceCheckEvery, Delay: 5 * time.Minute, Run: server.CheckSources})
 	go tasks.Run(ctx)
 
 	// Only header and keep-alive idle timeouts: a ReadTimeout would cut off

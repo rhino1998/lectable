@@ -74,6 +74,7 @@ func withDeps(base []string, extra ...string) []string {
 //	customVoicePresets                    GET /api/voices/custom-presets
 //	defaultVoice                          GET /api/voices/default
 //	recapSettings                         GET /api/settings/recap
+//	sourceSettings                        GET /api/settings/sources
 //
 // MinInterval is set on the topics whose build scans a whole book (or the
 // whole library), so steady background generation - a write every couple
@@ -126,6 +127,7 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("customVoicePresets", noParams("customVoicePresets", dbDeps("voice_presets", "character_voices", "characters", "books"), 0, s.buildCustomVoicePresets))
 	h.Register("defaultVoice", noParams("defaultVoice", dbDeps("default_voice"), 0, s.buildDefaultVoice))
 	h.Register("recapSettings", noParams("recapSettings", dbDeps("default_voice"), 0, s.buildRecapSettings))
+	h.Register("sourceSettings", noParams("sourceSettings", dbDeps("default_voice"), 0, s.buildSourceSettings))
 }
 
 // handleEvents is GET /api/events - the live-state WebSocket (package

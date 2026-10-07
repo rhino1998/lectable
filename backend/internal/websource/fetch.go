@@ -36,8 +36,9 @@ const (
 // errRedirectLoop is a page that only ever redirects.
 var errRedirectLoop = errors.New("the page redirects in a loop")
 
-// Client is the Fetcher for the live web: one request at a time and never
-// faster than MinInterval apart. The zero value works.
+// Client is the Fetcher for the live web: one request at a time (unless
+// Parallel says more) and never started faster than MinInterval apart.
+// The zero value works.
 type Client struct {
 	// HTTP makes the requests; nil uses a client that refuses to connect
 	// to private addresses (see publicOnly).
@@ -46,8 +47,13 @@ type Client struct {
 	// Negative disables it (tests).
 	MinInterval time.Duration
 
-	mu   sync.Mutex // one request at a time
-	last time.Time
+	// Parallel is how many requests may be in flight at once; 0 means
+	// one. They still start MinInterval apart.
+	Parallel int
+
+	mu    sync.Mutex
+	slots chan struct{} // one token per request in flight
+	last  time.Time     // when the latest request started, or will
 }
 
 // RenderChapter turns a chapter's cleaned content element into a Chapter:
@@ -135,8 +141,19 @@ func imageExt(mediaType string, data []byte) string {
 // rate-limit or server error a few times. Returns the body (an error if it
 // exceeds limit), the URL after redirects, and the Content-Type.
 func (c *Client) Get(ctx context.Context, rawURL string, limit int64) (body []byte, finalURL, mediaType string, err error) {
+	// At most Parallel requests at once.
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	if c.slots == nil {
+		c.slots = make(chan struct{}, max(c.Parallel, 1))
+	}
+	slots := c.slots
+	c.mu.Unlock()
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-ctx.Done():
+		return nil, "", "", ctx.Err()
+	}
 
 	gap := c.MinInterval
 	if gap == 0 {
@@ -147,14 +164,20 @@ func (c *Client) Get(ctx context.Context, rawURL string, limit int64) (body []by
 		client = publicOnly
 	}
 	for attempt := 1; ; attempt++ {
-		if wait := gap - time.Since(c.last); wait > 0 {
-			if err := sleep(ctx, wait); err != nil {
-				return nil, "", "", err
-			}
+		// Requests start no closer together than the gap, however many
+		// are in flight: each books the next free moment.
+		c.mu.Lock()
+		start := time.Now()
+		if next := c.last.Add(gap); next.After(start) {
+			start = next
+		}
+		c.last = start
+		c.mu.Unlock()
+		if err := sleep(ctx, time.Until(start)); err != nil {
+			return nil, "", "", err
 		}
 		var retryAfter time.Duration
 		body, finalURL, mediaType, retryAfter, err = fetch(ctx, client, rawURL, limit)
-		c.last = time.Now()
 		if err == nil || retryAfter < 0 || attempt == maxAttempts {
 			return body, finalURL, mediaType, err
 		}

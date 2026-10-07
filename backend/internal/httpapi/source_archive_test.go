@@ -38,7 +38,11 @@ func newFakeWayback(t *testing.T) (*fakeWayback, *websource.Wayback) {
 	// Not a ServeMux: it would "clean" the address inside the path.
 	f.server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.server.Close)
-	return f, &websource.Wayback{Client: websource.Client{HTTP: f.server.Client(), MinInterval: -1}, BaseURL: f.server.URL}
+	return f, &websource.Wayback{
+		Client:  websource.Client{HTTP: f.server.Client(), MinInterval: -1, Parallel: 3},
+		Index:   websource.Client{HTTP: f.server.Client(), MinInterval: -1},
+		BaseURL: f.server.URL,
+	}
 }
 
 func (f *fakeWayback) save(pageURL, timestamp, page string) {
@@ -572,10 +576,15 @@ func TestImportChosenChaptersOfStubbedFiction(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// A new chapter is added; the ones left out stay out.
+	// A new chapter is offered for review and, agreed to, added; the ones
+	// left out at import stay out and aren't offered again.
 	site.AddChapter("5. Five", `<p>Fifth.</p>`)
 	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/sync", nil, nil).Body.Close()
 	book = waitSourceSynced(t, ts.URL, book.ID)
+	if reviewLine(book) != "5. Five" {
+		t.Fatalf("review = %q", reviewLine(book))
+	}
+	book = importReviewed(t, ts.URL, book)
 	if book.ChapterCount != 3 || book.Source.Error != "" {
 		t.Fatalf("after a check: %d chapters, source %+v", book.ChapterCount, book.Source)
 	}

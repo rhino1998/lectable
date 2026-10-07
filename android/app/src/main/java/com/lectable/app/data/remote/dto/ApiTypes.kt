@@ -768,6 +768,13 @@ data class BookSourceDto(
      * Syncing is true while chapters are being fetched.
      */
     val syncing: Boolean = false,
+    /**
+     * Review lists entries the last check found that wait for the reader
+     * to say import or skip (POST .../source/review), in reading order;
+     * absent when there are none. The book takes nothing past the first
+     * until it is decided.
+     */
+    val review: List<SourceReviewEntryDto> = emptyList(),
 )
 
 @Serializable
@@ -1353,6 +1360,12 @@ data class ImportPreviewChapterDto(
      * list, this one first.
      */
     val replacedBy: String? = null,
+    /**
+     * Suspect is true when the title reads like an author's notice rather
+     * than a chapter (an announcement, a release, a summary): unticked by
+     * default.
+     */
+    val suspect: Boolean = false,
 )
 
 @Serializable
@@ -2204,6 +2217,17 @@ data class ReparseSourceResponseDto(
     val changed: List<Int> = emptyList(),
 )
 
+@Serializable
+data class ReviewBookSourceRequestDto(
+    /**
+     * Import and Skip are ids of entries waiting for review
+     * (source.review): take them, or leave them out for good. Entries
+     * named in neither keep waiting.
+     */
+    val import: List<String> = emptyList(),
+    val skip: List<String> = emptyList(),
+)
+
 /**
  * scareQuotePreviewLineDTO is one quoted line a scare-quote preview asked
  * about or flagged: whether it is flagged now, whether a fresh pass flags
@@ -2305,6 +2329,32 @@ data class SnapshotMessageDto(
     val type: String = "",
     val id: String = "",
     val data: JsonElement? = null,
+)
+
+/**
+ * sourceReviewEntryDTO is one entry waiting for the reader's say.
+ */
+@Serializable
+data class SourceReviewEntryDto(
+    val id: String = "",
+    val title: String = "",
+    /**
+     * Suspect is true when the title reads like an author's notice.
+     */
+    val suspect: Boolean = false,
+)
+
+/**
+ * sourceSettingsDTO is the library-wide setting for checking sources
+ * (GET|PUT /api/settings/sources, live topic sourceSettings).
+ */
+@Serializable
+data class SourceSettingsDto(
+    /**
+     * CheckEveryHours is how often each book imported from a website is
+     * checked for new entries by itself: 0 never.
+     */
+    val checkEveryHours: Int = 0,
 )
 
 /**

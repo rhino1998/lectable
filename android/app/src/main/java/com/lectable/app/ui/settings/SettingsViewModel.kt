@@ -4,7 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lectable.app.data.discovery.DiscoveredServer
 import com.lectable.app.data.discovery.NsdDiscoveryRepository
+import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.repository.DownloadRepository
+import com.lectable.app.data.repository.LibraryRepository
 import com.lectable.app.data.settings.DEFAULT_FONT_SIZE_SP
 import com.lectable.app.data.settings.DEFAULT_LOOKAHEAD_PARAGRAPHS
 import com.lectable.app.data.settings.DEFAULT_SPEED_RAMP_SECONDS
@@ -29,6 +31,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -48,6 +51,8 @@ data class SettingsUiState(
     val hueBusy: HueBusy? = null,
     val hueError: String? = null,
     val hueGroups: List<HueGroup>? = null,
+    // Why the last change to "Check for new chapters" didn't save.
+    val sourceCheckError: String? = null,
 )
 
 enum class HueBusy { DISCOVERING, PAIRING }
@@ -64,6 +69,8 @@ class SettingsViewModel @Inject constructor(
     private val discoveryRepository: NsdDiscoveryRepository,
     private val downloadRepository: DownloadRepository,
     private val lightingSettingsRepository: LightingSettingsRepository,
+    private val libraryRepository: LibraryRepository,
+    liveStore: LiveStore,
     lightingController: HueLightingController,
 ) : ViewModel() {
 
@@ -74,6 +81,20 @@ class SettingsViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, LightingSettings())
 
     val lightingState: StateFlow<LightingState> = lightingController.state
+
+    /** How often books imported from websites are checked for new entries (the backend's
+     *  sourceSettings live topic, library-wide); null until the backend has said. */
+    val sourceCheckEveryHours: StateFlow<Int?> = liveStore.sourceSettings()
+        .map { it.data?.checkEveryHours }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    fun setSourceCheckEveryHours(hours: Int) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(sourceCheckError = null) }
+            runCatching { libraryRepository.setSourceCheckEveryHours(hours) }
+                .onFailure { e -> _uiState.update { it.copy(sourceCheckError = e.message ?: "Could not save the setting") } }
+        }
+    }
 
     init {
         refreshDownloadsSummary()

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"archive/zip"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,39 @@ func waitSourceSynced(t *testing.T, base, bookID string) sourceTestBook {
 	}
 	t.Fatalf("source check of %s never finished: %+v", bookID, b.Source)
 	return b
+}
+
+// reviewLine is the titles waiting for review, suspects starred.
+func reviewLine(b sourceTestBook) string {
+	var parts []string
+	for _, e := range b.Source.Review {
+		title := e.Title
+		if e.Suspect {
+			title += "*"
+		}
+		parts = append(parts, title)
+	}
+	return strings.Join(parts, "|")
+}
+
+// importReviewed says "import" to every entry waiting for review but the
+// ones named in skip, which it skips, and waits for the check that follows.
+func importReviewed(t *testing.T, base string, b sourceTestBook, skip ...string) sourceTestBook {
+	t.Helper()
+	var req reviewBookSourceRequest
+	for _, e := range b.Source.Review {
+		if slices.Contains(skip, e.Title) {
+			req.Skip = append(req.Skip, e.ID)
+		} else {
+			req.Import = append(req.Import, e.ID)
+		}
+	}
+	resp := doJSON(t, http.MethodPost, base+"/api/books/"+b.ID+"/source/review", req, nil)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("review: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	return waitSourceSynced(t, base, b.ID)
 }
 
 func chapterTexts(t *testing.T, s *store.SQLiteStore, bookID string, idx int) (title string, texts []string) {
@@ -115,8 +149,11 @@ func TestImportBookURL(t *testing.T) {
 	}
 	resp.Body.Close()
 
-	// New chapters: the locked one opens and another is published.
+	// The locked chapter opens, and two more entries are published: a
+	// chapter and a notice. The one that was listed at import comes in;
+	// the new ones wait to be looked at.
 	site.Unlock(`<p>Now public.</p>`)
+	site.AddChapter("Announcement: on break", `<p>Back in March.</p>`)
 	site.AddChapter("5. Later", `<p>Much later.</p>`)
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/sync", nil, nil)
 	if resp.StatusCode != http.StatusAccepted {
@@ -124,6 +161,19 @@ func TestImportBookURL(t *testing.T) {
 	}
 	resp.Body.Close()
 	book = waitSourceSynced(t, ts.URL, book.ID)
+	if book.ChapterCount != 4 || reviewLine(book) != "Announcement: on break*|5. Later" || book.Source.RemoteChapters != 4 {
+		t.Fatalf("after sync: %d chapters, review %q, source %+v", book.ChapterCount, reviewLine(book), book.Source)
+	}
+	book = importReviewed(t, ts.URL, book, "Announcement: on break")
+	if len(book.Source.Review) != 0 {
+		t.Fatalf("still waiting: %q", reviewLine(book))
+	}
+	// A skipped entry doesn't come back at the next check.
+	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/sync", nil, nil).Body.Close()
+	book = waitSourceSynced(t, ts.URL, book.ID)
+	if len(book.Source.Review) != 0 {
+		t.Fatalf("a skipped entry came back: %q", reviewLine(book))
+	}
 	if book.ChapterCount != 5 || book.Source.RemoteChapters != 5 || book.Source.Error != "" || book.Source.Blocked != "" {
 		t.Fatalf("after sync: %d chapters, source %+v", book.ChapterCount, book.Source)
 	}
@@ -175,8 +225,9 @@ func TestSyncBookSourceFailure(t *testing.T) {
 	site.Remove(gone)
 	site.AddChapter("3. Three", `<p>Three.</p>`)
 	site.SetFailing(true)
+	// Both are new since the import: agreed to, then fetched.
 	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+created.ID+"/source/sync", nil, nil).Body.Close()
-	book := waitSourceSynced(t, ts.URL, created.ID)
+	book := importReviewed(t, ts.URL, waitSourceSynced(t, ts.URL, created.ID))
 	if book.ChapterCount != 1 || book.Source.Error == "" || book.Source.RemoteChapters != 3 {
 		t.Fatalf("after failed sync: %d chapters, source %+v", book.ChapterCount, book.Source)
 	}
@@ -253,5 +304,125 @@ func TestImportWanderingInnVolume(t *testing.T) {
 	resp = doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: "https://wanderinginn.com/"}, nil)
 	if code := respErrorCode(t, resp); resp.StatusCode != http.StatusConflict || code != string(errBookExists) {
 		t.Errorf("third import: %d %q", resp.StatusCode, code)
+	}
+}
+
+// TestImportHoldsNotices: an import that didn't choose its chapters takes
+// what reads as chapters and stops at an entry that reads like a notice,
+// for the reader to say.
+func TestImportHoldsNotices(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	site := royalroadtest.New(t)
+	srv.Sources = []websource.Source{site.Source()}
+	site.AddChapter("Chapter 1: One", `<p>First.</p>`)
+	site.AddChapter("Chapter 2: Jail Break", `<p>A chapter, whatever its title says.</p>`)
+	site.AddChapter("Book 1 on Kindle - release notice", `<p>Buy it.</p>`)
+	site.AddChapter("Chapter 3: Three", `<p>Third.</p>`)
+
+	var created sourceTestBook
+	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: fictionLink}, &created); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("import: %d", resp.StatusCode)
+	}
+	book := waitSourceSynced(t, ts.URL, created.ID)
+	if book.ChapterCount != 2 || reviewLine(book) != "Book 1 on Kindle - release notice*|Chapter 3: Three" {
+		t.Fatalf("%d chapters, review %q, source %+v", book.ChapterCount, reviewLine(book), book.Source)
+	}
+	// Deciding only on the notice lets the chapter behind it through too
+	// once it is agreed to; until then it waits.
+	book = importReviewed(t, ts.URL, book, "Book 1 on Kindle - release notice")
+	if book.ChapterCount != 3 || len(book.Source.Review) != 0 {
+		t.Fatalf("after review: %d chapters, review %q", book.ChapterCount, reviewLine(book))
+	}
+	if title, _ := chapterTexts(t, s, book.ID, 2); title != "Chapter 3: Three" {
+		t.Errorf("chapter 2 = %q", title)
+	}
+}
+
+func TestSuspectTitle(t *testing.T) {
+	for title, want := range map[string]bool{
+		"Chapter 12: Jail Break":            false,
+		"3.05 Notice Board":                 false,
+		"12. The Update":                    false,
+		"Bonus Chapter Silver":              false,
+		"X":                                 false,
+		"Epilogue":                          false,
+		"Announcement":                      true,
+		"Book Four Release":                 true,
+		"Extended Break For Health Reasons": true,
+		"Books available on Kindle, Kindle Unlimited and Audible": true,
+		"Missing Update":                                      true,
+		"Book 1 Summary for RR":                               true,
+		"Notice Book 9 Chapters Coming Down":                  true,
+		"Remaining Book 13 Chapters Being Released September": true,
+		"Non Chapter Announcement Return Date Delayed By":     true,
+	} {
+		if got := suspectTitle(title); got != want {
+			t.Errorf("suspectTitle(%q) = %v, want %v", title, got, want)
+		}
+	}
+}
+
+// TestCheckSources: the periodic pass checks only books whose last check
+// is older than the library's interval, and "check all now" every one; a
+// check lists what is new for review without importing it.
+func TestCheckSources(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	site := royalroadtest.New(t)
+	srv.Sources = []websource.Source{site.Source()}
+	site.AddChapter("Chapter 1: One", `<p>First.</p>`)
+	var created sourceTestBook
+	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: fictionLink}, &created); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("import: %d", resp.StatusCode)
+	}
+	site.AddChapter("Chapter 2: Two", `<p>Second.</p>`)
+
+	var settings sourceSettingsDTO
+	getJSONInto(t, ts.URL+"/api/settings/sources", &settings)
+	if settings.CheckEveryHours != 24 {
+		t.Fatalf("default interval = %d hours", settings.CheckEveryHours)
+	}
+	// Just imported, so not due.
+	if err := srv.CheckSources(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if book := waitSourceSynced(t, ts.URL, created.ID); len(book.Source.Review) != 0 {
+		t.Fatalf("a book checked a moment ago was checked again: %q", reviewLine(book))
+	}
+	// Two days on, it is.
+	src, _ := s.GetBookSource(created.ID)
+	src.CheckedAt -= 48 * 3600
+	if err := s.SetBookSource(created.ID, *src); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.CheckSources(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	book := waitSourceSynced(t, ts.URL, created.ID)
+	if reviewLine(book) != "Chapter 2: Two" || book.ChapterCount != 1 {
+		t.Fatalf("after the periodic check: %d chapters, review %q", book.ChapterCount, reviewLine(book))
+	}
+	// Turned off, nothing is checked; "check all now" still does.
+	resp := doJSON(t, http.MethodPut, ts.URL+"/api/settings/sources", sourceSettingsDTO{CheckEveryHours: 0}, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("set interval: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	site.AddChapter("Chapter 3: Three", `<p>Third.</p>`)
+	src, _ = s.GetBookSource(created.ID)
+	src.CheckedAt -= 48 * 3600
+	_ = s.SetBookSource(created.ID, *src)
+	if err := srv.CheckSources(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if book := waitSourceSynced(t, ts.URL, created.ID); reviewLine(book) != "Chapter 2: Two" {
+		t.Fatalf("checked with checking off: %q", reviewLine(book))
+	}
+	var queued queuedResponse
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/sources/check", nil, &queued)
+	if resp.StatusCode != http.StatusAccepted || queued.Queued != 1 {
+		t.Fatalf("check all: %d %+v", resp.StatusCode, queued)
+	}
+	if book := waitSourceSynced(t, ts.URL, created.ID); reviewLine(book) != "Chapter 2: Two|Chapter 3: Three" {
+		t.Fatalf("after check all: %q", reviewLine(book))
 	}
 }

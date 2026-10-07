@@ -483,6 +483,13 @@ export interface BookSource {
    * Syncing is true while chapters are being fetched.
    */
   syncing: boolean
+  /**
+   * Review lists entries the last check found that wait for the reader
+   * to say import or skip (POST .../source/review), in reading order;
+   * absent when there are none. The book takes nothing past the first
+   * until it is decided.
+   */
+  review?: SourceReviewEntry[]
 }
 
 export interface BookSummary {
@@ -1005,6 +1012,12 @@ export interface ImportPreviewChapter {
    * list, this one first.
    */
   replacedBy?: string
+  /**
+   * Suspect is true when the title reads like an author's notice rather
+   * than a chapter (an announcement, a release, a summary): unticked by
+   * default.
+   */
+  suspect: boolean
 }
 
 export interface ImportPreviewResponse {
@@ -1822,6 +1835,16 @@ export interface ReparseSourceResponse {
   changed: number[]
 }
 
+export interface ReviewBookSourceRequest {
+  /**
+   * Import and Skip are ids of entries waiting for review
+   * (source.review): take them, or leave them out for good. Entries
+   * named in neither keep waiting.
+   */
+  import: string[]
+  skip: string[]
+}
+
 /**
  * scareQuotePreviewLineDTO is one quoted line a scare-quote preview asked
  * about or flagged: whether it is flagged now, whether a fresh pass flags
@@ -1909,6 +1932,30 @@ export interface SnapshotMessage {
   type: 'snapshot'
   id: string
   data: unknown
+}
+
+/**
+ * sourceReviewEntryDTO is one entry waiting for the reader's say.
+ */
+export interface SourceReviewEntry {
+  id: string
+  title: string
+  /**
+   * Suspect is true when the title reads like an author's notice.
+   */
+  suspect: boolean
+}
+
+/**
+ * sourceSettingsDTO is the library-wide setting for checking sources
+ * (GET|PUT /api/settings/sources, live topic sourceSettings).
+ */
+export interface SourceSettings {
+  /**
+   * CheckEveryHours is how often each book imported from a website is
+   * checked for new entries by itself: 0 never.
+   */
+  checkEveryHours: number
 }
 
 /**
@@ -2434,6 +2481,7 @@ export interface LiveTopics {
    * /api/settings/recap's reply.
    */
   recapSettings: { params: Record<never, never>; data: RecapSettings }
+  sourceSettings: { params: Record<never, never>; data: SourceSettings }
 }
 
 // ---- Routes ----
@@ -3789,6 +3837,18 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleReviewBookSource records the reader's decision on entries a check
+   * found - import them or skip them - and runs a check to act on it. 202
+   * with how many are to be imported; 409 for a book with no source.
+   */
+  'POST /api/books/{id}/source/review': {
+    path: { id: string }
+    query: Record<never, never>
+    body: ReviewBookSourceRequest
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
    * handleSyncBookSource checks a book's source for chapters it doesn't have
    * and appends them, as a job-queue task (joining a check already queued or
    * running - see startSourceSync).
@@ -4169,6 +4229,26 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleGetSourceSettings serves GET /api/settings/sources.
+   */
+  'GET /api/settings/sources': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: never
+    response: SourceSettings
+    errorCode: never
+  }
+  /**
+   * handleSetSourceSettings serves PUT /api/settings/sources.
+   */
+  'PUT /api/settings/sources': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: SourceSettings
+    response: void
+    errorCode: never
+  }
+  /**
    * handleGenerateSFX is the standalone SFX/music test page's own backend
    * surface (see frontend SFXPage.tsx) - handleTestVoiceDesign's own
    * counterpart for this app's generation-only engines: stateless, not
@@ -4193,6 +4273,18 @@ export interface Routes {
     query: Record<never, never>
     body: GenerateSFXRequest
     response: Blob
+    errorCode: never
+  }
+  /**
+   * handleCheckSources queues a check for new entries on every book that has
+   * a source, whenever each was last checked. 202 with how many it queued
+   * (books already being checked aren't counted).
+   */
+  'POST /api/sources/check': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
     errorCode: never
   }
   /**
@@ -4522,6 +4614,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/setting/derive': 'json',
   'POST /api/books/{id}/source/backfill': 'json',
   'POST /api/books/{id}/source/reparse': 'json',
+  'POST /api/books/{id}/source/review': 'json',
   'POST /api/books/{id}/source/sync': 'json',
   'GET /api/books/{id}/speakers': 'json',
   'DELETE /api/books/{id}/speakers': 'none',
@@ -4546,7 +4639,10 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/paragraphs/{id}/sfx-audio': 'binary',
   'GET /api/settings/recap': 'json',
   'PUT /api/settings/recap': 'none',
+  'GET /api/settings/sources': 'json',
+  'PUT /api/settings/sources': 'none',
   'POST /api/sfx/generate': 'binary',
+  'POST /api/sources/check': 'json',
   'POST /api/voices/clone-instruct-test': 'binary',
   'GET /api/voices/custom-presets': 'json',
   'POST /api/voices/custom-presets': 'json',

@@ -7,8 +7,8 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class ImportPreviewTest {
-    private fun ch(id: String, source: String = ImportChapterSources.SITE) =
-        ImportPreviewChapterDto(id = id, title = "Chapter $id", source = source)
+    private fun ch(id: String, source: String = ImportChapterSources.SITE, suspect: Boolean = false) =
+        ImportPreviewChapterDto(id = id, title = "Chapter $id", source = source, suspect = suspect)
 
     @Test
     fun defaultSelectionLeavesLockedOut() {
@@ -41,6 +41,25 @@ class ImportPreviewTest {
         val before = listOf(ch("1"), ch("2", ImportChapterSources.LOCKED), ch("3", ImportChapterSources.LOCKED))
         val after = listOf(ch("1"), ch("2", ImportChapterSources.EPUB), ch("3", ImportChapterSources.LOCKED))
         assertEquals(setOf("2"), mergeSelection(before, emptySet(), after))
+    }
+
+    // An entry that reads like an author's notice starts unticked, wherever it comes from.
+    @Test
+    fun suspectsStartUnticked() {
+        val chapters = listOf(ch("1"), ch("2", suspect = true), ch("3", ImportChapterSources.ARCHIVE, suspect = true))
+        assertEquals(setOf("1"), defaultSelection(chapters))
+
+        val before = listOf(ch("1"), ch("2", suspect = true), ch("4", ImportChapterSources.LOCKED, suspect = true))
+        val after = listOf(
+            ch("0", ImportChapterSources.ARCHIVE, suspect = true),
+            ch("1"),
+            ch("2", suspect = true),
+            ch("4", ImportChapterSources.EPUB, suspect = true),
+        )
+        // New suspect "0" and the suspect the epub unlocked stay unticked.
+        assertEquals(setOf("1"), mergeSelection(before, setOf("1"), after))
+        // One ticked by hand stays ticked.
+        assertEquals(setOf("1", "2"), mergeSelection(before, setOf("1", "2"), after))
     }
 
     @Test
@@ -96,8 +115,10 @@ class ImportPreviewTest {
             ch("4", ImportChapterSources.EPUB),
             ch("5", ImportChapterSources.LOCKED),
             ch("6", "something-new"),
+            ch("7", suspect = true),
+            ch("8", ImportChapterSources.ARCHIVE, suspect = true),
         )
-        assertEquals(PreviewCounts(total = 6, site = 2, archive = 1, epub = 1, locked = 1), previewCounts(chapters))
+        assertEquals(PreviewCounts(total = 8, site = 3, archive = 2, epub = 1, locked = 1, suspect = 2), previewCounts(chapters))
     }
 
     @Test
@@ -112,5 +133,13 @@ class ImportPreviewTest {
         )
         assertEquals("3 chapters: 3 from the site", previewSummary(PreviewCounts(total = 3, site = 3), ""))
         assertEquals("0 chapters", previewSummary(PreviewCounts(), "Royal Road"))
+        assertEquals(
+            "5 chapters: 5 from Royal Road, 3 look like notices",
+            previewSummary(PreviewCounts(total = 5, site = 5, suspect = 3), "Royal Road"),
+        )
+        assertEquals(
+            "2 chapters: 2 from Royal Road, 1 looks like a notice",
+            previewSummary(PreviewCounts(total = 2, site = 2, suspect = 1), "Royal Road"),
+        )
     }
 }

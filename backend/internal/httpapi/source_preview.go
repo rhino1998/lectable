@@ -70,6 +70,10 @@ type importPreviewChapter struct {
 	// chapter was: the title of what is listed there now. Both are in the
 	// list, this one first.
 	ReplacedBy string `json:"replacedBy,omitempty"`
+	// Suspect is true when the title reads like an author's notice rather
+	// than a chapter (an announcement, a release, a summary): unticked by
+	// default.
+	Suspect bool `json:"suspect"`
 }
 
 type importPreviewResponse struct {
@@ -178,7 +182,7 @@ func (s *Server) handlePreviewImportURL(w http.ResponseWriter, r *http.Request) 
 		case !ref.Unlocked:
 			src = chapterLocked
 		}
-		resp.Chapters = append(resp.Chapters, importPreviewChapter{ID: ref.ID, Title: ref.Title, Source: src, ReplacedBy: ref.ReplacedBy})
+		resp.Chapters = append(resp.Chapters, importPreviewChapter{ID: ref.ID, Title: ref.Title, Source: src, ReplacedBy: ref.ReplacedBy, Suspect: suspectTitle(ref.Title)})
 	}
 	if existing, err := s.Store.FindBookBySource(p.reader.kind(), p.reader.storedID(p.work.ID)); err == nil {
 		resp.ExistingBookID = existing
@@ -275,7 +279,7 @@ func (p *importPreview) chosenChapters(ids []string) ([]websource.ChapterRef, st
 		}
 		chosen = append(chosen, ref)
 		if ref.Delisted {
-			plan.Extra = append(plan.Extra, store.PlannedChapter{ID: ref.ID, Title: ref.Title, URL: ref.URL})
+			plan.Extra = append(plan.Extra, store.PlannedChapter{ID: ref.ID, Title: ref.Title, URL: ref.URL, Archived: ref.Archived})
 		}
 	}
 	return chosen, plan
@@ -301,7 +305,7 @@ func plannedChapters(site websource.Source, listed []websource.ChapterRef, plan 
 	for _, c := range plan.Extra {
 		// Relisted since: the site's own entry stands.
 		if !have[c.ID] {
-			extra = append(extra, websource.ChapterRef{ID: c.ID, Title: c.Title, URL: c.URL, Unlocked: true, Delisted: true})
+			extra = append(extra, websource.ChapterRef{ID: c.ID, Title: c.Title, URL: c.URL, Unlocked: true, Delisted: true, Archived: c.Archived})
 		}
 	}
 	if len(extra) == 0 {

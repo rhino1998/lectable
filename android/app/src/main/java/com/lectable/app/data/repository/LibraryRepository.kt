@@ -18,8 +18,10 @@ import com.lectable.app.data.remote.dto.ImportPreviewResponseDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.MarkReadRequestDto
 import com.lectable.app.data.remote.dto.PositionDto
+import com.lectable.app.data.remote.dto.ReviewBookSourceRequestDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.data.remote.dto.SetParagraphEmotionRequestDto
+import com.lectable.app.data.remote.dto.SourceSettingsDto
 import com.lectable.app.data.remote.dto.SetParagraphScareQuoteRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphSpeakerRequestDto
 import com.lectable.app.data.remote.dto.SpeakerDto
@@ -143,6 +145,25 @@ class LibraryRepository @Inject constructor(
     suspend fun syncBookSource(id: String) {
         withServerMessage("Could not check for new chapters") { api.syncBookSource(id) }
     }
+
+    /** The reader's say on entries a check found and held back (BookSourceDto.review; backend
+     *  handleReviewBookSource): [importIds] are taken, [skipIds] left out for good, and the
+     *  book's source is checked again to act on it. Entries in neither keep waiting. */
+    suspend fun reviewBookSource(id: String, importIds: List<String>, skipIds: List<String>) {
+        withServerMessage("Could not save the review") {
+            api.reviewBookSource(id, ReviewBookSourceRequestDto(import = importIds, skip = skipIds))
+        }
+    }
+
+    /** Queues a check for new entries on every book imported from a website (backend
+     *  handleCheckSources). A check imports nothing: what it finds waits in each book's
+     *  source.review. Returns how many books it queued. */
+    suspend fun checkSources(): Int = withServerMessage("Could not check for new chapters") { api.checkSources().queued }
+
+    /** Sets how often those books are checked by themselves, for every client of the library
+     *  (backend handleSetSourceSettings); 0 is never. */
+    suspend fun setSourceCheckEveryHours(hours: Int) =
+        withServerMessage("Could not save the setting") { api.setSourceSettings(SourceSettingsDto(checkEveryHours = hours)) }
 
     suspend fun deleteBook(id: String) {
         api.deleteBook(id)

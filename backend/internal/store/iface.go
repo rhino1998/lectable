@@ -51,6 +51,9 @@ type Store interface {
 	SetBookSourcePlan(bookID string, plan SourcePlan) error
 	GetBookSourcePlan(bookID string) (SourcePlan, error)
 	SourcedChapters(bookID string) ([]SourcedChapter, error)
+	SourcedBooks() ([]SourcedBook, error)
+	SourceCheckHours() (int, error)
+	SetSourceCheckHours(hours int) error
 	CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error)
 	CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error)
 	DeleteBook(id string) error

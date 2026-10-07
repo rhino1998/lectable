@@ -5,6 +5,7 @@
 package royalroad
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/rhino1998/lectable/backend/internal/websource"
+	"golang.org/x/net/html"
 )
 
 // Kind is the book-source kind (store.BookSource.Kind) of a fiction
@@ -120,6 +122,13 @@ func (s *Source) Chapter(ctx context.Context, f websource.Fetcher, ref ChapterRe
 	if err != nil {
 		return nil, err
 	}
+	// A chapter found in an archive is known by a title made from its
+	// address; its page has the real one.
+	if ref.Delisted {
+		if t := pageHeading(page); t != "" && sameTitle(ref.Title, t) {
+			ref.Title = t
+		}
+	}
 	content, imgs, err := cleanChapter(page, ref.Title)
 	if err != nil {
 		return nil, fmt.Errorf("chapter %q: %w", ref.Title, err)
@@ -195,4 +204,47 @@ func (s *Source) Before(a, b websource.ChapterRef) bool {
 		return x < y
 	}
 	return xEarlier && !yEarlier
+}
+
+// pageHeading returns a chapter page's first <h1>, which is the chapter's
+// title (the page's second is the author's name).
+func pageHeading(page []byte) string {
+	z := html.NewTokenizer(bytes.NewReader(page))
+	var text strings.Builder
+	in := false
+	for {
+		switch z.Next() {
+		case html.ErrorToken:
+			return ""
+		case html.StartTagToken:
+			if name, _ := z.TagName(); string(name) == "h1" {
+				in = true
+			}
+		case html.TextToken:
+			if in {
+				text.Write(z.Text())
+			}
+		case html.EndTagToken:
+			if name, _ := z.TagName(); in && string(name) == "h1" {
+				return strings.Join(strings.Fields(html.UnescapeString(text.String())), " ")
+			}
+		}
+	}
+}
+
+// sameTitle reports whether heading is the full form of a title made from
+// an address slug: the same letters and digits, the slug's possibly cut
+// short. A slug of a letter or less ("x") says nothing, and any heading
+// stands for it.
+func sameTitle(fromSlug, heading string) bool {
+	key := func(s string) string {
+		return strings.Map(func(r rune) rune {
+			if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, strings.ToLower(s))
+	}
+	a, b := key(fromSlug), key(heading)
+	return len(a) <= 1 || strings.HasPrefix(b, a)
 }

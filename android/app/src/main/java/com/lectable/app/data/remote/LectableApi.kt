@@ -1301,6 +1301,17 @@ interface LectableApi {
     ): ReparseSourceResponseDto
 
     /**
+     * handleReviewBookSource records the reader's decision on entries a check
+     * found - import them or skip them - and runs a check to act on it. 202
+     * with how many are to be imported; 409 for a book with no source.
+     */
+    @POST("api/books/{id}/source/review")
+    suspend fun reviewBookSource(
+        @Path("id") id: String,
+        @Body body: ReviewBookSourceRequestDto,
+    ): QueuedResponseDto
+
+    /**
      * handleSyncBookSource checks a book's source for chapters it doesn't have
      * and appends them, as a job-queue task (joining a check already queued or
      * running - see startSourceSync).
@@ -1634,6 +1645,20 @@ interface LectableApi {
     ): Unit
 
     /**
+     * handleGetSourceSettings serves GET /api/settings/sources.
+     */
+    @GET("api/settings/sources")
+    suspend fun getSourceSettings(): SourceSettingsDto
+
+    /**
+     * handleSetSourceSettings serves PUT /api/settings/sources.
+     */
+    @PUT("api/settings/sources")
+    suspend fun setSourceSettings(
+        @Body body: SourceSettingsDto,
+    ): Unit
+
+    /**
      * handleGenerateSFX is the standalone SFX/music test page's own backend
      * surface (see frontend SFXPage.tsx) - handleTestVoiceDesign's own
      * counterpart for this app's generation-only engines: stateless, not
@@ -1658,6 +1683,14 @@ interface LectableApi {
     suspend fun generateSFX(
         @Body body: GenerateSFXRequestDto,
     ): ResponseBody
+
+    /**
+     * handleCheckSources queues a check for new entries on every book that has
+     * a source, whenever each was last checked. 202 with how many it queued
+     * (books already being checked aren't counted).
+     */
+    @POST("api/sources/check")
+    suspend fun checkSources(): QueuedResponseDto
 
     /**
      * handleTestCloneInstruct previews "instructed voice cloning" -

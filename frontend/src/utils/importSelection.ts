@@ -3,11 +3,21 @@ import type { ImportChapterSource, ImportPreviewChapter } from '../api/types'
 // Which chapters of an import preview are ticked: pure helpers for the
 // chapter picker (components/ImportPreviewPanel.tsx).
 
-// What is ticked when a preview first appears: every chapter that can
-// actually be read. A locked chapter stops an import at it, so it starts
-// unticked.
+// Whether a chapter starts out ticked: it can actually be read (a locked
+// chapter stops an import at it) and doesn't read like an author's notice.
+function tickedByDefault(c: ImportPreviewChapter): boolean {
+  return c.source !== 'locked' && !c.suspect
+}
+
+// What is ticked when a preview first appears.
 export function defaultSelection(chapters: ImportPreviewChapter[]): Set<string> {
-  return new Set(chapters.filter((c) => c.source !== 'locked').map((c) => c.id))
+  return new Set(chapters.filter(tickedByDefault).map((c) => c.id))
+}
+
+// Which entries waiting for review start out as "import": all but the
+// ones that read like a notice.
+export function defaultReview(entries: { id: string; suspect: boolean }[]): Set<string> {
+  return new Set(entries.filter((e) => !e.suspect).map((e) => e.id))
 }
 
 // Carries a selection over to a widened preview (the archive searched, an
@@ -24,8 +34,8 @@ export function mergeSelection(
   for (const c of after) {
     const old = was.get(c.id)
     if (old === undefined) {
-      if (c.source !== 'locked') next.add(c.id)
-    } else if (selected.has(c.id) || (old === 'locked' && c.source !== 'locked')) {
+      if (tickedByDefault(c)) next.add(c.id)
+    } else if (selected.has(c.id) || (old === 'locked' && tickedByDefault(c))) {
       next.add(c.id)
     }
   }

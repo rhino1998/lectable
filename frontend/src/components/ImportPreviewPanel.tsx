@@ -184,6 +184,14 @@ export function ImportPreviewPanel(props: {
               <span className="import-preview-number muted">{i + 1}</span>
               <span className="import-preview-title">{c.title}</span>
               {c.replacedBy && <span className="import-preview-source">replaced on the site</span>}
+              {c.suspect && (
+                <span
+                  className="import-preview-source"
+                  title="The title reads like an author’s notice rather than a chapter, so it starts unticked"
+                >
+                  notice?
+                </span>
+              )}
               {c.source !== 'site' && (
                 <span className={`import-preview-source import-preview-source-${c.source}`}>
                   {SOURCE_LABELS[c.source]}

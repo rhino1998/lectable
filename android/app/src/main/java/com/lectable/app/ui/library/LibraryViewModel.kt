@@ -47,6 +47,9 @@ data class LibraryUiState(
     val isLoading: Boolean = false,
     val isUploading: Boolean = false,
     val error: String? = null,
+    // Something to tell the reader that isn't a failure ("Checking 3 books for new chapters"),
+    // shown the way an error is.
+    val notice: String? = null,
     // True when `books` came from the offline downloaded-book cache (see DownloadRepository)
     // rather than the live books topic - only downloaded books show up, and their
     // progress/generation figures are unknown offline (zeroed, see toOfflineSummary). With
@@ -289,6 +292,30 @@ class LibraryViewModel @Inject constructor(
             runCatching { repository.syncBookSource(bookId) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
+    }
+
+    /** The review dialog's "Apply" (SourceReview.kt): which of the entries a check held back to
+     *  import and which to skip. The chapters, and the row's line, follow via the live topic. */
+    fun reviewBookSource(bookId: String, importIds: List<String>, skipIds: List<String>) {
+        viewModelScope.launch {
+            runCatching { repository.reviewBookSource(bookId, importIds, skipIds) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    /** The top bar's "Check all for new chapters": a check of every book imported from a
+     *  website, now. Nothing is imported - what a check finds shows on its book as entries to
+     *  review, via the live topic. */
+    fun checkAllSources() {
+        viewModelScope.launch {
+            runCatching { repository.checkSources() }
+                .onSuccess { queued -> _uiState.update { it.copy(notice = checkingSourcesMessage(queued)) } }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    fun dismissNotice() {
+        _uiState.update { it.copy(notice = null) }
     }
 
     fun deleteBook(id: String) {

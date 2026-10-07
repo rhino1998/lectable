@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest'
 import type { ImportPreviewChapter } from '../api/types'
-import { countBySource, defaultSelection, mergeSelection, selectRange } from './importSelection'
+import {
+  countBySource,
+  defaultReview,
+  defaultSelection,
+  mergeSelection,
+  selectRange,
+} from './importSelection'
 
-const ch = (id: string, source: ImportPreviewChapter['source']): ImportPreviewChapter => ({
+const ch = (
+  id: string,
+  source: ImportPreviewChapter['source'],
+  suspect = false,
+): ImportPreviewChapter => ({
   id,
   title: `Chapter ${id}`,
   source,
+  suspect,
 })
 
 describe('import selection', () => {
@@ -30,6 +41,13 @@ describe('import selection', () => {
 
   it('leaves a new locked chapter unticked', () => {
     expect([...mergeSelection(live, new Set(['1']), [...live, ch('11', 'locked')])]).toEqual(['1'])
+  })
+
+  it('leaves what reads like a notice unticked, at first and when it appears', () => {
+    const withNotice = [...live, ch('12', 'site', true)]
+    expect([...defaultSelection(withNotice)]).toEqual(['1', '9'])
+    expect([...mergeSelection(live, new Set(['1']), withNotice)]).toEqual(['1'])
+    expect([...defaultReview([ch('1', 'site'), ch('2', 'site', true)])]).toEqual(['1'])
   })
 
   it('selects exactly a range, clamped and in either order', () => {

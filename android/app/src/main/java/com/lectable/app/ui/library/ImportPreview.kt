@@ -60,14 +60,18 @@ import com.lectable.app.data.remote.dto.ImportPreviewResponseDto
 // for chapters the site won't serve. The decisions are the plain functions at the top
 // (ImportPreviewTest); the dialog below only draws them.
 
-/** What a fresh preview starts with ticked: everything that can be fetched. A locked chapter
- *  can still be ticked by hand, but an import stops at it. */
+/** Whether a chapter starts ticked: one that can be fetched and doesn't read like an author's
+ *  notice (`suspect`). Either can still be ticked by hand, but an import stops at a locked one. */
+private fun tickedByDefault(chapter: ImportPreviewChapterDto): Boolean =
+    chapter.source != ImportChapterSources.LOCKED && !chapter.suspect
+
+/** What a fresh preview starts with ticked. */
 internal fun defaultSelection(chapters: List<ImportPreviewChapterDto>): Set<String> =
-    chapters.filter { it.source != ImportChapterSources.LOCKED }.mapTo(HashSet()) { it.id }
+    chapters.filter(::tickedByDefault).mapTo(HashSet()) { it.id }
 
 /** The selection carried over to a widened preview's list: what was ticked stays ticked, what
- *  was unticked stays unticked, and chapters that are new to the list start ticked unless
- *  locked - as does one that was locked and now has a source (the attached epub has it). */
+ *  was unticked stays unticked, and chapters that are new to the list start as they would in a
+ *  fresh preview - as does one that was locked and now has a source (the attached epub has it). */
 internal fun mergeSelection(
     previous: List<ImportPreviewChapterDto>,
     selected: Set<String>,
@@ -75,12 +79,8 @@ internal fun mergeSelection(
 ): Set<String> {
     val sourceBefore = previous.associate { it.id to it.source }
     return next.filter { chapter ->
-        val locked = chapter.source == ImportChapterSources.LOCKED
-        when {
-            chapter.id !in sourceBefore -> !locked
-            sourceBefore[chapter.id] == ImportChapterSources.LOCKED && !locked -> true
-            else -> chapter.id in selected
-        }
+        val unlocked = sourceBefore[chapter.id] == ImportChapterSources.LOCKED && chapter.source != ImportChapterSources.LOCKED
+        if (chapter.id !in sourceBefore || unlocked) tickedByDefault(chapter) else chapter.id in selected
     }.mapTo(HashSet()) { it.id }
 }
 
@@ -107,9 +107,16 @@ internal fun importChapterIds(chapters: List<ImportPreviewChapterDto>, selected:
     return if (ids.size == chapters.size) null else ids
 }
 
-/** How many previewed chapters come from where. A source this build doesn't know counts
- *  toward [total] only. */
-internal data class PreviewCounts(val total: Int = 0, val site: Int = 0, val archive: Int = 0, val epub: Int = 0, val locked: Int = 0)
+/** How many previewed chapters come from where, and how many of them (from anywhere) read
+ *  like notices. A source this build doesn't know counts toward [total] only. */
+internal data class PreviewCounts(
+    val total: Int = 0,
+    val site: Int = 0,
+    val archive: Int = 0,
+    val epub: Int = 0,
+    val locked: Int = 0,
+    val suspect: Int = 0,
+)
 
 internal fun previewCounts(chapters: List<ImportPreviewChapterDto>): PreviewCounts {
     var site = 0
@@ -125,16 +132,25 @@ internal fun previewCounts(chapters: List<ImportPreviewChapterDto>): PreviewCoun
             else -> Unit
         }
     }
-    return PreviewCounts(total = chapters.size, site = site, archive = archive, epub = epub, locked = locked)
+    return PreviewCounts(
+        total = chapters.size,
+        site = site,
+        archive = archive,
+        epub = epub,
+        locked = locked,
+        suspect = chapters.count { it.suspect },
+    )
 }
 
-/** "1204 chapters: 900 from Royal Road, 300 from the Internet Archive, 4 locked". */
+/** "1204 chapters: 900 from Royal Road, 300 from the Internet Archive, 4 locked, 3 look like
+ *  notices". */
 internal fun previewSummary(counts: PreviewCounts, site: String): String {
     val parts = listOfNotNull(
         "${counts.site} from ${site.ifEmpty { "the site" }}".takeIf { counts.site > 0 },
         "${counts.archive} from the Internet Archive".takeIf { counts.archive > 0 },
         "${counts.epub} from the epub".takeIf { counts.epub > 0 },
         "${counts.locked} locked".takeIf { counts.locked > 0 },
+        (if (counts.suspect == 1) "1 looks like a notice" else "${counts.suspect} look like notices").takeIf { counts.suspect > 0 },
     )
     val total = chapterCount(counts.total)
     return if (parts.isEmpty()) total else "$total: ${parts.joinToString(", ")}"
@@ -441,6 +457,10 @@ private fun PreviewChapterRow(number: Int, chapter: ImportPreviewChapterDto, sel
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
+        // Reads like an author's notice, not a chapter: unticked unless the reader says so.
+        if (chapter.suspect) {
+            Text("notice?", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+        }
         sourceLabel(chapter.source, chapter.replacedBy)?.let { label ->
             Text(
                 label,

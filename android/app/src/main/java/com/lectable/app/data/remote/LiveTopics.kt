@@ -126,4 +126,7 @@ object LiveTopics {
      */
     fun recapSettings(): LiveTopic<RecapSettingsDto> =
         LiveTopic("recapSettings", emptyMap(), serializer<RecapSettingsDto>())
+
+    fun sourceSettings(): LiveTopic<SourceSettingsDto> =
+        LiveTopic("sourceSettings", emptyMap(), serializer<SourceSettingsDto>())
 }

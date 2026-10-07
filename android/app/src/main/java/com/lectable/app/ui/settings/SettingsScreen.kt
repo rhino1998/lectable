@@ -17,20 +17,25 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrightnessAuto
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
@@ -81,6 +86,7 @@ fun SettingsScreen(
     val lookaheadParagraphs by viewModel.lookaheadParagraphs.collectAsState()
     val speedRampSeconds by viewModel.speedRampSeconds.collectAsState()
     val discoveredServers by viewModel.discoveredServers.collectAsState()
+    val sourceCheckEveryHours by viewModel.sourceCheckEveryHours.collectAsState()
 
     DisposableEffect(Unit) {
         viewModel.startDiscovery()
@@ -242,6 +248,34 @@ fun SettingsScreen(
             Text("New books", style = MaterialTheme.typography.titleMedium)
             Button(onClick = onOpenBookDefaults) {
                 Text("Defaults for new books")
+            }
+
+            Text("Check for new chapters", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Books imported from websites are checked this often. New entries wait for you to review.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Box {
+                var showChoices by remember { mutableStateOf(false) }
+                // Nothing to pick from until the backend has said what it is set to.
+                OutlinedButton(onClick = { showChoices = true }, enabled = sourceCheckEveryHours != null) {
+                    Text(sourceCheckEveryHours?.let(::sourceCheckLabel) ?: "…")
+                }
+                DropdownMenu(expanded = showChoices, onDismissRequest = { showChoices = false }) {
+                    sourceCheckChoices(sourceCheckEveryHours).forEach { hours ->
+                        DropdownMenuItem(
+                            text = { Text(sourceCheckLabel(hours)) },
+                            trailingIcon = {
+                                if (hours == sourceCheckEveryHours) Icon(Icons.Filled.Check, contentDescription = "Selected")
+                            },
+                            onClick = { showChoices = false; viewModel.setSourceCheckEveryHours(hours) },
+                        )
+                    }
+                }
+            }
+            uiState.sourceCheckError?.let { error ->
+                Text(error, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
 
             Text("Job queue", style = MaterialTheme.typography.titleMedium)

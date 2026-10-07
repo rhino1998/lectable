@@ -6,6 +6,8 @@ import {
   useVoicePresets,
   useRecapSettings,
   useSetRecapSettings,
+  useSetSourceSettings,
+  useSourceSettings,
 } from '../api/queries'
 import { RECAP_AFTER_OPTIONS } from '../utils/recap'
 import { CLONE_MODELS, DEFAULT_CLONE_MODEL } from '../api/types'
@@ -16,6 +18,23 @@ import { BookSettingsFields } from '../components/speakers/SpeakerSettings'
 // the per-book switches each book then has on its own Book settings page. All
 // of it is one value (GET|PUT /api/voices/default), so every save sends
 // the lot.
+const SOURCE_CHECK_OPTIONS = [
+  { hours: 0, label: 'never' },
+  { hours: 6, label: 'every 6 hours' },
+  { hours: 12, label: 'every 12 hours' },
+  { hours: 24, label: 'daily' },
+  { hours: 48, label: 'every 2 days' },
+  { hours: 168, label: 'weekly' },
+]
+
+// The interval choices, with the stored one added if it is none of them.
+function sourceCheckOptions(current: number | undefined) {
+  if (current === undefined || SOURCE_CHECK_OPTIONS.some((o) => o.hours === current)) {
+    return SOURCE_CHECK_OPTIONS
+  }
+  return [...SOURCE_CHECK_OPTIONS, { hours: current, label: `every ${current} hours` }]
+}
+
 export function SettingsPage() {
   const defaultVoiceQuery = useDefaultVoice()
   const updateDefaultVoice = useUpdateDefaultVoice()
@@ -26,6 +45,8 @@ export function SettingsPage() {
   const cloneModel = defaults?.cloneModel ?? DEFAULT_CLONE_MODEL
   const defaultVoiceName = [...builtins, ...customs].find((p) => p.id === defaults?.presetId)?.name
 
+  const sourceSettings = useSourceSettings()
+  const setSourceSettings = useSetSourceSettings()
   const recapSettings = useRecapSettings()
   const setRecapSettings = useSetRecapSettings()
   return (
@@ -95,6 +116,27 @@ export function SettingsPage() {
       <p className="muted">
         When you open a book you have been away from this long, the reader offers a spoken recap of
         where you left off. Shared by every device; the reader’s Recap button works either way.
+      </p>
+
+      <h2>New chapters</h2>
+      <label>
+        Check books imported from websites{' '}
+        <select
+          value={sourceSettings.data?.checkEveryHours ?? ''}
+          onChange={(e) => setSourceSettings.mutate(Number(e.target.value))}
+          disabled={!sourceSettings.data || setSourceSettings.isPending}
+        >
+          {sourceCheckOptions(sourceSettings.data?.checkEveryHours).map((o) => (
+            <option key={o.hours} value={o.hours}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="muted">
+        How often each book imported from a website is checked for new entries at its source. A
+        check doesn’t import anything by itself: what it finds waits for you to review, and the book
+        is marked in the library. “Check all now” is in the library’s Add book menu.
       </p>
     </div>
   )

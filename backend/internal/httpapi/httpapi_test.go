@@ -38,6 +38,11 @@ func (noNetwork) RoundTrip(*http.Request) (*http.Response, error) {
 	return nil, errors.New("no network in tests")
 }
 
+func init() {
+	// No waiting between tries at the (fake) archive.
+	archiveRetryWait = time.Millisecond
+}
+
 func newTestServer(t *testing.T) (*Server, *store.SQLiteStore, *ttsworkertest.Server, *httptest.Server) {
 	t.Helper()
 	s, err := store.Open(filepath.Join(t.TempDir(), "library.sqlite"))
@@ -72,7 +77,10 @@ func newTestServer(t *testing.T) (*Server, *store.SQLiteStore, *ttsworkertest.Se
 		Narration:   narration.NewResolver(cached),
 		InstanceID:  "test-instance",
 		// Never the real archive: a test that wants one sets its own.
-		Wayback: &websource.Wayback{Client: websource.Client{HTTP: &http.Client{Transport: noNetwork{}}, MinInterval: -1}},
+		Wayback: &websource.Wayback{
+			Client: websource.Client{HTTP: &http.Client{Transport: noNetwork{}}, MinInterval: -1},
+			Index:  websource.Client{HTTP: &http.Client{Transport: noNetwork{}}, MinInterval: -1},
+		},
 	}
 	router := NewRouter(srv)
 	ts := httptest.NewServer(router)

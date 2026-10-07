@@ -56,18 +56,33 @@ func (s *SQLiteStore) GetBookSource(bookID string) (*BookSource, error) {
 // SourcePlan is which chapters of its source a book takes, when that isn't
 // simply "all the source lists" - see the books.source_plan migration.
 type SourcePlan struct {
-	// Skip are the source ids of chapters the reader left out at import.
+	// Skip are the source ids of chapters the reader left out.
 	Skip []string `json:"skip,omitempty"`
 	// Extra are chosen chapters the source no longer lists, in reading
 	// order: what a check needs to fetch them from an archive.
 	Extra []PlannedChapter `json:"extra,omitempty"`
+	// Approved are the source ids the reader has agreed to take: the ones
+	// chosen at import, and each entry found since that they said to
+	// import. Anything else a check finds waits in Pending. Reviewed is
+	// false for a plan from before entries were reviewed at all - its
+	// next check approves everything listed then.
+	Approved []string `json:"approved,omitempty"`
+	Reviewed bool     `json:"reviewed,omitempty"`
+	// Pending are entries the last check found that the reader hasn't
+	// decided on, in reading order. The book stops before the first.
+	Pending []PlannedChapter `json:"pending,omitempty"`
 }
 
-// PlannedChapter is one chapter of a SourcePlan's Extra.
+// PlannedChapter is one chapter of a SourcePlan's Extra or Pending.
 type PlannedChapter struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	URL   string `json:"url"`
+	// Archived is when the archive saved its page, if known.
+	Archived string `json:"archived,omitempty"`
+	// Suspect marks a pending entry whose title reads like an author's
+	// notice rather than a chapter.
+	Suspect bool `json:"suspect,omitempty"`
 }
 
 // SetBookSourcePlan stores bookID's plan, replacing any it had.
@@ -203,4 +218,44 @@ func (s *SQLiteStore) AppendChapters(bookID string, chapters []ChapterInput) (im
 		return nil, err
 	}
 	return images, nil
+}
+
+// SourceCheckHours is how often, in hours, books imported from websites
+// are checked for new entries without being asked: 0 never. Library-wide.
+func (s *SQLiteStore) SourceCheckHours() (int, error) {
+	var hours int
+	err := s.db.QueryRow(`SELECT source_check_hours FROM default_voice WHERE id = 0`).Scan(&hours)
+	return hours, err
+}
+
+// SetSourceCheckHours sets SourceCheckHours.
+func (s *SQLiteStore) SetSourceCheckHours(hours int) error {
+	_, err := s.db.Exec(`UPDATE default_voice SET source_check_hours = ? WHERE id = 0`, hours)
+	return err
+}
+
+// SourcedBook is a book imported from a website and when it was last
+// checked.
+type SourcedBook struct {
+	BookID    string
+	CheckedAt int64
+}
+
+// SourcedBooks lists every book that has a source, least recently checked
+// first.
+func (s *SQLiteStore) SourcedBooks() ([]SourcedBook, error) {
+	rows, err := s.db.Query(`SELECT id, source_checked_at FROM books WHERE source_kind <> '' ORDER BY source_checked_at, added_at`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourcedBook
+	for rows.Next() {
+		var b SourcedBook
+		if err := rows.Scan(&b.BookID, &b.CheckedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
 }

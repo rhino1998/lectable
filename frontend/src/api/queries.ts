@@ -34,6 +34,7 @@ import type {
   BookSetting,
   BookRecapResponse,
   RecapSettings,
+  SourceSettings,
   BookSettingResponse,
   ChapterNotes,
   ChapterNotesResponse,
@@ -79,6 +80,13 @@ export function useBackfillBookSource() {
   return useMutation({
     mutationFn: (args: { bookId: string; file: File }) =>
       api.backfillBookSource(args.bookId, args.file),
+  })
+}
+
+export function useReviewBookSource() {
+  return useMutation({
+    mutationFn: (args: { bookId: string; importIds: string[]; skipIds: string[] }) =>
+      api.reviewBookSource(args.bookId, args.importIds, args.skipIds),
   })
 }
 
@@ -811,6 +819,20 @@ export function usePrepareBookRecap(bookId: string) {
 
 // How long away brings the recap offer - one library-wide setting (live
 // topic), shared by every client.
+export function useSourceSettings(): LiveResult<SourceSettings> {
+  return useLive('sourceSettings', {})
+}
+
+export function useSetSourceSettings() {
+  return useMutation({
+    mutationFn: (checkEveryHours: number) => api.setSourceSettings(checkEveryHours),
+  })
+}
+
+export function useCheckSources() {
+  return useMutation({ mutationFn: () => api.checkSources() })
+}
+
 export function useRecapSettings(): LiveResult<RecapSettings> {
   return useLive('recapSettings', {})
 }

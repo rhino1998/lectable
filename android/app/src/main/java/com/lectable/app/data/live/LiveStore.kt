@@ -15,6 +15,7 @@ import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.BookRecapResponseDto
 import com.lectable.app.data.remote.dto.ChapterNotesResponseDto
 import com.lectable.app.data.remote.dto.RecapSettingsDto
+import com.lectable.app.data.remote.dto.SourceSettingsDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.JobsSnapshotDto
 import com.lectable.app.data.remote.dto.JobsSummaryDto
@@ -131,6 +132,9 @@ class LiveStore @Inject constructor(
 
     /** How long away brings the recap offer - one library-wide setting. */
     fun recapSettings(): StateFlow<LiveResult<RecapSettingsDto>> = topic(LiveTopics.recapSettings())
+
+    /** How often books imported from websites are checked for new entries - library-wide. */
+    fun sourceSettings(): StateFlow<LiveResult<SourceSettingsDto>> = topic(LiveTopics.sourceSettings())
 
     fun bookRecap(bookId: String): StateFlow<LiveResult<BookRecapResponseDto>> = topic(LiveTopics.bookRecap(bookId))
 

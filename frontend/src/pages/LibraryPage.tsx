@@ -13,6 +13,7 @@ import {
   RiLinksLine,
   RiLoader4Line,
   RiMagicLine,
+  RiNotification3Fill,
   RiRefreshLine,
   RiUploadLine,
   RiSettings3Line,
@@ -20,6 +21,7 @@ import {
 import {
   useBackfillBookSource,
   useBooks,
+  useCheckSources,
   useCancelBookJobs,
   useDeleteBook,
   useGenerateBook,
@@ -35,6 +37,7 @@ import {
 } from '../api/queries'
 import { useClickOutside } from '../hooks/useClickOutside'
 import { ImportPreviewPanel } from '../components/ImportPreviewPanel'
+import { SourceReviewPanel } from '../components/SourceReviewPanel'
 import type { ImportPreviewBusy } from '../components/ImportPreviewPanel'
 import { defaultSelection, mergeSelection } from '../utils/importSelection'
 import { ApiError } from '../api/client'
@@ -182,6 +185,8 @@ function BookCard({
     })
   }
   const sourceNote = book.source && sourceStatus(book)
+  // Entries a check found, waiting for a say: the cover's badge.
+  const newEntries = book.source?.review?.length ?? 0
   // A book stopped at a chapter its source won't serve can take that
   // stretch from an epub of it.
   const backfill = useBackfillBookSource()
@@ -207,6 +212,14 @@ function BookCard({
             <div className="book-cover-placeholder">{book.title.slice(0, 1).toUpperCase()}</div>
           )}
           {book.finished && <span className="book-finished-badge">Finished</span>}
+          {newEntries > 0 && (
+            <span
+              className="book-new-badge"
+              title={`${newEntries} new ${newEntries === 1 ? 'entry' : 'entries'} at ${book.source?.name} to review - at the top of this page`}
+            >
+              <RiNotification3Fill /> {newEntries}
+            </span>
+          )}
           {book.preprocessing && (
             <div
               className="book-cover-processing"
@@ -383,6 +396,10 @@ function sourceStatus(book: BookSummary): string | null {
       ? `Fetching chapters: ${book.chapterCount} of ${source.remoteChapters}`
       : 'Checking for new chapters…'
   }
+  // Entries the last check found wait for a say (the panel at the top of
+  // the page); the book takes nothing past the first until then.
+  const waiting = source.review?.length ?? 0
+  if (waiting > 0) return `${waiting} new ${waiting === 1 ? 'entry' : 'entries'} to review`
   if (outstanding > 0) {
     const n = `${outstanding} chapter${outstanding === 1 ? '' : 's'}`
     return source.error ? `${n} not fetched - check again` : `${n} left to fetch - check again`
@@ -443,6 +460,7 @@ export function LibraryPage() {
   // "Choose chapters…" looks the link over first: the picker below the
   // form shows the work's chapter list, which can be widened (the Internet
   // Archive, an epub) before importing what is ticked.
+  const checkSources = useCheckSources()
   const previewImport = usePreviewImport()
   const [preview, setPreview] = useState<ImportPreviewResponse | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -655,6 +673,21 @@ export function LibraryPage() {
               >
                 <RiLinksLine /> Import from a link
               </button>
+              <button
+                role="menuitem"
+                title="Check every book imported from a website for new entries now. What is found waits for you to review."
+                onClick={() => {
+                  setAddMenuOpen(false)
+                  checkSources.mutate(undefined, {
+                    onError: (err) =>
+                      setUploadError(
+                        err instanceof ApiError ? err.message : 'Could not start the check',
+                      ),
+                  })
+                }}
+              >
+                <RiRefreshLine /> Check all for new chapters
+              </button>
             </div>
           )}
         </div>
@@ -738,6 +771,12 @@ export function LibraryPage() {
       )}
 
       {uploadError && <p className="error-text">{uploadError}</p>}
+
+      {(booksQuery.data ?? [])
+        .filter((b) => (b.source?.review?.length ?? 0) > 0)
+        .map((b) => (
+          <SourceReviewPanel key={b.id} book={b} />
+        ))}
       {uploadFailures.length > 0 && (
         <div className="error-text">
           {uploadFailures.length} {uploadFailures.length === 1 ? 'book' : 'books'} could not be

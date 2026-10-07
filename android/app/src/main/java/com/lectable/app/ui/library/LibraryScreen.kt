@@ -20,12 +20,14 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Spellcheck
@@ -64,7 +66,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil.compose.AsyncImage
 import com.lectable.app.R
@@ -106,6 +111,8 @@ fun LibraryScreen(
         backfillBookId = null
         if (uri != null && bookId != null) viewModel.backfillBookSource(bookId, context.contentResolver, uri, context.cacheDir)
     }
+    // The book whose new entries are being reviewed (SourceReview.kt).
+    var reviewBookId by remember { mutableStateOf<String?>(null) }
     var showAddMenu by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
 
@@ -120,11 +127,23 @@ fun LibraryScreen(
         }
     }
 
+    LaunchedEffect(uiState.notice) {
+        uiState.notice?.let {
+            viewModel.dismissNotice()
+            snackbarHostState.showSnackbar(it)
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.app_name)) },
                 actions = {
+                    // Every book imported from a website, now; what turns up waits on its book
+                    // for review (the cover's bell).
+                    IconButton(onClick = viewModel::checkAllSources) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Check all for new chapters")
+                    }
                     IconButton(onClick = onOpenSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
                     }
@@ -217,6 +236,7 @@ fun LibraryScreen(
                                     backfillBookId = item.summary.id
                                     pickBackfillLauncher.launch("application/epub+zip")
                                 },
+                                onReviewSource = { reviewBookId = item.summary.id },
                                 onDeleteLocal = { pendingDeleteLocal = item.summary },
                                 onDelete = { pendingDelete = item.summary },
                             )
@@ -258,6 +278,22 @@ fun LibraryScreen(
     }
 
     ImportPreviewHost(uiState, viewModel)
+
+    // Read from the live list, so the dialog closes by itself once nothing is left to review.
+    uiState.books.find { it.summary.id == reviewBookId }?.summary?.let { book ->
+        val entries = book.source?.review.orEmpty()
+        if (entries.isNotEmpty()) {
+            SourceReviewDialog(
+                bookTitle = book.title,
+                entries = entries,
+                onApply = { decision ->
+                    reviewBookId = null
+                    viewModel.reviewBookSource(book.id, decision.import, decision.skip)
+                },
+                onDismiss = { reviewBookId = null },
+            )
+        }
+    }
 
     pendingDelete?.let { book ->
         ConfirmDialog(
@@ -341,6 +377,7 @@ private fun BookRow(
     onDownloadRemaining: () -> Unit,
     onSyncSource: () -> Unit,
     onBackfill: () -> Unit,
+    onReviewSource: () -> Unit,
     onDeleteLocal: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -384,6 +421,35 @@ private fun BookRow(
                             strokeWidth = 2.dp,
                             color = Color.White,
                         )
+                    }
+                }
+                // New entries waiting for review (long-press -> "Review…"): a bell and how many.
+                val reviewCount = book.source?.review?.size ?: 0
+                if (reviewCount > 0) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(2.dp)
+                            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(50))
+                            .padding(horizontal = 3.dp, vertical = 1.dp)
+                            .clearAndSetSemantics { contentDescription = "${newEntries(reviewCount)} to review" },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.Notifications,
+                            contentDescription = null,
+                            modifier = Modifier.size(11.dp),
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                        )
+                        reviewBadgeCount(reviewCount)?.let { count ->
+                            Text(
+                                count,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 10.sp,
+                                lineHeight = 12.sp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        }
                     }
                 }
             }
@@ -512,6 +578,15 @@ private fun BookRow(
                     enabled = !source.syncing,
                     onClick = { onSyncSource(); showMenu = false },
                 )
+                // Entries the last check found wait for the reader's say before the book takes them.
+                if (source.review.isNotEmpty()) {
+                    DropdownMenuItem(
+                        text = { Text("Review ${newEntries(source.review.size)}") },
+                        leadingIcon = { Icon(Icons.Filled.Checklist, contentDescription = null) },
+                        enabled = !source.syncing,
+                        onClick = { onReviewSource(); showMenu = false },
+                    )
+                }
                 // Stopped at a chapter the site won't serve: an epub of that stretch can fill it.
                 if (!source.blocked.isNullOrEmpty()) {
                     DropdownMenuItem(
@@ -566,6 +641,8 @@ private fun sourceStatus(book: BookSummaryDto): String? {
     return when {
         source.syncing && outstanding > 0 -> "Fetching chapters: ${book.chapterCount} of ${source.remoteChapters}"
         source.syncing -> "Checking for new chapters…"
+        // Nothing more arrives until these are decided (long-press -> "Review…").
+        source.review.isNotEmpty() -> "${newEntries(source.review.size)} to review"
         outstanding > 0 -> {
             val n = "$outstanding chapter${if (outstanding == 1) "" else "s"}"
             if (failed) "$n not fetched - check again" else "$n left to fetch - check again"

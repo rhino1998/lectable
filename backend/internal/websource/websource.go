@@ -91,6 +91,10 @@ type ChapterRef struct {
 	// an archive (Wayback.Delisted): it is read from its archived copy,
 	// the site not being asked.
 	Delisted bool `json:",omitempty"`
+	// Archived is when an archive is known to have saved a delisted
+	// chapter's page (a Wayback timestamp), so it can be read straight
+	// from that copy.
+	Archived string `json:",omitempty"`
 	// ReplacedBy is set on a delisted chapter whose place the site has
 	// given to something else: the title of what is listed under its id
 	// now - a notice or a summary an author put where a chapter was. The

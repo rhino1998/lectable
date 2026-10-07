@@ -138,6 +138,14 @@ export const api = {
     return call('POST /api/books/{id}/source/backfill', { path: { id }, body })
   },
 
+  // The reader's say on entries a check found (BookSummary.source.review):
+  // import these, skip those for good (httpapi.handleReviewBookSource).
+  reviewBookSource: (id: string, importIds: string[], skipIds: string[]) =>
+    call('POST /api/books/{id}/source/review', {
+      path: { id },
+      body: { import: importIds, skip: skipIds },
+    }),
+
   // "Check for new chapters" on a book imported from a website - appends
   // whatever its source has published since (httpapi.handleSyncBookSource).
   syncBookSource: (id: string) => call('POST /api/books/{id}/source/sync', { path: { id } }),
@@ -661,6 +669,16 @@ export const api = {
       path: { id: bookId },
       query: { force: force ? true : undefined },
     }),
+
+  // Sets how often books imported from websites are checked for new
+  // entries by themselves, library-wide (0 never) - see backend
+  // handleSetSourceSettings.
+  setSourceSettings: (checkEveryHours: number) =>
+    call('PUT /api/settings/sources', { body: { checkEveryHours } }),
+
+  // Queues a check for new entries on every book that has a source, now
+  // (backend handleCheckSources).
+  checkSources: () => call('POST /api/sources/check'),
 
   // Sets how long away brings the recap offer, library-wide - see backend
   // handleSetRecapSettings.

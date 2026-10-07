@@ -21,8 +21,12 @@ import (
 
 // Wayback reads pages from the Wayback Machine. The zero value works.
 type Wayback struct {
-	// Client makes the requests, at its own pace apart from any source's.
+	// Client reads archived pages, at its own pace apart from any
+	// source's. Index is a second one for the questions a preview asks
+	// (what the archive holds of a work), so that looking a link over
+	// doesn't queue behind the chapters an import is reading.
 	Client Client
+	Index  Client
 	// BaseURL replaces https://web.archive.org (tests).
 	BaseURL string
 }
@@ -77,7 +81,9 @@ func ParseWaybackLink(u *url.URL) (timestamp string, original *url.URL, ok bool)
 // nearest timestamp: pages come back as they were served then, unaltered,
 // and report the address they were saved from, so a source parses them
 // as it would its live site's.
-func (w *Wayback) At(timestamp string) Fetcher { return &waybackFetcher{w: w, timestamp: timestamp} }
+func (w *Wayback) At(timestamp string) Fetcher {
+	return &waybackFetcher{w: w, client: &w.Client, timestamp: timestamp}
+}
 
 // LinkAt is the Wayback Machine link to a page's copy nearest timestamp.
 func (w *Wayback) LinkAt(timestamp, pageURL string) string {
@@ -86,6 +92,7 @@ func (w *Wayback) LinkAt(timestamp, pageURL string) string {
 
 type waybackFetcher struct {
 	w         *Wayback
+	client    *Client
 	timestamp string
 }
 
@@ -93,7 +100,7 @@ func (f *waybackFetcher) Get(ctx context.Context, rawURL string, limit int64) ([
 	// "id_" asks for the copy as saved, without the archive's banner or
 	// its rewriting of the page's links.
 	get := func(timestamp string) ([]byte, string, string, error) {
-		return f.w.Client.Get(ctx, f.w.base()+"/web/"+timestamp+"id_/"+rawURL, limit)
+		return f.client.Get(ctx, f.w.base()+"/web/"+timestamp+"id_/"+rawURL, limit)
 	}
 	body, finalURL, mediaType, err := get(f.timestamp)
 	if errors.Is(err, errRedirectLoop) || errors.Is(err, ErrNotFound) {
@@ -260,7 +267,7 @@ func (w *Wayback) Delisted(ctx context.Context, src Delister, work *Work) ([]Cha
 		"collapse":  {"urlkey"},
 		"limit":     {"50000"},
 	}
-	body, _, _, err := w.Client.Get(ctx, w.base()+"/cdx/search/cdx?"+q.Encode(), 32<<20)
+	body, _, _, err := w.Index.Get(ctx, w.base()+"/cdx/search/cdx?"+q.Encode(), 32<<20)
 	if err != nil {
 		return nil, fmt.Errorf("list the archive's copies: %w", err)
 	}
@@ -320,7 +327,7 @@ func (w *Wayback) Delisted(ctx context.Context, src Delister, work *Work) ([]Cha
 		now, isListed := listed[id]
 		if !isListed {
 			ref := list[0].ref
-			ref.Delisted, ref.Unlocked = true, true
+			ref.Delisted, ref.Unlocked, ref.Archived = true, true, list[0].first
 			found[id] = &ref
 			captured[id] = list[0].first
 			order = append(order, id)
@@ -336,7 +343,7 @@ func (w *Wayback) Delisted(ctx context.Context, src Delister, work *Work) ([]Cha
 			ref := v.ref
 			_, slug, _ := cutLast(ref.URL, "/")
 			ref.ID = id + "@" + slug
-			ref.Delisted, ref.Unlocked, ref.ReplacedBy = true, true, now.Title
+			ref.Delisted, ref.Unlocked, ref.ReplacedBy, ref.Archived = true, true, now.Title, v.first
 			found[ref.ID] = &ref
 			captured[ref.ID] = v.first
 			replaced[id] = found[ref.ID]
@@ -350,7 +357,7 @@ func (w *Wayback) Delisted(ctx context.Context, src Delister, work *Work) ([]Cha
 			untitled[id] = true
 		}
 		read := func(timestamp string) {
-			refs, err := src.ListedChapters(ctx, w.At(timestamp), work)
+			refs, err := src.ListedChapters(ctx, &waybackFetcher{w: w, client: &w.Index, timestamp: timestamp}, work)
 			if err != nil {
 				return
 			}

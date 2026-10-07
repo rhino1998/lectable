@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
@@ -80,6 +81,11 @@ type bookSourceDTO struct {
 	Blocked string `json:"blocked,omitempty"`
 	// Syncing is true while chapters are being fetched.
 	Syncing bool `json:"syncing"`
+	// Review lists entries the last check found that wait for the reader
+	// to say import or skip (POST .../source/review), in reading order;
+	// absent when there are none. The book takes nothing past the first
+	// until it is decided.
+	Review []sourceReviewEntryDTO `json:"review,omitempty"`
 }
 
 type importBookURLRequest struct {
@@ -93,6 +99,13 @@ type importBookURLRequest struct {
 	// means all of them. Only with PreviewID.
 	Chapters []string `json:"chapters,omitempty"`
 }
+
+// A delisted chapter the archive won't give is asked for archiveAttempts
+// times, archiveRetryWait (then twice that) apart, before the check stops
+// at it. A variable for tests.
+var archiveRetryWait = 20 * time.Second
+
+const archiveAttempts = 3
 
 const (
 	// sourceBatch is how many fetched chapters are appended at a time:
@@ -127,8 +140,10 @@ func (s *Server) sourceOfKind(kind string) websource.Source {
 	return nil
 }
 
-// defaultWayback reads the Wayback Machine when Server.Wayback is unset.
-var defaultWayback = &websource.Wayback{}
+// defaultWayback reads the Wayback Machine when Server.Wayback is unset:
+// up to three archived pages at a time, which is what lets two imports
+// and a preview make progress together and one import read ahead.
+var defaultWayback = &websource.Wayback{Client: websource.Client{Parallel: 3}}
 
 func (s *Server) wayback() *websource.Wayback {
 	if s.Wayback != nil {
@@ -250,7 +265,14 @@ func (s *Server) bookSource(bookID string) (*bookSourceDTO, error) {
 	if r, _, ok := s.readerForBook(src); ok {
 		name = r.name()
 	}
+	var review []sourceReviewEntryDTO
+	if plan, err := s.Store.GetBookSourcePlan(bookID); err == nil {
+		for _, p := range plan.Pending {
+			review = append(review, sourceReviewEntryDTO{ID: p.ID, Title: p.Title, Suspect: p.Suspect})
+		}
+	}
 	return &bookSourceDTO{
+		Review:         review,
 		Kind:           bookSourceKind(src.Kind),
 		Name:           name,
 		URL:            src.URL,
@@ -319,7 +341,25 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 			writeBuildError(w, err)
 			return
 		}
-		chapters = work.Chapters
+		// Without choosing, an import takes what reads as chapters; an
+		// entry that reads like a notice waits for review, and the book
+		// with it.
+		for _, ref := range work.Chapters {
+			if suspectTitle(ref.Title) {
+				break
+			}
+			chapters = append(chapters, ref)
+			plan.Approved = append(plan.Approved, ref.ID)
+		}
+		if len(chapters) == 0 {
+			chapters = work.Chapters[:min(1, len(work.Chapters))]
+		}
+	}
+	plan.Reviewed = true
+	if req.PreviewID != "" {
+		for _, ref := range chapters {
+			plan.Approved = append(plan.Approved, ref.ID)
+		}
 	}
 	site := reader.site
 	if existing, err := s.Store.FindBookBySource(reader.kind(), reader.storedID(work.ID)); err != nil {
@@ -393,11 +433,9 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
 	}
-	if len(plan.Skip)+len(plan.Extra) > 0 {
-		if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
-			return
-		}
+	if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
+		return
 	}
 	if err := s.writeSourceEpub(bookID, meta, kept, true); err != nil {
 		log.Printf("source: keeping epub of %s: %v", bookID, err)
@@ -417,7 +455,8 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "book saved but could not be reloaded")
 		return
 	}
-	if len(chapters) > 1 {
+	// More to fetch, or entries behind the first that wait for review.
+	if len(chapters) > 1 || len(work.Chapters) > 1 {
 		s.startSourceSync(bookID, fill)
 	}
 	if req.PreviewID != "" {
@@ -492,6 +531,15 @@ func (s *Server) archivedChapter(ctx context.Context, r sourceReader, ref websou
 	if r.archived() || !ref.Unlocked {
 		return sourced{}, websource.ErrLocked
 	}
+	// A chapter found in the archive is read straight from the copy it
+	// was found as: one request, where looking for a copy is several.
+	if ref.Archived != "" {
+		if got, err := fetchChapter(ctx, r.site, s.wayback().At(ref.Archived), ref, "wayback"); err == nil {
+			return got, nil
+		} else if ctx.Err() != nil {
+			return sourced{}, ctx.Err()
+		}
+	}
 	var got sourced
 	_, err := s.wayback().ArchivedChapter(ctx, ref.URL, func(f websource.Fetcher) (*websource.Chapter, error) {
 		var err error
@@ -504,7 +552,11 @@ func (s *Server) archivedChapter(ctx context.Context, r sourceReader, ref websou
 		}
 		return sourced{}, websource.ErrLocked
 	}
-	log.Printf("source: %q is locked at %s; read from the Wayback Machine", ref.Title, r.site.Name())
+	why := "locked at"
+	if ref.Delisted {
+		why = "no longer listed by"
+	}
+	log.Printf("source: %q is %s %s; read from the Wayback Machine", ref.Title, why, r.site.Name())
 	return got, nil
 }
 
@@ -671,15 +723,12 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 		return 0, err
 	}
 	src.Blocked = ""
-	var missing []websource.ChapterRef
-	var unread []string // delisted chapters the archive wouldn't give
-	for _, ref := range plannedChapters(reader.site, work.Chapters, plan) {
-		if have[ref.ID] {
-			continue
-		}
-		// A chapter the list itself marks locked still gets its turn below:
-		// the epub or the archive may have it.
-		missing = append(missing, ref)
+	// Only entries the reader has agreed to are fetched; the rest wait
+	// for review, and hold back whatever follows them.
+	missing, pending := reviewPlan(&plan, plannedChapters(reader.site, work.Chapters, plan), have)
+	plan.Pending = pending
+	if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
+		return 0, err
 	}
 	count, err := s.Store.CountChapters(bookID)
 	if err != nil {
@@ -697,22 +746,66 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 		batch := missing[:min(sourceBatch, len(missing))]
 		missing = missing[len(batch):]
 
+		// Chapters that come from the archive are read a few at a time:
+		// it answers slowly, and they don't depend on each other. Not
+		// with an epub at hand, whose chapters are taken in order.
+		type read struct {
+			chapters []sourced
+			covered  bool
+			err      error
+		}
+		ahead := make([]*read, len(batch))
+		if fill == nil {
+			var wg sync.WaitGroup
+			for i, ref := range batch {
+				if !ref.Delisted {
+					continue
+				}
+				ahead[i] = &read{}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					// The archive fails in bursts; a chapter it won't
+					// give now it usually gives a little later.
+					for attempt := 1; ; attempt++ {
+						ahead[i].chapters, ahead[i].covered, ahead[i].err = s.readOrFill(ctx, reader, ref, nil)
+						if ahead[i].err == nil || attempt == archiveAttempts || ctx.Err() != nil {
+							return
+						}
+						select {
+						case <-ctx.Done():
+							return
+						case <-time.After(time.Duration(attempt) * archiveRetryWait):
+						}
+					}
+				}()
+			}
+			wg.Wait()
+		}
+
 		var fetched []sourced
 		var fetchErr error
 		dropped := 0 // chapters that won't be appended after all
 		for i, ref := range batch {
 			// covered: the epub chapter standing in for this one was
 			// already taken for the chapter before it.
-			chapters, covered, err := s.readOrFill(ctx, reader, ref, fill)
-			if errors.Is(err, websource.ErrNotFound) {
-				dropped++
-				continue
+			var chapters []sourced
+			var covered bool
+			var err error
+			if ahead[i] != nil {
+				chapters, covered, err = ahead[i].chapters, ahead[i].covered, ahead[i].err
+			} else {
+				chapters, covered, err = s.readOrFill(ctx, reader, ref, fill)
 			}
-			if errors.Is(err, websource.ErrLocked) && ref.Delisted {
-				// Nothing will ever open it at the site, so waiting on it
-				// would hold up everything after: go on without, and say
-				// so. It is tried again at the next check.
-				unread = append(unread, ref.Title)
+			if ref.Delisted && (errors.Is(err, websource.ErrNotFound) || errors.Is(err, websource.ErrLocked)) {
+				// The archive didn't give it - often only for now: it
+				// fails in bursts when asked a lot. Chapters can't be put
+				// in later, so the check stops here and the next one
+				// tries again; going on would leave a hole for good.
+				fetchErr = fmt.Errorf("%q could not be read from the Internet Archive - check again to retry", ref.Title)
+				break
+			}
+			if errors.Is(err, websource.ErrNotFound) {
 				dropped++
 				continue
 			}
@@ -755,9 +848,6 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 		}
 	}
 	s.fetchMissingRaw(ctx, bookID, reader, work)
-	if len(unread) > 0 {
-		return added, fmt.Errorf("%d delisted chapters could not be read from the Internet Archive and were left out (the first: %q) - checking again retries them, and an epub of them can fill them in", len(unread), unread[0])
-	}
 	return added, nil
 }
 
