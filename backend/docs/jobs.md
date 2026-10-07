@@ -152,6 +152,14 @@ The kinds:
     the emotion pass treat it as narration (speaker `Narrator`, no
     emotion), so Brightblade's "…" replies no longer land on whoever
     spoke last; migration `00007` cleared the ones already attributed.
+  - `KindRecap` (`poolLLM`, keyed by book) writes a book's "previously
+    on" recap and `KindRecapNarration` (`poolGeneration`, keyed by book;
+    `KindVoiceProvision`'s caller-supplied shape) speaks it - both run
+    blocking (`RunRecap`/`RunRecapNarration`) from the `pipeline_recap`
+    bulk group, which first runs any missing chapter summaries. The
+    narration's closure calls `Manager.NarrateText`, the one way to speak
+    text that isn't a paragraph in a book's voice. See the `.../recap`
+    entry in `api.md`.
   - `KindScareQuote` (`poolLLM`) runs one chapter's scare-quote
     tagging - `KindSpeechDirection`'s shape (`EnqueueScareQuote`/
     `RunScareQuote`). `KindSpeakerAttribution` depends on the chapter's

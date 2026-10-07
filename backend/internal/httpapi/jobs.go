@@ -110,6 +110,25 @@ type jobsSnapshotDTO struct {
 	// wall-clock second (12 = an hour of narration every five minutes),
 	// rounded to 0.1. Omitted (0) whenever that is.
 	NarrationRealtimeFactor float64 `json:"narrationRealtimeFactor,omitempty"`
+	// WorkLeft is jobs.Manager.WorkLeft over every in-flight and queued
+	// task, listed or not: what is left of each kind of work other than
+	// narration, with an estimate of how long it will take, most first.
+	WorkLeft []kindWorkDTO `json:"workLeft,omitempty"`
+}
+
+// kindWorkDTO is one kind's entry in jobsSnapshotDTO.WorkLeft.
+type kindWorkDTO struct {
+	// Kind is queueTaskDTO.Kind.
+	Kind  string `json:"kind"`
+	Tasks int    `json:"tasks"`
+	// TypicalSeconds is how long one task of this kind has been taking
+	// lately (the mean of its last few runs). Omitted (0) until one has
+	// finished since startup.
+	TypicalSeconds float64 `json:"typicalSeconds,omitempty"`
+	// Seconds estimates the wall-clock time until all of them are done -
+	// Tasks x TypicalSeconds over how many run at once. Omitted (0) when
+	// TypicalSeconds is.
+	Seconds float64 `json:"seconds,omitempty"`
 }
 
 // bookNarrationDTO is one book's entry in jobsSnapshotDTO.NarrationLeft.
@@ -263,6 +282,14 @@ func (s *Server) buildJobsSnapshot(queuedLimit int, keep func(jobs.QueueTask) bo
 		return cmp.Or(cmp.Compare(b.Chars, a.Chars), cmp.Compare(a.BookID, b.BookID))
 	})
 
+	for _, w := range s.Jobs.WorkLeft(slices.Concat(inFlight, queued)) {
+		out.WorkLeft = append(out.WorkLeft, kindWorkDTO{
+			Kind: string(w.Kind), Tasks: w.Tasks,
+			TypicalSeconds: math.Round(w.Typical.Seconds()*10) / 10,
+			Seconds:        math.Round(w.Left.Seconds()),
+		})
+	}
+
 	for _, t := range inFlight {
 		out.InFlight = append(out.InFlight, toDTO(t))
 	}
@@ -392,6 +419,14 @@ func (s *Server) handleSetJobTier(w http.ResponseWriter, r *http.Request) {
 // doc comment for what the returned count actually reflects.
 func (s *Server) handleCancelAllJobs(w http.ResponseWriter, r *http.Request) {
 	n := s.Jobs.CancelAll()
+	writeJSON(w, http.StatusOK, canceledCountResponse{Canceled: n})
+}
+
+// handleCancelBookJobs cancels every queued and in-flight task working on
+// one book - the library card's "Cancel jobs" button. See
+// jobs.Manager.CancelBook.
+func (s *Server) handleCancelBookJobs(w http.ResponseWriter, r *http.Request) {
+	n := s.Jobs.CancelBook(r.PathValue("id"))
 	writeJSON(w, http.StatusOK, canceledCountResponse{Canceled: n})
 }
 

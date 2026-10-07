@@ -531,3 +531,34 @@ func TestCancelledGroupTakesItsAdoptedTasksWithIt(t *testing.T) {
 		t.Fatalf("kept task tier = %d, want its own again", tier)
 	}
 }
+
+// Asking again for a bulk group that is already running, more urgently,
+// raises it - how a recap being prepared in the background moves to the
+// front when its reader asks for it (httpapi.prepareRecap).
+func TestEnqueueBulkAgainRaisesRunningGroup(t *testing.T) {
+	mgr := newTestManager()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mgr.Start(ctx)
+
+	started := make(chan func() int, 1)
+	run := func(ctx context.Context, tier func() int) error {
+		started <- tier
+		<-ctx.Done()
+		return nil
+	}
+	mgr.EnqueueBulk("book-1", BulkGroup{Kind: "pipeline_recap", Key: "recap", Tier: TierBackground}, run)
+	tier := <-started
+	if got := tier(); got != TierBackground {
+		t.Fatalf("tier = %d, want background", got)
+	}
+	mgr.EnqueueBulk("book-1", BulkGroup{Kind: "pipeline_recap", Key: "recap", Tier: TierUrgent}, run)
+	if got := tier(); got != TierUrgent {
+		t.Fatalf("tier after asking again = %d, want urgent", got)
+	}
+	select {
+	case <-started:
+		t.Fatal("the group ran a second time")
+	case <-time.After(50 * time.Millisecond):
+	}
+}

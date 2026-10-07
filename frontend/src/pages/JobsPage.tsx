@@ -19,7 +19,7 @@ import {
 } from '../api/queries'
 import { ApiError } from '../api/client'
 import { useClickOutside } from '../hooks/useClickOutside'
-import type { QueueTask } from '../api/types'
+import type { JobsSnapshot, KindWork, QueueTask } from '../api/types'
 import { emotionLabel } from '../utils/emotions'
 import { formatEta, narrationEta } from '../utils/narrationEta'
 
@@ -40,6 +40,8 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pronunciation: 'Pronunciation',
   chapter_summary: 'Summary',
   book_setting: 'Book Setting',
+  recap: 'Recap Text',
+  recap_narration: 'Recap Narration',
   // The phases of a book's own "Preprocess" run (see LibraryPage's
   // own Preprocess button) - each fans out real per-chapter/per-character
   // work into the ordinary kinds above (a "pipeline_attribution" row is a
@@ -76,6 +78,13 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   // A book export (see ExportPage) - renders its chapters' missing audio
   // first unless queued as-is, then builds the file.
   pipeline_export: 'Export',
+  pipeline_recap: 'Recap',
+  // A check of a web-imported book's site for new chapters (the library
+  // card's refresh button), fetching whatever it finds.
+  pipeline_source_sync: 'Check for New Chapters',
+  // A series preprocessed one book at a time, in order (the library's
+  // series title bar).
+  pipeline_series_preprocess: 'Preprocess Series',
   sfx_generation: 'SFX',
   sfx_preview: 'SFX/Music Preview',
   llm_preview: 'LLM Preview',
@@ -309,32 +318,53 @@ function TaskTable({
   )
 }
 
-// Live view of the backend's shared job queue (jobs.Manager) - voice
-// clone/design generation and speaker attribution alike, all sorted
-// through one tier-ordered priority queue (see internal/jobs.Kind) - what's
-// actually dispatched to a worker slot right now (at most maxInFlight, see
-// manager.go) vs. everything still waiting, pushed live as it changes
-// (the jobsQueue topic - see api/live.ts). Useful for
-// seeing whether a big "generate this chapter" job is actually moving, or
-// to check what a burst of lookahead work looks like as you jump around a
-// book.
-export function JobsPage() {
-  const jobsQuery = useJobsQueue()
+// The time-left estimate for everything that isn't narration: each kind's
+// queued and in-flight tasks at how long one has been taking lately. A
+// kind that hasn't finished a task since the backend started has no
+// estimate yet and is only counted.
+// One task's typical run time: seconds under a minute, formatEta above.
+function formatTypical(seconds: number): string {
+  return seconds < 60 ? `${Math.max(1, Math.round(seconds))}s` : formatEta(seconds)
+}
+
+function WorkLeftLine({ work }: { work: KindWork[] }) {
+  if (work.length === 0) return null
+  const totalSeconds = work.reduce((n, w) => n + (w.seconds ?? 0), 0)
+  const unknown = work.some((w) => !w.seconds)
+  return (
+    <p
+      className="muted jobs-eta"
+      title="Each kind's queued and in-flight tasks × how long one has been taking lately (the average of its last few runs), over how many run at once. Kinds are summed, since they share the same models."
+    >
+      Other work left:{' '}
+      {totalSeconds > 0
+        ? `~${formatEta(totalSeconds)}${unknown ? ' or more' : ''}`
+        : 'no estimate yet'}{' '}
+      (
+      {work
+        .map((w) => {
+          const label = KIND_LABELS[w.kind as QueueTask['kind']] ?? w.kind
+          return w.seconds
+            ? `${label}: ${w.tasks} × ~${formatTypical(w.typicalSeconds ?? 0)} = ~${formatEta(w.seconds)}`
+            : `${label}: ${w.tasks}`
+        })
+        .join(', ')}
+      )
+    </p>
+  )
+}
+
+// A queue snapshot's two task lists - in flight, then queued - with each
+// row's cancel and priority controls. Shared by the Jobs page (the whole
+// queue) and a book's own Jobs tab (BookSettingsPage).
+export function JobLists({ snapshot }: { snapshot: JobsSnapshot }) {
   const builtinsQuery = useVoicePresets()
   const customPresetsQuery = useCustomVoicePresets()
   const cancelJob = useCancelJob()
   const setJobTier = useSetJobTier()
-  const cancelAllJobs = useCancelAllJobs()
-  const pauseJobs = usePauseJobs()
-  const resumeJobs = useResumeJobs()
-  const restartWorker = useRestartWorker()
-  const snapshot = jobsQuery.data
-  const queued = snapshot?.queued ?? []
-  // The topic lists only the head of the queue; queuedTotal counts all of it.
-  const queuedTotal = Math.max(snapshot?.queuedTotal ?? 0, queued.length)
-  const totalCount = (snapshot?.inFlight.length ?? 0) + queuedTotal
-  const paused = snapshot?.paused ?? false
-  const eta = useMemo(() => narrationEta(snapshot), [snapshot])
+  const queued = snapshot.queued ?? []
+  // A topic may list only the head of the queue; queuedTotal counts all of it.
+  const queuedTotal = Math.max(snapshot.queuedTotal ?? 0, queued.length)
 
   // Tracked locally (not derived from the mutation's own isPending, which
   // only ever reflects the single most recent call) so two different rows'
@@ -342,7 +372,6 @@ export function JobsPage() {
   // clicked in quick succession.
   const [cancelingId, setCancelingId] = useState<string | null>(null)
   const [cancelError, setCancelError] = useState<string | null>(null)
-  const [restartError, setRestartError] = useState<string | null>(null)
   // Same "track locally, not off the mutation's own isPending" reasoning
   // as cancelingId - two different rows' priority menus shouldn't show
   // each other's pending state.
@@ -377,6 +406,104 @@ export function JobsPage() {
       },
     )
   }
+
+  // presetId -> friendly name, built from the same built-in/custom preset
+  // lists the Voices page already fetches (cached, so this adds no extra
+  // requests). A task with no presetId is a pure custom instruct with
+  // nothing to resolve (or a speaker_attribution task, which has neither),
+  // so it falls back to a preview of the instruct text.
+  const presetNames = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const p of builtinsQuery.data?.presets ?? []) map.set(p.id, p.name)
+    for (const p of customPresetsQuery.data ?? []) map.set(p.id, p.name)
+    return map
+  }, [builtinsQuery.data, customPresetsQuery.data])
+
+  const voiceName = (t: QueueTask): string => {
+    if (t.presetId) {
+      const name = presetNames.get(t.presetId) ?? t.presetId
+      return t.emotion ? `${name} (${emotionLabel(t.emotion)})` : name
+    }
+    if (!t.instruct) return '—'
+    return t.instruct.length > INSTRUCT_PREVIEW_LENGTH
+      ? `${t.instruct.slice(0, INSTRUCT_PREVIEW_LENGTH)}…`
+      : t.instruct
+  }
+
+  return (
+    <>
+      {cancelError && <p className="error-text">{cancelError}</p>}
+      {promoteError && <p className="error-text">{promoteError}</p>}
+      <WorkLeftLine work={snapshot.workLeft ?? []} />
+      <section className="jobs-section">
+        <h2>In flight ({snapshot.inFlight.length})</h2>
+        {snapshot.inFlight.length === 0 ? (
+          <p className="muted">Nothing generating right now.</p>
+        ) : (
+          <TaskTable
+            tasks={snapshot.inFlight}
+            voiceName={voiceName}
+            inFlight
+            onCancel={runCancel}
+            cancelingId={cancelingId}
+            onPromote={runPromote}
+            promotingId={promotingId}
+          />
+        )}
+      </section>
+
+      <section className="jobs-section">
+        <h2>Queued ({queuedTotal})</h2>
+        {queued.length === 0 ? (
+          <p className="muted">Nothing waiting.</p>
+        ) : (
+          <>
+            <TaskTable
+              tasks={queued}
+              voiceName={voiceName}
+              inFlight={false}
+              onCancel={runCancel}
+              cancelingId={cancelingId}
+              onPromote={runPromote}
+              promotingId={promotingId}
+            />
+            {queuedTotal > queued.length && (
+              <p className="muted jobs-truncated">
+                Showing first {queued.length} of {queuedTotal} queued.
+              </p>
+            )}
+          </>
+        )}
+      </section>
+    </>
+  )
+}
+
+// Live view of the backend's shared job queue (jobs.Manager) - voice
+// clone/design generation and speaker attribution alike, all sorted
+// through one tier-ordered priority queue (see internal/jobs.Kind) - what's
+// actually dispatched to a worker slot right now (at most maxInFlight, see
+// manager.go) vs. everything still waiting, pushed live as it changes
+// (the jobsQueue topic - see api/live.ts). Useful for
+// seeing whether a big "generate this chapter" job is actually moving, or
+// to check what a burst of lookahead work looks like as you jump around a
+// book.
+export function JobsPage() {
+  const jobsQuery = useJobsQueue()
+  const cancelAllJobs = useCancelAllJobs()
+  const pauseJobs = usePauseJobs()
+  const resumeJobs = useResumeJobs()
+  const restartWorker = useRestartWorker()
+  const snapshot = jobsQuery.data
+  const queued = snapshot?.queued ?? []
+  // The topic lists only the head of the queue; queuedTotal counts all of it.
+  const queuedTotal = Math.max(snapshot?.queuedTotal ?? 0, queued.length)
+  const totalCount = (snapshot?.inFlight.length ?? 0) + queuedTotal
+  const paused = snapshot?.paused ?? false
+  const eta = useMemo(() => narrationEta(snapshot), [snapshot])
+
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  const [restartError, setRestartError] = useState<string | null>(null)
 
   const runCancelAll = () => {
     if (
@@ -430,29 +557,6 @@ export function JobsPage() {
     })
   }
 
-  // presetId -> friendly name, built from the same built-in/custom preset
-  // lists the Voices page already fetches (cached, so this adds no extra
-  // requests). A task with no presetId is a pure custom instruct with
-  // nothing to resolve (or a speaker_attribution task, which has neither),
-  // so it falls back to a preview of the instruct text.
-  const presetNames = useMemo(() => {
-    const map = new Map<string, string>()
-    for (const p of builtinsQuery.data?.presets ?? []) map.set(p.id, p.name)
-    for (const p of customPresetsQuery.data ?? []) map.set(p.id, p.name)
-    return map
-  }, [builtinsQuery.data, customPresetsQuery.data])
-
-  const voiceName = (t: QueueTask): string => {
-    if (t.presetId) {
-      const name = presetNames.get(t.presetId) ?? t.presetId
-      return t.emotion ? `${name} (${emotionLabel(t.emotion)})` : name
-    }
-    if (!t.instruct) return '—'
-    return t.instruct.length > INSTRUCT_PREVIEW_LENGTH
-      ? `${t.instruct.slice(0, INSTRUCT_PREVIEW_LENGTH)}…`
-      : t.instruct
-  }
-
   return (
     <div className="jobs-page">
       <div className="library-header">
@@ -500,7 +604,6 @@ export function JobsPage() {
         </p>
       )}
       {cancelError && <p className="error-text">{cancelError}</p>}
-      {promoteError && <p className="error-text">{promoteError}</p>}
       {restartError && <p className="error-text">{restartError}</p>}
 
       {jobsQuery.isLoading && <p>Loading…</p>}
@@ -518,50 +621,7 @@ export function JobsPage() {
         </p>
       )}
 
-      {snapshot && (
-        <>
-          <section className="jobs-section">
-            <h2>In flight ({snapshot.inFlight.length})</h2>
-            {snapshot.inFlight.length === 0 ? (
-              <p className="muted">Nothing generating right now.</p>
-            ) : (
-              <TaskTable
-                tasks={snapshot.inFlight}
-                voiceName={voiceName}
-                inFlight
-                onCancel={runCancel}
-                cancelingId={cancelingId}
-                onPromote={runPromote}
-                promotingId={promotingId}
-              />
-            )}
-          </section>
-
-          <section className="jobs-section">
-            <h2>Queued ({queuedTotal})</h2>
-            {queued.length === 0 ? (
-              <p className="muted">Nothing waiting.</p>
-            ) : (
-              <>
-                <TaskTable
-                  tasks={queued}
-                  voiceName={voiceName}
-                  inFlight={false}
-                  onCancel={runCancel}
-                  cancelingId={cancelingId}
-                  onPromote={runPromote}
-                  promotingId={promotingId}
-                />
-                {queuedTotal > queued.length && (
-                  <p className="muted jobs-truncated">
-                    Showing first {queued.length} of {queuedTotal} queued.
-                  </p>
-                )}
-              </>
-            )}
-          </section>
-        </>
-      )}
+      {snapshot && <JobLists snapshot={snapshot} />}
     </div>
   )
 }

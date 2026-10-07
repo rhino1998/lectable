@@ -485,6 +485,35 @@ func TestAdoptedTasksFollowAndEndWithTheirParent(t *testing.T) {
 	}
 }
 
+func TestJoinedTaskFollowsItsParentAndSurvivesItsCancel(t *testing.T) {
+	s := newSched(t, Config{})
+	hold := newFake("hold", "gpu")
+	hold.capacity = 1
+	s.Request("x", 0, hold)
+
+	group := newFake("group", "")
+	s.Request("bulk", 3, group)
+	wantState(t, s, group, "running")
+	child := newFake("child", "gpu")
+	child.capacity = 1
+	s.Request("direct", 3, child)
+	if s.Join("group", "missing") {
+		t.Fatalf("joined a task that isn't there")
+	}
+	if !s.Join("group", "child") {
+		t.Fatalf("a running task should be able to take a queued one as a member")
+	}
+
+	s.Bump("group", 1)
+	if got := priority(t, s, child); got != 1 {
+		t.Fatalf("child priority = %d, want the bumped group's 1", got)
+	}
+	s.Cancel("group")
+	if state(s, child) != "ready" {
+		t.Fatalf("child is %s; its own request must keep it", state(s, child))
+	}
+}
+
 func TestManualPopAndFinish(t *testing.T) {
 	s := newSched(t, Config{Manual: true})
 	dep, top := newFake("dep", "a"), newFake("top", "b")

@@ -208,6 +208,23 @@ func (m *Manager) CancelAll() int {
 	return m.sched.CancelWhere(func(sched.Task) bool { return true })
 }
 
+// CancelBook cancels every queued and in-flight task and group working on
+// bookID - its preprocessing run, bulk groups, and each per-chapter or
+// per-character task - httpapi's DELETE /api/books/{id}/jobs, the library
+// card's "Cancel jobs" button. Returns how many were acted on; an
+// in-flight one still has to notice its cancelled context.
+func (m *Manager) CancelBook(bookID string) int {
+	return m.sched.CancelWhere(func(c sched.Task) bool {
+		switch t := c.(type) {
+		case *task:
+			return t.bookID == bookID
+		case *pipelineTask:
+			return t.bookID == bookID
+		}
+		return false
+	})
+}
+
 // ErrTaskNotFound is PromoteTier's own error when id doesn't name
 // anything currently queued or in flight in either queue - httpapi maps
 // this to 404, the same status Cancel's own false return does.

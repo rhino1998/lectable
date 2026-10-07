@@ -308,6 +308,17 @@ func (m *Manager) isPipelineRunningLocked(bookID string) bool {
 	return running
 }
 
+// PromotePipeline raises every queued or running phase of bookID's
+// preprocessing run to tier, each as PromoteTier would - so the tasks a
+// phase has asked for follow. A phase already that urgent is left alone.
+// What a group that runs whole pipelines (a series' in-order run) does to
+// pass its own promotion on.
+func (m *Manager) PromotePipeline(bookID string, tier int) {
+	for phase := range pipelinePhaseCount {
+		_ = m.PromoteTier(pipelineKey(bookID, phase), tier)
+	}
+}
+
 // CancelPipeline cancels bookID's in-progress preprocessing run and bulk
 // groups, if any - httpapi.handleDeleteBook's best-effort stop for a book
 // that's about to stop existing. A queued one is removed; a running one has
@@ -572,7 +583,7 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 			resolved = skipResolvedBeforeIdx(resolved, book.PosParagraphIdx)
 		}
 		for _, rp := range resolved {
-			m.pushResolvedTask(bookID, ch.ID, chapterIdx, TierBackground, rp, all, "")
+			m.joinGroup(ctx, m.pushResolvedTask(bookID, ch.ID, chapterIdx, TierBackground, rp, all, ""))
 		}
 		pushed[ch.ID] = true
 		chapterIdx++

@@ -163,6 +163,8 @@ fun kindLabel(kind: String): String = when (kind) {
     "scare_quote_tagging" -> "Scare Quote Tagging"
     "chapter_summary" -> "Summary"
     "book_setting" -> "Book Setting"
+    "recap" -> "Recap Text"
+    "recap_narration" -> "Recap Narration"
     "pipeline_summary" -> "Preprocess: Summary"
     "pipeline_bulk_summary" -> "Bulk: Summary"
     "pipeline_generate_chapter" -> "Generate: Chapter"
@@ -178,6 +180,9 @@ fun kindLabel(kind: String): String = when (kind) {
     "pipeline_bulk_music_generation" -> "Bulk: Music Generation"
     "pipeline_bulk_characterization" -> "Bulk: Characterization"
     "pipeline_export" -> "Export"
+    "pipeline_recap" -> "Recap"
+    "pipeline_source_sync" -> "Check for New Chapters"
+    "pipeline_series_preprocess" -> "Preprocess Series"
     "pipeline_bulk_voices" -> "Bulk: Voices"
     "pipeline_bulk_used_voices" -> "Bulk: Used Voices"
     else -> kind

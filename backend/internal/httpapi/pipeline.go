@@ -2,9 +2,12 @@ package httpapi
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/narration"
@@ -117,28 +120,136 @@ func (s *Server) handlePreprocessBook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
-	chapters, err := s.Store.ListChapterSummaries(book.ID, "", nil)
-	if err != nil {
+	switch err := s.enqueuePreprocess(book); {
+	case errors.Is(err, jobs.ErrPipelineAlreadyRunning):
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	case err != nil:
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
+}
 
+// enqueuePreprocess queues book's preprocessing pipeline, its chapters as
+// they are now. jobs.ErrPipelineAlreadyRunning if one is already queued or
+// running for it.
+func (s *Server) enqueuePreprocess(book *store.Book) error {
+	chapters, err := s.Store.ListChapterSummaries(book.ID, "", nil)
+	if err != nil {
+		return err
+	}
+
+	// No voice provisioning phase: a character's voice is made when a line
+	// of theirs is first generated (or by the roster's own buttons), not
+	// for the whole roster up front.
 	phases := jobs.PipelinePhases{
 		jobs.PhaseScareQuote:       s.preprocessScareQuotePhase(book, chapters),
 		jobs.PhaseAttribution:      s.preprocessAttributionPhase(book, chapters),
 		jobs.PhaseCharacterization: s.preprocessCharacterizationPhase(book),
-		jobs.PhaseVoiceProvision:   s.preprocessVoiceProvisionPhase(book),
 		jobs.PhaseDirection:        s.preprocessDirectionPhase(book, chapters),
 		jobs.PhaseAmbience:         s.preprocessAmbiencePhase(book, chapters),
 		jobs.PhasePronunciation:    s.preprocessPronunciationPhase(book, chapters),
 		jobs.PhaseSummary:          s.preprocessSummaryPhase(book, chapters),
 	}
-	if err := s.Jobs.EnqueuePipeline(book.ID, phases); err != nil {
-		writeError(w, http.StatusConflict, err.Error())
+	return s.Jobs.EnqueuePipeline(book.ID, phases)
+}
+
+// seriesPreprocessJobKey is the jobs.BulkGroup.Key of a series' in-order
+// preprocessing run (handlePreprocessSeries), queued on the series' first
+// book.
+const seriesPreprocessJobKey = "series_preprocess"
+
+// seriesPreprocessPoll is how often a series run looks whether the book
+// it is waiting on has finished preprocessing.
+const seriesPreprocessPoll = 250 * time.Millisecond
+
+// handlePreprocessSeries preprocesses every book of the book's series, one
+// at a time in series order: a book's pipeline (handlePreprocessBook's) is
+// queued only once the one before it has finished, so each book is
+// attributed and cast against the roster the earlier books left - the
+// series shares one (store.SeriesScope). One job-queue row (a
+// jobs.BulkGroup, Kind "pipeline_series_preprocess", on the series' first
+// book); each book's own phases appear under it as that book's turn comes.
+// Promoting the row promotes each book's phases as its turn comes (and
+// the one in progress). Cancelling the row stops the run before the next book - the book in
+// progress carries on unless cancelled itself. A book already
+// preprocessing is waited for, not restarted. 202, 409 for a book in no
+// series.
+func (s *Server) handlePreprocessSeries(w http.ResponseWriter, r *http.Request) {
+	if s.Speaker == nil {
+		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
 		return
 	}
-
-	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
+	book, err := s.Store.GetBook(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if book == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	if book.SeriesName == "" {
+		writeError(w, http.StatusConflict, "this book isn't part of a series")
+		return
+	}
+	books, err := s.Store.ListSeriesBooks(book.SeriesName)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(books) == 0 {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	ids := make([]string, len(books))
+	for i, b := range books {
+		ids[i] = b.ID
+	}
+	seriesName := book.SeriesName
+	s.Jobs.EnqueueBulk(ids[0], jobs.BulkGroup{
+		Kind:  "pipeline_series_preprocess",
+		Key:   seriesPreprocessJobKey,
+		Label: fmt.Sprintf("%s (%d books)", seriesName, len(ids)),
+		Tier:  jobs.TierBackground,
+	}, func(ctx context.Context, tier func() int) error {
+		for _, id := range ids {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			// Read now, not when the run was queued: the book may have
+			// been deleted, moved out of the series or gained chapters.
+			b, err := s.Store.GetBook(id)
+			if err != nil {
+				return err
+			}
+			if b == nil || b.SeriesName != seriesName {
+				continue
+			}
+			if err := s.enqueuePreprocess(b); err != nil && !errors.Is(err, jobs.ErrPipelineAlreadyRunning) {
+				log.Printf("preprocess series %q: %s: %v", seriesName, b.Title, err)
+				continue
+			}
+			// A book's phases are queued at the background tier; raising
+			// the series row's priority, now or while this book runs,
+			// raises theirs.
+			applied := jobs.TierBackground
+			for s.Jobs.IsPipelineRunning(id) {
+				if t := tier(); t < applied {
+					s.Jobs.PromotePipeline(id, t)
+					applied = t
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(seriesPreprocessPoll):
+				}
+			}
+		}
+		return nil
+	})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(ids)})
 }
 
 // preprocessScareQuotePhase is the scare-quote tagging phase - the root of
@@ -329,75 +440,6 @@ func (s *Server) preprocessCharacterizationPhase(book *store.Book) jobs.Pipeline
 		wg.Wait()
 		if ctx.Err() != nil {
 			log.Printf("httpapi: preprocess book %s: canceled during characterization", book.ID)
-		}
-		return nil
-	}
-}
-
-// preprocessVoiceProvisionPhase is Phase 3 - voice provisioning for every
-// character that doesn't already have one, for the book's own currently-
-// resolved clone model. Re-lists characters rather than reusing Phase 2's
-// own roster: characterization can discover brand-new characters too (see
-// store.Store.UpsertCharacter's call sites), and this phase only actually
-// needs the roster as it stands once Phase 2 has finished (see
-// jobs.pipelineResolver again). Routed through jobs.Manager.
-// RunVoiceProvision, not provisionCharacterVoice directly, so an implicit
-// reference-clip render here never spawns its own worker-side model
-// instance uncoordinated with the rest of poolGeneration - see
-// ensureVoiceRef's own doc comment (voices.go) for the general rule this
-// follows. Same fan-out/join/best-effort shape as the other three phases.
-//
-// Checks store.CharacterVoiceForModel up front, the same signal
-// jobs.provisionMissingCharacterVoices' own lazy path (and this book's own
-// Speakers page - a character's VoicePresetID/RefAudioURL) already gate
-// on, and skips dispatching a RunVoiceProvision task at all for a
-// character that already has one - not just relying on
-// provisionCharacterVoiceAttempt's own downstream check (which does exist,
-// and returns early for the same reason), because even a task that
-// returns near-instantly still occupies poolLLM/poolDesign's mutual-
-// exclusion "active pool" slot for its duration and shows up as a real
-// voice_provision entry on the Jobs dashboard. On a book with a large,
-// already-fully-provisioned roster (the common case for a rerun - this
-// phase used to unconditionally re-dispatch one task per character, every
-// single preprocess run, regardless of whether any of them actually
-// needed it), that's a lot of pointless task-queue churn and pool-
-// switching noise for work that was already done.
-func (s *Server) preprocessVoiceProvisionPhase(book *store.Book) jobs.PipelinePhaseFunc {
-	return func(ctx context.Context, tier func() int) error {
-		bookVoice, err := s.Narration.BookVoice(book)
-		if err != nil {
-			log.Printf("httpapi: preprocess book %s: resolve book voice: %v", book.ID, err)
-			return nil
-		}
-		cloneModel := narration.EffectiveCloneModel(bookVoice)
-		characters, err := s.Store.ListCharacters(store.SeriesScope(book))
-		if err != nil {
-			log.Printf("httpapi: preprocess book %s: list characters: %v", book.ID, err)
-		}
-		var wg sync.WaitGroup
-		for _, char := range characters {
-			if char.Invalid {
-				continue
-			}
-			if presetID, err := s.Store.CharacterVoiceForModel(char.ID, cloneModel); err != nil {
-				log.Printf("httpapi: preprocess book %s: check voice for %q: %v", book.ID, char.Name, err)
-				continue
-			} else if presetID != "" {
-				continue
-			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if _, err := s.Jobs.RunVoiceProvision(ctx, book.ID, char.ID, "generate", char.Name, func(ctx context.Context, attempt int) (string, error) {
-					return s.provisionCharacterVoiceAttempt(ctx, book.ID, char, cloneModel, attempt)
-				}); err != nil {
-					log.Printf("httpapi: preprocess book %s: provision voice for %q: %v", book.ID, char.Name, err)
-				}
-			}()
-		}
-		wg.Wait()
-		if ctx.Err() != nil {
-			log.Printf("httpapi: preprocess book %s: canceled during voice provisioning", book.ID)
 		}
 		return nil
 	}

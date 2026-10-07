@@ -280,6 +280,27 @@ func (s *Scheduler) Adopt(parent string, t Task) (added, ok bool) {
 	return added, ok
 }
 
+// Join makes the task already at key a member of parent's running task, as
+// Adopt would a new one - for a task the parent asked for by other means.
+// Whatever else wants it still does. ok is false, and nothing happens,
+// when parent isn't a running task or key names none.
+func (s *Scheduler) Join(parent, key string) (ok bool) {
+	s.do(func() {
+		p, found := s.nodes[parent]
+		n, exists := s.nodes[key]
+		if !found || !exists || p == n || p.state != Running || p.canceled {
+			return
+		}
+		ok = true
+		n.wantedBy[p] = true
+		if p.adopted == nil {
+			p.adopted = map[*node]bool{}
+		}
+		p.adopted[n] = true
+	})
+	return ok
+}
+
 // Wanted is one task a source asks for.
 type Wanted struct {
 	Priority int
