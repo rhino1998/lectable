@@ -1,7 +1,11 @@
-import { useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import type { ReactNode } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
   RiAddLine,
+  RiArrowGoBackLine,
+  RiCheckLine,
+  RiCloseCircleLine,
   RiDeleteBinLine,
   RiDownload2Line,
   RiFileUploadLine,
@@ -11,17 +15,20 @@ import {
   RiMagicLine,
   RiRefreshLine,
   RiUploadLine,
-  RiUserVoiceLine,
+  RiSettings3Line,
 } from 'react-icons/ri'
 import {
   useBackfillBookSource,
   useBooks,
+  useCancelBookJobs,
   useDeleteBook,
   useGenerateBook,
   useGenerateRemaining,
+  useMarkRead,
   useImportBookUrl,
   useJobsSummary,
   usePreprocessBook,
+  usePreprocessSeries,
   useSyncBookSource,
   useUploadBook,
 } from '../api/queries'
@@ -68,6 +75,27 @@ function groupBySeries(books: BookSummary[]): LibraryItem[] {
   }
 
   return items
+}
+
+// A word count for display: "950", "85k", "1.2M".
+function formatWords(words: number): string {
+  if (words >= 1_000_000) return `${(words / 1_000_000).toFixed(1)}M`
+  if (words >= 1_000) return `${Math.round(words / 1_000)}k`
+  return String(words)
+}
+
+// A series section's title-bar totals: how far through the whole series
+// the reader is (by estimated length), and its length in time and words.
+function seriesTotals(books: BookSummary[]): string {
+  const totalSeconds = books.reduce((sum, b) => sum + b.estimatedTotalSeconds, 0)
+  const listenedSeconds = books.reduce(
+    (sum, b) => sum + b.estimatedTotalSeconds * (b.progressPercent / 100),
+    0,
+  )
+  const words = books.reduce((sum, b) => sum + b.wordCount, 0)
+  const percent = totalSeconds > 0 ? Math.round((listenedSeconds / totalSeconds) * 100) : 0
+  const listened = listenedSeconds >= 30 ? formatDurationLong(listenedSeconds) : '0m'
+  return `${percent}% read · ${listened} of ${formatDurationLong(totalSeconds)} · ${formatWords(words)} words`
 }
 
 function BookCard({
@@ -117,6 +145,31 @@ function BookCard({
     })
   }
 
+  // Marking read moves the saved position to the end, so a book partway
+  // through loses its place - worth a confirm; a finished or unopened one
+  // has nothing to lose.
+  const markRead = useMarkRead()
+  const handleMarkRead = () => {
+    const read = !book.finished
+    if (read && percent > 0 && !confirm(`Mark "${book.title}" as read? Your place in it is lost.`))
+      return
+    markRead.mutate(
+      { bookId: book.id, read },
+      {
+        onError: (err) =>
+          alert(err instanceof ApiError ? err.message : 'Could not update the book'),
+      },
+    )
+  }
+
+  const cancelJobs = useCancelBookJobs()
+  const handleCancelJobs = () => {
+    if (!confirm(`Cancel every queued and running job for "${book.title}"?`)) return
+    cancelJobs.mutate(book.id, {
+      onError: (err) => alert(err instanceof ApiError ? err.message : 'Could not cancel jobs'),
+    })
+  }
+
   const syncSource = useSyncBookSource()
   const handleSyncSource = () => {
     syncSource.mutate(book.id, {
@@ -153,7 +206,7 @@ function BookCard({
           {book.preprocessing && (
             <div
               className="book-cover-processing"
-              title="Preprocessing: attributing speakers, characterizing, provisioning voices, tagging directions, resolving pronunciation…"
+              title="Preprocessing: summarizing, attributing speakers, characterizing, labeling emotions, scoring ambience, resolving pronunciation…"
             >
               <RiLoader4Line className="spin" />
             </div>
@@ -182,6 +235,7 @@ function BookCard({
             {' · '}
             {formatDurationLong(remainingSeconds)}
             {!book.estimateCalibrated && ' (est.)'}
+            {book.wordCount > 0 && ` · ${formatWords(book.wordCount)} words`}
           </div>
           {sourceNote && (
             <div
@@ -194,16 +248,24 @@ function BookCard({
         </div>
       </Link>
       <Link
-        to="/books/$bookId/speakers"
+        to="/books/$bookId/settings"
         params={{ bookId: book.id }}
         className="icon-button icon-button-speakers"
-        title="Speakers"
+        title="Book settings"
       >
-        <RiUserVoiceLine />
+        <RiSettings3Line />
       </Link>
       <button
-        className="icon-button icon-button-preprocess"
-        title="Preprocess: attribute speakers, characterize, provision voices, tag directions, and resolve pronunciation for the whole book"
+        className={
+          book.preprocessed
+            ? 'icon-button icon-button-preprocess icon-button-preprocessed'
+            : 'icon-button icon-button-preprocess'
+        }
+        title={
+          book.preprocessed
+            ? 'Preprocessed: every chapter has been through every pass. Click to run it again for anything new'
+            : "Preprocess: summarize, attribute speakers, characterize, label emotions, score ambience, and resolve pronunciation for the whole book. Voices are made later, when a character's lines are first generated"
+        }
         onClick={handlePreprocess}
         disabled={book.preprocessing || preprocessBook.isPending}
       >
@@ -245,6 +307,22 @@ function BookCard({
       >
         <RiDownload2Line />
       </Link>
+      <button
+        className="icon-button icon-button-read"
+        title={book.finished ? 'Mark as unread' : 'Mark as read'}
+        onClick={handleMarkRead}
+        disabled={markRead.isPending}
+      >
+        {book.finished ? <RiArrowGoBackLine /> : <RiCheckLine />}
+      </button>
+      <button
+        className="icon-button icon-button-cancel-jobs"
+        title="Cancel every queued and running job for this book"
+        onClick={handleCancelJobs}
+        disabled={cancelJobs.isPending}
+      >
+        <RiCloseCircleLine />
+      </button>
       {book.source && (
         <button
           className="icon-button icon-button-source"
@@ -281,7 +359,7 @@ function BookCard({
           />
         </>
       )}
-      <button className="icon-button" title="Delete book" onClick={onDelete}>
+      <button className="icon-button icon-button-delete" title="Delete book" onClick={onDelete}>
         <RiDeleteBinLine />
       </button>
     </div>
@@ -309,6 +387,36 @@ function sourceStatus(book: BookSummary): string | null {
   // The source lists the next chapter but won't serve it yet; the book
   // never skips past one.
   return source.blocked ? `Next chapter “${source.blocked}” is locked at ${source.name}` : null
+}
+
+// A series' one row of books, which scrolls sideways. It opens with the
+// first book not yet finished in the middle of the row, so a series
+// part-way read shows where the reader is - with what came before and
+// what comes next on either side - rather than its first volumes. Placed
+// once, when the row first appears: after that the row is the reader's to
+// scroll, and a book finishing mid-session doesn't move it under them.
+function SeriesRow({ books, children }: { books: BookSummary[]; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const firstUnread = books.findIndex((b) => !b.finished)
+  const opened = useRef(false)
+  useLayoutEffect(() => {
+    const row = ref.current
+    if (!row || opened.current) return
+    opened.current = true
+    const card = firstUnread >= 0 ? row.children[firstUnread] : undefined
+    if (card) {
+      // The browser keeps this within the row's ends, so an early book
+      // just leaves the row at its start.
+      const at = card.getBoundingClientRect()
+      const within = row.getBoundingClientRect()
+      row.scrollLeft += at.left - within.left - (within.width - at.width) / 2
+    }
+  }, [firstUnread])
+  return (
+    <div className="book-grid" ref={ref}>
+      {children}
+    </div>
+  )
 }
 
 export function LibraryPage() {
@@ -341,11 +449,36 @@ export function LibraryPage() {
     })
   }
 
-  const handleFileChosen = (file: File | undefined) => {
-    if (!file) return
+  // Epubs upload one at a time, in the order chosen (several from the file
+  // picker, or dropped on the page); one that fails is listed by name and
+  // the rest carry on.
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
+  const [uploadFailures, setUploadFailures] = useState<string[]>([])
+  const handleFilesChosen = async (files: File[]) => {
+    if (files.length === 0 || uploadProgress) return
     setUploadError(null)
-    uploadBook.mutate(file, {
-      onError: (err) => setUploadError(err instanceof ApiError ? err.message : 'Upload failed'),
+    setUploadFailures([])
+    setUploadProgress({ done: 0, total: files.length })
+    for (const [i, file] of files.entries()) {
+      try {
+        await uploadBook.mutateAsync(file)
+      } catch (err) {
+        const message = err instanceof ApiError ? err.message : 'Upload failed'
+        if (files.length === 1) setUploadError(message)
+        else setUploadFailures((prev) => [...prev, `${file.name}: ${message}`])
+      }
+      setUploadProgress({ done: i + 1, total: files.length })
+    }
+    setUploadProgress(null)
+  }
+  const uploading = uploadProgress !== null
+
+  const preprocessSeries = usePreprocessSeries()
+  const runPreprocessSeries = (seriesName: string, bookId: string) => {
+    if (!confirm(`Preprocess every book in "${seriesName}", one at a time in order?`)) return
+    preprocessSeries.mutate(bookId, {
+      onError: (err) =>
+        alert(err instanceof ApiError ? err.message : 'Could not start preprocessing the series'),
     })
   }
 
@@ -355,18 +488,31 @@ export function LibraryPage() {
     }
   }
 
-  const items = useMemo(() => groupBySeries(booksQuery.data ?? []), [booksQuery.data])
-  // The "Continue reading" entry: the unfinished book read most recently.
-  // It also keeps its usual place below. Not shown for a one-book library.
-  const continueBook = useMemo(() => {
+  // The search box narrows the library to books whose title, author or
+  // series contains every word typed.
+  const [search, setSearch] = useState('')
+  const searchWords = useMemo(() => search.toLowerCase().split(/\s+/).filter(Boolean), [search])
+  const searching = searchWords.length > 0
+  const items = useMemo(() => {
     const books = booksQuery.data ?? []
-    if (books.length < 2) return null
+    if (searchWords.length === 0) return groupBySeries(books)
+    return groupBySeries(
+      books.filter((b) => {
+        const haystack = `${b.title} ${b.author} ${b.seriesName ?? ''}`.toLowerCase()
+        return searchWords.every((w) => haystack.includes(w))
+      }),
+    )
+  }, [booksQuery.data, searchWords])
+  // The "Continue reading" row: the ten unfinished books read most
+  // recently, latest first. Each also keeps its usual place below. Not
+  // shown for a one-book library.
+  const continueBooks = useMemo(() => {
+    const books = booksQuery.data ?? []
+    if (books.length < 2) return []
     return books
       .filter((b) => !b.finished && b.lastReadAt)
-      .reduce<BookSummary | null>(
-        (best, b) => (!best || (b.lastReadAt ?? 0) > (best.lastReadAt ?? 0) ? b : best),
-        null,
-      )
+      .sort((a, b) => (b.lastReadAt ?? 0) - (a.lastReadAt ?? 0))
+      .slice(0, 10)
   }, [booksQuery.data])
 
   // Approximated, not tracked directly: no event logs actual listening
@@ -386,31 +532,58 @@ export function LibraryPage() {
   }, [booksQuery.data])
 
   return (
-    <div className="library">
+    <div
+      className="library"
+      onDragOver={(e) => {
+        if (e.dataTransfer.types.includes('Files')) e.preventDefault()
+      }}
+      onDrop={(e) => {
+        const epubs = [...e.dataTransfer.files].filter((f) =>
+          f.name.toLowerCase().endsWith('.epub'),
+        )
+        // Always taken, so a stray file isn't opened in place of the app.
+        e.preventDefault()
+        void handleFilesChosen(epubs)
+      }}
+    >
       <div className="library-header">
         <h1>Your books</h1>
+        <input
+          type="search"
+          className="library-search"
+          placeholder="Search by title, author or series"
+          aria-label="Search your books"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
         <div className="library-add-menu" ref={addMenuRef}>
           <button
             className="primary-button"
             aria-haspopup="menu"
             aria-expanded={addMenuOpen}
             onClick={() => setAddMenuOpen((v) => !v)}
-            disabled={uploadBook.isPending || importUrl.isPending}
+            disabled={uploading || importUrl.isPending}
           >
             <RiAddLine />{' '}
-            {uploadBook.isPending ? 'Uploading…' : importUrl.isPending ? 'Importing…' : 'Add book'}
+            {uploadProgress
+              ? uploadProgress.total > 1
+                ? `Uploading ${Math.min(uploadProgress.done + 1, uploadProgress.total)} of ${uploadProgress.total}…`
+                : 'Uploading…'
+              : importUrl.isPending
+                ? 'Importing…'
+                : 'Add book'}
           </button>
           {addMenuOpen && (
             <div className="popover-panel library-add-menu-panel" role="menu">
               <button
                 role="menuitem"
-                title="Upload an .epub - or a Lectable export, which restores the book with its audio"
+                title="Upload one or several .epub files (or drop them on this page) - a Lectable export restores the book with its audio"
                 onClick={() => {
                   setAddMenuOpen(false)
                   fileInputRef.current?.click()
                 }}
               >
-                <RiUploadLine /> Upload .epub
+                <RiUploadLine /> Upload .epub files
               </button>
               <button
                 role="menuitem"
@@ -429,9 +602,10 @@ export function LibraryPage() {
           ref={fileInputRef}
           type="file"
           accept=".epub"
+          multiple
           hidden
           onChange={(e) => {
-            handleFileChosen(e.target.files?.[0])
+            void handleFilesChosen([...(e.target.files ?? [])])
             // Cleared so choosing the same file again (a retry) still fires onChange.
             e.target.value = ''
           }}
@@ -474,6 +648,17 @@ export function LibraryPage() {
       )}
 
       {uploadError && <p className="error-text">{uploadError}</p>}
+      {uploadFailures.length > 0 && (
+        <div className="error-text">
+          {uploadFailures.length} {uploadFailures.length === 1 ? 'book' : 'books'} could not be
+          added:
+          <ul>
+            {uploadFailures.map((f) => (
+              <li key={f}>{f}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {booksQuery.isLoading && <p>Loading…</p>}
       {booksQuery.isError && <p className="error-text">Could not load your library.</p>}
@@ -491,25 +676,43 @@ export function LibraryPage() {
         </div>
       )}
 
-      {continueBook && (
+      {searching && booksQuery.data && booksQuery.data.length > 0 && items.length === 0 && (
+        <p className="muted">No books match “{search.trim()}”.</p>
+      )}
+
+      {continueBooks.length > 0 && !searching && (
         <section className="library-series-group">
           <h2 className="library-series-heading">Continue reading</h2>
           <div className="book-grid">
-            <BookCard
-              book={continueBook}
-              onDelete={() => confirmDelete(continueBook)}
-              showSeriesName={true}
-              narrationRate={rate}
-            />
+            {continueBooks.map((book) => (
+              <BookCard
+                key={book.id}
+                book={book}
+                onDelete={() => confirmDelete(book)}
+                showSeriesName={true}
+                narrationRate={rate}
+              />
+            ))}
           </div>
         </section>
       )}
 
       {items.map((item) =>
         item.kind === 'series' ? (
-          <section key={item.key} className="library-series-group">
-            <h2 className="library-series-heading">{item.seriesName}</h2>
-            <div className="book-grid">
+          <section key={item.key} className="library-series-group library-series-box">
+            <h2 className="library-series-heading">
+              {item.seriesName}
+              <span className="library-series-totals muted">{seriesTotals(item.books)}</span>
+              <button
+                className="icon-action-button"
+                title="Preprocess the whole series in order - each book only once the one before it has finished, so later books build on the earlier ones' characters and voices"
+                onClick={() => runPreprocessSeries(item.seriesName, item.books[0].id)}
+                disabled={preprocessSeries.isPending}
+              >
+                <RiMagicLine />
+              </button>
+            </h2>
+            <SeriesRow books={item.books}>
               {item.books.map((book) => (
                 <BookCard
                   key={book.id}
@@ -519,7 +722,7 @@ export function LibraryPage() {
                   narrationRate={rate}
                 />
               ))}
-            </div>
+            </SeriesRow>
           </section>
         ) : (
           <div key={item.key} className="book-grid">

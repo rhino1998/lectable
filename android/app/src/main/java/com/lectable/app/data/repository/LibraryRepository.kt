@@ -11,9 +11,11 @@ import com.lectable.app.data.remote.dto.BookmarkDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.ChapterNotesDto
+import com.lectable.app.data.remote.dto.RecapSettingsDto
 import com.lectable.app.data.remote.dto.CreateBookmarkRequestDto
 import com.lectable.app.data.remote.dto.ImportBookURLRequestDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
+import com.lectable.app.data.remote.dto.MarkReadRequestDto
 import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.data.remote.dto.SetParagraphEmotionRequestDto
@@ -153,6 +155,16 @@ class LibraryRepository @Inject constructor(
     suspend fun regenerateChapterNotes(bookId: String, idx: Int): Boolean =
         api.summarizeChapter(bookId, idx, overwriteEdits = "true").queued > 0
 
+    /** Asks for the "previously on" recap of where [bookId]'s reader is now (backend
+     *  handlePrepareBookRecap) - [force] writes it again even if it has one. The bookRecap live
+     *  topic carries the wait and the result. */
+    suspend fun prepareRecap(bookId: String, force: Boolean): Boolean =
+        api.prepareBookRecap(bookId, force = if (force) "true" else null).queued > 0
+
+    /** Sets how long away brings the recap offer, for every client of the library (backend
+     *  handleSetRecapSettings). */
+    suspend fun setRecapAfterMinutes(minutes: Int) = api.setRecapSettings(RecapSettingsDto(afterMinutes = minutes))
+
     /** Runs [block], turning an HTTP error into an exception carrying the server's own `error`
      *  text (or [fallback] with the status code). */
     private suspend fun <T> withServerMessage(fallback: String, block: suspend () -> T): T =
@@ -195,6 +207,11 @@ class LibraryRepository @Inject constructor(
 
     suspend fun updatePosition(bookId: String, position: PositionDto) {
         api.updatePosition(bookId, position)
+    }
+
+    /** [LectableApi.markRead] - see its own doc comment. */
+    suspend fun markRead(bookId: String, read: Boolean) {
+        api.markRead(bookId, MarkReadRequestDto(read))
     }
 
     suspend fun searchBook(bookId: String, query: String): List<SearchResultDto> = api.searchBook(bookId, query)

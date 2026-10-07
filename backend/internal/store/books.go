@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -374,6 +375,9 @@ func (s *SQLiteStore) DeleteBook(id string) error {
 	if _, err := tx.Exec(`DELETE FROM book_settings WHERE book_id = ?`, id); err != nil {
 		return fmt.Errorf("delete book setting: %w", err)
 	}
+	if _, err := tx.Exec(`DELETE FROM book_recaps WHERE book_id = ?`, id); err != nil {
+		return fmt.Errorf("delete book recap: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM books WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete book: %w", err)
 	}
@@ -411,6 +415,36 @@ func (s *SQLiteStore) UpdatePosition(bookID string, chapterIdx, paragraphIdx int
 	_, err := s.db.execAs(PositionTable,
 		`UPDATE books SET pos_chapter_idx = ?, pos_paragraph_idx = ?, pos_seconds = ?, last_read_at = ? WHERE id = ?`,
 		chapterIdx, paragraphIdx, seconds, time.Now().Unix(), bookID,
+	)
+	return err
+}
+
+// MarkBookRead moves bookID's reading position to its last paragraph
+// (read) or back to its start (!read) - "finished" is derived from the
+// position (httpapi.toBookSummary), so a book marked read becomes unread
+// again by itself when chapters are added after it. Marking unread also
+// clears Book.LastReadAt, as for a book never opened; marking read leaves
+// it alone.
+func (s *SQLiteStore) MarkBookRead(bookID string, read bool) error {
+	if !read {
+		_, err := s.db.execAs(PositionTable,
+			`UPDATE books SET pos_chapter_idx = 0, pos_paragraph_idx = 0, pos_seconds = 0, last_read_at = 0 WHERE id = ?`,
+			bookID,
+		)
+		return err
+	}
+	var chapterIdx, paragraphIdx int
+	err := s.db.QueryRow(`SELECT c.idx, (SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id) - 1
+		FROM chapters c WHERE c.book_id = ? ORDER BY c.idx DESC LIMIT 1`, bookID).Scan(&chapterIdx, &paragraphIdx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = s.db.execAs(PositionTable,
+		`UPDATE books SET pos_chapter_idx = ?, pos_paragraph_idx = ?, pos_seconds = 0 WHERE id = ?`,
+		chapterIdx, max(paragraphIdx, 0), bookID,
 	)
 	return err
 }

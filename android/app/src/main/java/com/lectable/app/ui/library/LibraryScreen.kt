@@ -17,7 +17,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
@@ -207,6 +209,7 @@ fun LibraryScreen(
                                 onOpenLexicon = { onOpenLexicon(item.summary.id) },
                                 onGenerate = { viewModel.generateBook(item.summary.id) },
                                 onGenerateRemaining = { viewModel.generateBookRemaining(item.summary.id) },
+                                onMarkRead = { viewModel.markRead(item.summary.id, read = !item.summary.finished) },
                                 onDownload = { viewModel.downloadBook(item.summary.id) },
                                 onDownloadRemaining = { viewModel.downloadBookRemaining(item.summary.id) },
                                 onSyncSource = { viewModel.syncBookSource(item.summary.id) },
@@ -330,6 +333,7 @@ private fun BookRow(
     onOpenLexicon: () -> Unit,
     onGenerate: () -> Unit,
     onGenerateRemaining: () -> Unit,
+    onMarkRead: () -> Unit,
     onDownload: () -> Unit,
     onDownloadRemaining: () -> Unit,
     onSyncSource: () -> Unit,
@@ -490,6 +494,13 @@ private fun BookRow(
                     )
                 }
             }
+            DropdownMenuItem(
+                text = { Text(if (book.finished) "Mark as unread" else "Mark as read") },
+                leadingIcon = {
+                    Icon(if (book.finished) Icons.AutoMirrored.Filled.Undo else Icons.Filled.Check, contentDescription = null)
+                },
+                onClick = { onMarkRead(); showMenu = false },
+            )
             // Only a book imported from a website has anywhere to check.
             book.source?.let { source ->
                 DropdownMenuItem(

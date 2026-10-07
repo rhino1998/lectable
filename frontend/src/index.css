@@ -163,6 +163,31 @@ h2 {
   color: var(--accent);
 }
 
+/* A page's own tabs, under its header (BookSettingsPage). */
+.page-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.page-tab {
+  padding: 0.5rem 0.9rem;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.page-tab:hover {
+  color: var(--accent);
+}
+.page-tab-active {
+  border-bottom-color: var(--accent);
+  color: var(--accent);
+}
+
 .app-sidebar-spacer {
   flex: 1;
 }
@@ -257,12 +282,40 @@ label {
 
 /* Library */
 
+/* The library fills the window instead of .app-main's reading-width
+   column, so a wide screen shows more covers per row - as do a book's
+   settings page and the Jobs page, for their wide tables. */
+.app-main:has(> .library),
+.app-main:has(> .speakers-page),
+.app-main:has(> .jobs-page) {
+  max-width: none;
+}
+
 .library-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
   margin-bottom: 1.5rem;
+}
+
+/* Filters the library by title/author/series; sits between the heading
+   and "Add book". */
+.library-search {
+  flex: 1 1 12rem;
+  min-width: 0;
+  max-width: 28rem;
+  margin-left: auto;
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.library-search:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 /* The header's "Add book" button and its menu of ways to add one (see
@@ -335,6 +388,28 @@ label {
 }
 .library-series-group .book-grid {
   margin-bottom: 0;
+}
+
+/* A section's books (a series, or "Continue reading") stay on one row
+   that scrolls sideways rather than wrapping. */
+.library-series-group .book-grid {
+  grid-template-columns: none;
+  grid-auto-flow: column;
+  grid-auto-columns: 170px;
+  overflow-x: auto;
+  /* Room for the scrollbar, clear of the cards' last line. */
+  padding-bottom: 0.5rem;
+}
+
+/* A series' title bar: its name, then its totals. */
+.library-series-box .library-series-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 1rem;
+}
+.library-series-totals {
+  font-size: 0.8rem;
 }
 
 .book-card {
@@ -464,23 +539,42 @@ label {
   opacity: 1;
   pointer-events: auto;
 }
-.icon-button-speakers {
+.icon-button-preprocess {
   top: 2.05rem;
 }
-.icon-button-preprocess {
-  top: 3.7rem;
-}
 .icon-button-export {
+  top: 5.35rem;
+}
+.icon-button-read {
   top: 7rem;
 }
-.icon-button-source {
+.icon-button-cancel-jobs {
   top: 8.65rem;
 }
-.icon-button-backfill {
+.icon-button-source {
   top: 10.3rem;
+}
+.icon-button-backfill {
+  top: 11.95rem;
+}
+/* Delete closes the column, in red, under whichever of the source buttons
+   the card has. */
+.icon-button-delete {
+  top: 10.3rem;
+  background: color-mix(in srgb, var(--error) 40%, rgba(0, 0, 0, 0.6));
+}
+.book-card:has(.icon-button-source) .icon-button-delete {
+  top: 11.95rem;
+}
+.book-card:has(.icon-button-backfill) .icon-button-delete {
+  top: 13.6rem;
 }
 .icon-button-source:disabled {
   cursor: default;
+}
+/* A book whose chapters have all been through every pass. */
+.icon-button-preprocessed {
+  background: var(--accent);
 }
 .icon-button-preprocess:disabled {
   opacity: 0.4;
@@ -495,7 +589,7 @@ label {
    where that button used to sit directly. */
 .book-generate-menu {
   position: absolute;
-  top: 5.35rem;
+  top: 3.7rem;
   right: 0.4rem;
   opacity: 0;
   pointer-events: none;
@@ -1051,7 +1145,7 @@ label {
   gap: 0.75rem;
 }
 
-/* Name filter above the Speakers page's roster list. */
+/* Name filter above the Book settings page's roster list. */
 .speakers-roster-search {
   font: inherit;
   width: 100%;
@@ -1200,7 +1294,7 @@ label {
   border-radius: 6px;
 }
 
-/* Speakers page (per-book character roster + attribution) */
+/* Book settings page (per-book character roster + attribution) */
 
 .speakers-page section {
   margin-bottom: 1.75rem;
@@ -1235,7 +1329,7 @@ label {
 .chapter-attribute-table tr:last-child td {
   border-bottom: none;
 }
-/* SpeakersPage's two whole-book action rows atop the chapter table: no
+/* BookSettingsPage's two whole-book action rows atop the chapter table: no
    divider between the pair, a stronger one under the last so they read as
    a header block distinct from the per-chapter rows. */
 .chapter-attribute-table tr.chapter-attribute-bulk-row td {
@@ -1251,7 +1345,7 @@ label {
 .icon-action-spacer {
   visibility: hidden;
 }
-/* One SpeakersPage chapter-table cell: the column's action button, then
+/* One BookSettingsPage chapter-table cell: the column's action button, then
    its status - button first so it lines up with the bulk rows' button in
    the same column. */
 .chapter-attribute-cell {
@@ -2462,7 +2556,7 @@ label {
   font-weight: 600;
   cursor: default;
 }
-/* SpeakersPage's per-speaker emotion variants (SpeakerEmotions) - one
+/* BookSettingsPage's per-speaker emotion variants (SpeakerEmotions) - one
    chip per emotion the speaker's lines use, tinted by variant status. */
 .speaker-emotions {
   display: flex;
@@ -2938,7 +3032,7 @@ label {
   padding-left: 1.2rem;
 }
 
-/* Speakers page book setting profile (SettingPanel). */
+/* Book settings page book setting profile (SettingPanel). */
 .setting-form {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
@@ -2972,7 +3066,7 @@ label {
   gap: 0.5rem;
 }
 
-/* Speakers page pronunciation lexicon (LexiconPanel). */
+/* Book settings page pronunciation lexicon (LexiconPanel). */
 .lexicon-form {
   display: flex;
   flex-wrap: wrap;
@@ -3009,6 +3103,49 @@ label {
   padding: 0.4rem 0.6rem;
   border-left: 3px solid var(--accent);
   background: var(--accent-bg, transparent);
+}
+
+/* The reader's "previously on" offer and panel (RecapPanel): floats over
+   the text just above the player bar, like .bottom-popover, so it never
+   moves the bar's own rows. */
+.recap-float {
+  position: absolute;
+  bottom: calc(100% + 0.75rem);
+  right: 1rem;
+  left: 1rem;
+  max-width: 36rem;
+  margin: 0 0 0 auto;
+  max-height: 60vh;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  padding: 0.75rem 1rem;
+}
+/* Open, the recap sits in the text above the paragraph it was opened at
+   (ChapterSection's .recap-slot), set off like the playing paragraph. */
+.recap-inline {
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.chapter-table > .recap-slot {
+  grid-column: 1 / -1;
+}
+.recap-panel p {
+  margin: 0.5rem 0;
+  line-height: 1.5;
+}
+.recap-panel-header,
+.recap-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .lexicon-suggestions {

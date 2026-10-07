@@ -242,6 +242,15 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    /** Long-press menu's "Mark as read"/"Mark as unread" - moves the book's saved position to its
+     *  end or back to its start server-side; the row's change arrives on the live books topic. */
+    fun markRead(bookId: String, read: Boolean) {
+        viewModelScope.launch {
+            runCatching { repository.markRead(bookId, read) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
     /** Long-press menu's "Download book" - every chapter, same
      *  semantics as ReaderViewModel.downloadBook's own whole-book action, just reachable directly
      *  from the library without opening the book first. KEEP (not REPLACE): re-tapping this must
