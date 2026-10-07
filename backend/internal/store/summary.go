@@ -15,9 +15,19 @@ type ChapterNotes struct {
 	Summary string         `json:"summary"`
 	Scenes  []SummaryScene `json:"scenes"`
 	Cast    []CastMember   `json:"cast"`
+	// Parts are the summaries Summary was joined from, one per window of a
+	// long chapter (speakerattr.ChapterSummary.Parts). A reader's edit of
+	// the notes keeps them only if it leaves Summary as it was.
+	Parts []SummaryPart `json:"parts,omitempty"`
 	// Edited notes were written or corrected by the reader (PUT .../notes);
 	// the summary pass leaves them alone unless told to overwrite them.
 	Edited bool `json:"edited,omitempty"`
+}
+
+// SummaryPart is the summary of the part of a chapter starting at StartIdx.
+type SummaryPart struct {
+	StartIdx int    `json:"startIdx"`
+	Summary  string `json:"summary"`
 }
 
 // SummaryScene is one scene of a chapter, running from StartIdx to the next

@@ -44,6 +44,18 @@ type ChapterSummary struct {
 	Summary string
 	Scenes  []Scene
 	Cast    []CastMember
+	// Parts are the summaries Summary was joined from, one per window of a
+	// chapter too long for one call, each with where its window starts - a
+	// recap for a reader partway through uses the ones they have passed.
+	// Empty for notes from before parts were kept.
+	Parts []SummaryPart
+}
+
+// SummaryPart is the summary of one window of a chapter: the paragraphs
+// from StartIdx to the next part's StartIdx (or the chapter's end).
+type SummaryPart struct {
+	StartIdx int
+	Summary  string
 }
 
 // Scene is one scene of a chapter: it runs from StartIdx until the next
@@ -174,6 +186,7 @@ func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle s
 				out.Summary += " "
 			}
 			out.Summary += s
+			out.Parts = append(out.Parts, SummaryPart{StartIdx: window[0].Idx, Summary: s})
 		}
 	}
 	// Whoever an explicit speech tag credits with a line is in the chapter,

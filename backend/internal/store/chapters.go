@@ -114,6 +114,7 @@ func SumNarration(chapters []ChapterNarration) ([]ChapterSummary, NarrationStats
 	for i, c := range chapters {
 		summaries[i] = c.ChapterSummary
 		stats.TotalChars += c.TotalChars
+		stats.TotalWords += c.TotalWords
 		stats.ReadyChars += c.ReadyChars
 		stats.ReadySeconds += c.ReadySeconds
 	}
@@ -147,6 +148,7 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
 				(SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id),
 				(SELECT COALESCE(SUM(LENGTH(p.content)), 0) FROM paragraphs p WHERE p.chapter_id = c.id),
+				(SELECT COALESCE(SUM(CASE WHEN p.content = '' THEN 0 ELSE LENGTH(p.content) - LENGTH(REPLACE(p.content, ' ', '')) + 1 END), 0) FROM paragraphs p WHERE p.chapter_id = c.id),
 				COUNT(pa.paragraph_id),
 				COALESCE(SUM(pa.chars), 0),
 				COALESCE(SUM(pa.duration_seconds), 0)
@@ -163,6 +165,7 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
 				COUNT(p.id),
 				COALESCE(SUM(LENGTH(p.content)), 0),
+				COALESCE(SUM(CASE WHEN p.content = '' THEN 0 ELSE LENGTH(p.content) - LENGTH(REPLACE(p.content, ' ', '')) + 1 END), 0),
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
@@ -184,7 +187,7 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 	for rows.Next() {
 		var cn ChapterNarration
 		if err := rows.Scan(&cn.ID, &cn.BookID, &cn.Idx, &cn.Title, &cn.Passes,
-			&cn.ParagraphCount, &cn.TotalChars, &cn.ReadyCount, &cn.ReadyChars, &cn.ReadySeconds); err != nil {
+			&cn.ParagraphCount, &cn.TotalChars, &cn.TotalWords, &cn.ReadyCount, &cn.ReadyChars, &cn.ReadySeconds); err != nil {
 			return nil, err
 		}
 		out = append(out, cn)

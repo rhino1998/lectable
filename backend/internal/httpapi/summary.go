@@ -74,6 +74,9 @@ func storeNotesFrom(s speakerattr.ChapterSummary) store.ChapterNotes {
 	for _, m := range s.Cast {
 		out.Cast = append(out.Cast, store.CastMember{Name: m.Name, Role: m.Role, Pronouns: m.Pronouns, Refs: m.Refs})
 	}
+	for _, p := range s.Parts {
+		out.Parts = append(out.Parts, store.SummaryPart{StartIdx: p.StartIdx, Summary: p.Summary})
+	}
 	return out
 }
 
@@ -318,6 +321,10 @@ func (s *Server) handlePutChapterNotes(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	// The per-window summaries stay with a summary the reader left alone.
+	if existing, err := s.Store.GetChapterNotes(ch.ID); err == nil && existing != nil && existing.Summary == notes.Summary {
+		notes.Parts = existing.Parts
 	}
 	if err := s.Store.SetChapterNotes(ch.ID, notes); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

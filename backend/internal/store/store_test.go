@@ -1774,7 +1774,7 @@ func TestParagraphAudioChapterCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, stats := SumNarration(narration)
-	if want := (NarrationStats{TotalChars: 18, ReadyChars: 12, ReadySeconds: 3.5}); stats != want {
+	if want := (NarrationStats{TotalChars: 18, TotalWords: 4, ReadyChars: 12, ReadySeconds: 3.5}); stats != want {
 		t.Errorf("ChapterNarration stats = %+v, want %+v", stats, want)
 	}
 	sums, err := s.ListChapterSummaries(bookID, voice, nil)
