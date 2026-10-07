@@ -261,8 +261,8 @@ export function CharacterVoiceEditor({
         <p className="muted">
           Clones the selected voice's own reference clip while applying the voice instruction above
           as a clone-time style direction, instead of designing a brand-new voice from scratch -
-          previews exactly what "Style unassigned characters with the narrator's own voice"
-          (Speakers page settings) does automatically. Only the "{INSTRUCTED_CLONE_MODEL}" clone
+          previews exactly what "Style unassigned characters with the narrator's own voice" (Book
+          settings page settings) does automatically. Only the "{INSTRUCTED_CLONE_MODEL}" clone
           model actually honors the instruction this way, so this always tests through that model
           regardless of this book's own cloning model.
         </p>

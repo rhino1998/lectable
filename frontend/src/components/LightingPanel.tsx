@@ -266,8 +266,8 @@ export function LightingPanel() {
       )}
       {error && <p className="error-text">{error}</p>}
       <p className="lighting-hint">
-        Cues come from each chapter's ambience pass (Speakers page). The bridge is reached directly
-        from this browser.
+        Cues come from each chapter's ambience pass (Book settings page). The bridge is reached
+        directly from this browser.
       </p>
     </div>
   )

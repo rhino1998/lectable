@@ -11,7 +11,7 @@ import {
 } from '../../api/queries'
 import type { LexiconEntry, UpsertLexiconRequest } from '../../api/types'
 
-// The Speakers page's pronunciation lexicon: listener-authored "say X as Y"
+// The Book settings page's pronunciation lexicon: listener-authored "say X as Y"
 // rules for names and coinages the TTS keeps getting wrong. Shared across
 // the book's whole series (like the roster), matched as whole words, and
 // applied at generation time on top of - and overriding - the LLM

@@ -4,7 +4,8 @@ import { ReaderPage } from './pages/ReaderPage'
 import { VoicesPage } from './pages/VoicesPage'
 import { SFXPage } from './pages/SFXPage'
 import { LLMPage } from './pages/LLMPage'
-import { SpeakersPage } from './pages/SpeakersPage'
+import { BookSettingsPage } from './pages/BookSettingsPage'
+import { BOOK_SETTINGS_TABS, type BookSettingsTab } from './utils/bookSettingsTabs'
 import { JobsPage } from './pages/JobsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { ExportPage } from './pages/ExportPage'
@@ -44,8 +45,12 @@ const readerRoute = createRoute({
 
 const speakersRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: '/books/$bookId/speakers',
-  component: SpeakersPage,
+  path: '/books/$bookId/settings',
+  component: BookSettingsPage,
+  // ?tab= picks the page's tab; anything else is the first one.
+  validateSearch: (search: Record<string, unknown>): { tab?: BookSettingsTab } => ({
+    tab: BOOK_SETTINGS_TABS.find((t) => t === search.tab),
+  }),
 })
 
 const exportRoute = createRoute({

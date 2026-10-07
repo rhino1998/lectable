@@ -25,7 +25,7 @@ import { useReimportChapterAction } from './useReimportChapterAction'
 // Chapter-header actions: clear a chapter's own generated audio (a
 // scalpel next to VoicePanel's whole-book "Delete generated audio"), and
 // run/re-run speaker attribution for just that chapter without going to
-// the Speakers page - see SpeakersPage's own "Attribute speakers" button
+// the Book settings page - see BookSettingsPage's own "Attribute speakers" button
 // for the fuller roster-management version of the same call.
 //
 // Every run* callback is useCallback-stable (keyed on its own mutation

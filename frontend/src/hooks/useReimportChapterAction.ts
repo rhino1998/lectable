@@ -4,7 +4,7 @@ import { useReimportChapter } from '../api/queries'
 
 // Re-import: re-parse one chapter from the book's stored source epub
 // (api.reimportChapter), shared by the reader's chapter menu and the
-// Speakers page's chapter rows. Two recoverable failures - the backend has
+// Book settings page's chapter rows. Two recoverable failures - the backend has
 // no stored epub for an older book (ask for the file, which it then keeps),
 // or the epub's chapter title differs (confirm, then force). Any other
 // failure goes to onError. reimportingIdx is the chapter currently being

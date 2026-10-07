@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { RiPauseFill, RiPlayFill } from 'react-icons/ri'
 
 // A standalone, isolated preview of one music region's generated clip
-// (the reader's region markers and the Speakers page's AmbiencePreview) - its
+// (the reader's region markers and the Book settings page's AmbiencePreview) - its
 // own plain <audio> (not tied to usePlayback's narration element or
 // useBackgroundMusic's own live-mixing Web Audio graph at all), the same
 // "quick audition, nothing else on the page needs to know about it" shape

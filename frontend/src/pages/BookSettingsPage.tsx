@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Link, useParams } from '@tanstack/react-router'
+import { Link, useParams, useSearch } from '@tanstack/react-router'
 import {
   RiDeleteBinLine,
   RiGitMergeLine,
@@ -12,6 +12,8 @@ import {
   useBulkAction,
   useBulkActionsRunning,
   useBook,
+  useBookJobsSnapshot,
+  useCancelBookJobs,
   useCharacterAppearances,
   useCharacterizeSpeaker,
   useCharacterizingCharacters,
@@ -32,26 +34,77 @@ import {
 } from '../api/queries'
 import { ApiError } from '../api/client'
 import { withCacheBust } from '../utils/cacheBust'
+import { JobLists } from './JobsPage'
 import { SpeakerRow } from '../components/speakers/SpeakerRow'
 import { ChapterPassTable } from '../components/speakers/ChapterPassTable'
 import { SpeakerSettings } from '../components/speakers/SpeakerSettings'
 import { LexiconPanel } from '../components/speakers/LexiconPanel'
 import { SettingPanel } from '../components/speakers/SettingPanel'
 import { sortedRoster } from '../utils/speakerOrder'
+import { BOOK_SETTINGS_TABS, type BookSettingsTab } from '../utils/bookSettingsTabs'
 import { DEFAULT_CLONE_MODEL } from '../api/types'
 import type { BulkAction, BulkScope, Speaker } from '../api/types'
+
+const TAB_LABELS: Record<BookSettingsTab, string> = {
+  general: 'General',
+  chapters: 'Chapters',
+  characters: 'Characters',
+  pronunciations: 'Pronunciations',
+  jobs: 'Jobs',
+}
 
 // A stable empty roster while speakers load, so memos keyed on it hold.
 const NO_SPEAKERS: Speaker[] = []
 
-// Per-book speaker management: run LLM attribution chapter by chapter,
-// review who's been identified so far and how much of their dialogue has
-// generated audio, assign each character their own narration voice, and
-// turn on book.MultiVoice once satisfied with the assignments. Voice
+// The Jobs tab: this book's part of the queue, with one button to cancel
+// all of it.
+function BookJobsTab({ bookId, bookTitle }: { bookId: string; bookTitle: string }) {
+  const jobsQuery = useBookJobsSnapshot(bookId)
+  const cancelJobs = useCancelBookJobs()
+  const [cancelError, setCancelError] = useState<string | null>(null)
+  const runCancelAll = () => {
+    if (!confirm(`Cancel every queued and running job for "${bookTitle}"?`)) return
+    setCancelError(null)
+    cancelJobs.mutate(bookId, {
+      onError: (err) =>
+        setCancelError(err instanceof ApiError ? err.message : 'Could not cancel jobs'),
+    })
+  }
+  return (
+    <section>
+      <div className="library-header">
+        <p className="muted">
+          What's running and waiting for this book. Narration tasks (one per paragraph) aren't
+          listed here - see the <Link to="/jobs">Jobs page</Link>.
+        </p>
+        <button
+          className="text-button"
+          onClick={runCancelAll}
+          disabled={cancelJobs.isPending}
+          title="Cancel every queued and running job for this book, narration included"
+        >
+          Cancel all
+        </button>
+      </div>
+      {cancelError && <p className="error-text">{cancelError}</p>}
+      {jobsQuery.isLoading && <p>Loading…</p>}
+      {jobsQuery.isError && <p className="error-text">Could not load this book's jobs.</p>}
+      {jobsQuery.data && <JobLists snapshot={jobsQuery.data} />}
+    </section>
+  )
+}
+
+// Per-book settings, in tabs: General (the book-wide switches, character
+// voice mode and setting profile), Chapters (run the LLM passes chapter by
+// chapter), Characters (review who's been identified so far and how much
+// of their dialogue has generated audio, and assign each their own
+// narration voice), Pronunciations (the series lexicon) and Jobs (this
+// book's part of the queue). Voice
 // *selection* for the book's own (narrator) voice stays in VoicePanel/the
-// reader - this page is only about characters and the multi-voice switch.
-export function SpeakersPage() {
-  const { bookId } = useParams({ from: '/books/$bookId/speakers' })
+// reader.
+export function BookSettingsPage() {
+  const { bookId } = useParams({ from: '/books/$bookId/settings' })
+  const { tab = 'general' } = useSearch({ from: '/books/$bookId/settings' })
   const bookQuery = useBook(bookId)
   const voiceQuery = useVoice(bookId)
   const speakersQuery = useSpeakers(bookId)
@@ -379,7 +432,7 @@ export function SpeakersPage() {
   }
 
   // Same "run everything" meta-task as the library page's own Preprocess
-  // button (attribution -> characterization -> voice provisioning ->
+  // button (attribution -> characterization ->
   // direction tagging, POST .../preprocess) - offered here too since a
   // reader already on this page tuning character voices is a natural
   // place to kick it off, without having to go back to the library grid.
@@ -394,7 +447,7 @@ export function SpeakersPage() {
     <div className="speakers-page">
       <div className="library-header">
         <div>
-          <h1>Speakers</h1>
+          <h1>Book settings</h1>
           <p className="muted">{book.title}</p>
         </div>
         <div className="speakers-roster-actions">
@@ -402,7 +455,7 @@ export function SpeakersPage() {
             className="text-button"
             onClick={handlePreprocess}
             disabled={book.preprocessing || preprocessBook.isPending}
-            title="Preprocess: attribute speakers, characterize, provision voices, and label emotions for the whole book"
+            title="Preprocess: summarize, attribute speakers, characterize, label emotions, score ambience, and resolve pronunciation for the whole book. Voices are made later, when a character's lines are first generated"
           >
             {book.preprocessing ? 'Preprocessing…' : 'Preprocess'}
           </button>
@@ -412,186 +465,215 @@ export function SpeakersPage() {
         </div>
       </div>
 
+      <nav className="page-tabs">
+        {BOOK_SETTINGS_TABS.map((t) => (
+          <Link
+            key={t}
+            to="/books/$bookId/settings"
+            params={{ bookId }}
+            search={{ tab: t }}
+            replace
+            className={t === tab ? 'page-tab page-tab-active' : 'page-tab'}
+          >
+            {TAB_LABELS[t]}
+          </Link>
+        ))}
+      </nav>
+
       {bulkError && <p className="error-text">{bulkError}</p>}
 
-      <SpeakerSettings bookId={bookId} cloneModel={effectiveCloneModel} />
+      {tab === 'general' && (
+        <>
+          <SettingPanel bookId={bookId} />
+          <SpeakerSettings bookId={bookId} cloneModel={effectiveCloneModel} />
+        </>
+      )}
 
-      <SettingPanel bookId={bookId} />
+      {tab === 'pronunciations' && <LexiconPanel bookId={bookId} seriesName={book.seriesName} />}
 
-      <LexiconPanel bookId={bookId} seriesName={book.seriesName} />
+      {tab === 'jobs' && <BookJobsTab bookId={bookId} bookTitle={book.title} />}
 
-      <ChapterPassTable
-        bookId={bookId}
-        book={book}
-        bulkRunning={bulkRunning}
-        runBulk={runBulk}
-        onBulkError={setBulkError}
-      />
+      {tab === 'chapters' && (
+        <ChapterPassTable
+          bookId={bookId}
+          book={book}
+          bulkRunning={bulkRunning}
+          runBulk={runBulk}
+          onBulkError={setBulkError}
+        />
+      )}
 
-      <section>
-        <div className="library-header">
-          <h2>
-            Roster
+      {tab === 'characters' && (
+        <section>
+          <div className="library-header">
+            <h2>
+              Roster
+              {speakers.length > 0 && (
+                <span className="muted">
+                  {' '}
+                  (
+                  {filteredSpeakers.length === speakers.length
+                    ? speakers.length
+                    : `${filteredSpeakers.length} of ${speakers.length}`}
+                  )
+                </span>
+              )}
+            </h2>
             {speakers.length > 0 && (
-              <span className="muted">
-                {' '}
-                (
-                {filteredSpeakers.length === speakers.length
-                  ? speakers.length
-                  : `${filteredSpeakers.length} of ${speakers.length}`}
-                )
-              </span>
-            )}
-          </h2>
-          {speakers.length > 0 && (
-            <div className="speakers-roster-actions">
-              {speakers.some((s) => s.id) && (
+              <div className="speakers-roster-actions">
+                {speakers.some((s) => s.id) && (
+                  <button
+                    className="icon-action-button"
+                    onClick={runCharacterizeAll}
+                    disabled={bulkRunning.has('characterization') || characterizingNames.size > 0}
+                    title={
+                      characterizingNames.size > 0
+                        ? 'Recharacterizing…'
+                        : "Recharacterize all — re-describe every character's voice from their dialogue, and invalidate their assigned voices so they're rebuilt fresh next time they're needed"
+                    }
+                  >
+                    <RiUserHeartLine
+                      className={
+                        bulkRunning.has('characterization') || characterizingNames.size > 0
+                          ? 'spin'
+                          : undefined
+                      }
+                    />
+                  </button>
+                )}
+                {speakers.some((s) => s.id && !s.voicePresetId) && (
+                  <button
+                    className="icon-action-button"
+                    onClick={runGenerateVoicesAll}
+                    disabled={bulkRunning.has('voices')}
+                    title="Generate all voices — characterize and create a voice now for every character that doesn't have one yet"
+                  >
+                    <RiUserVoiceLine className={bulkRunning.has('voices') ? 'spin' : undefined} />
+                  </button>
+                )}
+                {speakers.some((s) => s.id) && (
+                  <button
+                    className="icon-action-button"
+                    onClick={runRegenerateVoicesAll}
+                    disabled={bulkRunning.has('voices')}
+                    title="Regenerate all voices — force a fresh render for every character's voice, whether or not they already have one"
+                  >
+                    <RiRefreshLine className={bulkRunning.has('voices') ? 'spin' : undefined} />
+                  </button>
+                )}
                 <button
                   className="icon-action-button"
-                  onClick={runCharacterizeAll}
-                  disabled={bulkRunning.has('characterization') || characterizingNames.size > 0}
-                  title={
-                    characterizingNames.size > 0
-                      ? 'Recharacterizing…'
-                      : "Recharacterize all — re-describe every character's voice from their dialogue, and invalidate their assigned voices so they're rebuilt fresh next time they're needed"
-                  }
+                  onClick={runProvisionUsedVoices}
+                  disabled={bulkRunning.has('used_voices')}
+                  title="Provision used voices — for every voice this book's lines use, queue whatever is still missing (a voice for a character without one, its reference clip, and the emotion variants its lines need) so generation doesn't wait on them"
                 >
-                  <RiUserHeartLine
-                    className={
-                      bulkRunning.has('characterization') || characterizingNames.size > 0
-                        ? 'spin'
-                        : undefined
-                    }
+                  <RiVoiceprintLine
+                    className={bulkRunning.has('used_voices') ? 'spin' : undefined}
                   />
                 </button>
-              )}
-              {speakers.some((s) => s.id && !s.voicePresetId) && (
                 <button
                   className="icon-action-button"
-                  onClick={runGenerateVoicesAll}
-                  disabled={bulkRunning.has('voices')}
-                  title="Generate all voices — characterize and create a voice now for every character that doesn't have one yet"
+                  onClick={runDedupe}
+                  disabled={dedupeCharacters.isPending}
+                  title="Merge duplicate names — placeholders like “Protagonist” into the first-person narrator, case variants, descriptions into their role, first names into full names"
                 >
-                  <RiUserVoiceLine className={bulkRunning.has('voices') ? 'spin' : undefined} />
+                  <RiGitMergeLine className={dedupeCharacters.isPending ? 'spin' : undefined} />
                 </button>
-              )}
-              {speakers.some((s) => s.id) && (
                 <button
                   className="icon-action-button"
-                  onClick={runRegenerateVoicesAll}
-                  disabled={bulkRunning.has('voices')}
-                  title="Regenerate all voices — force a fresh render for every character's voice, whether or not they already have one"
+                  onClick={runDeleteSpeakerData}
+                  disabled={deleteSpeakerData.isPending}
+                  title="Delete all speaker data for this book"
                 >
-                  <RiRefreshLine className={bulkRunning.has('voices') ? 'spin' : undefined} />
+                  <RiDeleteBinLine />
                 </button>
-              )}
-              <button
-                className="icon-action-button"
-                onClick={runProvisionUsedVoices}
-                disabled={bulkRunning.has('used_voices')}
-                title="Provision used voices — for every voice this book's lines use, queue whatever is still missing (a voice for a character without one, its reference clip, and the emotion variants its lines need) so generation doesn't wait on them"
-              >
-                <RiVoiceprintLine className={bulkRunning.has('used_voices') ? 'spin' : undefined} />
-              </button>
-              <button
-                className="icon-action-button"
-                onClick={runDedupe}
-                disabled={dedupeCharacters.isPending}
-                title="Merge duplicate names — placeholders like “Protagonist” into the first-person narrator, case variants, descriptions into their role, first names into full names"
-              >
-                <RiGitMergeLine className={dedupeCharacters.isPending ? 'spin' : undefined} />
-              </button>
-              <button
-                className="icon-action-button"
-                onClick={runDeleteSpeakerData}
-                disabled={deleteSpeakerData.isPending}
-                title="Delete all speaker data for this book"
-              >
-                <RiDeleteBinLine />
-              </button>
-            </div>
+              </div>
+            )}
+          </div>
+          {speakersQuery.isLoading && <p>Loading…</p>}
+          {speakersQuery.isError && <p className="error-text">Could not load speakers.</p>}
+          {speakers.length === 0 && !speakersQuery.isLoading && (
+            <p className="muted">
+              No speakers yet — attribute a chapter on the Chapters tab to find out who's talking in
+              it.
+            </p>
           )}
-        </div>
-        {speakersQuery.isLoading && <p>Loading…</p>}
-        {speakersQuery.isError && <p className="error-text">Could not load speakers.</p>}
-        {speakers.length === 0 && !speakersQuery.isLoading && (
-          <p className="muted">
-            No speakers yet — attribute a chapter above to find out who's talking in it.
-          </p>
-        )}
-        {deleteSpeakerError && <p className="error-text">{deleteSpeakerError}</p>}
-        {characterizeError && <p className="error-text">{characterizeError}</p>}
-        {characterizeNote && <p className="muted">{characterizeNote}</p>}
-        {dedupeNote && <p className="muted">{dedupeNote}</p>}
-        {deleteCharacterError && <p className="error-text">{deleteCharacterError}</p>}
-        {invalidError && <p className="error-text">{invalidError}</p>}
-        {mergeError && <p className="error-text">{mergeError}</p>}
-        {autoSplitError && <p className="error-text">{autoSplitError}</p>}
-        {autoSplitNote && <p className="muted">{autoSplitNote}</p>}
-        {generateVoiceError && <p className="error-text">{generateVoiceError}</p>}
-        {speakers.length > 0 && (
-          <input
-            className="speakers-roster-search"
-            type="search"
-            placeholder="Search speakers…"
-            value={rosterFilter}
-            onChange={(e) => setRosterFilter(e.target.value)}
-          />
-        )}
-        {speakers.length > 0 && filteredSpeakers.length === 0 && (
-          <p className="muted">No matches</p>
-        )}
-        <ul className="speaker-list">
-          {filteredSpeakers.map((s) => {
-            // "Someone other than this character" - shared by the
-            // whole-character merge panel and per-line reassignment in
-            // this row's own appearances list.
-            const otherTargets = [
-              'Narrator',
-              ...speakers.filter((o) => o.id && o.id !== s.id && !o.invalid).map((o) => o.name),
-            ]
-            return (
-              <SpeakerRow
-                key={s.id || s.name}
-                bookId={bookId}
-                speaker={
-                  s.refAudioUrl
-                    ? { ...s, refAudioUrl: withCacheBust(s.refAudioUrl, audioVersion[s.id]) }
-                    : s
-                }
-                builtins={builtins}
-                customs={customs}
-                bookVoiceName={bookVoiceName}
-                narratorPresetId={voiceQuery.data?.presetId}
-                bookCloneModel={effectiveCloneModel}
-                onCharacterize={() => s.id && runCharacterize(s.id)}
-                characterizing={characterizingIds.has(s.id) || characterizingNames.has(s.name)}
-                onGenerateVoice={() => s.id && runGenerateVoice(s.id)}
-                generatingVoice={generatingVoiceId === s.id}
-                onDelete={() => s.id && runDeleteCharacter(s.id, s.name)}
-                deleting={deletingCharacterId === s.id}
-                onToggleInvalid={() => s.id && runToggleInvalid(s.id, !s.invalid)}
-                togglingInvalid={togglingInvalidId === s.id}
-                onToggleRole={() => s.id && runToggleRole(s.id, !s.role)}
-                togglingRole={togglingRoleId === s.id}
-                mergeTargets={otherTargets}
-                onMerge={(targetName) => s.id && runMerge(s.id, s.name, targetName)}
-                merging={mergingId === s.id}
-                onToggleMerge={() => setMergingId((cur) => (cur === s.id ? null : s.id))}
-                onAutoSplit={() => runAutoSplit(s.name)}
-                autoSplitting={reattributingNames.has(s.name)}
-                customizing={customizingId === s.id && s.id !== ''}
-                onToggleCustomize={() => setCustomizingId((cur) => (cur === s.id ? null : s.id))}
-                expanded={appearancesFor === s.id && s.id !== ''}
-                onToggleAppearances={() => setAppearancesFor((cur) => (cur === s.id ? null : s.id))}
-                appearances={appearancesQuery.data}
-                appearancesLoading={appearancesQuery.isLoading}
-                reassignTargets={otherTargets}
-              />
-            )
-          })}
-        </ul>
-      </section>
+          {deleteSpeakerError && <p className="error-text">{deleteSpeakerError}</p>}
+          {characterizeError && <p className="error-text">{characterizeError}</p>}
+          {characterizeNote && <p className="muted">{characterizeNote}</p>}
+          {dedupeNote && <p className="muted">{dedupeNote}</p>}
+          {deleteCharacterError && <p className="error-text">{deleteCharacterError}</p>}
+          {invalidError && <p className="error-text">{invalidError}</p>}
+          {mergeError && <p className="error-text">{mergeError}</p>}
+          {autoSplitError && <p className="error-text">{autoSplitError}</p>}
+          {autoSplitNote && <p className="muted">{autoSplitNote}</p>}
+          {generateVoiceError && <p className="error-text">{generateVoiceError}</p>}
+          {speakers.length > 0 && (
+            <input
+              className="speakers-roster-search"
+              type="search"
+              placeholder="Search speakers…"
+              value={rosterFilter}
+              onChange={(e) => setRosterFilter(e.target.value)}
+            />
+          )}
+          {speakers.length > 0 && filteredSpeakers.length === 0 && (
+            <p className="muted">No matches</p>
+          )}
+          <ul className="speaker-list">
+            {filteredSpeakers.map((s) => {
+              // "Someone other than this character" - shared by the
+              // whole-character merge panel and per-line reassignment in
+              // this row's own appearances list.
+              const otherTargets = [
+                'Narrator',
+                ...speakers.filter((o) => o.id && o.id !== s.id && !o.invalid).map((o) => o.name),
+              ]
+              return (
+                <SpeakerRow
+                  key={s.id || s.name}
+                  bookId={bookId}
+                  speaker={
+                    s.refAudioUrl
+                      ? { ...s, refAudioUrl: withCacheBust(s.refAudioUrl, audioVersion[s.id]) }
+                      : s
+                  }
+                  builtins={builtins}
+                  customs={customs}
+                  bookVoiceName={bookVoiceName}
+                  narratorPresetId={voiceQuery.data?.presetId}
+                  bookCloneModel={effectiveCloneModel}
+                  onCharacterize={() => s.id && runCharacterize(s.id)}
+                  characterizing={characterizingIds.has(s.id) || characterizingNames.has(s.name)}
+                  onGenerateVoice={() => s.id && runGenerateVoice(s.id)}
+                  generatingVoice={generatingVoiceId === s.id}
+                  onDelete={() => s.id && runDeleteCharacter(s.id, s.name)}
+                  deleting={deletingCharacterId === s.id}
+                  onToggleInvalid={() => s.id && runToggleInvalid(s.id, !s.invalid)}
+                  togglingInvalid={togglingInvalidId === s.id}
+                  onToggleRole={() => s.id && runToggleRole(s.id, !s.role)}
+                  togglingRole={togglingRoleId === s.id}
+                  mergeTargets={otherTargets}
+                  onMerge={(targetName) => s.id && runMerge(s.id, s.name, targetName)}
+                  merging={mergingId === s.id}
+                  onToggleMerge={() => setMergingId((cur) => (cur === s.id ? null : s.id))}
+                  onAutoSplit={() => runAutoSplit(s.name)}
+                  autoSplitting={reattributingNames.has(s.name)}
+                  customizing={customizingId === s.id && s.id !== ''}
+                  onToggleCustomize={() => setCustomizingId((cur) => (cur === s.id ? null : s.id))}
+                  expanded={appearancesFor === s.id && s.id !== ''}
+                  onToggleAppearances={() =>
+                    setAppearancesFor((cur) => (cur === s.id ? null : s.id))
+                  }
+                  appearances={appearancesQuery.data}
+                  appearancesLoading={appearancesQuery.isLoading}
+                  reassignTargets={otherTargets}
+                />
+              )
+            })}
+          </ul>
+        </section>
+      )}
     </div>
   )
 }

@@ -142,7 +142,7 @@ byte-for-byte.
   the build simple for a two-page app). Add new routes here directly.
 - `src/pages/SettingsPage.tsx` (`/settings`, in the sidebar) — app-wide
   settings: "Defaults for new books" (clone model + the per-book switches,
-  `BookSettingsFields` shared with the Speakers page; the default voice is
+  `BookSettingsFields` shared with the Book settings page; the default voice is
   the star on the Voices page). All one value, `GET|PUT /api/voices/default`.
 - `src/pages/LibraryPage.tsx`, `src/pages/ReaderPage.tsx` — the two
   screens. `ReaderPage` is an infinite-scroll reader: it keeps a `{start,
@@ -164,6 +164,18 @@ byte-for-byte.
   book's saved position moved by someone else while this reader sat
   paused - own saves are remembered so their echoes don't trigger it;
   mirrored in android's `ui/reader/RemotePosition.kt`), and
+  `components/RecapPanel` + `utils/recap.ts` (the "previously on" recap,
+  `bookRecap` live topic: the player bar's Recap button, and the offer
+  floating above the bar (`.recap-float`) on coming back to a book after a
+  while - the threshold is per browser, `lectable.recapAfterMinutes`, what
+  was turned down `lectable.recapDismissed`. Open, it is portalled into
+  the `.recap-slot` that `ChapterSection` renders above the paragraph the
+  reader was at (`recapSlotIdx`), floating instead only when that
+  paragraph isn't mounted. Opening asks for one if none is current and
+  plays it once it has a clip; its `<audio>` pauses the book and resumes
+  it when the recap ends, and `RecapText` highlights the word being spoken
+  from the clip's `segments` (`recapWords`), a click seeking to it;
+  mirrored in android's `ui/reader/Recap.kt`),
   `components/ChapterNotesBlock` (annotations view's chapter summary under
   the heading, editable in place: summary, cast with role/pronouns/what the
   text calls them, scenes with who is present as toggle chips - saved via
@@ -174,11 +186,15 @@ byte-for-byte.
   `components/ParagraphContextMenu` (the annotations-view right-click menu,
   opened imperatively like `AnnotationTooltip`; its reassign lists are
   "This chapter" then "All characters", alphabetical - `utils/speakerOrder`,
-  shared with the Speakers page's Narrator-first alphabetical roster).
+  shared with the Book settings page's Narrator-first alphabetical roster).
   The annotations-view toggle is remembered in `localStorage`
   (`lectable.annotationsView`).
-- `src/pages/SpeakersPage.tsx` — the roster and its handlers; the rest is
-  in `src/components/speakers/`: `SpeakerSettings` (book-wide switches),
+- `src/pages/BookSettingsPage.tsx` (`/books/$bookId/settings?tab=`) — a
+  book's settings in five tabs: General (`SpeakerSettings`,
+  `SettingPanel`), Chapters (`ChapterPassTable`), Characters (the roster
+  and its handlers, which live in the page), Pronunciations
+  (`LexiconPanel`) and Jobs (the book's `bookJobs` queue, drawn by
+  `JobsPage`'s `JobLists`). The rest is in `src/components/speakers/`: `SpeakerSettings` (book-wide switches),
   `ChapterPassTable` (per-chapter pass table + whole-book Rest/All/Reset
   rows; its Summary column's eye icon expands a row with the chapter's
   summary notes - `chapterNotes` live topic - and its Ambience column's

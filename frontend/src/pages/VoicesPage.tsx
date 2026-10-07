@@ -368,7 +368,7 @@ export function VoicesPage() {
     )
   }
 
-  // Groups auto-created speaker voices (see SpeakersPage's
+  // Groups auto-created speaker voices (see BookSettingsPage's
   // CharacterVoiceEditor) by the series - or book, if that character isn't
   // part of one - their roster belongs to (backend's groupLabel, derived
   // from store.SeriesScope), so a book/series worth of character voices

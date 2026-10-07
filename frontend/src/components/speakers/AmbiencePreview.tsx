@@ -3,7 +3,7 @@ import { LIGHT_EFFECT_LABELS } from '../../api/types'
 import { LightingSwatch } from '../LightingSwatch'
 import { MusicRegionPreviewButton } from '../MusicRegionPreviewButton'
 
-// AmbiencePreview is the Speakers page's look at one chapter's ambience pass
+// AmbiencePreview is the Book settings page's look at one chapter's ambience pass
 // (backend run-ambience): each music region's paragraph range and
 // transition, its mood, lighting cue, soundscape and music prompt, and - once
 // generated - its audio to play. The same regions the reader's annotations

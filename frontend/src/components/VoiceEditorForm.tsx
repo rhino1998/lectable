@@ -25,7 +25,7 @@ function speedPercent(value: number): number {
 }
 
 // The recipe fields + test box shared by VoicesPage's create/edit form and
-// SpeakersPage's per-character "Customize voice" editor - the "full voice
+// BookSettingsPage's per-character "Customize voice" editor - the "full voice
 // editor" both pages present is this same component, just wired to
 // different save/test business logic (create vs. update-in-place vs.
 // create-then-assign-to-a-character).

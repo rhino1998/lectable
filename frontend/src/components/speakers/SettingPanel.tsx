@@ -55,7 +55,7 @@ const FIELDS: { key: keyof BookSetting; label: string; placeholder: string; titl
   },
 ]
 
-// The Speakers page's book setting profile (backend httpapi/setting.go):
+// The Book settings page's book setting profile (backend httpapi/setting.go):
 // the world the story takes place in, written by one LLM call the first
 // time the ambience pass or a voice characterization needs it, and shown
 // to their prompts. Per book, not per series. Editable; an edit only

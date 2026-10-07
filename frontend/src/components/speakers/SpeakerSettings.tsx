@@ -9,7 +9,7 @@ import {
   type VoiceSettings,
 } from '../../api/types'
 
-// The Speakers page's book-wide switches, bound to one book's voice
+// The Book settings page's book-wide switches, bound to one book's voice
 // settings (PUT .../voice).
 export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneModel: string }) {
   const voiceQuery = useVoice(bookId)

@@ -8,11 +8,14 @@ import {
   RiFileTextLine,
   RiSpeakLine,
   RiLightbulbLine,
+  RiMapPinFill,
+  RiMapPinLine,
   RiMusic2Line,
   RiUserSearchLine,
   RiVoiceprintLine,
 } from 'react-icons/ri'
 import {
+  useUpdatePosition,
   useAttributeSpeakers,
   useResetPass,
   useAttributingChapters,
@@ -38,7 +41,7 @@ import type { BookDetail, BulkAction, BulkScope, ResetPass } from '../../api/typ
 import { BulkActionButton, CountStatus, PassStatus } from './PassStatus'
 import { AmbiencePreview } from './AmbiencePreview'
 
-// The Speakers page's per-chapter pass table: one row per chapter with each
+// The Book settings page's per-chapter pass table: one row per chapter with each
 // pass's run button and status (attribution, scare quotes,
 // emotions, pronunciation, ambience, narration audio, music audio), topped
 // by whole-book Rest/All/Reset rows. Whole-book actions go through the
@@ -58,6 +61,20 @@ export function ChapterPassTable({
   onBulkError: (message: string | null) => void
 }) {
   const attributeSpeakers = useAttributeSpeakers(bookId)
+  // A row's "read from here" pin moves the book's saved position to that
+  // chapter's first paragraph; the filled pin marks where it is now.
+  const updatePosition = useUpdatePosition(bookId)
+  const runSetPosition = (chapterIdx: number, title: string) => {
+    if (!confirm(`Move your place in "${book.title}" to the start of "${title}"?`)) return
+    onBulkError(null)
+    updatePosition.mutate(
+      { chapterIdx, paragraphIdx: 0, seconds: 0 },
+      {
+        onError: (err) =>
+          onBulkError(err instanceof ApiError ? err.message : 'Could not move your place'),
+      },
+    )
+  }
   const retagScareQuotes = useRetagScareQuotes(bookId)
   const tagDirections = useTagDirections(bookId)
   const resolvePronunciation = useResolvePronunciation(bookId)
@@ -525,6 +542,18 @@ export function ChapterPassTable({
                         <RiFileHistoryLine
                           className={reimportingIdx === c.idx ? 'spin' : undefined}
                         />
+                      </button>
+                      <button
+                        className="icon-action-button"
+                        disabled={updatePosition.isPending}
+                        onClick={() => runSetPosition(c.idx, c.title)}
+                        title={
+                          c.idx === book.posChapterIdx
+                            ? 'Your place is in this chapter — move it back to the chapter’s start'
+                            : 'Move your place in the book to the start of this chapter'
+                        }
+                      >
+                        {c.idx === book.posChapterIdx ? <RiMapPinFill /> : <RiMapPinLine />}
                       </button>
                       {c.title}
                     </div>

@@ -680,7 +680,7 @@ function SpeakerEmotions({
 
 // A speaker's own "targetName" picker + confirm/cancel for
 // handleMergeCharacter - targets is "Narrator" plus every other real
-// character's name (see SpeakersPage's own mergeTargets computation,
+// character's name (see BookSettingsPage's own mergeTargets computation,
 // which already excludes the row being merged).
 function MergeCharacterPanel({
   targets,

@@ -9,7 +9,7 @@ import type { SpeakerAppearance } from '../../api/types'
 // every book in their series (see backend Store.ParagraphsForSpeaker), so
 // this owns its own useRegenerateParagraph(appearance.bookId)/
 // useSetParagraphSpeaker(appearance.bookId) rather than sharing ones bound
-// to whichever book the Speakers page itself is open on. reassignTargets
+// to whichever book the Book settings page itself is open on. reassignTargets
 // is "Narrator" plus every other character's name (the row's own
 // mergeTargets, reused - same set, since reassigning one line and merging
 // a whole character both mean "someone other than this character").

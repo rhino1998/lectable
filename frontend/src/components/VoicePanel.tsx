@@ -16,7 +16,7 @@ import { CLONE_MODELS, DEFAULT_CHARACTER_VOICE_MODE, DEFAULT_CLONE_MODEL } from 
 // a language, and the clone model every voice in the book narrates through,
 // nothing else. Creating/editing custom voices lives on its own page (see
 // VoicesPage), not here. Also hosts the link to
-// the Speakers page (character roster/attribution) - moved in here from
+// the Book settings page (character roster/attribution) - moved in here from
 // the reader header since it's a voice-adjacent, occasional-use screen,
 // not something that needs to be one click away from the reading view.
 export function VoicePanel({ bookId }: { bookId: string }) {
@@ -177,10 +177,10 @@ export function VoicePanel({ bookId }: { bookId: string }) {
           <RiDeleteBinLine />
         </button>
         <Link
-          to="/books/$bookId/speakers"
+          to="/books/$bookId/settings"
           params={{ bookId }}
           className="icon-action-button"
-          title="Speakers — character roster and attribution"
+          title="Book settings — chapters, characters and pronunciations"
         >
           <RiUserCommunityLine />
         </Link>
