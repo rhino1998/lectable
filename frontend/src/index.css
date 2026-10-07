@@ -265,6 +265,56 @@ label {
   margin-bottom: 1.5rem;
 }
 
+/* The header's "Add book" button and its menu of ways to add one (see
+   LibraryPage.tsx); the wrapper is what the popover anchors against. */
+.library-add-menu {
+  position: relative;
+}
+.library-add-menu-panel {
+  width: max-content;
+  max-width: 80vw;
+  padding: 0.35rem;
+  gap: 0.15rem;
+}
+.library-add-menu-panel button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 0.7rem;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+}
+.library-add-menu-panel button:hover {
+  background: var(--border);
+}
+/* The "Import from Royal Road" link field, shown under the header. */
+.library-import {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 1.5rem;
+}
+.library-import input {
+  flex: 1 1 20rem;
+  min-width: 0;
+  font: inherit;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.library-import .muted {
+  flex-basis: 100%;
+  font-size: 0.8rem;
+}
+
 .library-stats {
   margin-bottom: 1.5rem;
 }
@@ -384,6 +434,10 @@ label {
   margin-top: 0.25rem;
   font-size: 0.75rem;
 }
+.book-source-status {
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+}
 
 .icon-button {
   position: absolute;
@@ -418,6 +472,12 @@ label {
 }
 .icon-button-export {
   top: 7rem;
+}
+.icon-button-source {
+  top: 8.65rem;
+}
+.icon-button-source:disabled {
+  cursor: default;
 }
 .icon-button-preprocess:disabled {
   opacity: 0.4;

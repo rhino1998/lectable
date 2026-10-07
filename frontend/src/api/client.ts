@@ -105,6 +105,15 @@ export const api = {
     return call('POST /api/books', { body })
   },
 
+  // Imports a Royal Road fiction by link: answers with the new book once
+  // its first chapter is in, the rest arriving in the background (see
+  // httpapi.handleImportBookURL).
+  importBookUrl: (url: string) => call('POST /api/books/import-url', { body: { url } }),
+
+  // "Check for new chapters" on a book imported from a website - appends
+  // whatever its source has published since (httpapi.handleSyncBookSource).
+  syncBookSource: (id: string) => call('POST /api/books/{id}/source/sync', { path: { id } }),
+
   deleteBook: (id: string) => call('DELETE /api/books/{id}', { path: { id } }),
 
   // Queues building (or rebuilding - same settings, same export) a book

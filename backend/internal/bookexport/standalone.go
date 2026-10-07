@@ -84,6 +84,11 @@ func (c *collector) standalone(out *Book, idxs []int) {
 						r[k] = json.RawMessage(`0`)
 					}
 				}
+				// A subset isn't the website's book any more: checking its
+				// source would add every chapter left out of it.
+				if _, ok := r["source_kind"]; ok {
+					r["source_kind"] = json.RawMessage(`""`)
+				}
 			case "chapters":
 				var idx int
 				if json.Unmarshal(r["idx"], &idx) == nil {

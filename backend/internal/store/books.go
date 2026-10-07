@@ -43,6 +43,9 @@ type BlockInput struct {
 type ChapterInput struct {
 	Title  string
 	Blocks []BlockInput
+	// SourceID is the chapter's id at the website the book was imported
+	// from (see BookSource), "" for an epub's chapter.
+	SourceID string
 }
 
 // CreatedImage identifies where one image block ended up in the database,
@@ -86,8 +89,8 @@ func (s *SQLiteStore) CreateBook(title, author, language string, coverExt string
 	for ci, ch := range chapters {
 		chapterID := NewID()
 		_, err = tx.Exec(
-			`INSERT INTO chapters (id, book_id, idx, title) VALUES (?, ?, ?, ?)`,
-			chapterID, bookID, ci, ch.Title,
+			`INSERT INTO chapters (id, book_id, idx, title, source_id) VALUES (?, ?, ?, ?, ?)`,
+			chapterID, bookID, ci, ch.Title, ch.SourceID,
 		)
 		if err != nil {
 			return "", nil, fmt.Errorf("insert chapter: %w", err)

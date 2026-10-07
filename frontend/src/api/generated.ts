@@ -18,6 +18,12 @@ export const BOOK_SETTING_SOURCES = ['auto', 'manual'] as const
 export type BookSettingSource = (typeof BOOK_SETTING_SOURCES)[number]
 
 /**
+ * bookSourceKind names the website a book was imported from.
+ */
+export const BOOK_SOURCE_KINDS = ['royalroad'] as const
+export type BookSourceKind = (typeof BOOK_SOURCE_KINDS)[number]
+
+/**
  * bulkAction is a Speakers-page whole-book action (POST
  * /api/books/{id}/bulk/{action}), in the page's display order. "generate"
  * queues the same "pipeline_generate_book" row as the library page's
@@ -359,6 +365,38 @@ export interface BookSettingResponse {
   updatedAt?: number
 }
 
+/**
+ * bookSourceDTO is where a book imported from a website came from, and
+ * the state of fetching its chapters.
+ */
+export interface BookSource {
+  kind: BookSourceKind
+  /**
+   * URL is the work's page at the source.
+   */
+  url: string
+  /**
+   * CheckedAt is when the source was last checked for chapters (unix
+   * seconds), absent if never.
+   */
+  checkedAt?: number
+  /**
+   * RemoteChapters is the book's chapter count plus the chapters the
+   * last check found at the source and hadn't fetched yet: more than
+   * chapterCount while a check is running, or after one that stopped
+   * early.
+   */
+  remoteChapters: number
+  /**
+   * Error is why the last check stopped early, absent if it finished.
+   */
+  error?: string
+  /**
+   * Syncing is true while chapters are being fetched.
+   */
+  syncing: boolean
+}
+
 export interface BookSummary {
   id: string
   title: string
@@ -404,6 +442,12 @@ export interface BookSummary {
    * settings fetch just to know whether background music is on.
    */
   musicEnabled: boolean
+  /**
+   * Source is set for a book imported from a website (Royal Road)
+   * rather than an uploaded epub: where from, and the state of fetching
+   * its chapters. Set by buildBookSummary.
+   */
+  source?: BookSource | null
 }
 
 export interface Bookmark {
@@ -825,6 +869,13 @@ export interface GenerateVoiceResponse {
 
 export interface IdResponse {
   id: string
+}
+
+export interface ImportBookURLRequest {
+  /**
+   * URL is a link to a Royal Road fiction or any of its chapters.
+   */
+  url: string
 }
 
 export interface Instance {
@@ -2170,6 +2221,19 @@ export interface Routes {
     response: BookSummary[]
     errorCode: never
   }
+  /**
+   * handleImportBookURL imports a Royal Road fiction as a new book: its
+   * first chapter now, the rest in the background (the book's source.syncing
+   * / remoteChapters show the progress). 409 book_exists if the library
+   * already has that fiction - check it for new chapters instead.
+   */
+  'POST /api/books/import-url': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: ImportBookURLRequest
+    response: BookSummary
+    errorCode: 'book_exists'
+  }
   'GET /api/books/{id}': {
     path: { id: string }
     query: Record<never, never>
@@ -3338,6 +3402,18 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleSyncBookSource checks a book's source for chapters it doesn't have
+   * and appends them, in the background (joining a check already running).
+   * 409 for a book that wasn't imported from a website.
+   */
+  'POST /api/books/{id}/source/sync': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
    * handleListSpeakers reports every speaker recognized in bookID so far -
    * the Narrator plus every attributed character - and how much of each
    * one's audio has actually been generated, so the reader can see which
@@ -3957,6 +4033,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'DELETE /api/bookmarks/{id}': 'none',
   'POST /api/books': 'json',
   'GET /api/books': 'json',
+  'POST /api/books/import-url': 'json',
   'GET /api/books/{id}': 'json',
   'DELETE /api/books/{id}': 'none',
   'DELETE /api/books/{id}/audio': 'none',
@@ -4027,6 +4104,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/setting': 'json',
   'PUT /api/books/{id}/setting': 'json',
   'POST /api/books/{id}/setting/derive': 'json',
+  'POST /api/books/{id}/source/sync': 'json',
   'GET /api/books/{id}/speakers': 'json',
   'DELETE /api/books/{id}/speakers': 'none',
   'POST /api/books/{id}/speakers/reattribute': 'json',

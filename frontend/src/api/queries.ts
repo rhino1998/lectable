@@ -59,6 +59,14 @@ export function useUploadBook() {
   return useMutation({ mutationFn: (file: File) => api.uploadBook(file) })
 }
 
+export function useImportBookUrl() {
+  return useMutation({ mutationFn: (url: string) => api.importBookUrl(url) })
+}
+
+export function useSyncBookSource() {
+  return useMutation({ mutationFn: (bookId: string) => api.syncBookSource(bookId) })
+}
+
 export function useDeleteBook() {
   return useMutation({ mutationFn: (bookId: string) => api.deleteBook(bookId) })
 }

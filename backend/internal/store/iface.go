@@ -41,6 +41,11 @@ type Store interface {
 	DeleteBookAudio(bookID string) error
 	DeleteBookmark(id string) error
 	DeleteLexiconEntry(id string) (*LexiconEntry, error)
+	AppendChapters(bookID string, chapters []ChapterInput) (images []CreatedImage, err error)
+	ChapterSourceIDs(bookID string) ([]string, error)
+	FindBookBySource(kind, sourceID string) (string, error)
+	GetBookSource(bookID string) (*BookSource, error)
+	SetBookSource(bookID string, src BookSource) error
 	DeleteChapterAudio(chapterID string) error
 	DeleteCharacter(id string) error
 	DeleteParagraphAudioByVoiceID(bookID, voiceID string) ([]SpeakerAudioRef, error)

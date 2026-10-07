@@ -281,6 +281,20 @@ building/running `ttsworker` does, since both now link into that binary.
   table-based plays (their rows are table paragraphs, which the play pass
   leaves alone), merging name variants ("Rank"/"Doctor Rank"), and
   group labels ("All", "Both") are ordinary characters.
+- `internal/royalroad/` — reads a fiction from royalroad.com for
+  import-by-link: `Client` (one request at a time, paced, retrying
+  rate limits; its default HTTP client refuses loopback/private addresses,
+  since chapter images are fetched from wherever the author linked),
+  `Fiction` (metadata + chapter list with the site's chapter ids),
+  `Chapter` (the chapter's text as a cleaned XHTML fragment plus its
+  images - `parse.go` holds everything that depends on the site's markup),
+  and `WriteEPUB`, which lays fetched chapters out as the book's source
+  epub and can add chapters to one it wrote. No store or job access: the
+  orchestration (create the book, append chapters, check for new ones) is
+  `httpapi/source.go` - see the `import-url` entry in `docs/api.md`.
+  `royalroadtest` is a local stand-in for the site for tests;
+  `ROYALROAD_LIVE=<fiction id or URL> go test ./internal/royalroad -run
+  TestLive -v` checks the real one, for when its markup changes.
 - `internal/store/` — SQLite persistence (`books` → `chapters` →
   `paragraphs`, plus `characters`/`character_voices`, book-scoped), through
   `mattn/go-sqlite3` (cgo, SQLite bundled). WAL mode with **one write

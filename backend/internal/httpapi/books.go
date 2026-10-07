@@ -56,6 +56,10 @@ type bookSummaryDTO struct {
 	// BookSummary (the reader, the library) don't need a separate voice-
 	// settings fetch just to know whether background music is on.
 	MusicEnabled bool `json:"musicEnabled"`
+	// Source is set for a book imported from a website (Royal Road)
+	// rather than an uploaded epub: where from, and the state of fetching
+	// its chapters. Set by buildBookSummary.
+	Source *bookSourceDTO `json:"source,omitempty"`
 }
 
 // Generic fallback narration rate (~150 words/minute at ~6 characters per
@@ -179,6 +183,9 @@ func (s *Server) buildBookSummary(b store.Book) (bookSummaryDTO, []store.Chapter
 	chapters, stats := store.SumNarration(narration)
 	dto := toBookSummary(b, chapters, stats)
 	dto.Preprocessing = s.isPreprocessing(b.ID)
+	if dto.Source, err = s.bookSource(b.ID); err != nil {
+		return bookSummaryDTO{}, nil, err
+	}
 	return dto, chapters, nil
 }
 
@@ -551,6 +558,13 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		writeError(w, http.StatusBadRequest, "play must be auto, on or off")
 		return
+	}
+	// A book fetched from a website was never read as a play (see
+	// sourceChapterInput); keep it that way unless asked.
+	if playMode == epub.PlayAuto {
+		if src, err := s.Store.GetBookSource(bookID); err == nil && src != nil {
+			playMode = epub.PlayOff
+		}
 	}
 	parsed, err := epub.ParseAs(src, info.Size(), playMode)
 	if err != nil {

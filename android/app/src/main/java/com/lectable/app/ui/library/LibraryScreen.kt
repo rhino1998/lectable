@@ -22,10 +22,14 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Headphones
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.RecordVoiceOver
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Spellcheck
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -35,11 +39,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
@@ -91,6 +97,9 @@ fun LibraryScreen(
             ?.maxByOrNull { it.summary.lastReadAt ?: 0 }
     }
 
+    var showAddMenu by remember { mutableStateOf(false) }
+    var showImportDialog by remember { mutableStateOf(false) }
+
     val pickEpubLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) viewModel.uploadBook(context.contentResolver, uri, context.cacheDir)
     }
@@ -114,11 +123,26 @@ fun LibraryScreen(
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                text = { Text(if (uiState.isUploading) "Uploading…" else "Add book") },
-                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
-                onClick = { pickEpubLauncher.launch("application/epub+zip") },
-            )
+            // "Add book" offers both ways in: an epub from the device, or a Royal Road link.
+            Box {
+                ExtendedFloatingActionButton(
+                    text = { Text(if (uiState.isUploading) "Adding…" else "Add book") },
+                    icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                    onClick = { if (!uiState.isUploading) showAddMenu = true },
+                )
+                DropdownMenu(expanded = showAddMenu, onDismissRequest = { showAddMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Upload an epub") },
+                        leadingIcon = { Icon(Icons.Filled.UploadFile, contentDescription = null) },
+                        onClick = { showAddMenu = false; pickEpubLauncher.launch("application/epub+zip") },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Import from Royal Road") },
+                        leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null) },
+                        onClick = { showAddMenu = false; showImportDialog = true },
+                    )
+                }
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) { Snackbar(it) } },
     ) { padding ->
@@ -146,7 +170,7 @@ fun LibraryScreen(
                         item {
                             Box(modifier = Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
                                 Text(
-                                    "No books yet - tap \"Add book\" to upload an epub.",
+                                    "No books yet - tap \"Add book\" to upload an epub or import a Royal Road fiction.",
                                     modifier = Modifier.padding(32.dp),
                                 )
                             }
@@ -177,6 +201,7 @@ fun LibraryScreen(
                                 onGenerateRemaining = { viewModel.generateBookRemaining(item.summary.id) },
                                 onDownload = { viewModel.downloadBook(item.summary.id) },
                                 onDownloadRemaining = { viewModel.downloadBookRemaining(item.summary.id) },
+                                onSyncSource = { viewModel.syncBookSource(item.summary.id) },
                                 onDeleteLocal = { pendingDeleteLocal = item.summary },
                                 onDelete = { pendingDelete = item.summary },
                             )
@@ -207,6 +232,13 @@ fun LibraryScreen(
                 }
             }
         }
+    }
+
+    if (showImportDialog) {
+        ImportLinkDialog(
+            onDismiss = { showImportDialog = false },
+            onImport = { link -> showImportDialog = false; viewModel.importBookUrl(link) },
+        )
     }
 
     pendingDelete?.let { book ->
@@ -288,6 +320,7 @@ private fun BookRow(
     onGenerateRemaining: () -> Unit,
     onDownload: () -> Unit,
     onDownloadRemaining: () -> Unit,
+    onSyncSource: () -> Unit,
     onDeleteLocal: () -> Unit,
     onDelete: () -> Unit,
 ) {
@@ -372,6 +405,15 @@ private fun BookRow(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                sourceStatus(book)?.let { status ->
+                    Text(
+                        status,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (book.source?.error.isNullOrEmpty()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
         DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
@@ -435,6 +477,15 @@ private fun BookRow(
                     )
                 }
             }
+            // Only a book imported from a website has anywhere to check.
+            book.source?.let { source ->
+                DropdownMenuItem(
+                    text = { Text(if (source.syncing) "Fetching chapters…" else "Check for new chapters") },
+                    leadingIcon = { Icon(Icons.Filled.Refresh, contentDescription = null) },
+                    enabled = !source.syncing,
+                    onClick = { onSyncSource(); showMenu = false },
+                )
+            }
             if (isDownloaded) {
                 DropdownMenuItem(
                     text = { Text("Remove downloaded copy") },
@@ -466,4 +517,55 @@ private fun bookProgressLabel(book: BookSummaryDto, narrationRate: Double): Stri
         append(" · ${formatDurationLong(remainingSeconds)}")
         if (!book.estimateCalibrated) append(" (est.)")
     }
+}
+
+/** The row line for a book imported from a website, when there's something to say: chapters
+ *  still arriving, or a check that stopped early. Mirrors LibraryPage.tsx's sourceStatus -
+ *  remoteChapters counts the book's own chapters plus the ones the last check found and hasn't
+ *  fetched yet. */
+private fun sourceStatus(book: BookSummaryDto): String? {
+    val source = book.source ?: return null
+    val outstanding = source.remoteChapters - book.chapterCount
+    val failed = !source.error.isNullOrEmpty()
+    return when {
+        source.syncing && outstanding > 0 -> "Fetching chapters: ${book.chapterCount} of ${source.remoteChapters}"
+        source.syncing -> "Checking for new chapters…"
+        outstanding > 0 -> {
+            val n = "$outstanding chapter${if (outstanding == 1) "" else "s"}"
+            if (failed) "$n not fetched - check again" else "$n left to fetch - check again"
+        }
+        failed -> "Last check for new chapters failed"
+        else -> null
+    }
+}
+
+/** "Add book" -> "Import from Royal Road": asks for the fiction's link. */
+@Composable
+private fun ImportLinkDialog(onDismiss: () -> Unit, onImport: (String) -> Unit) {
+    var link by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Import from Royal Road") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = link,
+                    onValueChange = { link = it },
+                    label = { Text("Fiction link") },
+                    placeholder = { Text("https://www.royalroad.com/fiction/…") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "The first chapter is ready in a few seconds; the rest arrive in the background.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onImport(link) }, enabled = link.isNotBlank()) { Text("Import") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }

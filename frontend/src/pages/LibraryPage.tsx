@@ -1,11 +1,14 @@
 import { useMemo, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import {
+  RiAddLine,
   RiDeleteBinLine,
   RiDownload2Line,
   RiHeadphoneLine,
+  RiLinksLine,
   RiLoader4Line,
   RiMagicLine,
+  RiRefreshLine,
   RiUploadLine,
   RiUserVoiceLine,
 } from 'react-icons/ri'
@@ -14,8 +17,10 @@ import {
   useDeleteBook,
   useGenerateBook,
   useGenerateRemaining,
+  useImportBookUrl,
   useJobsSummary,
   usePreprocessBook,
+  useSyncBookSource,
   useUploadBook,
 } from '../api/queries'
 import { useClickOutside } from '../hooks/useClickOutside'
@@ -110,6 +115,15 @@ function BookCard({
     })
   }
 
+  const syncSource = useSyncBookSource()
+  const handleSyncSource = () => {
+    syncSource.mutate(book.id, {
+      onError: (err) =>
+        alert(err instanceof ApiError ? err.message : 'Could not check for new chapters'),
+    })
+  }
+  const sourceNote = book.source && sourceStatus(book)
+
   return (
     <div className="book-card">
       <Link to="/books/$bookId" params={{ bookId: book.id }} className="book-card-link">
@@ -153,6 +167,14 @@ function BookCard({
             {formatDurationLong(remainingSeconds)}
             {!book.estimateCalibrated && ' (est.)'}
           </div>
+          {sourceNote && (
+            <div
+              className={`book-source-status ${book.source?.error ? 'error-text' : 'muted'}`}
+              title={book.source?.error}
+            >
+              {sourceNote}
+            </div>
+          )}
         </div>
       </Link>
       <Link
@@ -207,11 +229,45 @@ function BookCard({
       >
         <RiDownload2Line />
       </Link>
+      {book.source && (
+        <button
+          className="icon-button icon-button-source"
+          title={
+            book.source.syncing
+              ? 'Fetching chapters from Royal Road…'
+              : 'Check Royal Road for new chapters'
+          }
+          onClick={handleSyncSource}
+          disabled={book.source.syncing || syncSource.isPending}
+        >
+          <RiRefreshLine className={book.source.syncing ? 'spin' : undefined} />
+        </button>
+      )}
       <button className="icon-button" title="Delete book" onClick={onDelete}>
         <RiDeleteBinLine />
       </button>
     </div>
   )
+}
+
+// The card line for a book imported from a website, when there is
+// something to say: chapters still arriving, or a check that stopped
+// early. remoteChapters counts the book's own chapters plus the ones the
+// last check found and hasn't fetched.
+function sourceStatus(book: BookSummary): string | null {
+  const source = book.source
+  if (!source) return null
+  const outstanding = source.remoteChapters - book.chapterCount
+  if (source.syncing) {
+    return outstanding > 0
+      ? `Fetching chapters: ${book.chapterCount} of ${source.remoteChapters}`
+      : 'Checking for new chapters…'
+  }
+  if (outstanding > 0) {
+    const n = `${outstanding} chapter${outstanding === 1 ? '' : 's'}`
+    return source.error ? `${n} not fetched - check again` : `${n} left to fetch - check again`
+  }
+  return source.error ? 'Last check for new chapters failed' : null
 }
 
 export function LibraryPage() {
@@ -222,6 +278,27 @@ export function LibraryPage() {
   const deleteBook = useDeleteBook()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
+
+  const importUrl = useImportBookUrl()
+  const [importOpen, setImportOpen] = useState(false)
+  const [importLink, setImportLink] = useState('')
+  // "Add book" lists the ways in: an epub from disk, or a Royal Road link
+  // (which opens the link field under the header).
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const addMenuRef = useRef<HTMLDivElement>(null)
+  useClickOutside([addMenuRef], () => setAddMenuOpen(false), addMenuOpen)
+  const handleImport = () => {
+    const link = importLink.trim()
+    if (!link || importUrl.isPending) return
+    setUploadError(null)
+    importUrl.mutate(link, {
+      onSuccess: () => {
+        setImportLink('')
+        setImportOpen(false)
+      },
+      onError: (err) => setUploadError(err instanceof ApiError ? err.message : 'Import failed'),
+    })
+  }
 
   const handleFileChosen = (file: File | undefined) => {
     if (!file) return
@@ -271,14 +348,42 @@ export function LibraryPage() {
     <div className="library">
       <div className="library-header">
         <h1>Your books</h1>
-        <button
-          className="primary-button"
-          title="Upload an .epub - or a Lectable export, which restores the book with its audio"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={uploadBook.isPending}
-        >
-          <RiUploadLine /> {uploadBook.isPending ? 'Uploading…' : 'Upload .epub'}
-        </button>
+        <div className="library-add-menu" ref={addMenuRef}>
+          <button
+            className="primary-button"
+            aria-haspopup="menu"
+            aria-expanded={addMenuOpen}
+            onClick={() => setAddMenuOpen((v) => !v)}
+            disabled={uploadBook.isPending || importUrl.isPending}
+          >
+            <RiAddLine />{' '}
+            {uploadBook.isPending ? 'Uploading…' : importUrl.isPending ? 'Importing…' : 'Add book'}
+          </button>
+          {addMenuOpen && (
+            <div className="popover-panel library-add-menu-panel" role="menu">
+              <button
+                role="menuitem"
+                title="Upload an .epub - or a Lectable export, which restores the book with its audio"
+                onClick={() => {
+                  setAddMenuOpen(false)
+                  fileInputRef.current?.click()
+                }}
+              >
+                <RiUploadLine /> Upload .epub
+              </button>
+              <button
+                role="menuitem"
+                title="Import a Royal Road fiction by its link"
+                onClick={() => {
+                  setAddMenuOpen(false)
+                  setImportOpen(true)
+                }}
+              >
+                <RiLinksLine /> Import from Royal Road
+              </button>
+            </div>
+          )}
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -292,13 +397,48 @@ export function LibraryPage() {
         />
       </div>
 
+      {importOpen && (
+        <form
+          className="library-import"
+          onSubmit={(e) => {
+            e.preventDefault()
+            handleImport()
+          }}
+        >
+          <input
+            type="url"
+            autoFocus
+            placeholder="https://www.royalroad.com/fiction/…"
+            aria-label="Royal Road fiction link"
+            value={importLink}
+            onChange={(e) => setImportLink(e.target.value)}
+            disabled={importUrl.isPending}
+          />
+          <button
+            className="primary-button"
+            type="submit"
+            disabled={!importLink.trim() || importUrl.isPending}
+          >
+            {importUrl.isPending ? 'Importing…' : 'Import'}
+          </button>
+          <button type="button" className="text-button" onClick={() => setImportOpen(false)}>
+            Cancel
+          </button>
+          <span className="muted">
+            The first chapter is ready in a few seconds; the rest arrive in the background.
+          </span>
+        </form>
+      )}
+
       {uploadError && <p className="error-text">{uploadError}</p>}
 
       {booksQuery.isLoading && <p>Loading…</p>}
       {booksQuery.isError && <p className="error-text">Could not load your library.</p>}
 
       {booksQuery.data && booksQuery.data.length === 0 && (
-        <p className="muted">No books yet. Upload an .epub to get started.</p>
+        <p className="muted">
+          No books yet. Use “Add book” to upload an .epub or import a Royal Road fiction.
+        </p>
       )}
 
       {booksQuery.data && booksQuery.data.length > 0 && (

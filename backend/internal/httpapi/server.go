@@ -19,6 +19,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/live"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/royalroad"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
@@ -60,6 +61,15 @@ type Server struct {
 	// telling backends apart in a client's UI - purely cosmetic, never used for the cache-scoping
 	// InstanceID is for. "" (the default) means the deployer never set one.
 	LibraryName string
+
+	// RoyalRoad fetches fictions for import-by-link (see source.go); nil
+	// uses a shared default client.
+	RoyalRoad *royalroad.Client
+	// sourceImportMu serializes handleImportBookURL; sourceSyncs holds the
+	// ids of books whose source is being checked right now
+	// (startSourceSync).
+	sourceImportMu sync.Mutex
+	sourceSyncs    sync.Map
 
 	// provisionLocks is a keyed mutex (characterID -> *sync.Mutex) used by
 	// lockCharacterProvision to serialize provisionCharacterVoice per
@@ -157,6 +167,8 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/instance", s.handleGetInstance)
 
 	mux.HandleFunc("POST /api/books", s.handleUploadBook)
+	mux.HandleFunc("POST /api/books/import-url", s.handleImportBookURL)
+	mux.HandleFunc("POST /api/books/{id}/source/sync", s.handleSyncBookSource)
 	mux.HandleFunc("GET /api/books", s.handleListBooks)
 	mux.HandleFunc("GET /api/books/{id}", s.handleGetBook)
 	mux.HandleFunc("DELETE /api/books/{id}", s.handleDeleteBook)

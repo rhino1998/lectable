@@ -161,6 +161,26 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    /** "Add book" -> "Import from Royal Road": the book appears on the live books topic as soon
+     *  as its first chapter is in, and keeps growing from there (see BookSummaryDto.source). */
+    fun importBookUrl(url: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isUploading = true, error = null) }
+            runCatching { repository.importBookUrl(url.trim()) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+            _uiState.update { it.copy(isUploading = false) }
+        }
+    }
+
+    /** Long-press menu's "Check for new chapters", for a book imported from a website. Fire-and-
+     *  forget like [preprocessBook]: the row's source line follows the fetch via the live topic. */
+    fun syncBookSource(bookId: String) {
+        viewModelScope.launch {
+            runCatching { repository.syncBookSource(bookId) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
     fun deleteBook(id: String) {
         viewModelScope.launch {
             runCatching { repository.deleteBook(id) }

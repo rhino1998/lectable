@@ -46,6 +46,22 @@ object BookSettingSources {
 }
 
 /**
+ * bookSourceKind names the website a book was imported from.
+ *
+ *
+ * Values: see [BookSourceKinds].
+ */
+typealias BookSourceKind = String
+
+/**
+ * [BookSourceKind]'s wire values, in declaration order.
+ */
+object BookSourceKinds {
+    const val ROYALROAD: BookSourceKind = "royalroad"
+    val VALUES: List<BookSourceKind> = listOf(ROYALROAD)
+}
+
+/**
  * bulkAction is a Speakers-page whole-book action (POST
  * /api/books/{id}/bulk/{action}), in the page's display order. "generate"
  * queues the same "pipeline_generate_book" row as the library page's
@@ -428,6 +444,12 @@ data class BookDetailDto(
      * settings fetch just to know whether background music is on.
      */
     val musicEnabled: Boolean = false,
+    /**
+     * Source is set for a book imported from a website (Royal Road)
+     * rather than an uploaded epub: where from, and the state of fetching
+     * its chapters. Set by buildBookSummary.
+     */
+    val source: BookSourceDto? = null,
     val chapters: List<ChapterSummaryDto> = emptyList(),
 )
 
@@ -574,6 +596,39 @@ data class BookSettingResponseDto(
     val updatedAt: Long? = null,
 )
 
+/**
+ * bookSourceDTO is where a book imported from a website came from, and
+ * the state of fetching its chapters.
+ */
+@Serializable
+data class BookSourceDto(
+    val kind: BookSourceKind = "",
+    /**
+     * URL is the work's page at the source.
+     */
+    val url: String = "",
+    /**
+     * CheckedAt is when the source was last checked for chapters (unix
+     * seconds), absent if never.
+     */
+    val checkedAt: Long? = null,
+    /**
+     * RemoteChapters is the book's chapter count plus the chapters the
+     * last check found at the source and hadn't fetched yet: more than
+     * chapterCount while a check is running, or after one that stopped
+     * early.
+     */
+    val remoteChapters: Int = 0,
+    /**
+     * Error is why the last check stopped early, absent if it finished.
+     */
+    val error: String? = null,
+    /**
+     * Syncing is true while chapters are being fetched.
+     */
+    val syncing: Boolean = false,
+)
+
 @Serializable
 data class BookSummaryDto(
     val id: String = "",
@@ -620,6 +675,12 @@ data class BookSummaryDto(
      * settings fetch just to know whether background music is on.
      */
     val musicEnabled: Boolean = false,
+    /**
+     * Source is set for a book imported from a website (Royal Road)
+     * rather than an uploaded epub: where from, and the state of fetching
+     * its chapters. Set by buildBookSummary.
+     */
+    val source: BookSourceDto? = null,
 )
 
 @Serializable
@@ -1101,6 +1162,14 @@ data class GenerateVoiceResponseDto(
 @Serializable
 data class IdResponseDto(
     val id: String = "",
+)
+
+@Serializable
+data class ImportBookURLRequestDto(
+    /**
+     * URL is a link to a Royal Road fiction or any of its chapters.
+     */
+    val url: String = "",
 )
 
 @Serializable

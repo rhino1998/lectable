@@ -12,6 +12,7 @@ import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.ChapterNotesDto
 import com.lectable.app.data.remote.dto.CreateBookmarkRequestDto
+import com.lectable.app.data.remote.dto.ImportBookURLRequestDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.SearchResultDto
@@ -60,6 +61,18 @@ class LibraryRepository @Inject constructor(
         } finally {
             tempFile.delete()
         }
+    }
+
+    /** Imports a Royal Road fiction by its link (backend handleImportBookURL): returns once the
+     *  first chapter is in, the rest arriving in the background. A refusal - not a Royal Road
+     *  link, already in the library, the site unreachable - throws with the server's explanation. */
+    suspend fun importBookUrl(url: String): BookSummaryDto =
+        withServerMessage("Import failed") { api.importBookURL(ImportBookURLRequestDto(url = url)) }
+
+    /** "Check for new chapters" on a book imported from a website (backend handleSyncBookSource):
+     *  the new chapters show up on the live books topic as they're fetched. */
+    suspend fun syncBookSource(id: String) {
+        withServerMessage("Could not check for new chapters") { api.syncBookSource(id) }
     }
 
     suspend fun deleteBook(id: String) {

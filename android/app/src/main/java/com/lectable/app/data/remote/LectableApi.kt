@@ -49,6 +49,17 @@ interface LectableApi {
     @GET("api/books")
     suspend fun listBooks(): List<BookSummaryDto>
 
+    /**
+     * handleImportBookURL imports a Royal Road fiction as a new book: its
+     * first chapter now, the rest in the background (the book's source.syncing
+     * / remoteChapters show the progress). 409 book_exists if the library
+     * already has that fiction - check it for new chapters instead.
+     */
+    @POST("api/books/import-url")
+    suspend fun importBookURL(
+        @Body body: ImportBookURLRequestDto,
+    ): BookSummaryDto
+
     @GET("api/books/{id}")
     suspend fun getBook(
         @Path("id") id: String,
@@ -1163,6 +1174,16 @@ interface LectableApi {
      */
     @POST("api/books/{id}/setting/derive")
     suspend fun deriveBookSetting(
+        @Path("id") id: String,
+    ): QueuedResponseDto
+
+    /**
+     * handleSyncBookSource checks a book's source for chapters it doesn't have
+     * and appends them, in the background (joining a check already running).
+     * 409 for a book that wasn't imported from a website.
+     */
+    @POST("api/books/{id}/source/sync")
+    suspend fun syncBookSource(
         @Path("id") id: String,
     ): QueuedResponseDto
 
