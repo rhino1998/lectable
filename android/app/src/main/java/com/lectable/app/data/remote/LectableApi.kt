@@ -65,6 +65,23 @@ interface LectableApi {
         @Body body: ImportBookURLRequestDto,
     ): BookSummaryDto
 
+    /**
+     * handlePreviewImportURL looks a link over before importing it:
+     * ?url=<link> resolves it and lists the work's chapters; ?preview=<id>
+     * returns to an earlier preview instead, to widen it. ?archive=true also
+     * searches the Internet Archive for chapters the site has delisted (slow:
+     * up to a minute), and a multipart "file" attaches an epub whose chapters
+     * fill in for ones the site won't serve. Nothing is imported.
+     */
+    @Multipart
+    @POST("api/books/import-url/preview")
+    suspend fun previewImportURL(
+        @Query("preview") preview: String? = null,
+        @Query("url") url: String? = null,
+        @Query("archive") archive: String? = null,
+        @Part file: MultipartBody.Part? = null,
+    ): ImportPreviewResponseDto
+
     @GET("api/books/{id}")
     suspend fun getBook(
         @Path("id") id: String,

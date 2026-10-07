@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -50,6 +51,52 @@ func (s *SQLiteStore) GetBookSource(bookID string) (*BookSource, error) {
 		return nil, err
 	}
 	return &src, nil
+}
+
+// SourcePlan is which chapters of its source a book takes, when that isn't
+// simply "all the source lists" - see the books.source_plan migration.
+type SourcePlan struct {
+	// Skip are the source ids of chapters the reader left out at import.
+	Skip []string `json:"skip,omitempty"`
+	// Extra are chosen chapters the source no longer lists, in reading
+	// order: what a check needs to fetch them from an archive.
+	Extra []PlannedChapter `json:"extra,omitempty"`
+}
+
+// PlannedChapter is one chapter of a SourcePlan's Extra.
+type PlannedChapter struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+// SetBookSourcePlan stores bookID's plan, replacing any it had.
+func (s *SQLiteStore) SetBookSourcePlan(bookID string, plan SourcePlan) error {
+	raw, err := json.Marshal(plan)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`UPDATE books SET source_plan = ? WHERE id = ?`, string(raw), bookID)
+	return err
+}
+
+// GetBookSourcePlan returns bookID's plan, empty for a book without one.
+func (s *SQLiteStore) GetBookSourcePlan(bookID string) (SourcePlan, error) {
+	var raw string
+	err := s.db.QueryRow(`SELECT source_plan FROM books WHERE id = ?`, bookID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return SourcePlan{}, nil
+	}
+	if err != nil {
+		return SourcePlan{}, err
+	}
+	var plan SourcePlan
+	if raw != "" {
+		if err := json.Unmarshal([]byte(raw), &plan); err != nil {
+			return SourcePlan{}, fmt.Errorf("read source plan: %w", err)
+		}
+	}
+	return plan, nil
 }
 
 // FindBookBySource returns the id of the book imported from that source,

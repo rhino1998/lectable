@@ -62,6 +62,51 @@ func TestLive(t *testing.T) {
 	if len(w.Chapters) == 0 {
 		t.Fatal("no chapters")
 	}
+	// WEBSOURCE_LIVE_DELISTED=1 also looks in the archive for chapters the
+	// site has taken off the work's list.
+	if d, ok := src.(websource.Delister); ok && os.Getenv("WEBSOURCE_LIVE_DELISTED") != "" && !archived {
+		all, err := wayback.Delisted(ctx, d, w)
+		if err != nil {
+			t.Fatal(err)
+		}
+		delisted := 0
+		for _, ref := range all {
+			if ref.Delisted {
+				delisted++
+			}
+		}
+		t.Logf("with the archive: %d chapters, %d of them delisted", len(all), delisted)
+		for _, i := range []int{0, 1, len(all) / 3, len(all) / 2, len(all) - 2, len(all) - 1} {
+			t.Logf("  %4d %s delisted=%v %q", i, all[i].ID, all[i].Delisted, all[i].Title)
+		}
+		// Chapters the site has put something else in the place of, with
+		// their neighbours.
+		replaced := false
+		for i, ref := range all {
+			if ref.ReplacedBy == "" {
+				continue
+			}
+			replaced = true
+			for j := max(0, i-1); j < min(len(all), i+3); j++ {
+				t.Logf("  %4d %s delisted=%v %q replacedBy=%q", j, all[j].ID, all[j].Delisted, all[j].Title, all[j].ReplacedBy)
+			}
+		}
+		// Read one delisted chapter from its archived copy: a replaced one
+		// if there is any, else the first.
+		for _, ref := range all {
+			if !ref.Delisted || (replaced && ref.ReplacedBy == "") {
+				continue
+			}
+			ch, err := wayback.ArchivedChapter(ctx, ref.URL, func(f websource.Fetcher) (*websource.Chapter, error) {
+				return src.Chapter(ctx, f, ref)
+			})
+			if err != nil {
+				t.Fatalf("delisted chapter %q: %v", ref.Title, err)
+			}
+			t.Logf("  read %q from the archive: %d bytes: %.160q", ref.Title, len(ch.Body), ch.Body)
+			break
+		}
+	}
 	meta := websource.Meta{Kind: src.Kind(), WorkID: w.ID, URL: w.URL, Title: w.Title, Author: w.Author}
 	if w.CoverURL != "" {
 		if meta.Cover, meta.CoverExt, err = websource.Cover(ctx, f, w.CoverURL); err != nil {

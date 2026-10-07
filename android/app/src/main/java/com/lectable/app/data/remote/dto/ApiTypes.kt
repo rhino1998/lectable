@@ -168,6 +168,25 @@ object ExportFormats {
 }
 
 /**
+ * importChapterSource says where a previewed chapter's text would come from.
+ *
+ *
+ * Values: see [ImportChapterSources].
+ */
+typealias ImportChapterSource = String
+
+/**
+ * [ImportChapterSource]'s wire values, in declaration order.
+ */
+object ImportChapterSources {
+    const val SITE: ImportChapterSource = "site"
+    const val ARCHIVE: ImportChapterSource = "archive"
+    const val EPUB: ImportChapterSource = "epub"
+    const val LOCKED: ImportChapterSource = "locked"
+    val VALUES: List<ImportChapterSource> = listOf(SITE, ARCHIVE, EPUB, LOCKED)
+}
+
+/**
  * jobTier is a job-queue priority tier on the wire - jobs.Tier*'s names,
  * most urgent first.
  *
@@ -1309,6 +1328,69 @@ data class ImportBookURLRequestDto(
      * URL is a link to a work at a supported site, or one of its chapters.
      */
     val url: String = "",
+    /**
+     * PreviewID names a preview of the link (POST .../import-url/preview)
+     * to import from instead of looking the link up again: its chapter
+     * list, with whatever the archive and an attached epub added to it.
+     */
+    val previewId: String? = null,
+    /**
+     * Chapters are the ids of the preview's chapters to import; none
+     * means all of them. Only with PreviewID.
+     */
+    val chapters: List<String> = emptyList(),
+)
+
+@Serializable
+data class ImportPreviewChapterDto(
+    val id: String = "",
+    val title: String = "",
+    val source: ImportChapterSource = "",
+    /**
+     * ReplacedBy is set on a chapter from the archive whose place the site
+     * has since given to something else - a notice or summary where a
+     * chapter was: the title of what is listed there now. Both are in the
+     * list, this one first.
+     */
+    val replacedBy: String? = null,
+)
+
+@Serializable
+data class ImportPreviewResponseDto(
+    /**
+     * ID names this preview in the import request, and in a further
+     * preview request that widens it.
+     */
+    val id: String = "",
+    val title: String = "",
+    val author: String = "",
+    /**
+     * Site is the site's name ("Royal Road").
+     */
+    val site: String = "",
+    /**
+     * Chapters is every chapter that can be chosen, in reading order.
+     */
+    val chapters: List<ImportPreviewChapterDto> = emptyList(),
+    /**
+     * CanSearchArchive is true when the site takes chapters off its lists
+     * and the Internet Archive hasn't been searched for them yet.
+     */
+    val canSearchArchive: Boolean = false,
+    /**
+     * ArchiveSearched is true once it has.
+     */
+    val archiveSearched: Boolean = false,
+    /**
+     * EpubChapters is how many chapters the attached epub has, 0 with none
+     * attached.
+     */
+    val epubChapters: Int = 0,
+    /**
+     * ExistingBookID is the library's book of this work, if it has one
+     * already - an import would be refused.
+     */
+    val existingBookId: String? = null,
 )
 
 @Serializable

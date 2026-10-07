@@ -253,8 +253,11 @@ fun LibraryScreen(
         ImportLinkDialog(
             onDismiss = { showImportDialog = false },
             onImport = { link -> showImportDialog = false; viewModel.importBookUrl(link) },
+            onChooseChapters = { link -> showImportDialog = false; viewModel.previewImport(link) },
         )
     }
+
+    ImportPreviewHost(uiState, viewModel)
 
     pendingDelete?.let { book ->
         ConfirmDialog(
@@ -575,9 +578,10 @@ private fun sourceStatus(book: BookSummaryDto): String? {
 }
 
 /** "Add book" -> "Import from a link": asks for the link - a Royal Road fiction, or a chapter
- *  or the table of contents of The Wandering Inn (imported one volume per book). */
+ *  or the table of contents of The Wandering Inn (imported one volume per book). "Import" takes
+ *  everything the site lists; "Choose chapters…" looks the link over first (ImportPreview.kt). */
 @Composable
-private fun ImportLinkDialog(onDismiss: () -> Unit, onImport: (String) -> Unit) {
+private fun ImportLinkDialog(onDismiss: () -> Unit, onImport: (String) -> Unit, onChooseChapters: (String) -> Unit) {
     var link by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -600,7 +604,10 @@ private fun ImportLinkDialog(onDismiss: () -> Unit, onImport: (String) -> Unit) 
             }
         },
         confirmButton = {
-            TextButton(onClick = { onImport(link) }, enabled = link.isNotBlank()) { Text("Import") }
+            Row {
+                TextButton(onClick = { onChooseChapters(link) }, enabled = link.isNotBlank()) { Text("Choose chapters…") }
+                TextButton(onClick = { onImport(link) }, enabled = link.isNotBlank()) { Text("Import") }
+            }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

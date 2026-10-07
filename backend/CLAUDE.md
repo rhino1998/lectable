@@ -295,7 +295,9 @@ building/running `ttsworker` does, since both now link into that binary.
   reads the Internet Archive's copies of a site's pages (a `Fetcher` like
   `Client`: every `Source` method takes the fetcher to read through, so
   the same parser reads the live site or an archived one - and has to
-  cope with the site's older layouts). No store or job
+  cope with the site's older layouts). A site that takes chapters off
+  its lists also implements `Delister`, which `Wayback.Delisted` uses to
+  find them in the archive's index. No store or job
   access: the orchestration (create the book, append chapters, check for
   new ones) is `httpapi/source.go` - see the `import-url` entry in
   `docs/api.md`. The sites: `internal/royalroad/` (a work is a fiction)

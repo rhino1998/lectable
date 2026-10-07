@@ -110,7 +110,24 @@ export const api = {
   // with the new book once its first chapter is in, the rest arriving in
   // the background; or an archive.org item's epub, imported like an upload
   // (see httpapi.handleImportBookURL).
-  importBookUrl: (url: string) => call('POST /api/books/import-url', { body: { url } }),
+  // With previewId (see previewImport), the import takes that preview's
+  // chapter list and only the chapters named - all of them when none are.
+  importBookUrl: (url: string, previewId?: string, chapters?: string[]) =>
+    call('POST /api/books/import-url', { body: { url, previewId, chapters } }),
+
+  // Looks a link over before importing it (httpapi.handlePreviewImportURL):
+  // the work's chapter list, each chapter with where its text would come
+  // from. previewId returns to an earlier preview to widen it - archive
+  // searches the Internet Archive for chapters the site has delisted (slow),
+  // file attaches an epub that stands in for chapters the site won't serve.
+  previewImport: (opts: { url?: string; previewId?: string; archive?: boolean; file?: File }) => {
+    const body = new FormData()
+    if (opts.file) body.append('file', opts.file)
+    return call('POST /api/books/import-url/preview', {
+      query: { url: opts.url, preview: opts.previewId, archive: opts.archive ? true : undefined },
+      body,
+    })
+  },
 
   // Checks a book's source with an epub at hand: chapters the site lists
   // but won't serve are filled from the epub's, matched by title (see

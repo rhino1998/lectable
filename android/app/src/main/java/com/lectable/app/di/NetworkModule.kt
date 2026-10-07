@@ -38,11 +38,18 @@ object NetworkModule {
             // POST /api/llm/test answers only once the model has loaded and generated the whole
             // response (LlmTestScreen) - minutes for a cold model and a long answer, well past
             // the read timeout below.
+            // An import by link, and the preview of one, answer only once the backend has
+            // read the site - and, for a preview searching the Internet Archive for delisted
+            // chapters or an import whose first chapter comes from it, the archive too, which
+            // takes a minute or several.
             .addInterceptor { chain ->
-                if (chain.request().url.encodedPath.endsWith("/api/llm/test")) {
-                    chain.withReadTimeout(10, TimeUnit.MINUTES).proceed(chain.request())
-                } else {
-                    chain.proceed(chain.request())
+                val path = chain.request().url.encodedPath
+                when {
+                    path.endsWith("/api/llm/test") ->
+                        chain.withReadTimeout(10, TimeUnit.MINUTES).proceed(chain.request())
+                    path.endsWith("/api/books/import-url") || path.endsWith("/api/books/import-url/preview") ->
+                        chain.withReadTimeout(5, TimeUnit.MINUTES).proceed(chain.request())
+                    else -> chain.proceed(chain.request())
                 }
             }
             // Paragraph audio fetches and voice-preset synthesis can take a while on a

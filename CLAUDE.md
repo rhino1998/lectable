@@ -143,7 +143,9 @@ lists but won't serve is read from the Internet Archive's last public
 copy of it, or from an epub of that stretch the reader uploads; with
 neither, the book stops there rather than skip it. A Wayback Machine link
 imports a work as archived, and an archive.org item link imports the
-item's epub. See the `import-url` entry in `backend/docs/api.md`.
+item's epub. An import can be previewed first to choose chapters, and -
+for a serial whose early chapters the site has taken down - widened with
+the Internet Archive's copies of the delisted ones or an epub of them. See the `import-url` entry in `backend/docs/api.md`.
 
 A per-book **setting profile** (era, technology, place, accent, genre)
 is written once per book by one LLM call over excerpts from across it, the first time a pass needs it, and shown to the ambience,

@@ -55,6 +55,27 @@ type Source interface {
 	Chapter(ctx context.Context, f Fetcher, ref ChapterRef) (*Chapter, error)
 }
 
+// Delister is a Source whose site takes chapters off a work's list - a
+// serial "stubbed" when its early volumes are published elsewhere - and
+// which can say how to find them in an archive (Wayback.Delisted).
+type Delister interface {
+	// ChapterPrefix is the address every chapter page of the work starts
+	// with, for asking an archive's index what it has under it.
+	ChapterPrefix(work *Work) string
+	// ArchivedChapter reads a chapter out of an archived page's address
+	// under that prefix: its id, its address (the same for every way the
+	// archive may have saved one page), and a title made from the address
+	// as a stand-in. ok is false for a page that isn't a chapter. One id
+	// under two addresses is a chapter that was renamed - or replaced.
+	ArchivedChapter(work *Work, pageURL *url.URL) (ref ChapterRef, ok bool)
+	// ListedChapters reads the work's chapter list as f serves its page -
+	// an archive's copy from when more of it was listed.
+	ListedChapters(ctx context.Context, f Fetcher, work *Work) ([]ChapterRef, error)
+	// Before reports whether a comes before b in the work, for chapters
+	// that never shared a list.
+	Before(a, b ChapterRef) bool
+}
+
 // ChapterRef is one entry of a work's chapter list.
 type ChapterRef struct {
 	// ID is the source's own id for the chapter - stable across retitles
@@ -66,6 +87,15 @@ type ChapterRef struct {
 	// readable by an anonymous visitor. A site whose list doesn't say
 	// reports ErrLocked from Chapter instead.
 	Unlocked bool
+	// Delisted marks a chapter the site no longer lists at all, found in
+	// an archive (Wayback.Delisted): it is read from its archived copy,
+	// the site not being asked.
+	Delisted bool `json:",omitempty"`
+	// ReplacedBy is set on a delisted chapter whose place the site has
+	// given to something else: the title of what is listed under its id
+	// now - a notice or a summary an author put where a chapter was. The
+	// chapter is the archive's copy from before; both can be chosen.
+	ReplacedBy string `json:",omitempty"`
 	// Aliases are the titles this chapter goes by in the work's published
 	// ebook, where the source says - one web chapter can be several ebook
 	// chapters, or share one with its neighbours. What an uploaded epub's

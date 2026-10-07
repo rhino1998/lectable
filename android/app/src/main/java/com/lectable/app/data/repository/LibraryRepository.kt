@@ -14,6 +14,7 @@ import com.lectable.app.data.remote.dto.ChapterNotesDto
 import com.lectable.app.data.remote.dto.RecapSettingsDto
 import com.lectable.app.data.remote.dto.CreateBookmarkRequestDto
 import com.lectable.app.data.remote.dto.ImportBookURLRequestDto
+import com.lectable.app.data.remote.dto.ImportPreviewResponseDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.MarkReadRequestDto
 import com.lectable.app.data.remote.dto.PositionDto
@@ -66,11 +67,58 @@ class LibraryRepository @Inject constructor(
     }
 
     /** Imports a work from a supported site by its link (backend handleImportBookURL): returns
-     *  once the first chapter is in, the rest arriving in the background. A refusal - a site the
-     *  backend can't read, already in the library, the site unreachable - throws with the
-     *  server's explanation. */
-    suspend fun importBookUrl(url: String): BookSummaryDto =
-        withServerMessage("Import failed") { api.importBookURL(ImportBookURLRequestDto(url = url)) }
+     *  once the first chapter is in, the rest arriving in the background. With [previewId] it
+     *  imports from that preview ([previewImport]) instead of looking the link up again - its
+     *  chapter list, with whatever the archive and an attached epub added - and only
+     *  [chapterIds] of it (null: all). A refusal - a site the backend can't read, already in the
+     *  library, the site unreachable, a preview since expired - throws with the server's
+     *  explanation. */
+    suspend fun importBookUrl(url: String, previewId: String? = null, chapterIds: List<String>? = null): BookSummaryDto =
+        withServerMessage("Import failed") {
+            api.importBookURL(ImportBookURLRequestDto(url = url, previewId = previewId, chapters = chapterIds.orEmpty()))
+        }
+
+    /** Looks a link over without importing it (backend handlePreviewImportURL): [url] starts a
+     *  preview, [previewId] returns to an earlier one to widen it - with [searchArchive], the
+     *  Internet Archive's copies of chapters the site has delisted (slow: up to a minute), and
+     *  with [epub], a picked epub whose chapters stand in for ones the site won't serve. */
+    suspend fun previewImport(
+        url: String?,
+        previewId: String?,
+        searchArchive: Boolean,
+        contentResolver: ContentResolver? = null,
+        epub: Uri? = null,
+        cacheDir: File? = null,
+    ): ImportPreviewResponseDto {
+        val tempFile = if (contentResolver != null && epub != null && cacheDir != null) {
+            File(cacheDir, "preview-${System.currentTimeMillis()}.epub")
+        } else {
+            null
+        }
+        return try {
+            // Retrofit refuses a multipart body with no parts, so a request without an epub
+            // carries an empty field the backend ignores.
+            val part = if (tempFile != null && contentResolver != null && epub != null) {
+                contentResolver.openInputStream(epub)?.use { input ->
+                    tempFile.outputStream().use { output -> input.copyTo(output) }
+                } ?: error("Could not open picked file")
+                val body = tempFile.asRequestBody("application/epub+zip".toMediaType())
+                MultipartBody.Part.createFormData("file", contentResolver.displayNameFor(epub), body)
+            } else {
+                MultipartBody.Part.createFormData("nofile", "")
+            }
+            withServerMessage("Could not look up the link") {
+                api.previewImportURL(
+                    preview = previewId,
+                    url = url.takeIf { previewId == null },
+                    archive = if (searchArchive) "true" else null,
+                    file = part,
+                )
+            }
+        } finally {
+            tempFile?.delete()
+        }
+    }
 
     /** Checks a book's source with an epub at hand (backend handleBackfillBookSource): chapters
      *  the site lists but won't serve are filled from the epub's, matched by title. Returns how

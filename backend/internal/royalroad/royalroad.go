@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -124,4 +125,74 @@ func (s *Source) Chapter(ctx context.Context, f websource.Fetcher, ref ChapterRe
 		return nil, fmt.Errorf("chapter %q: %w", ref.Title, err)
 	}
 	return websource.RenderChapter(ctx, f, ref, base, content, imgs)
+}
+
+// Royal Road takes chapters off a fiction's list when the author "stubs"
+// it - its early volumes published elsewhere - so the fiction's page then
+// lists only what is left. websource.Delister: how to find the rest in an
+// archive. A chapter's page is /fiction/<id>/<slug>/chapter/<chapter id>/
+// <chapter slug>, and chapter ids are handed out in order of writing.
+
+// The slug is lowercase words and hyphens; the archive also holds mangled
+// addresses (".../chapter/1764028/0, 0, 0, .5"), which aren't a chapter's.
+var chapterPagePath = regexp.MustCompile(`^/fiction/(\d+)/[^/]+/chapter/(\d+)/([a-z0-9][a-z0-9-]*)/?$`)
+
+func (s *Source) ChapterPrefix(work *websource.Work) string {
+	return "royalroad.com/fiction/" + work.ID + "/"
+}
+
+func (s *Source) ArchivedChapter(work *websource.Work, pageURL *url.URL) (websource.ChapterRef, bool) {
+	m := chapterPagePath.FindStringSubmatch(pageURL.Path)
+	if m == nil || m[1] != work.ID {
+		return websource.ChapterRef{}, false
+	}
+	// As the site would link it, whatever the archive saved it under
+	// (a comment's address, the old domain).
+	clean := url.URL{Scheme: "https", Host: "www.royalroad.com", Path: strings.TrimSuffix(pageURL.Path, "/")}
+	return websource.ChapterRef{ID: m[2], Title: titleFromSlug(m[3]), URL: clean.String()}, true
+}
+
+// titleFromSlug makes a stand-in title of a chapter's address slug:
+// "chapter-670-sadness-porridge" reads "Chapter 670 Sadness Porridge".
+func titleFromSlug(slug string) string {
+	words := strings.FieldsFunc(slug, func(r rune) bool { return r == '-' || r == '_' })
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	if len(words) == 0 {
+		return "Untitled chapter"
+	}
+	return strings.Join(words, " ")
+}
+
+func (s *Source) ListedChapters(ctx context.Context, f websource.Fetcher, work *websource.Work) ([]websource.ChapterRef, error) {
+	body, finalURL, _, err := f.Get(ctx, work.URL, websource.MaxPageSize)
+	if err != nil {
+		return nil, err
+	}
+	fic, err := parseFiction(body, finalURL)
+	if err != nil {
+		return nil, err
+	}
+	return fic.Chapters, nil
+}
+
+// Before orders chapters by id. An earlier chapter the site has since
+// replaced shares the id of what replaced it ("<id>@<slug>"), and comes
+// first: it is where the story was.
+func (s *Source) Before(a, b websource.ChapterRef) bool {
+	num := func(id string) (uint64, bool, bool) {
+		plain, _, earlier := strings.Cut(id, "@")
+		n, err := strconv.ParseUint(plain, 10, 64)
+		return n, earlier, err == nil
+	}
+	x, xEarlier, okA := num(a.ID)
+	y, yEarlier, okB := num(b.ID)
+	if !okA || !okB {
+		return a.ID < b.ID
+	}
+	if x != y {
+		return x < y
+	}
+	return xEarlier && !yEarlier
 }

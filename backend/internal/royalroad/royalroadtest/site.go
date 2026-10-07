@@ -27,6 +27,7 @@ type chapter struct {
 	body     string
 	unlocked bool
 	gone     bool
+	delisted bool
 }
 
 // Site is the fake site. Add chapters, then point a client at it.
@@ -104,6 +105,31 @@ func (s *Site) SetFailing(failing bool) {
 	s.failing = failing
 }
 
+// Delist takes a chapter off the fiction's list and its page away, as when
+// a fiction is stubbed.
+func (s *Site) Delist(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.chapters {
+		if fmt.Sprint(c.id) == id {
+			c.gone, c.delisted = true, true
+		}
+	}
+}
+
+// Replace puts something else in a chapter's place - a new title and text
+// under the same id, as an author does to leave a notice where a chapter
+// was.
+func (s *Site) Replace(id, title, body string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.chapters {
+		if fmt.Sprint(c.id) == id {
+			c.title, c.body = title, body
+		}
+	}
+}
+
 // Remove makes a listed chapter's page answer 404.
 func (s *Site) Remove(id string) {
 	s.mu.Lock()
@@ -132,6 +158,9 @@ func (s *Site) fiction(w http.ResponseWriter, r *http.Request) {
 	}
 	list := []entry{}
 	for i, c := range s.chapters {
+		if c.delisted {
+			continue
+		}
 		list = append(list, entry{ID: c.id, Title: c.title, Slug: "c", Order: i, IsUnlocked: c.unlocked,
 			URL: fmt.Sprintf("/fiction/%s/the-long-road/chapter/%d/c", FictionID, c.id)})
 	}

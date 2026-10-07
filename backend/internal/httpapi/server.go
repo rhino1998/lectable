@@ -74,6 +74,9 @@ type Server struct {
 	// startSourceSync job) or whose stored pages are being re-read.
 	sourceImportMu sync.Mutex
 	sourceSyncs    sync.Map
+	// importPreviews holds links looked over and not yet imported
+	// (preview id -> *importPreview) - see source_preview.go.
+	importPreviews sync.Map
 
 	// provisionLocks is a keyed mutex (characterID -> *sync.Mutex) used by
 	// lockCharacterProvision to serialize provisionCharacterVoice per
@@ -177,6 +180,7 @@ func NewRouter(s *Server) http.Handler {
 
 	mux.HandleFunc("POST /api/books", s.handleUploadBook)
 	mux.HandleFunc("POST /api/books/import-url", s.handleImportBookURL)
+	mux.HandleFunc("POST /api/books/import-url/preview", s.handlePreviewImportURL)
 	mux.HandleFunc("POST /api/books/{id}/source/sync", s.handleSyncBookSource)
 	mux.HandleFunc("POST /api/books/{id}/source/backfill", s.handleBackfillBookSource)
 	mux.HandleFunc("POST /api/books/{id}/source/reparse", s.handleReparseBookSource)

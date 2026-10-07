@@ -13,6 +13,7 @@ import com.lectable.app.data.download.DownloadedBook
 import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.BookSummaryDto
+import com.lectable.app.data.remote.dto.ImportPreviewResponseDto
 import com.lectable.app.data.repository.DownloadRepository
 import com.lectable.app.data.repository.LibraryRepository
 import com.lectable.app.data.repository.VoiceRepository
@@ -22,6 +23,7 @@ import com.lectable.app.playback.ChapterDownloadWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.io.File
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -58,7 +60,17 @@ data class LibraryUiState(
     // Measured narration speed in chars/s for each row's "to go" estimate - see
     // ui/jobs/NarrationEta.kt's narrationRate. 0 until anything has been measured.
     val narrationRate: Double = 0.0,
+    // "Import from a link" -> "Choose chapters…" (ImportPreview.kt), shown while any of these
+    // is set: the request in flight, the link as the backend last described it, and what went
+    // wrong with the last request. Which chapters are ticked is LibraryViewModel
+    // .previewSelection, kept out of here so a tick doesn't recompose the library.
+    val previewBusy: PreviewBusy? = null,
+    val preview: ImportPreviewResponseDto? = null,
+    val previewError: String? = null,
 )
+
+/** What the import preview is waiting on. */
+enum class PreviewBusy { LOOKING_UP, SEARCHING_ARCHIVE, ATTACHING_EPUB, IMPORTING }
 
 @HiltViewModel
 class LibraryViewModel @Inject constructor(
@@ -76,6 +88,12 @@ class LibraryViewModel @Inject constructor(
     val uiState: StateFlow<LibraryUiState> = _uiState
 
     private var booksJob: Job? = null
+
+    // Ids of the previewed chapters ticked for import (see LibraryUiState.preview).
+    private val _previewSelection = MutableStateFlow<Set<String>>(emptySet())
+    val previewSelection: StateFlow<Set<String>> = _previewSelection
+
+    private var previewJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -170,6 +188,89 @@ class LibraryViewModel @Inject constructor(
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
             _uiState.update { it.copy(isUploading = false) }
         }
+    }
+
+    /** "Import from a link" -> "Choose chapters…": looks the link over (nothing is imported)
+     *  and opens the preview on its chapter list. */
+    fun previewImport(url: String) {
+        previewJob?.cancel()
+        previewJob = null
+        _previewSelection.value = emptySet()
+        _uiState.update { it.copy(preview = null) }
+        runPreview(PreviewBusy.LOOKING_UP) { repository.previewImport(url = url.trim(), previewId = null, searchArchive = false) }
+    }
+
+    /** The preview's "Search the Internet Archive": adds the chapters the site has delisted and
+     *  the archive kept a copy of. Slow - up to a minute. */
+    fun searchPreviewArchive() {
+        val id = _uiState.value.preview?.id ?: return
+        runPreview(PreviewBusy.SEARCHING_ARCHIVE) { repository.previewImport(url = null, previewId = id, searchArchive = true) }
+    }
+
+    /** The preview's "Attach an epub": its chapters stand in for ones the site won't serve. */
+    fun attachPreviewEpub(contentResolver: ContentResolver, uri: Uri, cacheDir: File) {
+        val id = _uiState.value.preview?.id ?: return
+        runPreview(PreviewBusy.ATTACHING_EPUB) {
+            repository.previewImport(url = null, previewId = id, searchArchive = false, contentResolver = contentResolver, epub = uri, cacheDir = cacheDir)
+        }
+    }
+
+    /** One preview request at a time. A failure leaves the list and the selection as they were,
+     *  with the error beside them. */
+    private fun runPreview(busy: PreviewBusy, request: suspend () -> ImportPreviewResponseDto) {
+        if (previewJob?.isActive == true) return
+        previewJob = viewModelScope.launch {
+            _uiState.update { it.copy(previewBusy = busy, previewError = null) }
+            runCatching { request() }
+                .onSuccess { response ->
+                    // Chapter ids key the list's rows and the selection, so each appears once.
+                    val next = response.copy(chapters = response.chapters.distinctBy { it.id })
+                    val previous = _uiState.value.preview
+                    _previewSelection.value =
+                        if (previous == null) defaultSelection(next.chapters)
+                        else mergeSelection(previous.chapters, _previewSelection.value, next.chapters)
+                    _uiState.update { it.copy(preview = next, previewBusy = null) }
+                }
+                .onFailure { e ->
+                    if (e is CancellationException) throw e
+                    _uiState.update { it.copy(previewBusy = null, previewError = e.message ?: "Could not look up the link") }
+                }
+        }
+    }
+
+    fun setPreviewSelection(selected: Set<String>) {
+        _previewSelection.value = selected
+    }
+
+    /** The preview's "Import N chapters": imports the ticked chapters from the preview and
+     *  closes it. A refusal keeps it open, selection intact, with the server's explanation. */
+    fun importPreviewSelection() {
+        val preview = _uiState.value.preview ?: return
+        if (previewJob?.isActive == true) return
+        val chapterIds = importChapterIds(preview.chapters, _previewSelection.value)
+        previewJob = viewModelScope.launch {
+            _uiState.update { it.copy(previewBusy = PreviewBusy.IMPORTING, previewError = null, isUploading = true) }
+            try {
+                repository.importBookUrl(url = "", previewId = preview.id, chapterIds = chapterIds)
+                _uiState.update { it.copy(preview = null, previewBusy = null) }
+                _previewSelection.value = emptySet()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update { it.copy(previewBusy = null, previewError = e.message ?: "Import failed") }
+            } finally {
+                _uiState.update { it.copy(isUploading = false) }
+            }
+        }
+    }
+
+    /** Closes the preview, dropping a request still in flight. An import already sent may still
+     *  go through - the book then just appears in the library. */
+    fun dismissPreview() {
+        previewJob?.cancel()
+        previewJob = null
+        _previewSelection.value = emptySet()
+        _uiState.update { it.copy(preview = null, previewBusy = null, previewError = null) }
     }
 
     /** Long-press menu's "Fill locked chapters from an epub", for a book whose source stopped at

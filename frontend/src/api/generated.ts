@@ -61,6 +61,12 @@ export const EXPORT_FORMATS = ['epub'] as const
 export type ExportFormat = (typeof EXPORT_FORMATS)[number]
 
 /**
+ * importChapterSource says where a previewed chapter's text would come from.
+ */
+export const IMPORT_CHAPTER_SOURCES = ['site', 'archive', 'epub', 'locked'] as const
+export type ImportChapterSource = (typeof IMPORT_CHAPTER_SOURCES)[number]
+
+/**
  * jobTier is a job-queue priority tier on the wire - jobs.Tier*'s names,
  * most urgent first.
  */
@@ -975,6 +981,67 @@ export interface ImportBookURLRequest {
    * URL is a link to a work at a supported site, or one of its chapters.
    */
   url: string
+  /**
+   * PreviewID names a preview of the link (POST .../import-url/preview)
+   * to import from instead of looking the link up again: its chapter
+   * list, with whatever the archive and an attached epub added to it.
+   */
+  previewId?: string
+  /**
+   * Chapters are the ids of the preview's chapters to import; none
+   * means all of them. Only with PreviewID.
+   */
+  chapters?: string[]
+}
+
+export interface ImportPreviewChapter {
+  id: string
+  title: string
+  source: ImportChapterSource
+  /**
+   * ReplacedBy is set on a chapter from the archive whose place the site
+   * has since given to something else - a notice or summary where a
+   * chapter was: the title of what is listed there now. Both are in the
+   * list, this one first.
+   */
+  replacedBy?: string
+}
+
+export interface ImportPreviewResponse {
+  /**
+   * ID names this preview in the import request, and in a further
+   * preview request that widens it.
+   */
+  id: string
+  title: string
+  author: string
+  /**
+   * Site is the site's name ("Royal Road").
+   */
+  site: string
+  /**
+   * Chapters is every chapter that can be chosen, in reading order.
+   */
+  chapters: ImportPreviewChapter[]
+  /**
+   * CanSearchArchive is true when the site takes chapters off its lists
+   * and the Internet Archive hasn't been searched for them yet.
+   */
+  canSearchArchive: boolean
+  /**
+   * ArchiveSearched is true once it has.
+   */
+  archiveSearched: boolean
+  /**
+   * EpubChapters is how many chapters the attached epub has, 0 with none
+   * attached.
+   */
+  epubChapters: number
+  /**
+   * ExistingBookID is the library's book of this work, if it has one
+   * already - an import would be refused.
+   */
+  existingBookId?: string
 }
 
 export interface Instance {
@@ -2426,6 +2493,21 @@ export interface Routes {
     body: ImportBookURLRequest
     response: BookSummary
     errorCode: 'book_exists'
+  }
+  /**
+   * handlePreviewImportURL looks a link over before importing it:
+   * ?url=<link> resolves it and lists the work's chapters; ?preview=<id>
+   * returns to an earlier preview instead, to widen it. ?archive=true also
+   * searches the Internet Archive for chapters the site has delisted (slow:
+   * up to a minute), and a multipart "file" attaches an epub whose chapters
+   * fill in for ones the site won't serve. Nothing is imported.
+   */
+  'POST /api/books/import-url/preview': {
+    path: Record<never, never>
+    query: { preview?: string | number | boolean; url?: string | number | boolean; archive?: string | number | boolean }
+    body: FormData
+    response: ImportPreviewResponse
+    errorCode: never
   }
   'GET /api/books/{id}': {
     path: { id: string }
@@ -4361,6 +4443,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books': 'json',
   'GET /api/books': 'json',
   'POST /api/books/import-url': 'json',
+  'POST /api/books/import-url/preview': 'json',
   'GET /api/books/{id}': 'json',
   'DELETE /api/books/{id}': 'none',
   'DELETE /api/books/{id}/audio': 'none',

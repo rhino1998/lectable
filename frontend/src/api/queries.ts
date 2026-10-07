@@ -62,7 +62,17 @@ export function useUploadBook() {
 }
 
 export function useImportBookUrl() {
-  return useMutation({ mutationFn: (url: string) => api.importBookUrl(url) })
+  return useMutation({
+    mutationFn: (args: { url: string; previewId?: string; chapters?: string[] }) =>
+      api.importBookUrl(args.url, args.previewId, args.chapters),
+  })
+}
+
+export function usePreviewImport() {
+  return useMutation({
+    mutationFn: (opts: { url?: string; previewId?: string; archive?: boolean; file?: File }) =>
+      api.previewImport(opts),
+  })
 }
 
 export function useBackfillBookSource() {

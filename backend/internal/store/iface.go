@@ -48,6 +48,8 @@ type Store interface {
 	FindBookBySource(kind, sourceID string) (string, error)
 	GetBookSource(bookID string) (*BookSource, error)
 	SetBookSource(bookID string, src BookSource) error
+	SetBookSourcePlan(bookID string, plan SourcePlan) error
+	GetBookSourcePlan(bookID string) (SourcePlan, error)
 	SourcedChapters(bookID string) ([]SourcedChapter, error)
 	CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error)
 	CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error)

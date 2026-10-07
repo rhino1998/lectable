@@ -368,6 +368,109 @@ label {
   font-size: 0.8rem;
 }
 
+/* A button beside a primary one, for the lesser choice. */
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.55rem 1.1rem;
+  font-weight: 600;
+}
+.secondary-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.secondary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* The chapter picker under the import form (ImportPreviewPanel.tsx). */
+.import-preview {
+  flex-basis: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.import-preview-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.import-preview .import-preview-summary {
+  font-size: 0.8rem;
+}
+.import-preview-tools,
+.import-preview-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.import-preview .muted {
+  flex-basis: auto;
+}
+.import-preview-range {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+.library-import .import-preview-range input {
+  flex: none;
+  width: 5.5rem;
+  padding: 0.3rem 0.4rem;
+}
+.import-preview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.import-preview-list label {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+.import-preview-list label:hover {
+  background: var(--bg-subtle);
+}
+.library-import .import-preview-list input {
+  flex: none;
+  padding: 0;
+}
+.import-preview-number {
+  min-width: 3ch;
+  text-align: right;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.import-preview-title {
+  flex: 1;
+  min-width: 0;
+}
+.import-preview-source {
+  font-size: 0.7rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+.import-preview-source-locked {
+  opacity: 0.6;
+}
+
 .library-stats {
   margin-bottom: 1.5rem;
 }

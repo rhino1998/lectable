@@ -26,6 +26,7 @@ import {
   useGenerateRemaining,
   useMarkRead,
   useImportBookUrl,
+  usePreviewImport,
   useJobsSummary,
   usePreprocessBook,
   usePreprocessSeries,
@@ -33,10 +34,13 @@ import {
   useUploadBook,
 } from '../api/queries'
 import { useClickOutside } from '../hooks/useClickOutside'
+import { ImportPreviewPanel } from '../components/ImportPreviewPanel'
+import type { ImportPreviewBusy } from '../components/ImportPreviewPanel'
+import { defaultSelection, mergeSelection } from '../utils/importSelection'
 import { ApiError } from '../api/client'
 import { formatDurationLong } from '../utils/time'
 import { formatEta, narrationRate as measuredNarrationRate } from '../utils/narrationEta'
-import type { BookSummary } from '../api/types'
+import type { BookSummary, ImportPreviewResponse } from '../api/types'
 
 // One library grid entry: either a run of consecutive standalone books (no
 // series, or a series with only one book present - not worth its own
@@ -436,17 +440,73 @@ export function LibraryPage() {
   const [addMenuOpen, setAddMenuOpen] = useState(false)
   const addMenuRef = useRef<HTMLDivElement>(null)
   useClickOutside([addMenuRef], () => setAddMenuOpen(false), addMenuOpen)
+  // "Choose chapters…" looks the link over first: the picker below the
+  // form shows the work's chapter list, which can be widened (the Internet
+  // Archive, an epub) before importing what is ticked.
+  const previewImport = usePreviewImport()
+  const [preview, setPreview] = useState<ImportPreviewResponse | null>(null)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [previewBusy, setPreviewBusy] = useState<ImportPreviewBusy>(null)
+  const closeImport = () => {
+    setImportLink('')
+    setImportOpen(false)
+    setPreview(null)
+  }
+  const importError = (fallback: string) => (err: unknown) =>
+    setUploadError(err instanceof ApiError ? err.message : fallback)
+  const handlePreview = () => {
+    const link = importLink.trim()
+    if (!link || previewImport.isPending) return
+    setUploadError(null)
+    previewImport.mutate(
+      { url: link },
+      {
+        onSuccess: (p) => {
+          setPreview(p)
+          setSelected(defaultSelection(p.chapters))
+        },
+        onError: importError('Could not look that link up'),
+      },
+    )
+  }
+  // Asks for the preview again, widened; the ticks carry over.
+  const widenPreview = (kind: 'archive' | 'epub', file?: File) => {
+    if (!preview) return
+    setUploadError(null)
+    setPreviewBusy(kind)
+    previewImport.mutate(
+      { previewId: preview.id, archive: kind === 'archive', file },
+      {
+        onSuccess: (p) => {
+          setSelected(mergeSelection(preview.chapters, selected, p.chapters))
+          setPreview(p)
+        },
+        onError: importError(
+          kind === 'archive' ? 'Could not search the Internet Archive' : 'Could not read that epub',
+        ),
+        onSettled: () => setPreviewBusy(null),
+      },
+    )
+  }
   const handleImport = () => {
     const link = importLink.trim()
     if (!link || importUrl.isPending) return
     setUploadError(null)
-    importUrl.mutate(link, {
-      onSuccess: () => {
-        setImportLink('')
-        setImportOpen(false)
+    // Everything ticked is just "all of them".
+    const everything = preview !== null && selected.size === preview.chapters.length
+    const chapters =
+      preview && !everything
+        ? preview.chapters.filter((c) => selected.has(c.id)).map((c) => c.id)
+        : undefined
+    if (preview) setPreviewBusy('import')
+    importUrl.mutate(
+      { url: link, previewId: preview?.id, chapters },
+      {
+        onSuccess: closeImport,
+        onError: importError('Import failed'),
+        onSettled: () => setPreviewBusy(null),
       },
-      onError: (err) => setUploadError(err instanceof ApiError ? err.message : 'Import failed'),
-    })
+    )
   }
 
   // Epubs upload one at a time, in the order chosen (several from the file
@@ -626,17 +686,35 @@ export function LibraryPage() {
             placeholder="Royal Road, Wandering Inn, web.archive.org or archive.org link"
             aria-label="Link to import"
             value={importLink}
-            onChange={(e) => setImportLink(e.target.value)}
-            disabled={importUrl.isPending}
+            onChange={(e) => {
+              setImportLink(e.target.value)
+              // A preview is of the link it was asked for.
+              setPreview(null)
+            }}
+            disabled={importUrl.isPending || previewImport.isPending}
           />
-          <button
-            className="primary-button"
-            type="submit"
-            disabled={!importLink.trim() || importUrl.isPending}
-          >
-            {importUrl.isPending ? 'Importing…' : 'Import'}
-          </button>
-          <button type="button" className="text-button" onClick={() => setImportOpen(false)}>
+          {!preview && (
+            <>
+              <button
+                className="primary-button"
+                type="submit"
+                title="Import every chapter the site lists"
+                disabled={!importLink.trim() || importUrl.isPending || previewImport.isPending}
+              >
+                {importUrl.isPending ? 'Importing…' : 'Import'}
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                title="See the chapter list first: pick chapters, find ones the site has delisted in the Internet Archive, or attach an epub of the published part"
+                onClick={handlePreview}
+                disabled={!importLink.trim() || importUrl.isPending || previewImport.isPending}
+              >
+                {previewImport.isPending ? 'Looking it up…' : 'Choose chapters…'}
+              </button>
+            </>
+          )}
+          <button type="button" className="text-button" onClick={closeImport}>
             Cancel
           </button>
           <span className="muted">
@@ -644,6 +722,18 @@ export function LibraryPage() {
             link; or an archive.org item with an epub. The first chapter is ready in a few seconds;
             the rest arrive in the background.
           </span>
+          {preview && (
+            <ImportPreviewPanel
+              preview={preview}
+              selected={selected}
+              onSelect={setSelected}
+              busy={previewBusy}
+              onSearchArchive={() => widenPreview('archive')}
+              onAttachEpub={(file) => widenPreview('epub', file)}
+              onImport={handleImport}
+              onClose={() => setPreview(null)}
+            />
+          )}
         </form>
       )}
 

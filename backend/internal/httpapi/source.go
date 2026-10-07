@@ -85,6 +85,13 @@ type bookSourceDTO struct {
 type importBookURLRequest struct {
 	// URL is a link to a work at a supported site, or one of its chapters.
 	URL string `json:"url"`
+	// PreviewID names a preview of the link (POST .../import-url/preview)
+	// to import from instead of looking the link up again: its chapter
+	// list, with whatever the archive and an attached epub added to it.
+	PreviewID string `json:"previewId,omitempty"`
+	// Chapters are the ids of the preview's chapters to import; none
+	// means all of them. Only with PreviewID.
+	Chapters []string `json:"chapters,omitempty"`
 }
 
 const (
@@ -279,41 +286,46 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, summary)
 		return
 	}
-	reader, link, err := s.readerForLink(req.URL)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	site := reader.site
-
 	// One import at a time, so the same link sent twice can't make two books.
 	s.sourceImportMu.Lock()
 	defer s.sourceImportMu.Unlock()
 
 	ctx := r.Context()
-	candidates, err := site.Resolve(ctx, reader.fetch, link)
-	if err != nil {
-		writeSourceError(w, site, err, http.StatusBadRequest)
-		return
-	}
-	// A link to a whole site names several works (a serial's volumes):
-	// take the first the library doesn't have.
-	workID, existing := "", ""
-	for _, id := range candidates {
-		found, err := s.Store.FindBookBySource(reader.kind(), reader.storedID(id))
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+	var reader sourceReader
+	var work *websource.Work
+	var chapters []websource.ChapterRef
+	var plan store.SourcePlan
+	var fill *epubFill
+	if req.PreviewID != "" {
+		v, ok := s.importPreviews.Load(req.PreviewID)
+		if !ok {
+			writeError(w, http.StatusGone, "that preview has expired - look the link up again")
 			return
 		}
-		if found == "" {
-			workID = id
-			break
+		p := v.(*importPreview)
+		p.mu.Lock()
+		reader, work, fill = p.reader, p.work, p.fill
+		chapters, plan = p.chosenChapters(req.Chapters)
+		p.mu.Unlock()
+	} else {
+		var link *url.URL
+		var err error
+		reader, link, err = s.readerForLink(req.URL)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
-		if existing == "" {
-			existing = found
+		if work, err = s.resolveWork(r, reader, link); err != nil {
+			writeBuildError(w, err)
+			return
 		}
+		chapters = work.Chapters
 	}
-	if workID == "" {
+	site := reader.site
+	if existing, err := s.Store.FindBookBySource(reader.kind(), reader.storedID(work.ID)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	} else if existing != "" {
 		title := "This"
 		if b, _ := s.Store.GetBook(existing); b != nil {
 			title = "\"" + b.Title + "\""
@@ -321,25 +333,24 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeErrorCode(w, http.StatusConflict, errBookExists, title+" is already in the library - check it for new chapters instead")
 		return
 	}
-
-	work, err := site.Work(ctx, reader.fetch, workID)
-	if err != nil {
-		writeSourceError(w, site, err, http.StatusBadGateway)
-		return
-	}
-	if len(work.Chapters) == 0 {
+	if len(chapters) == 0 {
 		writeError(w, http.StatusUnprocessableEntity, "\""+work.Title+"\" has no chapters to read yet")
 		return
 	}
-	first, err := s.readChapter(ctx, reader, work.Chapters[0])
+	got, _, err := s.readOrFill(ctx, reader, chapters[0], fill)
 	if errors.Is(err, websource.ErrLocked) {
-		writeError(w, http.StatusUnprocessableEntity, "\""+work.Title+"\" can't be read yet: its first chapter is locked at "+site.Name())
+		writeError(w, http.StatusUnprocessableEntity, "\""+work.Title+"\" can't be read yet: its first chapter, \""+chapters[0].Title+"\", is locked at "+site.Name())
 		return
 	}
 	if err != nil {
 		writeSourceError(w, site, err, http.StatusBadGateway)
 		return
 	}
+	if len(got) == 0 {
+		writeError(w, http.StatusUnprocessableEntity, "the first chapter chosen has no text of its own")
+		return
+	}
+	first := got[0]
 	meta := reader.meta(work)
 	if work.CoverURL != "" {
 		// Best-effort, like an epub's cover.
@@ -358,21 +369,42 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		// Beside the live work's book, if both are in the library.
 		title += " (archived " + archiveDate(reader.timestamp) + ")"
 	}
-	bookID, createdImages, err := s.Store.CreateBook(title, work.Author, "en", meta.CoverExt, work.SeriesName, work.SeriesIndex, []store.ChapterInput{input})
+	inputs := []store.ChapterInput{input}
+	kept := []*websource.Chapter{first.ch}
+	// The first chapter can be several of an epub's.
+	for _, more := range got[1:] {
+		in, images, err := sourceChapterInput(meta, more.ch)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		inputs = append(inputs, in)
+		kept = append(kept, more.ch)
+		imageBytes = append(imageBytes, images...)
+	}
+	bookID, createdImages, err := s.Store.CreateBook(title, work.Author, "en", meta.CoverExt, work.SeriesName, work.SeriesIndex, inputs)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
 	}
 	if err := s.Store.SetBookSource(bookID, store.BookSource{
-		Kind: reader.kind(), SourceID: reader.storedID(work.ID), URL: reader.workURL(work), CheckedAt: time.Now().Unix(), RemoteChapters: len(work.Chapters),
+		Kind: reader.kind(), SourceID: reader.storedID(work.ID), URL: reader.workURL(work), CheckedAt: time.Now().Unix(), RemoteChapters: len(chapters) + len(got) - 1,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
 	}
-	if err := s.writeSourceEpub(bookID, meta, []*websource.Chapter{first.ch}, true); err != nil {
+	if len(plan.Skip)+len(plan.Extra) > 0 {
+		if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
+			return
+		}
+	}
+	if err := s.writeSourceEpub(bookID, meta, kept, true); err != nil {
 		log.Printf("source: keeping epub of %s: %v", bookID, err)
 	}
-	s.writeRawChapter(bookID, first)
+	for _, g := range got {
+		s.writeRawChapter(bookID, g)
+	}
 	if meta.CoverExt != "" {
 		if err := audiopath.EnsureCoverDir(s.DataDir); err == nil {
 			_ = os.WriteFile(audiopath.CoverFile(s.DataDir, bookID, meta.CoverExt), meta.Cover, 0o644)
@@ -385,8 +417,11 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "book saved but could not be reloaded")
 		return
 	}
-	if len(work.Chapters) > 1 {
-		s.startSourceSync(bookID, nil)
+	if len(chapters) > 1 {
+		s.startSourceSync(bookID, fill)
+	}
+	if req.PreviewID != "" {
+		s.importPreviews.Delete(req.PreviewID)
 	}
 	summary, _, err := s.buildBookSummary(*b)
 	if err != nil {
@@ -631,9 +666,14 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 	for _, id := range haveIDs {
 		have[id] = true
 	}
+	plan, err := s.Store.GetBookSourcePlan(bookID)
+	if err != nil {
+		return 0, err
+	}
 	src.Blocked = ""
 	var missing []websource.ChapterRef
-	for _, ref := range work.Chapters {
+	var unread []string // delisted chapters the archive wouldn't give
+	for _, ref := range plannedChapters(reader.site, work.Chapters, plan) {
 		if have[ref.ID] {
 			continue
 		}
@@ -665,6 +705,14 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 			// already taken for the chapter before it.
 			chapters, covered, err := s.readOrFill(ctx, reader, ref, fill)
 			if errors.Is(err, websource.ErrNotFound) {
+				dropped++
+				continue
+			}
+			if errors.Is(err, websource.ErrLocked) && ref.Delisted {
+				// Nothing will ever open it at the site, so waiting on it
+				// would hold up everything after: go on without, and say
+				// so. It is tried again at the next check.
+				unread = append(unread, ref.Title)
 				dropped++
 				continue
 			}
@@ -707,6 +755,9 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 		}
 	}
 	s.fetchMissingRaw(ctx, bookID, reader, work)
+	if len(unread) > 0 {
+		return added, fmt.Errorf("%d delisted chapters could not be read from the Internet Archive and were left out (the first: %q) - checking again retries them, and an epub of them can fill them in", len(unread), unread[0])
+	}
 	return added, nil
 }
 
@@ -715,12 +766,15 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 // chapters for it, or report it covered by ones already given) or the
 // Wayback Machine.
 func (s *Server) readOrFill(ctx context.Context, r sourceReader, ref websource.ChapterRef, fill *epubFill) (chapters []sourced, covered bool, err error) {
-	got, err := fetchChapter(ctx, r.site, r.fetch, ref, r.via())
-	if err == nil {
-		return []sourced{got}, false, nil
-	}
-	if !errors.Is(err, websource.ErrLocked) {
-		return nil, false, err
+	// A delisted chapter isn't at the site to ask for.
+	if !ref.Delisted {
+		got, err := fetchChapter(ctx, r.site, r.fetch, ref, r.via())
+		if err == nil {
+			return []sourced{got}, false, nil
+		}
+		if !errors.Is(err, websource.ErrLocked) {
+			return nil, false, err
+		}
 	}
 	if fill != nil {
 		if filled, ok := fill.take(ref); ok {
@@ -731,7 +785,7 @@ func (s *Server) readOrFill(ctx context.Context, r sourceReader, ref websource.C
 			return chapters, len(filled) == 0, nil
 		}
 	}
-	got, err = s.archivedChapter(ctx, r, ref)
+	got, err := s.archivedChapter(ctx, r, ref)
 	if err != nil {
 		return nil, false, err
 	}
