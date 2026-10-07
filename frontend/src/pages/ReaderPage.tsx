@@ -31,6 +31,7 @@ import { remotePosition, useRemotePosition } from '../hooks/useRemotePosition'
 import { useReaderShortcuts } from '../hooks/useReaderShortcuts'
 import { ParagraphContextMenu } from '../components/ParagraphContextMenu'
 import type { ParagraphContextMenuHandle } from '../components/ParagraphContextMenu'
+import { RecapPanel, type RecapTransport } from '../components/RecapPanel'
 import { PlayerBar } from '../components/PlayerBar'
 import { ChapterSection } from '../components/ChapterSection'
 import { AnnotationTooltip } from '../components/AnnotationTooltip'
@@ -188,6 +189,16 @@ export function ReaderPage() {
   // requiring a chapter to be explicitly selected.
   const [range, setRange] = useState<{ start: number; end: number } | null>(null)
 
+  // The "previously on" recap - see RecapPanel. Open, it sits in the text
+  // above the paragraph the reader was at when it opened (recapAnchor),
+  // rendered into the slot that paragraph's ChapterSection provides.
+  const [recapOpen, setRecapOpenState] = useState(false)
+  const [recapAnchor, setRecapAnchor] = useState<{ chapterIdx: number; paragraphIdx: number }>()
+  const [recapSlot, setRecapSlot] = useState<HTMLElement | null>(null)
+  // Set while the recap is open with a clip: the player bar's play/pause,
+  // the keyboard shortcut and the sleep timer then act on it, not the book.
+  const [recapTransport, setRecapTransport] = useState<RecapTransport | null>(null)
+
   const remotePositionState = useRemotePosition()
   const { noteOwnSave } = remotePositionState
 
@@ -287,6 +298,12 @@ export function ReaderPage() {
     onPosition: handlePosition,
     onNeedChapter: expandDown,
   })
+  // What the player bar and shortcuts drive - see recapTransport.
+  const barPlayback = useMemo(
+    () =>
+      recapTransport ? { ...playback, ...recapTransport, isWaitingForAudio: false } : playback,
+    [playback, recapTransport],
+  )
 
   // Chapter background music - an entirely separate, parallel Web Audio
   // graph mixed in underneath playback's own plain <audio> narration (see
@@ -590,9 +607,9 @@ export function ReaderPage() {
   const hideAnnotationTooltip = useCallback(() => tooltipRef.current?.hide(), [])
 
   useReaderShortcuts({
-    isPlaying: playback.isPlaying,
-    play: playback.play,
-    pause: playback.pause,
+    isPlaying: barPlayback.isPlaying,
+    play: barPlayback.play,
+    pause: barPlayback.pause,
     chapterIdx: playback.chapterIdx,
     paragraphIdx: playback.paragraphIdx,
     skipParagraph,
@@ -611,6 +628,20 @@ export function ReaderPage() {
     playback.playAt(chapterIdx, paragraphIdx)
     setAutoFollow(true)
   }
+
+  const setRecapOpen = useCallback(
+    (open: boolean) => {
+      if (open) {
+        setRecapAnchor({ chapterIdx: playback.chapterIdx, paragraphIdx: playback.paragraphIdx })
+      }
+      setRecapOpenState(open)
+    },
+    [playback.chapterIdx, playback.paragraphIdx],
+  )
+  const recapPos = useMemo(
+    () => ({ chapterIdx: playback.chapterIdx, paragraphIdx: playback.paragraphIdx }),
+    [playback.chapterIdx, playback.paragraphIdx],
+  )
 
   if (bookQuery.isLoading || range === null) return <p>Loading…</p>
   if (bookQuery.isError || !bookQuery.data)
@@ -747,6 +778,10 @@ export function ReaderPage() {
                 onGenerate={runGenerateChapter}
                 musicRegions={chapterMusicRegions.get(idx) ?? EMPTY_MUSIC_REGIONS}
                 notes={chapterNotesByIdx.get(idx) ?? null}
+                recapSlotIdx={
+                  recapOpen && recapAnchor?.chapterIdx === idx ? recapAnchor.paragraphIdx : null
+                }
+                registerRecapSlot={setRecapSlot}
                 onRegenerateMusic={runRegenerateMusic}
                 registerSectionRef={registerChapterSectionRef}
                 onSeek={seek}
@@ -773,7 +808,8 @@ export function ReaderPage() {
         bookId={bookId}
         chapter={currentChapter}
         bookChapters={book.chapters}
-        playback={playback}
+        playback={barPlayback}
+        statusOverride={recapTransport ? 'Previously on…' : undefined}
         autoFollow={autoFollow}
         onJumpToCurrent={jumpToCurrentParagraph}
         onJumpToChapter={jumpToChapter}
@@ -781,6 +817,24 @@ export function ReaderPage() {
         progressPercent={liveProgressPercent}
         estimatedTotalSeconds={book.estimatedTotalSeconds}
         finished={liveFinished}
+        recap={
+          <RecapPanel
+            bookId={bookId}
+            lastReadAt={book.lastReadAt}
+            seriesIndex={book.seriesIndex ?? 0}
+            pos={recapPos}
+            isPlaying={playback.isPlaying}
+            open={recapOpen}
+            onOpenChange={setRecapOpen}
+            container={recapSlot}
+            playbackRate={playback.playbackRate}
+            onTransport={setRecapTransport}
+            onPause={playback.pause}
+            onPlay={playback.play}
+          />
+        }
+        recapOpen={recapOpen}
+        onToggleRecap={() => setRecapOpen(!recapOpen)}
         annotationsView={annotationsView}
         onToggleAnnotationsView={() =>
           setAnnotationsView((v) => {

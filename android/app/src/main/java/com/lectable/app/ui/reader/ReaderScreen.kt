@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.FormatIndentIncrease
 import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
@@ -100,6 +101,26 @@ fun ReaderScreen(
     var showChapterPicker by remember { mutableStateOf(false) }
     // The chapter whose notes sheet is open (chapter picker long-press "Edit chapter notes").
     var notesChapterIdx by remember { mutableStateOf<Int?>(null) }
+    // The "previously on" recap - offered over the reader's top; open, it sits in the text
+    // above the paragraph the reader was at (recapAnchor, see RecapInline).
+    val recapState by viewModel.recapState.collectAsState()
+    var recapAnchor by remember { mutableStateOf<ParagraphPos?>(null) }
+    // Opened from the menu, it plays as soon as it has a clip - at once, or when its narration
+    // arrives; opened to be read ("Read it"), it doesn't.
+    var recapAutoPlay by remember { mutableStateOf(false) }
+    val openRecap = { autoPlay: Boolean ->
+        recapAnchor = recapState.pos
+        recapAutoPlay = autoPlay
+        viewModel.setRecapOpen(true)
+    }
+    val closeRecap = {
+        viewModel.setRecapOpen(false)
+        viewModel.dismissRecap()
+    }
+    // Closed here, or by its clip ending (the book then plays on).
+    LaunchedEffect(recapState.open) {
+        if (!recapState.open) recapAnchor = null
+    }
     var showSpeedPicker by remember { mutableStateOf(false) }
     var showBookmarksSheet by remember { mutableStateOf(false) }
     var showSearchSheet by remember { mutableStateOf(false) }
@@ -227,6 +248,11 @@ fun ReaderScreen(
                                 }
                             },
                             onClick = { showSleepTimerSheet = true; showMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Recap") },
+                            leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
+                            onClick = { openRecap(true); showMenu = false },
                         )
                         DropdownMenuItem(
                             text = { Text("Search") },
@@ -410,7 +436,8 @@ fun ReaderScreen(
             // absolute seconds, so speed cancels out of them already.
             val speed = uiState.playback.playbackSpeed
             PlaybackBar(
-                isPlaying = uiState.playback.isPlaying,
+                // While the recap is open with a clip, play/pause is the recap's.
+                isPlaying = if (recapState.engaged) recapState.playing else uiState.playback.isPlaying,
                 playbackSpeed = speed,
                 chapterProgress = chapterProgress,
                 bufferedAheadEnd = bufferedAheadEnd,
@@ -469,6 +496,25 @@ fun ReaderScreen(
                     onRegenerateMusic = viewModel::regenerateMusicRegion,
                     onPreviewMusic = viewModel::previewMusicRegion,
                     resolveImageUrl = viewModel::resolveImageUrl,
+                    recapAnchor = recapAnchor,
+                    recapContent = {
+                        RecapInline(
+                            state = recapState,
+                            positionSeconds = viewModel::recapPositionSeconds,
+                            onClose = closeRecap,
+                            onPrepare = viewModel::prepareRecap,
+                            onSetAfterMinutes = viewModel::setRecapAfterMinutes,
+                        )
+                    },
+                )
+            }
+            if (recapState.offer && recapAnchor == null) {
+                RecapOfferCard(
+                    state = recapState,
+                    onPlay = { openRecap(true) },
+                    onRead = { openRecap(false) },
+                    onDismiss = viewModel::dismissRecap,
+                    modifier = Modifier.align(Alignment.TopCenter),
                 )
             }
         }
@@ -552,6 +598,21 @@ fun ReaderScreen(
                 showChapterPicker = false
             },
         )
+    }
+
+    if (recapAnchor != null) {
+        // Opened with nothing written for this spot: ask for one - even while one is being
+        // prepared, since asking also moves a recap the backend was preparing in the
+        // background to the front of the queue.
+        LaunchedEffect(Unit) {
+            if (!recapState.current) viewModel.prepareRecap(force = false)
+        }
+        LaunchedEffect(recapAutoPlay, recapState.current, recapState.recap?.audioUrl) {
+            if (recapAutoPlay && recapState.current && recapState.recap?.audioUrl != null) {
+                recapAutoPlay = false
+                if (!recapState.playing) viewModel.toggleRecapPlayback()
+            }
+        }
     }
 
     notesChapterIdx?.let { idx ->

@@ -712,12 +712,12 @@ interface ChapterSectionProps {
   chapterClearing: boolean
   chapterReimporting: boolean
   hasAttribution: boolean
-  // The rest of the chapter-header action buttons - SpeakersPage's own
+  // The rest of the chapter-header action buttons - BookSettingsPage's own
   // per-chapter row, mirrored here so a reader can run any of these
-  // without leaving the reader for the Speakers page. All job-queue-
+  // without leaving the reader for the Book settings page. All job-queue-
   // derived (see useScareQuotingChapters/
   // useDirectingChapters/useAmbienceChapters/useGeneratingChapters),
-  // the same as SpeakersPage's own per-row booleans.
+  // the same as BookSettingsPage's own per-row booleans.
   chapterRetaggingScareQuotes: boolean
   chapterDirecting: boolean
   chapterPronouncing: boolean
@@ -730,7 +730,7 @@ interface ChapterSectionProps {
   hasDirection: boolean
   hasPronunciation: boolean
   hasMusic: boolean
-  // c.readyCount >= c.paragraphCount (SpeakersPage's own isGenerated) -
+  // c.readyCount >= c.paragraphCount (BookSettingsPage's own isGenerated) -
   // only used for the generate button's own title wording.
   isGenerated: boolean
   // Windowing (see ReaderPage's chapterHeights/registerHeight): false once
@@ -775,6 +775,11 @@ interface ChapterSectionProps {
   // The chapter's summary notes (annotations view only), null until
   // summarized or while annotations view is off.
   notes: ChapterNotes | null
+  // The paragraph the open "previously on" recap sits above (RecapPanel
+  // renders into the element handed to registerRecapSlot), null when it
+  // isn't open in this chapter.
+  recapSlotIdx: number | null
+  registerRecapSlot: (el: HTMLElement | null) => void
   onRegenerateMusic: (chapterIdx: number, regionId: string) => void
   registerSectionRef: (idx: number, el: HTMLElement | null) => void
   onSeek: (seconds: number) => void
@@ -852,6 +857,8 @@ export const ChapterSection = memo(function ChapterSection({
   registerParagraphRef,
   onSetSFXPrompt,
   onGenerateSFX,
+  recapSlotIdx,
+  registerRecapSlot,
 }: ChapterSectionProps) {
   if (!renderFull) {
     return (
@@ -929,9 +936,15 @@ export const ChapterSection = memo(function ChapterSection({
   // cell's second paragraph drops under its first while the next cell
   // along sits beside it, and the rule (full width) starts each new row.
   const rendered: ReactNode[] = []
+  // Where the recap goes: above the paragraph it was opened at (above the
+  // whole table, for one inside a table).
+  const holdsRecapSlot = (g: ContentGroup) =>
+    recapSlotIdx !== null && g.kind === 'text' && g.paragraphs.some((p) => p.idx === recapSlotIdx)
+  const recapSlot = <div key="recap-slot" className="recap-slot" ref={registerRecapSlot} />
   for (let i = 0; i < groups.length;) {
     const table = groupTable(groups[i])
     if (!table) {
+      if (holdsRecapSlot(groups[i])) rendered.push(recapSlot)
       rendered.push(renderGroup(groups[i]))
       i++
       continue
@@ -943,6 +956,7 @@ export const ChapterSection = memo(function ChapterSection({
     for (; i < groups.length; i++) {
       const t = groupTable(groups[i])
       if (!t || t.table !== table.table) break
+      if (holdsRecapSlot(groups[i])) rendered.push(recapSlot)
       columns = Math.max(columns, tableColumnEnd(t))
       if (t.row !== row) {
         items.push(<span key={`rule-${groups[i].key}`} className="chapter-table-rule" />)

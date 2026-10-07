@@ -44,6 +44,7 @@ private val Context.readingDataStore by preferencesDataStore(name = "reading_set
 private val FONT_SIZE_KEY = intPreferencesKey("font_size")
 private val FONT_FAMILY_KEY = stringPreferencesKey("font_family")
 private val ANNOTATIONS_MODE_KEY = booleanPreferencesKey("annotations_mode")
+private fun recapDismissedKey(bookId: String) = stringPreferencesKey("recap_dismissed_$bookId")
 
 /** Reader typography preferences (font size/family for paragraph text in ReaderScreen) -
  *  same DataStore-backed pattern as [ThemeSettingsRepository], kept in its own file since
@@ -73,6 +74,13 @@ class ReadingSettingsRepository @Inject constructor(
 
     suspend fun setAnnotationsMode(on: Boolean) {
         context.readingDataStore.edit { prefs -> prefs[ANNOTATIONS_MODE_KEY] = on }
+    }
+
+    /** The recap (ui/reader/Recap.kt's recapKey) the reader last turned down for [bookId]. */
+    fun dismissedRecap(bookId: String): Flow<String?> = context.readingDataStore.data.map { prefs -> prefs[recapDismissedKey(bookId)] }
+
+    suspend fun setDismissedRecap(bookId: String, key: String) {
+        context.readingDataStore.edit { prefs -> prefs[recapDismissedKey(bookId)] = key }
     }
 
     suspend fun setFontFamily(family: ReaderFontFamily) {

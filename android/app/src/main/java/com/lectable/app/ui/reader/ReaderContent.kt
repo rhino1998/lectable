@@ -88,6 +88,9 @@ internal sealed class ReaderListEntry {
     // mirrors frontend's own ChapterSection.MusicRegionBoundary. Always immediately precedes the
     // [ParagraphItem] whose first segment's idx == region.startIdx, never its own list position.
     data class MusicBoundary(val chapterIdx: Int, val key: String, val region: MusicRegionDto) : ReaderListEntry()
+    // The open "previously on" recap (RecapInline), set into the text right above the paragraph
+    // the reader was at when they opened it. At most one in the list.
+    object RecapItem : ReaderListEntry()
 }
 
 /**
@@ -183,9 +186,12 @@ internal fun InfiniteChapterContent(
     onRegenerateMusic: (chapterIdx: Int, regionId: String) -> Unit,
     onPreviewMusic: (regionId: String, audioUrl: String) -> Unit,
     resolveImageUrl: (String) -> Any?,
+    // Where the open recap sits (above this paragraph) and what it shows - null while closed.
+    recapAnchor: ParagraphPos? = null,
+    recapContent: @Composable () -> Unit = {},
 ) {
-    val entries = remember(loadedChapters, range, annotationsMode, chapterMusicRegions) {
-        range.mapNotNull { idx -> loadedChapters[idx] }.flatMap { chapter ->
+    val entries = remember(loadedChapters, range, annotationsMode, chapterMusicRegions, recapAnchor) {
+        withRecapItem(recapAnchor, range.mapNotNull { idx -> loadedChapters[idx] }.flatMap { chapter ->
             // Only actually inserted while annotations mode is on - see MusicBoundary's own doc
             // comment; chapterMusicRegions itself may already be populated regardless (the live
             // background-music mix needs it independent of whether the reader ever looks at
@@ -199,7 +205,14 @@ internal fun InfiniteChapterContent(
                 add(ReaderListEntry.ChapterHeader(chapter.idx, chapter.title))
                 addAll(groupContent(chapter.idx, chapter, musicByStart))
             }
-        }
+        })
+    }
+
+    // Opening the recap brings it into view.
+    LaunchedEffect(recapAnchor) {
+        if (recapAnchor == null) return@LaunchedEffect
+        val index = entries.indexOf(ReaderListEntry.RecapItem)
+        if (index >= 0) listState.animateScrollToItem(index)
     }
 
     // Grows the loaded window as the reader nears either end of what's currently mounted -
@@ -308,6 +321,7 @@ internal fun InfiniteChapterContent(
                     is ReaderListEntry.ImageItem -> entry.key
                     is ReaderListEntry.BreakItem -> entry.key
                     is ReaderListEntry.MusicBoundary -> entry.key
+                    ReaderListEntry.RecapItem -> "recap"
                 }
             },
         ) { entry ->
@@ -347,6 +361,7 @@ internal fun InfiniteChapterContent(
                         HorizontalDivider(modifier = Modifier.width(64.dp))
                     }
                 }
+                ReaderListEntry.RecapItem -> recapContent()
                 is ReaderListEntry.MusicBoundary -> {
                     MusicRegionBoundaryRow(
                         region = entry.region,
@@ -358,6 +373,22 @@ internal fun InfiniteChapterContent(
             }
         }
     }
+}
+
+/** [entries] with the recap's item put in right above the block holding [anchor]'s paragraph
+ *  (above the whole table, for one inside a table) - unchanged when [anchor] is null or its
+ *  paragraph isn't among them. */
+internal fun withRecapItem(anchor: ParagraphPos?, entries: List<ReaderListEntry>): List<ReaderListEntry> {
+    val (chapterIdx, paragraphIdx) = anchor ?: return entries
+    val at = entries.indexOfFirst { e ->
+        when (e) {
+            is ReaderListEntry.ParagraphItem -> e.chapterIdx == chapterIdx && e.segments.any { it.idx == paragraphIdx }
+            is ReaderListEntry.TableItem -> e.chapterIdx == chapterIdx && e.blockIndexOf(paragraphIdx) >= 0
+            else -> false
+        }
+    }
+    if (at < 0) return entries
+    return entries.subList(0, at) + ReaderListEntry.RecapItem + entries.subList(at, entries.size)
 }
 
 /** "m:ss" - mirrors frontend's ChapterSection.tsx formatMusicDuration exactly. */

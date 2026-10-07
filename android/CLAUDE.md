@@ -423,6 +423,23 @@ compiled-in default in place if nothing answers in time.
 - `ui/navigation/` - `Routes.kt` + `LectableNavHost.kt` (Library / Reader /
   Settings / Voices / Jobs / Speakers, Navigation-Compose, code-based like
   the frontend's `routes.tsx`).
+- `ui/reader/Recap.kt` + `RecapInline.kt` - the "previously on" recap
+  (backend `httpapi/recap.go`, `bookRecap` live topic), the twin of the
+  web's `RecapPanel`/`utils/recap.ts`: `RecapOfferCard` over the top of the
+  reader when the reader comes back after a while (threshold in
+  `ReadingSettingsRepository.recapAfterMinutes`, default a day; what was
+  turned down per book in `dismissedRecap`) or starts a sequel, and
+  `RecapInline`, the recap itself, set into the reader's list above the
+  paragraph the reader was at (`ReaderListEntry.RecapItem`,
+  `withRecapItem`) from the offer or the reader menu's "Recap". Opening it
+  asks for one if none is current and plays it as soon as it has a clip
+  (not when opened by "Read it"). `ReaderViewModel.recapState` combines the
+  live recap, the player's position and those settings;
+  `toggleRecapPlayback` plays the clip on its own `MediaPlayer` with the
+  book paused and resumes the book when it ends, and the word being spoken
+  is highlighted from the clip's `segments` (`recapWordTimes`, polled
+  position). Not a media-session item: no lock-screen controls for the
+  minute it plays.
 
 ## Known scaffold limitations (not yet implemented)
 

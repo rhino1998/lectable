@@ -12,7 +12,9 @@ import com.lectable.app.data.remote.dto.LexiconEntryDto
 import com.lectable.app.data.remote.dto.LexiconSuggestionDto
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterMusicDto
+import com.lectable.app.data.remote.dto.BookRecapResponseDto
 import com.lectable.app.data.remote.dto.ChapterNotesResponseDto
+import com.lectable.app.data.remote.dto.RecapSettingsDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.JobsSnapshotDto
 import com.lectable.app.data.remote.dto.JobsSummaryDto
@@ -126,6 +128,11 @@ class LiveStore @Inject constructor(
 
     fun chapterNotes(bookId: String, chapterIdx: Int): StateFlow<LiveResult<ChapterNotesResponseDto>> =
         topic(LiveTopics.chapterNotes(bookId, chapterIdx))
+
+    /** How long away brings the recap offer - one library-wide setting. */
+    fun recapSettings(): StateFlow<LiveResult<RecapSettingsDto>> = topic(LiveTopics.recapSettings())
+
+    fun bookRecap(bookId: String): StateFlow<LiveResult<BookRecapResponseDto>> = topic(LiveTopics.bookRecap(bookId))
 
     fun characterAppearances(bookId: String, characterId: String): StateFlow<LiveResult<List<SpeakerAppearanceDto>>> =
         topic(LiveTopics.characterAppearances(bookId, characterId))

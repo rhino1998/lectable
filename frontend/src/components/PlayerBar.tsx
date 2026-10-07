@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   RiArrowDropUpLine,
   RiBook2Line,
@@ -7,6 +7,7 @@ import {
   RiEmotionLine,
   RiFileTextLine,
   RiFontSize,
+  RiHistoryLine,
   RiLightbulbLine,
   RiGitMergeLine,
   RiIndentIncrease,
@@ -68,6 +69,10 @@ export function PlayerBar({
   finished,
   annotationsView,
   onToggleAnnotationsView,
+  recap,
+  statusOverride,
+  recapOpen,
+  onToggleRecap,
   speakers,
   selectedSpeaker,
   onSelectSpeaker,
@@ -91,6 +96,14 @@ export function PlayerBar({
   finished: boolean
   annotationsView: boolean
   onToggleAnnotationsView: () => void
+  // The "previously on" offer and panel (RecapPanel), which float just
+  // above the bar - the one part of the reader always on screen.
+  recap: ReactNode
+  // Shown in place of the chapter/paragraph line - "Previously on…" while
+  // the bar is driving the recap's clip (see ReaderPage's barPlayback).
+  statusOverride?: string
+  recapOpen: boolean
+  onToggleRecap: () => void
   speakers: Speaker[]
   selectedSpeaker: string | null
   onSelectSpeaker: (name: string | null) => void
@@ -147,7 +160,7 @@ export function PlayerBar({
   }, [speakers, speakerFilter, scopeToChapter, chapterSpeakerNames])
 
   // Merge button on each speaker-list row - folds one character into
-  // another (or into "Narrator") via the same endpoint SpeakersPage's own
+  // another (or into "Narrator") via the same endpoint BookSettingsPage's own
   // MergeCharacterPanel uses. Only real characters (s.id truthy) get the
   // button - the synthesized Narrator row (id "") has no characterId to
   // merge from. mergingId tracks which single row has its inline
@@ -161,8 +174,8 @@ export function PlayerBar({
   const [mergeError, setMergeError] = useState<string | null>(null)
 
   // Recharacterize/regenerate-voice buttons on each speaker-list row,
-  // mirroring SpeakersPage's own runCharacterize/useRegenerateCharacterVoices
-  // - a Set (not a single id) for the same reason SpeakersPage's
+  // mirroring BookSettingsPage's own runCharacterize/useRegenerateCharacterVoices
+  // - a Set (not a single id) for the same reason BookSettingsPage's
   // characterizingIds is one: two rows firing independently shouldn't
   // clobber each other's spinner.
   const characterizeSpeaker = useCharacterizeSpeaker(bookId)
@@ -326,6 +339,7 @@ export function PlayerBar({
 
   return (
     <div className="player-bar">
+      {recap}
       {!autoFollow && (
         <button
           className="jump-to-current-button"
@@ -561,7 +575,10 @@ export function PlayerBar({
 
         <div className="player-progress">
           <div className="player-status">
-            {chapter ? `${chapter.title} — paragraph ${playback.paragraphIdx + 1} / ${total}` : ''}
+            {statusOverride ??
+              (chapter
+                ? `${chapter.title} — paragraph ${playback.paragraphIdx + 1} / ${total}`
+                : '')}
             {playback.isWaitingForAudio && <span className="muted"> — generating…</span>}
           </div>
           <div className="player-track">
@@ -665,6 +682,14 @@ export function PlayerBar({
           title="Philips Hue lighting driven by the book's ambience"
         >
           <RiLightbulbLine /> Lights
+        </button>
+
+        <button
+          className={'text-button-icon' + (recapOpen ? ' text-button-icon-active' : '')}
+          onClick={onToggleRecap}
+          title="Previously on: what has happened up to where you are"
+        >
+          <RiHistoryLine /> Recap
         </button>
 
         <button

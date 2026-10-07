@@ -1,6 +1,9 @@
 package com.lectable.app.ui.reader
 
+import android.content.Context
+import android.media.AudioAttributes
 import android.media.MediaPlayer
+import android.os.PowerManager
 import android.os.SystemClock
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -13,6 +16,7 @@ import com.lectable.app.data.remote.LiveResult
 import com.lectable.app.data.remote.MediaUrlResolver
 import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.BookDetailDto
+import com.lectable.app.data.remote.dto.BookRecapDto
 import com.lectable.app.data.remote.dto.ChapterNotesDto
 import com.lectable.app.data.remote.dto.ChapterNotesResponseDto
 import com.lectable.app.data.remote.dto.CharacterNameDto
@@ -47,6 +51,7 @@ import com.lectable.app.playback.ParagraphPlayer
 import com.lectable.app.playback.PlaybackState
 import com.lectable.app.playback.SleepTimerOption
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -137,6 +142,41 @@ data class ReaderUiState(
     val characters: List<CharacterNameDto>? = null,
 )
 
+/** The reader's "previously on" recap (backend httpapi/recap.go) - see [ReaderViewModel.recapState]. */
+data class RecapUiState(
+    val recap: BookRecapDto? = null,
+    // One is queued, or being written or spoken.
+    val preparing: Boolean = false,
+    // Where the reader is, and whether [recap] was written for it (recapIsCurrent).
+    val pos: ParagraphPos = 0 to 0,
+    val current: Boolean = false,
+    // Show the unasked-for offer (shouldOfferRecap, and the book hasn't played this visit).
+    val offer: Boolean = false,
+    // It is open in the text (RecapInline), and - [engaged] - has a clip for the playback bar's
+    // play/pause to drive in place of the book's.
+    val open: Boolean = false,
+    val engaged: Boolean = false,
+    // The recap's own clip is playing (ReaderViewModel.toggleRecapPlayback).
+    val playing: Boolean = false,
+    // The library-wide offer threshold (RECAP_NEVER until it has arrived).
+    val afterMinutes: Int = RECAP_NEVER,
+    // When the book was last read as of opening it, before this visit saved anything, and when
+    // that was - what "away" is measured between.
+    val lastReadAtOnOpen: Long? = null,
+    val openedAtMs: Long = 0L,
+)
+
+/** What only this visit to the reader knows about its recap - see [RecapUiState]. */
+private data class RecapLocal(
+    val opened: Boolean = false,
+    val openPos: ParagraphPos = 0 to 0,
+    val lastReadAtOnOpen: Long? = null,
+    val openedAtMs: Long = 0L,
+    val played: Boolean = false,
+    val open: Boolean = false,
+    val playing: Boolean = false,
+)
+
 @HiltViewModel
 class ReaderViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -153,6 +193,7 @@ class ReaderViewModel @Inject constructor(
     private val downloadRepository: DownloadRepository,
     private val workManager: WorkManager,
     private val mediaUrlResolver: MediaUrlResolver,
+    @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
     private val bookId: String = checkNotNull(savedStateHandle["bookId"])
@@ -215,6 +256,38 @@ class ReaderViewModel @Inject constructor(
     // previewMusicRegion, mirroring VoicesViewModel's own single-clip MediaPlayer pattern.
     private var musicPreviewPlayer: MediaPlayer? = null
 
+    // The recap's own clip - see playRecap.
+    private var recapPlayer: MediaPlayer? = null
+    private val recapLocal = MutableStateFlow(RecapLocal())
+
+    /** The book's "previously on" recap as the reader shows it: the live recap, whether it is
+     *  for where the reader is now, and whether to offer it unasked. */
+    val recapState: StateFlow<RecapUiState> = combine(
+        liveStore.bookRecap(bookId),
+        player.state,
+        liveStore.recapSettings().map { it.data?.afterMinutes ?: RECAP_NEVER },
+        readingSettingsRepository.dismissedRecap(bookId),
+        recapLocal,
+    ) { live, playback, afterMinutes, dismissed, local ->
+        val recap = live.data?.recap
+        // Before the player has a position in this book it sits where the book was left.
+        val pos = if (playback.chapterIdx >= 0) playback.chapterIdx to maxOf(playback.paragraphIdx, 0) else local.openPos
+        RecapUiState(
+            recap = recap,
+            preparing = live.data?.preparing == true,
+            pos = pos,
+            current = recapIsCurrent(recap, pos),
+            offer = local.opened && !local.played && !local.playing &&
+                shouldOfferRecap(recap, pos, local.lastReadAtOnOpen, local.openedAtMs, afterMinutes, dismissed),
+            open = local.open,
+            engaged = local.open && recapIsCurrent(recap, pos) && recap?.audioUrl != null,
+            playing = local.playing,
+            afterMinutes = afterMinutes,
+            lastReadAtOnOpen = local.lastReadAtOnOpen,
+            openedAtMs = local.openedAtMs,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), RecapUiState())
+
     init {
         // Mirrors usePlayback's onNeedChapter - fires when playback advances into a chapter
         // that isn't loaded yet (normally just past the loaded window's trailing edge). Grows
@@ -225,6 +298,17 @@ class ReaderViewModel @Inject constructor(
 
         viewModelScope.launch {
             player.state.collect { playback -> _uiState.update { withRemotePosition(it.copy(playback = playback)) } }
+        }
+
+        // Once the book plays, the reader has picked it back up: no more offer this visit, and
+        // the book and its recap never talk over each other.
+        viewModelScope.launch {
+            player.state.map { it.isPlaying }.distinctUntilChanged().collect { playing ->
+                if (playing) {
+                    recapLocal.update { it.copy(played = true) }
+                    stopRecap()
+                }
+            }
         }
 
         // Keeps some runway of generated audio ahead of wherever playback currently is
@@ -398,6 +482,7 @@ class ReaderViewModel @Inject constructor(
                         if (first && offline) adoptLivePosition(book)
                         if (first && !offline) noteOwnPositionSave(book.posChapterIdx to book.posParagraphIdx)
                         _uiState.update { withRemotePosition(it.copy(loading = false, book = book)) }
+                        if (first) openRecap(book)
                         if (first && !offline) startFromLiveBook(book)
                     }
                     error != null && !bookInitialized && !offline && !failed -> {
@@ -703,7 +788,11 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    fun togglePlayPause() = player.togglePlayPause()
+    /** The playback bar's play/pause: the book's - or, while the recap is open with a clip, the
+     *  recap's (it has no controls of its own). */
+    fun togglePlayPause() {
+        if (recapState.value.engaged) toggleRecapPlayback() else player.togglePlayPause()
+    }
 
     fun playParagraph(chapterIdx: Int, paragraphIdx: Int, startSeconds: Double = 0.0) {
         player.playFrom(chapterIdx, paragraphIdx, startSeconds)
@@ -1030,6 +1119,115 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
+    /** Notes how long the reader has been away, as the first live [book] value has it (this
+     *  visit's own position saves move lastReadAt), and asks for a recap if they would be
+     *  offered one and none is ready - see shouldRequestRecap. */
+    private fun openRecap(book: BookDetailDto) {
+        val now = System.currentTimeMillis()
+        // A player already narrating this book means the reader never left it.
+        val following = player.hasPositionIn(bookId) && player.state.value.isPlaying
+        recapLocal.update {
+            it.copy(
+                opened = true,
+                openPos = book.posChapterIdx to book.posParagraphIdx,
+                lastReadAtOnOpen = book.lastReadAt?.takeIf { at -> at > 0 },
+                openedAtMs = now,
+                played = following,
+            )
+        }
+        if (following) return
+        viewModelScope.launch {
+            runCatching {
+                val recap = liveStore.bookRecap(bookId).first { it.data != null }.data?.recap
+                val afterMinutes = liveStore.recapSettings().first { it.data != null }.data?.afterMinutes ?: RECAP_NEVER
+                val pos = book.posChapterIdx to book.posParagraphIdx
+                if (shouldRequestRecap(recap, pos, book.lastReadAt, book.seriesIndex ?: 0.0, now, afterMinutes)) {
+                    libraryRepository.prepareRecap(bookId, force = false)
+                }
+            }
+        }
+    }
+
+    /** Asks for the recap of where the reader is now - [force] to write it again. */
+    fun prepareRecap(force: Boolean) {
+        viewModelScope.launch {
+            runCatching { libraryRepository.prepareRecap(bookId, force) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Could not ask for the recap") } }
+        }
+    }
+
+    /** Turns the current recap down: it isn't offered again (the menu still opens it). */
+    fun dismissRecap() {
+        val recap = recapState.value.recap ?: return
+        viewModelScope.launch { readingSettingsRepository.setDismissedRecap(bookId, recapKey(recap)) }
+    }
+
+    fun setRecapAfterMinutes(minutes: Int) {
+        viewModelScope.launch {
+            runCatching { libraryRepository.setRecapAfterMinutes(minutes) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Could not save the setting") } }
+        }
+    }
+
+    /** Opens or closes the recap in the text (RecapInline). Closing stops its clip. */
+    fun setRecapOpen(open: Boolean) {
+        recapLocal.update { it.copy(open = open) }
+        if (!open) stopRecap()
+    }
+
+    /** Plays, pauses or resumes the recap's own clip (a plain one-clip player, like
+     *  previewMusicRegion's) with the book paused, at the book's speed. When it ends the recap
+     *  closes and the book picks up where it was - "previously on", then the story. */
+    fun toggleRecapPlayback() {
+        recapPlayer?.let { mp ->
+            val nowPlaying = runCatching {
+                if (mp.isPlaying) mp.pause() else mp.start()
+                mp.isPlaying
+            }.getOrDefault(false)
+            recapLocal.update { it.copy(playing = nowPlaying) }
+            return
+        }
+        val url = recapState.value.recap?.audioUrl?.let(mediaUrlResolver::resolve) ?: return
+        player.pause()
+        dismissRecap()
+        recapLocal.update { it.copy(playing = true) }
+        recapPlayer = MediaPlayer().apply {
+            // Kept running with the screen off; released with the player.
+            setWakeMode(appContext, PowerManager.PARTIAL_WAKE_LOCK)
+            setAudioAttributes(
+                AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build(),
+            )
+            setDataSource(url)
+            setOnPreparedListener { mp ->
+                if (recapPlayer !== mp) return@setOnPreparedListener
+                runCatching { mp.playbackParams = mp.playbackParams.setSpeed(player.state.value.playbackSpeed) }
+                mp.start()
+            }
+            setOnCompletionListener { mp ->
+                if (recapPlayer !== mp) return@setOnCompletionListener
+                setRecapOpen(false)
+                if (!player.state.value.isPlaying) player.togglePlayPause()
+            }
+            setOnErrorListener { mp, _, _ ->
+                if (recapPlayer === mp) {
+                    stopRecap()
+                    _uiState.update { it.copy(error = "Could not play the recap") }
+                }
+                true
+            }
+            prepareAsync()
+        }
+    }
+
+    /** Seconds into the recap's clip, 0 when it isn't playing - polled for the word highlight. */
+    fun recapPositionSeconds(): Double = runCatching { (recapPlayer?.currentPosition ?: 0) / 1000.0 }.getOrDefault(0.0)
+
+    fun stopRecap() {
+        recapPlayer?.release()
+        recapPlayer = null
+        recapLocal.update { if (it.playing) it.copy(playing = false) else it }
+    }
+
     /** One chapter's summary notes (live topic) for [ChapterNotesSheet] - live only while the
      *  sheet collects it. */
     fun chapterNotes(chapterIdx: Int): StateFlow<LiveResult<ChapterNotesResponseDto>> =
@@ -1177,6 +1375,8 @@ class ReaderViewModel @Inject constructor(
         super.onCleared()
         musicPreviewPlayer?.release()
         musicPreviewPlayer = null
+        recapPlayer?.release()
+        recapPlayer = null
         // player/backgroundMusicPlayer are deliberately NOT released here - both are app-scoped
         // singletons (see ParagraphPlayer's class doc) so background/lock-screen playback (and
         // the live background-music mix) survives leaving this screen, unlike everything else
