@@ -181,7 +181,7 @@ export const api = {
 
   // Corrects one paragraph's speaker attribution directly - the per-line
   // counterpart of mergeCharacter's whole-character reassignment, used by
-  // the Speakers page's per-character "appearances" list to fix one
+  // the Book settings page's per-character "appearances" list to fix one
   // individually misattributed line without touching any other paragraph
   // sharing the same (wrong) speaker. "" and "Narrator" both mean "no
   // character"; any other name is registered as a real character if it
@@ -284,7 +284,7 @@ export const api = {
       body: { prompt: prompt ?? '', durationSeconds },
     }),
 
-  // Speakers page's "Retag scare quotes" - enqueues a scare-quote tagging
+  // Book settings page's "Retag scare quotes" - enqueues a scare-quote tagging
   // job for one chapter (fire-and-forget, 202), mirroring
   // retagDescriptions below.
   retagScareQuotes: (bookId: string, chapterIdx: number) =>
@@ -405,7 +405,7 @@ export const api = {
     }),
 
   // Kicks off the whole-book meta-task: attribution, then characterization,
-  // then voice provisioning, then direction-tagging, for every chapter/
+  // plus direction-tagging and the other LLM passes, for every chapter/
   // character in the book, in the backend, without needing the Speakers
   // page's four individual "all" buttons clicked in order. Fire-and-forget,
   // same {queued} shape as attributeSpeakers/tagDirections - a whole book
@@ -416,6 +416,11 @@ export const api = {
   // as the individual buttons.
   preprocessBook: (bookId: string) =>
     call('POST /api/books/{id}/preprocess', { path: { id: bookId } }),
+
+  // Preprocesses every book of bookId's series one at a time, in series
+  // order - see httpapi.handlePreprocessSeries.
+  preprocessSeries: (bookId: string) =>
+    call('POST /api/books/{id}/preprocess-series', { path: { id: bookId } }),
 
   // Enqueues background TTS generation for every chapter in the book at
   // once - the library page's hover "Generate audio" button. Fire-and-
@@ -583,6 +588,12 @@ export const api = {
   updatePosition: (bookId: string, position: Position) =>
     call('PUT /api/books/{id}/position', { path: { id: bookId }, body: position }),
 
+  // "Mark as read"/"Mark as unread" on a library card: moves the saved
+  // position to the book's end or back to its start - see
+  // httpapi.handleMarkRead.
+  markRead: (bookId: string, read: boolean) =>
+    call('PUT /api/books/{id}/read', { path: { id: bookId }, body: { read } }),
+
   searchBook: (bookId: string, q: string) =>
     call('GET /api/books/{id}/search', { path: { id: bookId }, query: { q } }),
 
@@ -625,6 +636,20 @@ export const api = {
   deriveBookSetting: (bookId: string) =>
     call('POST /api/books/{id}/setting/derive', { path: { id: bookId } }),
 
+  // Queues the "previously on" recap for the book's saved position (a
+  // pipeline_recap job); force writes it again even if it has one - see
+  // backend handlePrepareBookRecap.
+  prepareBookRecap: (bookId: string, force = false) =>
+    call('POST /api/books/{id}/recap', {
+      path: { id: bookId },
+      query: { force: force ? true : undefined },
+    }),
+
+  // Sets how long away brings the recap offer, library-wide - see backend
+  // handleSetRecapSettings.
+  setRecapSettings: (afterMinutes: number) =>
+    call('PUT /api/settings/recap', { body: { afterMinutes } }),
+
   deleteLexiconEntry: (bookId: string, entryId: string) =>
     call('DELETE /api/books/{id}/lexicon/{entryId}', { path: { id: bookId, entryId } }),
 
@@ -648,6 +673,10 @@ export const api = {
   // Cancels every queued and in-flight task at once - see
   // httpapi.handleCancelAllJobs.
   cancelAllJobs: () => call('DELETE /api/jobs'),
+
+  // Cancels every queued and in-flight task working on one book - see
+  // httpapi.handleCancelBookJobs.
+  cancelBookJobs: (bookId: string) => call('DELETE /api/books/{id}/jobs', { path: { id: bookId } }),
 
   // Stops the queue from dispatching any *new* task - see
   // httpapi.handlePauseJobs. Not a cancel: whatever's already in flight

@@ -70,8 +70,8 @@ type Server struct {
 	// default.
 	Wayback *websource.Wayback
 	// sourceImportMu serializes handleImportBookURL; sourceSyncs holds the
-	// ids of books whose source is being checked right now
-	// (startSourceSync).
+	// ids of books whose source check is running right now (the
+	// startSourceSync job) or whose stored pages are being re-read.
 	sourceImportMu sync.Mutex
 	sourceSyncs    sync.Map
 
@@ -91,6 +91,11 @@ type Server struct {
 	// originParagraphs caches each book's speakerattr.OriginParagraphs and
 	// VoiceParagraphs (bookID -> cachedClueParagraphs) - see narrationClues.
 	originParagraphs sync.Map
+
+	// idleRecapTried is the reading position (bookID -> "chapter:paragraph")
+	// PrepareIdleRecaps last looked at for each book, so each is looked at
+	// once.
+	idleRecapTried sync.Map
 
 	// settingLocks is a keyed mutex (bookID -> *sync.Mutex) serializing
 	// deriveBookSetting per book.
@@ -192,6 +197,7 @@ func NewRouter(s *Server) http.Handler {
 
 	mux.HandleFunc("GET /api/books/{id}/position", s.handleGetPosition)
 	mux.HandleFunc("PUT /api/books/{id}/position", s.handleUpdatePosition)
+	mux.HandleFunc("PUT /api/books/{id}/read", s.handleMarkRead)
 
 	mux.HandleFunc("GET /api/books/{id}/search", s.handleSearchBook)
 
@@ -199,6 +205,11 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/books/{id}/setting", s.handleGetBookSetting)
 	mux.HandleFunc("PUT /api/books/{id}/setting", s.handleSetBookSetting)
 	mux.HandleFunc("POST /api/books/{id}/setting/derive", s.handleDeriveBookSetting)
+	mux.HandleFunc("GET /api/books/{id}/recap", s.handleGetBookRecap)
+	mux.HandleFunc("POST /api/books/{id}/recap", s.handlePrepareBookRecap)
+	mux.HandleFunc("GET /api/books/{id}/recap/audio", s.handleGetBookRecapAudio)
+	mux.HandleFunc("GET /api/settings/recap", s.handleGetRecapSettings)
+	mux.HandleFunc("PUT /api/settings/recap", s.handleSetRecapSettings)
 	mux.HandleFunc("GET /api/books/{id}/lexicon", s.handleListLexicon)
 	mux.HandleFunc("PUT /api/books/{id}/lexicon", s.handleUpsertLexicon)
 	mux.HandleFunc("DELETE /api/books/{id}/lexicon/{entryId}", s.handleDeleteLexicon)
@@ -237,6 +248,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/music-regions/{id}/audio", s.handleGetMusicRegionAudio)
 	mux.HandleFunc("POST /api/music-regions/{id}/regenerate", s.handleRegenerateMusicRegion)
 	mux.HandleFunc("POST /api/books/{id}/preprocess", s.handlePreprocessBook)
+	mux.HandleFunc("POST /api/books/{id}/preprocess-series", s.handlePreprocessSeries)
 	mux.HandleFunc("POST /api/books/{id}/bulk/{action}", s.handleBulkAction)
 	mux.HandleFunc("POST /api/books/{id}/reset/{pass}", s.handleResetPass)
 	mux.HandleFunc("DELETE /api/books/{id}/chapters/{idx}/audio", s.handleDeleteChapterAudio)
@@ -268,6 +280,7 @@ func NewRouter(s *Server) http.Handler {
 
 	mux.HandleFunc("GET /api/jobs", s.handleJobsSnapshot)
 	mux.HandleFunc("DELETE /api/jobs", s.handleCancelAllJobs)
+	mux.HandleFunc("DELETE /api/books/{id}/jobs", s.handleCancelBookJobs)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleCancelJob)
 	mux.HandleFunc("PUT /api/jobs/{id}/tier", s.handleSetJobTier)
 	mux.HandleFunc("POST /api/jobs/pause", s.handlePauseJobs)
@@ -402,10 +415,6 @@ func writeLoggedWarning(r *http.Request, format string, args ...any) {
 
 func (s *Server) chapterByID(id string) (*store.Chapter, error) {
 	return s.Store.GetChapterByID(id)
-}
-
-func (s *Server) paragraphAudioPath(bookID, chapterID, voiceID string, idx int) string {
-	return audiopath.ParagraphFile(s.DataDir, bookID, chapterID, voiceID, idx)
 }
 
 // serveClip serves a generated audio clip - its legacy WAV if the

@@ -248,6 +248,13 @@ const (
 	// by it. The ambience, characterization and summary tasks that read the
 	// setting depend on it (bookSettingDependency) when the book has none.
 	KindBookSetting Kind = "book_setting"
+	// KindRecap writes a book's "previously on" recap
+	// (internal/speakerattr.Client.Recap/SeriesRecap, via
+	// httpapi.writeRecap) - one per book, keyed by it; see RunRecap.
+	KindRecap Kind = "recap"
+	// KindRecapNarration speaks that recap in the book's narrator voice
+	// (RunRecapNarration) - KindVoiceProvision's shape, in poolGeneration.
+	KindRecapNarration Kind = "recap_narration"
 )
 
 // Tier is shared across every chapter/paragraph-scoped Kind - a
@@ -326,6 +333,9 @@ type task struct {
 	// never read concurrently with a write.
 	pushedAt  time.Time
 	startedAt time.Time
+	// ranBefore is how long t ran in earlier stretches of a pass that
+	// paused and resumed under this task (see kindDurations).
+	ranBefore time.Duration
 
 	// skipDependencies opts t out of Manager.needs entirely (see
 	// that function's own early check) - set on KindLengthEstimate tasks,
@@ -415,6 +425,10 @@ type task struct {
 	// claimed is the content key t is the one task rendering, if any (see
 	// sharedClips.claim).
 	claimed string
+	// again is the latest push of t's key that arrived while t was already
+	// running (Merge), guarded by Manager.mu: t's result may not be what
+	// that push asked for - see runAgain.
+	again *task
 
 	// genLexicon is the pronunciation lexicon generate actually rendered
 	// with (genLexiconSet once it has run) - refreshStaleGeneration
@@ -634,6 +648,10 @@ func (t *task) dedupKey() string {
 		return "summary:" + t.llmKey
 	case KindBookSetting:
 		return "book_setting:" + t.llmKey
+	case KindRecap:
+		return "recap:" + t.llmKey
+	case KindRecapNarration:
+		return "recap_narration:" + t.llmKey
 	default:
 		return t.paragraph.ID
 	}
@@ -689,6 +707,7 @@ var kindCompare = map[Kind]func(a, b *task, priority int) int{
 	KindPronunciation:           comparePosition,
 	KindSummary:                 comparePosition,
 	KindBookSetting:             comparePosition,
+	KindRecap:                   comparePosition,
 }
 
 // lessTask breaks a tie between two tasks of equal effective priority:

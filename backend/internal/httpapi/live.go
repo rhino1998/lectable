@@ -62,6 +62,7 @@ func withDeps(base []string, extra ...string) []string {
 //	characters     {bookId}               GET /api/books/{id}/characters
 //	lexicon        {bookId}               GET /api/books/{id}/lexicon
 //	bookSetting    {bookId}               GET /api/books/{id}/setting
+//	bookRecap      {bookId}               GET /api/books/{id}/recap
 //	chapterNotes   {bookId, chapterIdx}   GET /api/books/{id}/chapters/{idx}/notes
 //	lexiconSuggestions {bookId}           GET /api/books/{id}/lexicon/suggestions
 //	bookExports    {bookId}               GET /api/books/{id}/exports
@@ -72,6 +73,7 @@ func withDeps(base []string, extra ...string) []string {
 //	voicePresets                          GET /api/voices/presets
 //	customVoicePresets                    GET /api/voices/custom-presets
 //	defaultVoice                          GET /api/voices/default
+//	recapSettings                         GET /api/settings/recap
 //
 // MinInterval is set on the topics whose build scans a whole book (or the
 // whole library), so steady background generation - a write every couple
@@ -96,6 +98,9 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("characters", bookTopic("characters", dbDeps("characters", "books"), 0, s.buildCharacterNames))
 	h.Register("chapterNotes", chapterTopic("chapterNotes", dbDeps("chapter_summaries", "chapters"), 0, s.buildChapterNotes))
 	h.Register("bookSetting", bookTopic("bookSetting", dbDeps("book_settings"), 0, s.buildBookSetting))
+	// books/voice_presets: a changed narrator voice leaves the clip stale.
+	// DepJobs: "preparing" is the recap job being queued or running.
+	h.Register("bookRecap", bookTopic("bookRecap", withDeps(dbDeps("book_recaps", "books", "voice_presets"), DepJobs), 0, s.buildBookRecap))
 	h.Register("lexicon", bookTopic("lexicon", dbDeps("pronunciation_lexicon", "books", "paragraphs"), 2*time.Second, s.buildLexicon))
 	h.Register("lexiconSuggestions", bookTopic("lexiconSuggestions", dbDeps("pronunciation_lexicon", "characters", "books", "paragraphs"), 2*time.Second, s.buildLexiconSuggestions))
 	// Staleness is a whole-book fingerprint query, so this is rate-limited
@@ -120,6 +125,7 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("voicePresets", noParams("voicePresets", nil, 0, s.buildVoicePresets))
 	h.Register("customVoicePresets", noParams("customVoicePresets", dbDeps("voice_presets", "character_voices", "characters", "books"), 0, s.buildCustomVoicePresets))
 	h.Register("defaultVoice", noParams("defaultVoice", dbDeps("default_voice"), 0, s.buildDefaultVoice))
+	h.Register("recapSettings", noParams("recapSettings", dbDeps("default_voice"), 0, s.buildRecapSettings))
 }
 
 // handleEvents is GET /api/events - the live-state WebSocket (package

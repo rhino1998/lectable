@@ -231,6 +231,23 @@ object ParagraphEditFields {
 }
 
 /**
+ * RecapKind is what a BookRecap covers.
+ *
+ *
+ * Values: see [RecapKinds].
+ */
+typealias RecapKind = String
+
+/**
+ * [RecapKind]'s wire values, in declaration order.
+ */
+object RecapKinds {
+    const val POSITION: RecapKind = "position"
+    const val SERIES: RecapKind = "series"
+    val VALUES: List<RecapKind> = listOf(POSITION, SERIES)
+}
+
+/**
  * resetPass is a pass the Speakers page can reset across a whole book
  * (POST /api/books/{id}/reset/{pass}) - every bulkAction except the
  * character-scoped ones.
@@ -270,10 +287,30 @@ typealias SFXEngine = String
  */
 object SFXEngines {
     const val ACE_STEP: SFXEngine = "ace_step"
+    const val YUE2: SFXEngine = "yue2"
     const val STABLE_AUDIO_MUSIC: SFXEngine = "stable_audio_music"
     const val STABLE_AUDIO_MEDIUM: SFXEngine = "stable_audio_medium"
     const val STABLE_AUDIO_SFX: SFXEngine = "stable_audio_sfx"
-    val VALUES: List<SFXEngine> = listOf(ACE_STEP, STABLE_AUDIO_MUSIC, STABLE_AUDIO_MEDIUM, STABLE_AUDIO_SFX)
+    val VALUES: List<SFXEngine> = listOf(ACE_STEP, YUE2, STABLE_AUDIO_MUSIC, STABLE_AUDIO_MEDIUM, STABLE_AUDIO_SFX)
+}
+
+/**
+ * SFXPlanning is YuE2's symbolic planning route for a test render: whether
+ * it writes an ABC score before the music ("melody", "full") or not ("off").
+ *
+ *
+ * Values: see [SFXPlannings].
+ */
+typealias SFXPlanning = String
+
+/**
+ * [SFXPlanning]'s wire values, in declaration order.
+ */
+object SFXPlannings {
+    const val OFF: SFXPlanning = "off"
+    const val MELODY: SFXPlanning = "melody"
+    const val FULL: SFXPlanning = "full"
+    val VALUES: List<SFXPlanning> = listOf(OFF, MELODY, FULL)
 }
 
 /** Backend catalog values - see each constant. */
@@ -421,6 +458,10 @@ data class BookDetailDto(
     val progressPercent: Double = 0.0,
     val finished: Boolean = false,
     val estimatedTotalSeconds: Double = 0.0,
+    /**
+     * WordCount is the number of words in the book's text.
+     */
+    val wordCount: Long = 0L,
     val estimateCalibrated: Boolean = false,
     val generatedPercent: Double = 0.0,
     /**
@@ -438,6 +479,14 @@ data class BookDetailDto(
      * see their own call sites.
      */
     val preprocessing: Boolean = false,
+    /**
+     * Preprocessed is true once every chapter has been through every
+     * per-chapter pass a preprocessing run makes (scare quotes, summary,
+     * attribution, emotions, pronunciation, ambience) - nothing is left for
+     * POST .../preprocess to do but characters it hasn't described. False
+     * again when a book gains a chapter or has a pass reset.
+     */
+    val preprocessed: Boolean = false,
     /**
      * MusicEnabled mirrors store.Book.MusicEnabled - included here (not
      * just on voiceSettingsDTO, which is what actually reads/writes it)
@@ -560,6 +609,67 @@ data class BookNarrationDto(
 )
 
 /**
+ * bookRecapDTO is a book's "previously on" recap.
+ */
+@Serializable
+data class BookRecapDto(
+    val kind: RecapKind = "",
+    /**
+     * ChapterIdx/ParagraphIdx is the reading position it was written for -
+     * it tells nothing from that paragraph on - and ThroughIdx the last
+     * paragraph of that chapter a reader can be at and still be offered
+     * it: it is current for a position in ChapterIdx with ParagraphIdx <=
+     * paragraph <= ThroughIdx.
+     */
+    val chapterIdx: Int = 0,
+    val paragraphIdx: Int = 0,
+    val throughIdx: Int = 0,
+    /**
+     * Title is the book it recaps, as spoken ("Previously, in <Title>") -
+     * this book, or for kind "series" the one before it.
+     */
+    val title: String = "",
+    /**
+     * Text is the recap, paragraphs separated by a blank line; "" when
+     * writing it failed (Error says why).
+     */
+    val text: String = "",
+    val error: String? = null,
+    /**
+     * AudioURL is the recap spoken in the book's narrator voice, opening
+     * with "Previously, in <Title>."; "" until it has been rendered, or
+     * once the book's voice has changed.
+     */
+    val audioUrl: String? = null,
+    val audioSeconds: Double? = null,
+    /**
+     * Segments lay the clip out for following along: the stretches it was
+     * spoken in, in order (the first opens with "Previously, in <Title>.",
+     * then Text's paragraphs), each with where it sits in the clip and its
+     * words' timings. Empty without a clip.
+     */
+    val segments: List<RecapSegmentDto> = emptyList(),
+    /**
+     * ReadAt is when the reader stopped at the position it was written for
+     * (the book's lastReadAt then, unix seconds) - how long they have been
+     * away is measured from it.
+     */
+    val readAt: Long = 0L,
+    val updatedAt: Long = 0L,
+)
+
+/**
+ * bookRecapResponse is GET .../recap's reply and the bookRecap live
+ * topic's value. Recap is nil until one has been written; Preparing is
+ * true while one is queued or being written or spoken.
+ */
+@Serializable
+data class BookRecapResponseDto(
+    val recap: BookRecapDto? = null,
+    val preparing: Boolean = false,
+)
+
+/**
  * bookSettingDTO is a book's setting profile (store.BookSetting) - the world
  * its story takes place in, which the ambience, lighting and
  * characterization prompts are shown. Field-for-field store.BookSetting, so
@@ -662,6 +772,10 @@ data class BookSummaryDto(
     val progressPercent: Double = 0.0,
     val finished: Boolean = false,
     val estimatedTotalSeconds: Double = 0.0,
+    /**
+     * WordCount is the number of words in the book's text.
+     */
+    val wordCount: Long = 0L,
     val estimateCalibrated: Boolean = false,
     val generatedPercent: Double = 0.0,
     /**
@@ -679,6 +793,14 @@ data class BookSummaryDto(
      * see their own call sites.
      */
     val preprocessing: Boolean = false,
+    /**
+     * Preprocessed is true once every chapter has been through every
+     * per-chapter pass a preprocessing run makes (scare quotes, summary,
+     * attribution, emotions, pronunciation, ambience) - nothing is left for
+     * POST .../preprocess to do but characters it hasn't described. False
+     * again when a book gains a chapter or has a pass reset.
+     */
+    val preprocessed: Boolean = false,
     /**
      * MusicEnabled mirrors store.Book.MusicEnabled - included here (not
      * just on voiceSettingsDTO, which is what actually reads/writes it)
@@ -1142,10 +1264,11 @@ data class GenerateParagraphSFXRequestDto(
 /**
  * generateSFXRequest is POST /api/sfx/generate's body - the standalone
  * test surface for every generation-only "gen task" engine this app
- * wires in (ACE-Step, Stable Audio Music/SFX/Medium), one shared request
+ * wires in (ACE-Step, YuE2, Stable Audio Music/SFX/Medium), one shared request
  * shape covering the union of what any of them accept. Engine selects
  * which one actually runs; every field below that engine doesn't use is
- * simply ignored (e.g. Lyrics only means anything for "ace_step"). See
+ * simply ignored (e.g. Lyrics only means anything for "ace_step" and
+ * "yue2", where Prompt is the style and empty Lyrics means instrumental). See
  * audioworker.Worker.Music/StableAudioMusic/StableAudioSFX/
  * StableAudioMedium's own doc comments for which knobs each engine
  * actually reads and what each defaults to when left zero.
@@ -1158,6 +1281,10 @@ data class GenerateSFXRequestDto(
     val engine: SFXEngine? = null,
     val prompt: String = "",
     val lyrics: String? = null,
+    /**
+     * Planning is "yue2" only; unset leaves the model's default (full).
+     */
+    val planning: SFXPlanning? = null,
     val negativePrompt: String? = null,
     val durationSeconds: Double? = null,
     val numInferenceSteps: Int? = null,
@@ -1255,6 +1382,12 @@ data class JobsSnapshotDto(
      * rounded to 0.1. Omitted (0) whenever that is.
      */
     val narrationRealtimeFactor: Double? = null,
+    /**
+     * WorkLeft is jobs.Manager.WorkLeft over every in-flight and queued
+     * task, listed or not: what is left of each kind of work other than
+     * narration, with an estimate of how long it will take, most first.
+     */
+    val workLeft: List<KindWorkDto> = emptyList(),
 )
 
 /**
@@ -1282,6 +1415,30 @@ data class JobsSummaryDto(
     val narrationCharsPerSecond: Double? = null,
     val lastNarrationCharsPerSecond: Double? = null,
     val narrationRealtimeFactor: Double? = null,
+)
+
+/**
+ * kindWorkDTO is one kind's entry in jobsSnapshotDTO.WorkLeft.
+ */
+@Serializable
+data class KindWorkDto(
+    /**
+     * Kind is queueTaskDTO.Kind.
+     */
+    val kind: String = "",
+    val tasks: Int = 0,
+    /**
+     * TypicalSeconds is how long one task of this kind has been taking
+     * lately (the mean of its last few runs). Omitted (0) until one has
+     * finished since startup.
+     */
+    val typicalSeconds: Double? = null,
+    /**
+     * Seconds estimates the wall-clock time until all of them are done -
+     * Tasks x TypicalSeconds over how many run at once. Omitted (0) when
+     * TypicalSeconds is.
+     */
+    val seconds: Double? = null,
 )
 
 @Serializable
@@ -1413,6 +1570,11 @@ data class LookaheadRequestDto(
      * that send none share one.
      */
     val clientId: String? = null,
+)
+
+@Serializable
+data class MarkReadRequestDto(
+    val read: Boolean = false,
 )
 
 @Serializable
@@ -1883,6 +2045,34 @@ data class ReattributeSpeakerRequestDto(
      * handleListSpeakers).
      */
     val name: String = "",
+)
+
+/**
+ * recapSegmentDTO is one stretch of a recap's clip - what one generation
+ * call spoke. Start/End and the words' times are seconds into the clip.
+ * Words is empty when the stretch couldn't be aligned; its text then
+ * spreads evenly over Start..End.
+ */
+@Serializable
+data class RecapSegmentDto(
+    val text: String = "",
+    val start: Double = 0.0,
+    val end: Double = 0.0,
+    val words: List<WordTimingDto> = emptyList(),
+)
+
+/**
+ * recapSettingsDTO is the library-wide recap setting (GET|PUT
+ * /api/settings/recap, live topic recapSettings).
+ */
+@Serializable
+data class RecapSettingsDto(
+    /**
+     * AfterMinutes is how long a reader must have been away from a book
+     * before the clients offer its recap unasked: 0 offers it every time
+     * the book is opened, -1 never.
+     */
+    val afterMinutes: Int = 0,
 )
 
 @Serializable

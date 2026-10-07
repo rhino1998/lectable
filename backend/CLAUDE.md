@@ -10,7 +10,9 @@ linking against `libaudiocpp.so` **or** `libllama.so`.
 The long-form notes live in `docs/`, to be read when working on that area:
 `docs/speakerattr.md` (every LLM pass), `docs/jobs.md` (the job queue),
 `docs/api.md` (per-route notes), `docs/latents.md` (latents sidecars and
-caches) and `docs/audiocpp-patches.md` (the local audio.cpp patch set).
+caches), `docs/audiocpp-patches.md` (the local audio.cpp patch set) and
+`docs/music-models.md` (why region music is Stable Audio 3 Medium: the
+measured comparison with ACE-Step, YuE2 and Magenta RealTime 2).
 
 ## ttsworker / audioworker / llmworker - why model inference is a separate process
 
@@ -491,42 +493,62 @@ building/running `ttsworker` does, since both now link into that binary.
   `.wav` sibling until `internal/audiomaint` converts it, so reads go
   through `Resolve` and deletes through `RemoveClip`, and the handlers
   serve through `httpapi.serveClip` (sets `audio/ogg; codecs=opus`).
-  Anything a model reads back stays WAV: voice refs, ambience loops, and
-  each music region's `.seed.wav` (only the music layer's last 10s - all
-  `musicgen.GenerateRegion` ever reads of a seed; the full-length stems it
-  replaced doubled the music footprint).
+  Voice refs stay WAV. Ambience loops are kept as their latents alone
+  (`ambience/<hash>.lat`, rebuilt by `jobs.ambienceLoop` when a region in
+  that place renders; `audiomaint.DropRebuildableAmbienceLoops` removes a
+  WAV that has latents beside it - only loops from before latents are
+  still WAV), as is each music region's seed (only the music layer's last
+  10s - all `musicgen.GenerateRegion` ever reads of one).
 - `internal/clipkey/` + `jobs/sharedclips.go` — **shared narration
-  clips**. A narration clip is stored once, library-wide, under a content
-  key (`clipkey.Recipe`: clone model, reference clip identity, language,
-  clone instruct, the effective spoken text, the plain text it's aligned
-  to) at `LECTABLE_DATA_DIR/clips/<kk>/<key>.opus` (+ `.lat`), and the
-  `paragraph_audio` row of every paragraph it plays for names the key
+  clips**. Every narration clip is stored once, library-wide, under a
+  content key (`clipkey.Recipe`: clone model, reference clip identity,
+  language, clone instruct, the effective spoken text, the plain text it's
+  aligned to) at `LECTABLE_DATA_DIR/clips/<kk>/<key>.opus` (+ `.lat`), and
+  the `paragraph_audio` row of every paragraph it plays for names the key
   (`clip_key`); `audiopath.NarrationClipFile` is how anything finds a
-  paragraph's clip (its shared clip, else its own `ParagraphFile`). The
-  same line elsewhere (a speech tag, the same narrator line in another
-  book) is put on the existing clip instead of rendered: `generate` looks
-  the key up first (`claimSharedClip`, which also waits out another task
-  rendering the same key). Scare-quote merge groups are keyed by the whole
-  group's spoken text (members stay pointer rows into the anchor's clip)
-  and unvoiced lines by spelling. The key carries a **take**
-  (`clipkey.TakeAt`): identical lines within `RunWindow` (5) paragraphs of
-  each other count 0, 1, 2... so a run of repeats is read differently each
-  time; further apart they share take 0. A clip is only reused while some
-  row is still ready on it, so "clear generation" re-renders;
-  `audiomaint.SweepSharedClips` drops clips no row names. "Regenerate this
-  paragraph" (`task.fresh`) re-renders the shared clip for every paragraph
-  on it. Word timings saved for one row reach every row on its clip
-  (`SetParagraphWordTimings`). The reference identity is preset + render
-  version (`voicerefs.RefIdentity`, `.ver` files stamped on a re-render,
-  not on loudness fixes). Only preset-less voices (`KindVoiceDesign`) still
-  write `audio/.../<idx>.opus`. `Manager.AdoptSharedClips` moves
-  pre-existing clips in once at startup (marker `clips/.adopted`),
-  assuming each matches its paragraph's current state, and drops repeats
-  for the first clip adopted. Exports carry shared clips under `clips/`;
-  import keeps one the library already has. Clients play a shared clip
-  from `/api/clips/{key}` (see `docs/api.md`).
+  paragraph's clip. Nothing is written under `audio/.../<voice>/` any more
+  (only as a fallback when the store can't be written); the sweep removes
+  leftover files and empty voice directories there.
+  - **Keys.** Clones key on the preset's reference clip + render version
+    (`voicerefs.RefIdentity`, `.ver` files stamped on a re-render, not on
+    loudness fixes) and emotion variant; preset-less voices on their
+    instruct/seed/design model (`designRecipe`); scare-quote merge groups
+    on the whole group's spoken text (members stay pointer rows into the
+    anchor's clip, their parts also kept on the anchor row as
+    `clip_parts`); unvoiced lines on spelling. The key carries a **take**
+    (`clipkey.TakeAt`): identical lines within `RunWindow` (5) paragraphs
+    of each other count 0, 1, 2..., further apart they share take 0.
+  - **Reuse.** A paragraph whose clip exists is put on it instead of
+    rendered: at enqueue when it waits on nothing (`resolveAtEnqueue` - no
+    task is queued at all), else when its task runs (`claimSharedClip`,
+    which also waits out another task rendering the same key). A clip
+    outlives its last row: a trigger saves what that row knew to
+    `clip_orphans` and the clip is still found for
+    `clipkey.OrphanRetention` (7 days), so a voice switched back or a
+    chapter reimported unchanged isn't rendered twice. Explicit "clear
+    generation" and deleting a book call `Manager.DiscardOrphanedClips`,
+    so those do re-render. `audiomaint.SweepSharedClips` drops clips no row
+    names once past retention.
+  - **Regenerate this paragraph** (`task.fresh`) re-renders the clip for
+    every paragraph on it. A push that arrives while its paragraph's task
+    is already running is looked at again when that task ends
+    (`runAgain`), so it isn't dropped with it.
+  - **Writes.** `SetParagraphReadyClip` sets status, key, timings and parts
+    in one statement - a row is never ready without its clip. Word timings
+    saved for one row reach every row on its clip.
+  - **Old libraries.** `AdoptSharedClips` (once, marker `clips/.adopted`)
+    keys pre-existing clips from their paragraph's current state and moves
+    them in; `AdoptStaleClips` (every startup) drops clips still at their
+    own path under a voice their paragraph no longer uses (their recipe
+    isn't known) and retries any under the current voice;
+    `DropUnsharedClips` (once, `clips/.unshared-dropped`) deletes the ones
+    an earlier version kept under private keys instead;
+    `Store.BackfillClipParts` fills `clip_parts` for older groups.
+  - Exports carry shared clips under `clips/`; import keeps one the
+    library already has. Clients play a shared clip from
+    `/api/clips/{key}` (see `docs/api.md`).
 - `internal/oggopus/` — pure-Go WAV -> Ogg Opus encoder (`EncodeWAV`,
-  `Duration`): 48 kbps mono / 128 kbps stereo VBR, 44.1kHz (Stable Audio)
+  `Duration`): 48 kbps mono / 64 kbps stereo VBR (128 before 2026-10-06; older clips keep it), 44.1kHz (Stable Audio)
   resampled to 48kHz, 24kHz narration encoded natively, pre-skip and end
   trimming so decoded length matches the WAV exactly, ~1 page per second.
   The encoder is `github.com/kazzmir/opus-go` (transpiled libopus 1.6.1,

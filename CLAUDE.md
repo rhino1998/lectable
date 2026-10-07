@@ -155,6 +155,14 @@ A per-chapter **summary pass** writes each chapter's summary, scenes
 attribution reads the cast and ambience/lighting the scenes. See
 the `.../summarize` entry in `backend/docs/api.md`.
 
+A **"previously on" recap** is written and spoken in the narrator's voice
+for where a reader stopped (from the chapter summaries behind them and the
+part of the current chapter they heard - never anything ahead), prepared
+once a book has sat idle so it is ready when they come back; the clients
+offer it after a day away (per-device setting). A book started right
+after the one before it in its series opens with a recap of that book
+instead. See the `.../recap` entry in `backend/docs/api.md`.
+
 ## Running everything locally
 
 1. `backend`: from `backend/`, `make build` builds both binaries and
@@ -219,8 +227,8 @@ client, not a browser.)
   `./data`): `library.sqlite`,
   `audio/<bookID>/<chapterID>/<voiceID>/<idx>.opus` (served clips - narration,
   plus `sfx/` and `music/` beside the voice dirs - are Ogg Opus; model inputs
-  like `music/<regionID>.seed.wav` and `audio/<bookID>/ambience/*.wav` stay
-  WAV; see `backend/CLAUDE.md`'s `internal/audiomaint`),
+  like legacy `music/<regionID>.seed.wav` stay WAV, and ambience loops are
+  kept as latents, `audio/<bookID>/ambience/*.lat`; see `backend/CLAUDE.md`'s `internal/audiomaint`),
   `clips/<kk>/<key>.opus` (narration clips by content key, shared by every
   paragraph reading the same line the same way and named by their
   `paragraph_audio` rows - nearly all narration lives here rather than
@@ -232,6 +240,7 @@ client, not a browser.)
   migrated in the background),
   `backups/library-<timestamp>.sqlite` (rolling daily copies of the
   database, see `backend/CLAUDE.md`'s `internal/dbbackup`),
+  `audio/<bookID>/recap.opus` (the book's spoken recap),
   `covers/<bookID>.<ext>`, `epubs/<bookID>.epub` (the source epub, kept for
   single-chapter re-import; for a book imported from a website, an epub
   written from the fetched chapters and added to as new ones arrive), `sources/<bookID>/<chapter>.json.gz` (for a

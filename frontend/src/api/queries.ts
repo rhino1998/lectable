@@ -32,6 +32,8 @@ import type {
   VoiceSettings,
   VoiceSettingsUpdate,
   BookSetting,
+  BookRecapResponse,
+  RecapSettings,
   BookSettingResponse,
   ChapterNotes,
   ChapterNotesResponse,
@@ -417,11 +419,17 @@ export function useResolvePronunciation(bookId: string) {
 }
 
 // The library page's "Preprocess" button (attribution -> characterization
-// -> voice provisioning -> direction tagging, for the whole book - see
+// -> direction tagging, for the whole book - see
 // api.preprocessBook). BookSummary.preprocessing flips on the books topic
 // as soon as the run is enqueued.
 export function usePreprocessBook() {
   return useMutation({ mutationFn: (bookId: string) => api.preprocessBook(bookId) })
+}
+
+// The library's series title-bar "Preprocess series" button: every book of
+// bookId's series, one at a time in order.
+export function usePreprocessSeries() {
+  return useMutation({ mutationFn: (bookId: string) => api.preprocessSeries(bookId) })
 }
 
 // The library page's "Generate audio" hover button (see api.generateBook).
@@ -444,7 +452,7 @@ export function useBulkAction(bookId: string) {
   })
 }
 
-// The Speakers page's per-pass reset (see api.resetPass). What it cleared
+// The Book settings page's per-pass reset (see api.resetPass). What it cleared
 // arrives on the chapter/speakers topics by itself.
 export function useResetPass(bookId: string) {
   return useMutation({ mutationFn: (pass: ResetPass) => api.resetPass(bookId, pass) })
@@ -475,6 +483,12 @@ function useBookJobs(bookId: string, kind: QueueTask['kind']): QueueTask[] {
     () => [...(jobs?.inFlight ?? []), ...(jobs?.queued ?? [])].filter((t) => t.kind === kind),
     [jobs, kind],
   )
+}
+
+// A book's own queue for its Jobs tab: everything queued or running for it
+// except narration tasks, which the bookJobs topic leaves out.
+export function useBookJobsSnapshot(bookId: string): LiveResult<JobsSnapshot> {
+  return useLive('bookJobs', { bookId })
 }
 
 function useChapterIdxSet(bookId: string, kind: QueueTask['kind']): Set<number> {
@@ -687,11 +701,11 @@ export function useCharacterizeSpeaker(bookId: string) {
 // done" for it to drive a per-row spinner from. useCharacterizeSpeaker (the
 // single-row "Regenerate" button) is still a genuinely blocking request, so
 // it keeps tracking its own in-flight character id locally instead of
-// through this - SpeakersPage combines both.
+// through this - BookSettingsPage combines both.
 //
 // onFinished (optional) is called with exactly the names that just
 // dropped out of the tracked set - i.e. finished, successfully or not.
-// SpeakersPage uses it to bump audioVersion for those characters, the
+// BookSettingsPage uses it to bump audioVersion for those characters, the
 // same cache-busting useCharacterizeSpeaker's own onSuccess already does
 // for the single-row "Regenerate" button (see withCacheBust): the backend
 // really does delete a recharacterized character's old cached reference
@@ -723,6 +737,13 @@ export function useCharacterAppearances(
 
 export function useUpdatePosition(bookId: string) {
   return useMutation({ mutationFn: (position: Position) => api.updatePosition(bookId, position) })
+}
+
+// The library card's change arrives on the live books topic.
+export function useMarkRead() {
+  return useMutation({
+    mutationFn: ({ bookId, read }: { bookId: string; read: boolean }) => api.markRead(bookId, read),
+  })
 }
 
 // query is expected to already be debounced by the caller (BookSearch) -
@@ -762,6 +783,32 @@ export function useUpdateBookmarkNote(_bookId: string) {
 
 export function useDeleteBookmark(_bookId: string) {
   return useMutation({ mutationFn: (id: string) => api.deleteBookmark(id) })
+}
+
+// The book's "previously on" recap (live topic: the recap, and whether one
+// is being prepared) - see backend httpapi/recap.go.
+export function useBookRecap(bookId: string): LiveResult<BookRecapResponse> {
+  return useLive('bookRecap', { bookId })
+}
+
+// Asks for the recap of where the book's reader is now - fire-and-forget;
+// the bookRecap topic carries both the wait and the result.
+export function usePrepareBookRecap(bookId: string) {
+  return useMutation({
+    mutationFn: (force: boolean) => api.prepareBookRecap(bookId, force),
+  })
+}
+
+// How long away brings the recap offer - one library-wide setting (live
+// topic), shared by every client.
+export function useRecapSettings(): LiveResult<RecapSettings> {
+  return useLive('recapSettings', {})
+}
+
+export function useSetRecapSettings() {
+  return useMutation({
+    mutationFn: (afterMinutes: number) => api.setRecapSettings(afterMinutes),
+  })
 }
 
 // The book's setting profile (live topic) and its edits - see backend
@@ -982,6 +1029,11 @@ export function useSetJobTier() {
   return useMutation({
     mutationFn: ({ id, tier }: { id: string; tier: QueueTask['tier'] }) => api.setJobTier(id, tier),
   })
+}
+
+// The library card's "Cancel jobs" button.
+export function useCancelBookJobs() {
+  return useMutation({ mutationFn: (bookId: string) => api.cancelBookJobs(bookId) })
 }
 
 // Jobs dashboard's "Cancel all" button.

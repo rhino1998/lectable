@@ -19,9 +19,17 @@ type Store interface {
 	AudioRefs() (AudioRefs, error)
 	ClipUsers(key string) ([]ClipUser, error)
 	ClipKeys() (map[string]bool, error)
-	SetParagraphReadyClip(id, voiceID, key string, durationSeconds float64, wordTimingsJSON string) error
+	KeylessClips() ([]ClipUser, error)
+	KeyedClips() ([]ClipUser, error)
+	DeleteClipRows(users []ClipUser) error
+	BackfillClipParts() (int, error)
+	ClipOrphan(key string) (*ClipOrphan, error)
+	ClipOrphansSince(since int64) ([]string, error)
+	DeleteClipOrphans(keys []string) error
+	SetParagraphReadyClip(id, voiceID, key string, durationSeconds float64, wordTimingsJSON string, parts []ClipPart) error
 	SetParagraphClipKey(id, voiceID, key string) error
 	ChapterAudioFingerprints(bookID string) (map[string]string, error)
+	ChapterExtents(bookID string) ([]ChapterExtent, error)
 	ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error)
 	CharacterVoiceForModel(characterID, cloneModel string) (string, error)
 	CharacterVoicesForModel(characterIDs []string, cloneModel string) (map[string]string, error)
@@ -44,6 +52,7 @@ type Store interface {
 	CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error)
 	CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error)
 	DeleteBook(id string) error
+	DeleteBookRecap(bookID string) error
 	DeleteBookSetting(bookID string) error
 	DeleteBookAudio(bookID string) error
 	DeleteBookmark(id string) error
@@ -62,8 +71,11 @@ type Store interface {
 	GetCharacter(id string) (*Character, error)
 	GetCharacterByName(scope, name string) (*Character, error)
 	GetDefaultVoice() (DefaultVoice, error)
+	RecapAfterMinutes() (int, error)
+	SetRecapAfterMinutes(minutes int) error
 	GetImage(id string) (*Image, error)
 	GetMusicRegion(id string) (*MusicRegion, error)
+	GetBookRecap(bookID string) (*BookRecap, error)
 	GetBookSetting(bookID string) (*StoredBookSetting, error)
 	GetChapterNotes(chapterID string) (*ChapterNotes, error)
 	GetParagraph(id string) (*Paragraph, error)
@@ -121,6 +133,8 @@ type Store interface {
 	SetDefaultVoice(presetID, instruct, language string, seed int, cloneModel string) error
 	SetLengthEstimate(bookID string, secPerChar float64) error
 	SetMusicRegionError(id, message string) error
+	SetBookRecap(r BookRecap) (int64, error)
+	SetBookRecapAudio(bookID string, updatedAt int64, voice string, seconds float64, segments string) (bool, error)
 	SetBookSetting(bookID string, setting BookSetting, source BookSettingSource) error
 	SetChapterNotes(chapterID string, notes ChapterNotes) error
 	ClearBookSummaries(bookID string, fromIdx int) (int, error)
@@ -154,6 +168,7 @@ type Store interface {
 	SyncTreeNodes(bookID, version string) (map[int]SyncTreeNode, error)
 	UpdateBookmarkNote(id, note string) error
 	UpdatePosition(bookID string, chapterIdx, paragraphIdx int, seconds float64) error
+	MarkBookRead(bookID string, read bool) error
 	SyncCharacterSummariesFromPreset(presetID, instruct, refText string, instructChanged, refTextChanged bool) error
 	SetBookProcessing(bookID string, strictOrder, settingRequired bool) error
 	SetBookDefaults(d BookDefaults) error

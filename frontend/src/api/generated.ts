@@ -84,6 +84,12 @@ export const PARAGRAPH_EDIT_FIELDS = ['speaker', 'emotion', 'scare_quote'] as co
 export type ParagraphEditField = (typeof PARAGRAPH_EDIT_FIELDS)[number]
 
 /**
+ * RecapKind is what a BookRecap covers.
+ */
+export const RECAP_KINDS = ['position', 'series'] as const
+export type RecapKind = (typeof RECAP_KINDS)[number]
+
+/**
  * resetPass is a pass the Speakers page can reset across a whole book
  * (POST /api/books/{id}/reset/{pass}) - every bulkAction except the
  * character-scoped ones.
@@ -95,8 +101,15 @@ export type ResetPass = (typeof RESET_PASSES)[number]
  * SFXEngine picks which generation engine a standalone SFX/music test
  * render (POST /api/sfx/generate) runs, in the test page's display order.
  */
-export const SFX_ENGINES = ['ace_step', 'stable_audio_music', 'stable_audio_medium', 'stable_audio_sfx'] as const
+export const SFX_ENGINES = ['ace_step', 'yue2', 'stable_audio_music', 'stable_audio_medium', 'stable_audio_sfx'] as const
 export type SFXEngine = (typeof SFX_ENGINES)[number]
+
+/**
+ * SFXPlanning is YuE2's symbolic planning route for a test render: whether
+ * it writes an ABC score before the music ("melody", "full") or not ("off").
+ */
+export const SFX_PLANNINGS = ['off', 'melody', 'full'] as const
+export type SFXPlanning = (typeof SFX_PLANNINGS)[number]
 
 // ---- Catalog ----
 
@@ -329,6 +342,65 @@ export interface BookNarration {
 }
 
 /**
+ * bookRecapDTO is a book's "previously on" recap.
+ */
+export interface BookRecap {
+  kind: RecapKind
+  /**
+   * ChapterIdx/ParagraphIdx is the reading position it was written for -
+   * it tells nothing from that paragraph on - and ThroughIdx the last
+   * paragraph of that chapter a reader can be at and still be offered
+   * it: it is current for a position in ChapterIdx with ParagraphIdx <=
+   * paragraph <= ThroughIdx.
+   */
+  chapterIdx: number
+  paragraphIdx: number
+  throughIdx: number
+  /**
+   * Title is the book it recaps, as spoken ("Previously, in <Title>") -
+   * this book, or for kind "series" the one before it.
+   */
+  title: string
+  /**
+   * Text is the recap, paragraphs separated by a blank line; "" when
+   * writing it failed (Error says why).
+   */
+  text: string
+  error?: string
+  /**
+   * AudioURL is the recap spoken in the book's narrator voice, opening
+   * with "Previously, in <Title>."; "" until it has been rendered, or
+   * once the book's voice has changed.
+   */
+  audioUrl?: string
+  audioSeconds?: number
+  /**
+   * Segments lay the clip out for following along: the stretches it was
+   * spoken in, in order (the first opens with "Previously, in <Title>.",
+   * then Text's paragraphs), each with where it sits in the clip and its
+   * words' timings. Empty without a clip.
+   */
+  segments: RecapSegment[]
+  /**
+   * ReadAt is when the reader stopped at the position it was written for
+   * (the book's lastReadAt then, unix seconds) - how long they have been
+   * away is measured from it.
+   */
+  readAt: number
+  updatedAt: number
+}
+
+/**
+ * bookRecapResponse is GET .../recap's reply and the bookRecap live
+ * topic's value. Recap is nil until one has been written; Preparing is
+ * true while one is queued or being written or spoken.
+ */
+export interface BookRecapResponse {
+  recap?: BookRecap | null
+  preparing: boolean
+}
+
+/**
  * bookSettingDTO is a book's setting profile (store.BookSetting) - the world
  * its story takes place in, which the ambience, lighting and
  * characterization prompts are shown. Field-for-field store.BookSetting, so
@@ -427,6 +499,10 @@ export interface BookSummary {
   progressPercent: number
   finished: boolean
   estimatedTotalSeconds: number
+  /**
+   * WordCount is the number of words in the book's text.
+   */
+  wordCount: number
   estimateCalibrated: boolean
   generatedPercent: number
   /**
@@ -444,6 +520,14 @@ export interface BookSummary {
    * see their own call sites.
    */
   preprocessing: boolean
+  /**
+   * Preprocessed is true once every chapter has been through every
+   * per-chapter pass a preprocessing run makes (scare quotes, summary,
+   * attribution, emotions, pronunciation, ambience) - nothing is left for
+   * POST .../preprocess to do but characters it hasn't described. False
+   * again when a book gains a chapter or has a pass reset.
+   */
+  preprocessed: boolean
   /**
    * MusicEnabled mirrors store.Book.MusicEnabled - included here (not
    * just on voiceSettingsDTO, which is what actually reads/writes it)
@@ -850,10 +934,11 @@ export interface GenerateParagraphSFXRequest {
 /**
  * generateSFXRequest is POST /api/sfx/generate's body - the standalone
  * test surface for every generation-only "gen task" engine this app
- * wires in (ACE-Step, Stable Audio Music/SFX/Medium), one shared request
+ * wires in (ACE-Step, YuE2, Stable Audio Music/SFX/Medium), one shared request
  * shape covering the union of what any of them accept. Engine selects
  * which one actually runs; every field below that engine doesn't use is
- * simply ignored (e.g. Lyrics only means anything for "ace_step"). See
+ * simply ignored (e.g. Lyrics only means anything for "ace_step" and
+ * "yue2", where Prompt is the style and empty Lyrics means instrumental). See
  * audioworker.Worker.Music/StableAudioMusic/StableAudioSFX/
  * StableAudioMedium's own doc comments for which knobs each engine
  * actually reads and what each defaults to when left zero.
@@ -865,6 +950,10 @@ export interface GenerateSFXRequest {
   engine?: SFXEngine
   prompt: string
   lyrics?: string
+  /**
+   * Planning is "yue2" only; unset leaves the model's default (full).
+   */
+  planning?: SFXPlanning
   negativePrompt?: string
   durationSeconds?: number
   numInferenceSteps?: number
@@ -955,6 +1044,12 @@ export interface JobsSnapshot {
    * rounded to 0.1. Omitted (0) whenever that is.
    */
   narrationRealtimeFactor?: number
+  /**
+   * WorkLeft is jobs.Manager.WorkLeft over every in-flight and queued
+   * task, listed or not: what is left of each kind of work other than
+   * narration, with an estimate of how long it will take, most first.
+   */
+  workLeft?: KindWork[]
 }
 
 /**
@@ -981,6 +1076,29 @@ export interface JobsSummary {
   narrationCharsPerSecond?: number
   lastNarrationCharsPerSecond?: number
   narrationRealtimeFactor?: number
+}
+
+/**
+ * kindWorkDTO is one kind's entry in jobsSnapshotDTO.WorkLeft.
+ */
+export interface KindWork {
+  /**
+   * Kind is queueTaskDTO.Kind.
+   */
+  kind: string
+  tasks: number
+  /**
+   * TypicalSeconds is how long one task of this kind has been taking
+   * lately (the mean of its last few runs). Omitted (0) until one has
+   * finished since startup.
+   */
+  typicalSeconds?: number
+  /**
+   * Seconds estimates the wall-clock time until all of them are done -
+   * Tasks x TypicalSeconds over how many run at once. Omitted (0) when
+   * TypicalSeconds is.
+   */
+  seconds?: number
 }
 
 export interface LanguagesResponse {
@@ -1105,6 +1223,10 @@ export interface LookaheadRequest {
    * that send none share one.
    */
   clientId?: string
+}
+
+export interface MarkReadRequest {
+  read: boolean
 }
 
 export interface MergeCharacterRequest {
@@ -1562,6 +1684,32 @@ export interface ReattributeSpeakerRequest {
    * handleListSpeakers).
    */
   name: string
+}
+
+/**
+ * recapSegmentDTO is one stretch of a recap's clip - what one generation
+ * call spoke. Start/End and the words' times are seconds into the clip.
+ * Words is empty when the stretch couldn't be aligned; its text then
+ * spreads evenly over Start..End.
+ */
+export interface RecapSegment {
+  text: string
+  start: number
+  end: number
+  words: WordTiming[]
+}
+
+/**
+ * recapSettingsDTO is the library-wide recap setting (GET|PUT
+ * /api/settings/recap, live topic recapSettings).
+ */
+export interface RecapSettings {
+  /**
+   * AfterMinutes is how long a reader must have been away from a book
+   * before the clients offer its recap unasked: 0 offers it every time
+   * the book is opened, -1 never.
+   */
+  afterMinutes: number
 }
 
 export interface RegenerateVariantRequest {
@@ -2179,6 +2327,11 @@ export interface LiveTopics {
    */
   bookSetting: { params: { bookId: string }; data: BookSettingResponse }
   /**
+   * buildBookRecap is the bookRecap live topic's value and GET .../recap's
+   * reply.
+   */
+  bookRecap: { params: { bookId: string }; data: BookRecapResponse }
+  /**
    * buildLexicon lists bookID's scope's pronunciation rules, each with how
    * many of this book's paragraphs it matches (so a typo'd rule that never
    * fires is visible).
@@ -2209,6 +2362,11 @@ export interface LiveTopics {
   voicePresets: { params: Record<never, never>; data: VoicePresets }
   customVoicePresets: { params: Record<never, never>; data: CustomVoicePreset[] }
   defaultVoice: { params: Record<never, never>; data: VoiceSettings }
+  /**
+   * buildRecapSettings is the recapSettings live topic's value and GET
+   * /api/settings/recap's reply.
+   */
+  recapSettings: { params: Record<never, never>; data: RecapSettings }
 }
 
 // ---- Routes ----
@@ -2256,7 +2414,8 @@ export interface Routes {
    * Royal Road fiction, a volume of The Wandering Inn, either of them as a
    * Wayback Machine link - picking the site by the link: its first chapter
    * now, the rest in the background (the book's source.syncing /
-   * remoteChapters show the progress). 409 book_exists if the library
+   * remoteChapters show the progress). Nothing is generated for it until
+   * it is read or asked for. 409 book_exists if the library
    * already has that work - check it for new chapters instead. A link to an
    * archive.org item instead downloads its epub and imports that, as an
    * upload would.
@@ -3202,6 +3361,18 @@ export interface Routes {
     response: QueuedResponse
     errorCode: never
   }
+  /**
+   * handleCancelBookJobs cancels every queued and in-flight task working on
+   * one book - the library card's "Cancel jobs" button. See
+   * jobs.Manager.CancelBook.
+   */
+  'DELETE /api/books/{id}/jobs': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: CanceledCountResponse
+    errorCode: never
+  }
   'GET /api/books/{id}/lexicon': {
     path: { id: string }
     query: Record<never, never>
@@ -3362,6 +3533,74 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handlePreprocessSeries preprocesses every book of the book's series, one
+   * at a time in series order: a book's pipeline (handlePreprocessBook's) is
+   * queued only once the one before it has finished, so each book is
+   * attributed and cast against the roster the earlier books left - the
+   * series shares one (store.SeriesScope). One job-queue row (a
+   * jobs.BulkGroup, Kind "pipeline_series_preprocess", on the series' first
+   * book); each book's own phases appear under it as that book's turn comes.
+   * Promoting the row promotes each book's phases as its turn comes (and
+   * the one in progress). Cancelling the row stops the run before the next book - the book in
+   * progress carries on unless cancelled itself. A book already
+   * preprocessing is waited for, not restarted. 202, 409 for a book in no
+   * series.
+   */
+  'POST /api/books/{id}/preprocess-series': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleMarkRead marks a book read or unread from the libraries' own
+   * button, without opening it: read moves the saved position to the book's
+   * last paragraph, unread back to its start (see Store.MarkBookRead).
+   */
+  'PUT /api/books/{id}/read': {
+    path: { id: string }
+    query: Record<never, never>
+    body: MarkReadRequest
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleGetBookRecap serves GET /api/books/{id}/recap.
+   */
+  'GET /api/books/{id}/recap': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: BookRecapResponse
+    errorCode: never
+  }
+  /**
+   * handlePrepareBookRecap serves POST /api/books/{id}/recap: queues the
+   * recap for the book's saved reading position (the pipeline_recap job) and
+   * answers 202 with how many it queued - 0 when the book already has one
+   * for that position, or there is nothing to recap there. ?force=true
+   * writes it again regardless. The bookRecap live topic carries the result.
+   */
+  'POST /api/books/{id}/recap': {
+    path: { id: string }
+    query: { force?: string | number | boolean }
+    body: never
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleGetBookRecapAudio serves GET /api/books/{id}/recap/audio - the
+   * recap as spoken (bookRecapDTO.AudioURL).
+   */
+  'GET /api/books/{id}/recap/audio': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: Blob
+    errorCode: never
+  }
+  /**
    * handleResetPass is POST /api/books/{id}/reset/{pass} - the Speakers
    * page's per-column reset buttons: clears one pass across the whole book as
    * though it had never run, and deletes whatever generated audio it made
@@ -3469,7 +3708,8 @@ export interface Routes {
   }
   /**
    * handleSyncBookSource checks a book's source for chapters it doesn't have
-   * and appends them, in the background (joining a check already running).
+   * and appends them, as a job-queue task (joining a check already queued or
+   * running - see startSourceSync).
    * 409 for a book that wasn't imported from a website.
    */
   'POST /api/books/{id}/source/sync': {
@@ -3826,6 +4066,27 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleGetRecapSettings serves GET /api/settings/recap.
+   */
+  'GET /api/settings/recap': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: never
+    response: RecapSettings
+    errorCode: never
+  }
+  /**
+   * handleSetRecapSettings serves PUT /api/settings/recap - the one recap
+   * setting, shared by every client of the library.
+   */
+  'PUT /api/settings/recap': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: RecapSettings
+    response: void
+    errorCode: never
+  }
+  /**
    * handleGenerateSFX is the standalone SFX/music test page's own backend
    * surface (see frontend SFXPage.tsx) - handleTestVoiceDesign's own
    * counterpart for this app's generation-only engines: stateless, not
@@ -4153,6 +4414,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/exports/{exportId}/file': 'binary',
   'POST /api/books/{id}/generate': 'json',
   'POST /api/books/{id}/generate-remaining': 'json',
+  'DELETE /api/books/{id}/jobs': 'json',
   'GET /api/books/{id}/lexicon': 'json',
   'PUT /api/books/{id}/lexicon': 'json',
   'POST /api/books/{id}/lexicon/matches': 'json',
@@ -4165,6 +4427,11 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/position': 'json',
   'PUT /api/books/{id}/position': 'none',
   'POST /api/books/{id}/preprocess': 'json',
+  'POST /api/books/{id}/preprocess-series': 'json',
+  'PUT /api/books/{id}/read': 'none',
+  'GET /api/books/{id}/recap': 'json',
+  'POST /api/books/{id}/recap': 'json',
+  'GET /api/books/{id}/recap/audio': 'binary',
   'POST /api/books/{id}/reset/{pass}': 'json',
   'GET /api/books/{id}/search': 'json',
   'GET /api/books/{id}/setting': 'json',
@@ -4194,6 +4461,8 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/music-regions/{id}/regenerate': 'json',
   'GET /api/paragraphs/{id}/audio': 'binary',
   'GET /api/paragraphs/{id}/sfx-audio': 'binary',
+  'GET /api/settings/recap': 'json',
+  'PUT /api/settings/recap': 'none',
   'POST /api/sfx/generate': 'binary',
   'POST /api/voices/clone-instruct-test': 'binary',
   'GET /api/voices/custom-presets': 'json',

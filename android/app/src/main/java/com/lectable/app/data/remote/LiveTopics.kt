@@ -63,6 +63,13 @@ object LiveTopics {
         LiveTopic("bookSetting", mapOf("bookId" to bookId), serializer<BookSettingResponseDto>())
 
     /**
+     * buildBookRecap is the bookRecap live topic's value and GET .../recap's
+     * reply.
+     */
+    fun bookRecap(bookId: String): LiveTopic<BookRecapResponseDto> =
+        LiveTopic("bookRecap", mapOf("bookId" to bookId), serializer<BookRecapResponseDto>())
+
+    /**
      * buildLexicon lists bookID's scope's pronunciation rules, each with how
      * many of this book's paragraphs it matches (so a typo'd rule that never
      * fires is visible).
@@ -112,4 +119,11 @@ object LiveTopics {
 
     fun defaultVoice(): LiveTopic<VoiceSettingsDto> =
         LiveTopic("defaultVoice", emptyMap(), serializer<VoiceSettingsDto>())
+
+    /**
+     * buildRecapSettings is the recapSettings live topic's value and GET
+     * /api/settings/recap's reply.
+     */
+    fun recapSettings(): LiveTopic<RecapSettingsDto> =
+        LiveTopic("recapSettings", emptyMap(), serializer<RecapSettingsDto>())
 }

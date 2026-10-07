@@ -37,8 +37,10 @@ type bookSummaryDTO struct {
 	ProgressPercent       float64 `json:"progressPercent"`
 	Finished              bool    `json:"finished"`
 	EstimatedTotalSeconds float64 `json:"estimatedTotalSeconds"`
-	EstimateCalibrated    bool    `json:"estimateCalibrated"`
-	GeneratedPercent      float64 `json:"generatedPercent"`
+	// WordCount is the number of words in the book's text.
+	WordCount          int64   `json:"wordCount"`
+	EstimateCalibrated bool    `json:"estimateCalibrated"`
+	GeneratedPercent   float64 `json:"generatedPercent"`
 	// PendingNarrationChars is how much of the book's text (in its current
 	// voices) has no generated audio yet - divided by the jobs snapshot's
 	// narration rate, the clients' "time to finish narrating" estimate.
@@ -50,6 +52,12 @@ type bookSummaryDTO struct {
 	// not toBookSummary itself (a plain function with no Server access) -
 	// see their own call sites.
 	Preprocessing bool `json:"preprocessing"`
+	// Preprocessed is true once every chapter has been through every
+	// per-chapter pass a preprocessing run makes (scare quotes, summary,
+	// attribution, emotions, pronunciation, ambience) - nothing is left for
+	// POST .../preprocess to do but characters it hasn't described. False
+	// again when a book gains a chapter or has a pass reset.
+	Preprocessed bool `json:"preprocessed"`
 	// MusicEnabled mirrors store.Book.MusicEnabled - included here (not
 	// just on voiceSettingsDTO, which is what actually reads/writes it)
 	// purely as a read convenience so pages already holding a BookDetail/
@@ -115,14 +123,19 @@ func toBookSummary(b store.Book, chapters []store.ChapterSummary, stats store.Na
 		PosSeconds:      b.PosSeconds,
 		LastReadAt:      b.LastReadAt,
 		MusicEnabled:    b.MusicEnabled,
+		WordCount:       stats.TotalWords,
 	}
 	if b.CoverExt != "" {
 		dto.CoverURL = "/api/books/" + b.ID + "/cover"
 	}
 
+	dto.Preprocessed = len(chapters) > 0
 	totalParagraphs := 0
 	completedParagraphs := 0
 	for i, c := range chapters {
+		if p := c.Passes; !p.ScareQuote || !p.Summary || !p.Attribution || !p.Direction || !p.Pronunciation || !p.AmbienceDone() {
+			dto.Preprocessed = false
+		}
 		totalParagraphs += c.ParagraphCount
 		switch {
 		case c.Idx < b.PosChapterIdx:
@@ -277,7 +290,7 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "play must be auto, on or off")
 		return
 	}
-	summary, err := s.importEpub(tmp, size, strings.TrimSuffix(header.Filename, ".epub"), playMode)
+	summary, err := s.importEpub(tmp, size, strings.TrimSuffix(header.Filename, ".epub"), playMode, true)
 	if err != nil {
 		writeBuildError(w, err)
 		return
@@ -285,14 +298,15 @@ func (s *Server) handleUploadBook(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, summary)
 }
 
-// importEpub creates a book from an epub: its text, cover and images, the
-// epub itself kept for chapter re-import, and the first samples queued.
-// fallbackTitle names a book whose epub has no title. Errors carry their
-// HTTP status (httpError).
+// importEpub creates a book from an epub: its text, cover and images, and
+// the epub itself kept for chapter re-import. sample also queues the
+// first chapter's sample narration and length estimate, as an upload
+// does. fallbackTitle names a book whose epub has no title. Errors carry
+// their HTTP status (httpError).
 func (s *Server) importEpub(src interface {
 	io.ReaderAt
 	io.ReadSeeker
-}, size int64, fallbackTitle string, playMode epub.PlayMode) (bookSummaryDTO, error) {
+}, size int64, fallbackTitle string, playMode epub.PlayMode, sample bool) (bookSummaryDTO, error) {
 	book, err := epub.ParseAs(src, size, playMode)
 	if err != nil {
 		return bookSummaryDTO{}, httpError(http.StatusBadRequest, "could not parse epub: "+err.Error())
@@ -357,7 +371,7 @@ func (s *Server) importEpub(src interface {
 		return bookSummaryDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 
-	if len(chapters) > 0 {
+	if sample && len(chapters) > 0 {
 		// Real narration in the book's own voice, so the reader has
 		// something to listen to immediately - this alone used to also be
 		// what calibrated the length estimate below, which meant that
@@ -756,11 +770,14 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 	// is currently in flight, not whatever real per-item work that phase
 	// already dispatched into a poolLLM/poolDesign slot.
 	s.cancelPipeline(id)
+	deleted := time.Now()
 	if err := s.Store.DeleteBook(id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s", s.DataDir, id))
+	// The narration clips only this book used go with it.
+	s.Jobs.DiscardOrphanedClips(deleted)
 	if b.CoverExt != "" {
 		_ = os.Remove(audiopath.CoverFile(s.DataDir, id, b.CoverExt))
 	}
@@ -796,6 +813,7 @@ func (s *Server) handleDeleteBookAudio(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
+	cleared := time.Now()
 	if err := s.Store.DeleteBookAudio(id); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -811,6 +829,9 @@ func (s *Server) handleDeleteBookAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s", s.DataDir, id))
+	// Asked for new renders: the shared clips this left unused go now,
+	// rather than waiting to be found again.
+	s.Jobs.DiscardOrphanedClips(cleared)
 	writeNoContent(w)
 }
 
@@ -835,6 +856,7 @@ func (s *Server) handleDeleteChapterAudio(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "chapter not found")
 		return
 	}
+	cleared := time.Now()
 	if err := s.Store.DeleteChapterAudio(ch.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -848,6 +870,7 @@ func (s *Server) handleDeleteChapterAudio(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_ = os.RemoveAll(fmt.Sprintf("%s/audio/%s/%s", s.DataDir, bookID, ch.ID))
+	s.Jobs.DiscardOrphanedClips(cleared)
 	writeNoContent(w)
 }
 

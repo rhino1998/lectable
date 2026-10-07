@@ -50,9 +50,18 @@ func newTestServer(t *testing.T) (*Server, *store.SQLiteStore, *ttsworkertest.Se
 	cached := store.NewCached(s)
 
 	fake := ttsworkertest.New(t)
-	dataDir := t.TempDir()
+	dataDir := testDataDir(t)
 	tts := fake.Manager()
 	mgr := jobs.NewManager(cached, tts, dataDir)
+	// Runs after the cancel registered below: lets whatever the manager
+	// had in flight finish before the data dir goes (see testDataDir).
+	t.Cleanup(func() {
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+			if inFlight, _ := mgr.Snapshot(); len(inFlight) == 0 {
+				return
+			}
+		}
+	})
 
 	srv := &Server{
 		Store:       cached,
@@ -74,6 +83,36 @@ func newTestServer(t *testing.T) (*Server, *store.SQLiteStore, *ttsworkertest.Se
 	mgr.Start(ctx)
 
 	return srv, s, fake, ts
+}
+
+// testDataDir is a data directory removed when the test ends. Not
+// t.TempDir: jobs.Manager has no way to wait for its work to stop, and a
+// job still winding down after its context is cancelled (an upload queues
+// narration for the whole book) can create a file under the directory
+// while it is being removed - which t.TempDir reports as a test failure
+// ("directory not empty"). Registered before the manager's cancel, so it
+// runs after it, and tries again until the stragglers are done.
+func testDataDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "lectable-httpapi-*")
+	if err != nil {
+		t.Fatalf("create data dir: %v", err)
+	}
+	t.Cleanup(func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := os.RemoveAll(dir)
+			if err == nil {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Logf("remove data dir: %v", err)
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	return dir
 }
 
 func createTestBook(t *testing.T, s *store.SQLiteStore, seriesName string, seriesIndex float64, paragraphs ...string) string {
@@ -186,6 +225,41 @@ func TestVoiceSettingsRoundTrip(t *testing.T) {
 	resp = doJSON(t, http.MethodGet, ts.URL+"/api/books/"+bookID+"/voice", nil, &got)
 	if resp.StatusCode != http.StatusOK || got.Instruct != "speak like a robot" {
 		t.Fatalf("voice update didn't persist: %+v", got)
+	}
+}
+
+func TestMarkRead(t *testing.T) {
+	_, s, _, ts := newTestServer(t)
+	bookID := createTestBook(t, s, "", 0, "p1", "p2", "p3")
+
+	finished := func() bookSummaryDTO {
+		t.Helper()
+		var books []bookSummaryDTO
+		if resp := doJSON(t, http.MethodGet, ts.URL+"/api/books", nil, &books); resp.StatusCode != http.StatusOK || len(books) != 1 {
+			t.Fatalf("GET books: status %d, %d books", resp.StatusCode, len(books))
+		}
+		return books[0]
+	}
+
+	resp := doJSON(t, http.MethodPut, ts.URL+"/api/books/"+bookID+"/read", markReadRequest{Read: true}, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT read: status %d", resp.StatusCode)
+	}
+	if b := finished(); !b.Finished || b.PosParagraphIdx != 2 {
+		t.Fatalf("after marking read: %+v", b)
+	}
+
+	resp = doJSON(t, http.MethodPut, ts.URL+"/api/books/"+bookID+"/read", markReadRequest{Read: false}, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("PUT read false: status %d", resp.StatusCode)
+	}
+	if b := finished(); b.Finished || b.ProgressPercent != 0 || b.LastReadAt != 0 {
+		t.Fatalf("after marking unread: %+v", b)
+	}
+
+	resp = doJSON(t, http.MethodPut, ts.URL+"/api/books/nope/read", markReadRequest{Read: true}, nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("PUT read on a missing book: status %d", resp.StatusCode)
 	}
 }
 
@@ -669,10 +743,8 @@ func TestUpdateCustomVoicePresetInvalidatesStaleAudio(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, statErr := os.Stat(clip)
-		if (status == store.AudioReady) != (statErr == nil) {
-			t.Fatalf("row status %q and file (stat err %v) disagree", status, statErr)
-		}
+		// The row is what invalidation resets; a file left at the
+		// paragraph's own path is the sweep's to remove.
 		return status == store.AudioReady
 	}
 	put := func(req customVoicePresetInputDTO) {

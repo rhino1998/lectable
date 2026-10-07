@@ -348,6 +348,8 @@ var kindPool = map[Kind]poolKey{
 	KindPronunciation:           poolLLM,
 	KindSummary:                 poolLLM,
 	KindBookSetting:             poolLLM,
+	KindRecap:                   poolLLM,
+	KindRecapNarration:          poolGeneration,
 }
 
 // poolFor reports which slot pool kind draws from - see kindPool.
@@ -382,6 +384,9 @@ type Manager struct {
 
 	// throughput measures recent narration speed - see Throughput.
 	throughput narrationThroughput
+	// durations remembers how long each other kind of task takes - see
+	// WorkLeft.
+	durations kindDurations
 
 	// musicGenerating is the set of music region ids currently being
 	// generated (claimMusicRegion/releaseMusicRegion) - kept in memory
@@ -391,6 +396,7 @@ type Manager struct {
 	musicGenerating map[string]bool
 	// ambienceLocks: see lockAmbience.
 	ambienceLocks sync.Map
+	ambienceCache ambienceCache
 
 	store         store.Store
 	tts           *ttsworker.Manager
@@ -659,6 +665,14 @@ func (m *Manager) Start(ctx context.Context) {
 		m.sched.Close()
 	}()
 	m.sched.SetManual(false) // a test manager stepped by hand until now
+}
+
+// stopped reports whether the context Start was given has ended.
+func (m *Manager) stopped() bool {
+	m.mu.Lock()
+	ctx := m.ctx
+	m.mu.Unlock()
+	return ctx != nil && ctx.Err() != nil
 }
 
 // gate is the scheduler's admission gate: nothing before Start; while

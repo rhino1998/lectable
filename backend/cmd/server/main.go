@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/rhino1998/lectable/backend/internal/audiomaint"
 	"github.com/rhino1998/lectable/backend/internal/bookexport"
+	"github.com/rhino1998/lectable/backend/internal/cron"
 	"github.com/rhino1998/lectable/backend/internal/dbbackup"
 	"github.com/rhino1998/lectable/backend/internal/httpapi"
 	"github.com/rhino1998/lectable/backend/internal/instanceid"
@@ -153,6 +154,17 @@ func main() {
 			log.Printf("adopted %d narration clips into the shared store in %s, dropping %d repeats of lines already in it (%.1f MB freed)",
 				s.Adopted, time.Since(start).Round(time.Second), s.Deduplicated, float64(s.BytesFreed)/(1<<20))
 		}
+		if n, err := st.BackfillClipParts(); err != nil {
+			log.Printf("backfill merge group clip parts: %v", err)
+		} else if n > 0 {
+			log.Printf("recorded the member parts of %d merge group clips", n)
+		}
+		if adopted, dropped := jobManager.AdoptStaleClips(ctx); adopted+dropped > 0 {
+			log.Printf("narration clips still at their own paths: moved %d into the shared store, dropped %d kept under voices their paragraphs no longer use", adopted, dropped)
+		}
+		if n := jobManager.DropUnsharedClips(ctx); n > 0 {
+			log.Printf("dropped %d clips kept under voices their paragraphs no longer use", n)
+		}
 	}()
 	// Levels reference clips saved before normalization (or restored from
 	// an export) to voicerefs.TargetLUFS; a no-op once they all are.
@@ -226,6 +238,13 @@ func main() {
 		LibraryName: libraryName,
 	}
 	handler := httpapi.NewRouter(server)
+	// Periodic background tasks - see internal/cron.
+	var tasks cron.Scheduler
+	// Writes and speaks each book's "previously on" recap once its reader
+	// has been away as long as the offer threshold, so it is ready when
+	// they come back.
+	tasks.Add(cron.Task{Name: "idle-recaps", Every: httpapi.RecapCheckEvery, Run: server.PrepareIdleRecaps})
+	go tasks.Run(ctx)
 
 	// Only header and keep-alive idle timeouts: a ReadTimeout would cut off
 	// multi-gigabyte export uploads, and a WriteTimeout long clip/export

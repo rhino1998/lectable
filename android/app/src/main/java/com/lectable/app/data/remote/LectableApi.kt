@@ -54,7 +54,8 @@ interface LectableApi {
      * Royal Road fiction, a volume of The Wandering Inn, either of them as a
      * Wayback Machine link - picking the site by the link: its first chapter
      * now, the rest in the background (the book's source.syncing /
-     * remoteChapters show the progress). 409 book_exists if the library
+     * remoteChapters show the progress). Nothing is generated for it until
+     * it is read or asked for. 409 book_exists if the library
      * already has that work - check it for new chapters instead. A link to an
      * archive.org item instead downloads its epub and imports that, as an
      * upload would.
@@ -969,6 +970,16 @@ interface LectableApi {
         @Path("id") id: String,
     ): QueuedResponseDto
 
+    /**
+     * handleCancelBookJobs cancels every queued and in-flight task working on
+     * one book - the library card's "Cancel jobs" button. See
+     * jobs.Manager.CancelBook.
+     */
+    @DELETE("api/books/{id}/jobs")
+    suspend fun cancelBookJobs(
+        @Path("id") id: String,
+    ): CanceledCountResponseDto
+
     @GET("api/books/{id}/lexicon")
     suspend fun listLexicon(
         @Path("id") id: String,
@@ -1114,6 +1125,67 @@ interface LectableApi {
     ): QueuedResponseDto
 
     /**
+     * handlePreprocessSeries preprocesses every book of the book's series, one
+     * at a time in series order: a book's pipeline (handlePreprocessBook's) is
+     * queued only once the one before it has finished, so each book is
+     * attributed and cast against the roster the earlier books left - the
+     * series shares one (store.SeriesScope). One job-queue row (a
+     * jobs.BulkGroup, Kind "pipeline_series_preprocess", on the series' first
+     * book); each book's own phases appear under it as that book's turn comes.
+     * Promoting the row promotes each book's phases as its turn comes (and
+     * the one in progress). Cancelling the row stops the run before the next book - the book in
+     * progress carries on unless cancelled itself. A book already
+     * preprocessing is waited for, not restarted. 202, 409 for a book in no
+     * series.
+     */
+    @POST("api/books/{id}/preprocess-series")
+    suspend fun preprocessSeries(
+        @Path("id") id: String,
+    ): QueuedResponseDto
+
+    /**
+     * handleMarkRead marks a book read or unread from the libraries' own
+     * button, without opening it: read moves the saved position to the book's
+     * last paragraph, unread back to its start (see Store.MarkBookRead).
+     */
+    @PUT("api/books/{id}/read")
+    suspend fun markRead(
+        @Path("id") id: String,
+        @Body body: MarkReadRequestDto,
+    ): Unit
+
+    /**
+     * handleGetBookRecap serves GET /api/books/{id}/recap.
+     */
+    @GET("api/books/{id}/recap")
+    suspend fun getBookRecap(
+        @Path("id") id: String,
+    ): BookRecapResponseDto
+
+    /**
+     * handlePrepareBookRecap serves POST /api/books/{id}/recap: queues the
+     * recap for the book's saved reading position (the pipeline_recap job) and
+     * answers 202 with how many it queued - 0 when the book already has one
+     * for that position, or there is nothing to recap there. ?force=true
+     * writes it again regardless. The bookRecap live topic carries the result.
+     */
+    @POST("api/books/{id}/recap")
+    suspend fun prepareBookRecap(
+        @Path("id") id: String,
+        @Query("force") force: String? = null,
+    ): QueuedResponseDto
+
+    /**
+     * handleGetBookRecapAudio serves GET /api/books/{id}/recap/audio - the
+     * recap as spoken (bookRecapDTO.AudioURL).
+     */
+    @Streaming
+    @GET("api/books/{id}/recap/audio")
+    suspend fun getBookRecapAudio(
+        @Path("id") id: String,
+    ): ResponseBody
+
+    /**
      * handleResetPass is POST /api/books/{id}/reset/{pass} - the Speakers
      * page's per-column reset buttons: clears one pass across the whole book as
      * though it had never run, and deletes whatever generated audio it made
@@ -1213,7 +1285,8 @@ interface LectableApi {
 
     /**
      * handleSyncBookSource checks a book's source for chapters it doesn't have
-     * and appends them, in the background (joining a check already running).
+     * and appends them, as a job-queue task (joining a check already queued or
+     * running - see startSourceSync).
      * 409 for a book that wasn't imported from a website.
      */
     @POST("api/books/{id}/source/sync")
@@ -1527,6 +1600,21 @@ interface LectableApi {
     suspend fun getParagraphSFXAudio(
         @Path("id") id: String,
     ): ResponseBody
+
+    /**
+     * handleGetRecapSettings serves GET /api/settings/recap.
+     */
+    @GET("api/settings/recap")
+    suspend fun getRecapSettings(): RecapSettingsDto
+
+    /**
+     * handleSetRecapSettings serves PUT /api/settings/recap - the one recap
+     * setting, shared by every client of the library.
+     */
+    @PUT("api/settings/recap")
+    suspend fun setRecapSettings(
+        @Body body: RecapSettingsDto,
+    ): Unit
 
     /**
      * handleGenerateSFX is the standalone SFX/music test page's own backend

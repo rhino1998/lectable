@@ -371,3 +371,9 @@ func EnsureVoiceDesignCacheDir(dataDir string) error {
 func EnsureDir(path string) error {
 	return os.MkdirAll(filepath.Dir(path), 0o755)
 }
+
+// RecapFile is a book's spoken "previously on" recap (httpapi's recap.go) -
+// one per book, replaced with the recap.
+func RecapFile(dataDir, bookID string) string {
+	return filepath.Join(dataDir, "audio", bookID, "recap"+ClipExt)
+}
