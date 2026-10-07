@@ -73,7 +73,9 @@ func TestLive(t *testing.T) {
 		ch, err := src.Chapter(ctx, f, ref)
 		if errors.Is(err, websource.ErrLocked) && !archived {
 			t.Logf("chapter %q is locked at the site; looking in the archive", ref.Title)
-			ch, err = wayback.ArchivedChapter(ctx, src, ref)
+			ch, err = wayback.ArchivedChapter(ctx, ref.URL, func(f websource.Fetcher) (*websource.Chapter, error) {
+				return src.Chapter(ctx, f, ref)
+			})
 		}
 		if err != nil {
 			t.Fatal(err)

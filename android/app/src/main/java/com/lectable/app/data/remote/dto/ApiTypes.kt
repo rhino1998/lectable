@@ -1911,6 +1911,27 @@ data class RenameCharacterRequestDto(
     val name: String = "",
 )
 
+@Serializable
+data class ReparseSourceResponseDto(
+    /**
+     * Reparsed is how many chapters were read again from their stored
+     * pages and written to the book's kept epub.
+     */
+    val reparsed: Int = 0,
+    /**
+     * Missing is how many chapters have no stored pages (imported before
+     * they were kept) and Failed how many stored pages no longer read as a
+     * chapter; both keep what the kept epub had.
+     */
+    val missing: Int = 0,
+    val failed: Int = 0,
+    /**
+     * Changed lists the chapters (by idx) whose text now differs from the
+     * library's - the ones a chapter re-import would change.
+     */
+    val changed: List<Int> = emptyList(),
+)
+
 /**
  * scareQuotePreviewLineDTO is one quoted line a scare-quote preview asked
  * about or flagged: whether it is flagged now, whether a fresh pass flags

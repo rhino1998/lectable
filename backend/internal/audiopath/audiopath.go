@@ -197,6 +197,19 @@ func EnsureSourceEpubDir(dataDir string) error {
 	return os.MkdirAll(filepath.Join(dataDir, "epubs"), 0o755)
 }
 
+// SourceRawDir holds, for a book imported from a website, each chapter's
+// pages as they were fetched (websource.RawChapter), so the chapter can be
+// cleaned up again by newer import code without fetching it again.
+func SourceRawDir(dataDir, bookID string) string {
+	return filepath.Join(dataDir, "sources", bookID)
+}
+
+// SourceRawFile is one chapter's fetched pages; key is
+// websource.FileKey of the chapter's source id.
+func SourceRawFile(dataDir, bookID, key string) string {
+	return filepath.Join(SourceRawDir(dataDir, bookID), key+".json.gz")
+}
+
 func ImageDir(dataDir, bookID, chapterID string) string {
 	return filepath.Join(dataDir, "images", bookID, chapterID)
 }

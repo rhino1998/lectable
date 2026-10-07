@@ -1587,6 +1587,26 @@ export interface RenameCharacterRequest {
   name: string
 }
 
+export interface ReparseSourceResponse {
+  /**
+   * Reparsed is how many chapters were read again from their stored
+   * pages and written to the book's kept epub.
+   */
+  reparsed: number
+  /**
+   * Missing is how many chapters have no stored pages (imported before
+   * they were kept) and Failed how many stored pages no longer read as a
+   * chapter; both keep what the kept epub had.
+   */
+  missing: number
+  failed: number
+  /**
+   * Changed lists the chapters (by idx) whose text now differs from the
+   * library's - the ones a chapter re-import would change.
+   */
+  changed: number[]
+}
+
 /**
  * scareQuotePreviewLineDTO is one quoted line a scare-quote preview asked
  * about or flagged: whether it is flagged now, whether a fresh pass flags
@@ -3432,6 +3452,22 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleReparseBookSource reads every chapter of a book imported from a
+   * website again from its stored pages - no fetching - with the current
+   * import code, and rewrites the book's kept epub with the results. The
+   * library's chapters are untouched: the answer lists the ones that now
+   * read differently, for re-importing one by one (POST
+   * .../chapters/{idx}/reimport). 409 for a book with no source, no kept
+   * epub of its own, or a check running.
+   */
+  'POST /api/books/{id}/source/reparse': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: ReparseSourceResponse
+    errorCode: never
+  }
+  /**
    * handleSyncBookSource checks a book's source for chapters it doesn't have
    * and appends them, in the background (joining a check already running).
    * 409 for a book that wasn't imported from a website.
@@ -4135,6 +4171,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'PUT /api/books/{id}/setting': 'json',
   'POST /api/books/{id}/setting/derive': 'json',
   'POST /api/books/{id}/source/backfill': 'json',
+  'POST /api/books/{id}/source/reparse': 'json',
   'POST /api/books/{id}/source/sync': 'json',
   'GET /api/books/{id}/speakers': 'json',
   'DELETE /api/books/{id}/speakers': 'none',

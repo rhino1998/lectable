@@ -346,7 +346,7 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	input, imageBytes, err := sourceChapterInput(meta, first)
+	input, imageBytes, err := sourceChapterInput(meta, first.ch)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -367,9 +367,10 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
 	}
-	if err := s.writeSourceEpub(bookID, meta, []*websource.Chapter{first}, true); err != nil {
+	if err := s.writeSourceEpub(bookID, meta, []*websource.Chapter{first.ch}, true); err != nil {
 		log.Printf("source: keeping epub of %s: %v", bookID, err)
 	}
+	s.writeRawChapter(bookID, first)
 	if meta.CoverExt != "" {
 		if err := audiopath.EnsureCoverDir(s.DataDir); err == nil {
 			_ = os.WriteFile(audiopath.CoverFile(s.DataDir, bookID, meta.CoverExt), meta.Cover, 0o644)
@@ -410,34 +411,65 @@ func archiveDate(timestamp string) string {
 	return timestamp
 }
 
+// sourced is a chapter with what it was made from - the pages as fetched,
+// kept beside the book (writeRawChapter) so the chapter can be cleaned up
+// again later without fetching (see source_raw.go).
+type sourced struct {
+	ch  *websource.Chapter
+	raw *websource.RawChapter
+}
+
+// fetchChapter reads one chapter through f, keeping what was fetched.
+func fetchChapter(ctx context.Context, site websource.Source, f websource.Fetcher, ref websource.ChapterRef, via string) (sourced, error) {
+	rec := &websource.Recorder{Inner: f}
+	ch, err := site.Chapter(ctx, rec, ref)
+	if err != nil {
+		return sourced{}, err
+	}
+	return sourced{ch: ch, raw: &websource.RawChapter{Ref: ref, Via: via, FetchedAt: time.Now().Unix(), Fetches: rec.Fetches()}}, nil
+}
+
+// via names how a reader's chapters are read, for RawChapter.Via.
+func (r sourceReader) via() string {
+	if r.archived() {
+		return "wayback"
+	}
+	return "live"
+}
+
 // readChapter fetches one chapter through r. One the live site lists but
 // doesn't serve to the public is looked for in the Wayback Machine before
 // answering ErrLocked (archivedChapter).
-func (s *Server) readChapter(ctx context.Context, r sourceReader, ref websource.ChapterRef) (*websource.Chapter, error) {
-	ch, err := r.site.Chapter(ctx, r.fetch, ref)
+func (s *Server) readChapter(ctx context.Context, r sourceReader, ref websource.ChapterRef) (sourced, error) {
+	got, err := fetchChapter(ctx, r.site, r.fetch, ref, r.via())
 	if errors.Is(err, websource.ErrLocked) {
 		return s.archivedChapter(ctx, r, ref)
 	}
-	return ch, err
+	return got, err
 }
 
 // archivedChapter reads a chapter the live site won't serve from the
 // Wayback Machine: the last copy of its page saved while it was readable.
 // ErrLocked when there is none - and without looking for a chapter the
 // site's own list marks locked, which was never public (early access).
-func (s *Server) archivedChapter(ctx context.Context, r sourceReader, ref websource.ChapterRef) (*websource.Chapter, error) {
+func (s *Server) archivedChapter(ctx context.Context, r sourceReader, ref websource.ChapterRef) (sourced, error) {
 	if r.archived() || !ref.Unlocked {
-		return nil, websource.ErrLocked
+		return sourced{}, websource.ErrLocked
 	}
-	ch, err := s.wayback().ArchivedChapter(ctx, r.site, ref)
+	var got sourced
+	_, err := s.wayback().ArchivedChapter(ctx, ref.URL, func(f websource.Fetcher) (*websource.Chapter, error) {
+		var err error
+		got, err = fetchChapter(ctx, r.site, f, ref, "wayback")
+		return got.ch, err
+	})
 	if err != nil {
 		if !errors.Is(err, websource.ErrLocked) {
 			log.Printf("source: looking for %q in the Wayback Machine: %v", ref.Title, err)
 		}
-		return nil, websource.ErrLocked
+		return sourced{}, websource.ErrLocked
 	}
 	log.Printf("source: %q is locked at %s; read from the Wayback Machine", ref.Title, r.site.Name())
-	return ch, nil
+	return got, nil
 }
 
 // handleSyncBookSource checks a book's source for chapters it doesn't have
@@ -585,7 +617,7 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 		batch := missing[:min(sourceBatch, len(missing))]
 		missing = missing[len(batch):]
 
-		var fetched []*websource.Chapter
+		var fetched []sourced
 		var fetchErr error
 		dropped := 0 // chapters that won't be appended after all
 		for i, ref := range batch {
@@ -610,8 +642,8 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 			if covered {
 				dropped++
 				if n := len(fetched); n > 0 {
-					fetched[n-1].ID += " " + ref.ID
-				} else if err := s.Store.AddLastChapterSourceID(bookID, ref.ID); err != nil {
+					fetched[n-1].ch.ID += " " + ref.ID
+				} else if err := s.addLastChapterSourceID(bookID, ref.ID); err != nil {
 					return added, err
 				}
 				continue
@@ -634,6 +666,7 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 			return added, fetchErr
 		}
 	}
+	s.fetchMissingRaw(ctx, bookID, reader, work)
 	return added, nil
 }
 
@@ -641,38 +674,44 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 // site won't serve it, from the uploaded epub (which may give several
 // chapters for it, or report it covered by ones already given) or the
 // Wayback Machine.
-func (s *Server) readOrFill(ctx context.Context, r sourceReader, ref websource.ChapterRef, fill *epubFill) (chapters []*websource.Chapter, covered bool, err error) {
-	ch, err := r.site.Chapter(ctx, r.fetch, ref)
+func (s *Server) readOrFill(ctx context.Context, r sourceReader, ref websource.ChapterRef, fill *epubFill) (chapters []sourced, covered bool, err error) {
+	got, err := fetchChapter(ctx, r.site, r.fetch, ref, r.via())
 	if err == nil {
-		return []*websource.Chapter{ch}, false, nil
+		return []sourced{got}, false, nil
 	}
 	if !errors.Is(err, websource.ErrLocked) {
 		return nil, false, err
 	}
 	if fill != nil {
 		if filled, ok := fill.take(ref); ok {
-			return filled, len(filled) == 0, nil
+			for _, ch := range filled {
+				// No page to keep: the chapter itself is what it was made from.
+				chapters = append(chapters, sourced{ch: ch, raw: &websource.RawChapter{Ref: ref, Via: "epub", FetchedAt: time.Now().Unix(), Chapter: ch}})
+			}
+			return chapters, len(filled) == 0, nil
 		}
 	}
-	ch, err = s.archivedChapter(ctx, r, ref)
+	got, err = s.archivedChapter(ctx, r, ref)
 	if err != nil {
 		return nil, false, err
 	}
-	return []*websource.Chapter{ch}, false, nil
+	return []sourced{got}, false, nil
 }
 
 // appendSourceChapters parses fetched chapters and adds them to the end of
-// bookID: rows, images, and the kept epub. A chapter's ID is its source
-// id - several, space-separated, when it stands for more than one of the
-// source's chapters.
-func (s *Server) appendSourceChapters(bookID string, meta websource.Meta, chapters []*websource.Chapter) error {
-	inputs := make([]store.ChapterInput, 0, len(chapters))
+// bookID: rows, images, the kept epub, and what each was made from. A
+// chapter's ID is its source id - several, space-separated, when it stands
+// for more than one of the source's chapters.
+func (s *Server) appendSourceChapters(bookID string, meta websource.Meta, fetched []sourced) error {
+	chapters := make([]*websource.Chapter, 0, len(fetched))
+	inputs := make([]store.ChapterInput, 0, len(fetched))
 	var imageBytes [][]byte
-	for _, ch := range chapters {
-		input, chImages, err := sourceChapterInput(meta, ch)
+	for _, f := range fetched {
+		input, chImages, err := sourceChapterInput(meta, f.ch)
 		if err != nil {
 			return err
 		}
+		chapters = append(chapters, f.ch)
 		inputs = append(inputs, input)
 		imageBytes = append(imageBytes, chImages...)
 	}
@@ -685,6 +724,9 @@ func (s *Server) appendSourceChapters(bookID string, meta websource.Meta, chapte
 	// re-import asks for a file.
 	if err := s.writeSourceEpub(bookID, meta, chapters, false); err != nil && !errors.Is(err, websource.ErrForeignEpub) {
 		log.Printf("source: adding to the epub of %s: %v", bookID, err)
+	}
+	for _, f := range fetched {
+		s.writeRawChapter(bookID, f)
 	}
 	return nil
 }

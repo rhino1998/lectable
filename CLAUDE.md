@@ -234,7 +234,9 @@ client, not a browser.)
   database, see `backend/CLAUDE.md`'s `internal/dbbackup`),
   `covers/<bookID>.<ext>`, `epubs/<bookID>.epub` (the source epub, kept for
   single-chapter re-import; for a book imported from a website, an epub
-  written from the fetched chapters and added to as new ones arrive), `exports/<bookID>/<exportID>.epub` + `.json`
+  written from the fetched chapters and added to as new ones arrive), `sources/<bookID>/<chapter>.json.gz` (for a
+  book imported from a website, each chapter's pages as fetched, so it can
+  be re-read by newer import code without fetching again), `exports/<bookID>/<exportID>.epub` + `.json`
   (built book exports - EPUB 3 with read-aloud; a whole-book one also
   restores the book into another library when uploaded there, see
   `backend/CLAUDE.md`'s `internal/bookexport`), `voice-refs/<presetID>.wav`,

@@ -215,15 +215,16 @@ func (w *Wayback) Snapshots(ctx context.Context, pageURL string) ([]string, erro
 }
 
 // ArchivedChapter reads a chapter the live site won't serve from the
-// newest archived copy of its page that src can read as a chapter - the
-// last one saved while it was public. ErrLocked if the archive has none.
-func (w *Wayback) ArchivedChapter(ctx context.Context, src Source, ref ChapterRef) (*Chapter, error) {
-	times, err := w.Snapshots(ctx, ref.URL)
+// newest archived copy of its page that read can make a chapter of - the
+// last one saved while it was public. read is given a fetcher for each
+// copy in turn. ErrLocked if the archive has none that reads.
+func (w *Wayback) ArchivedChapter(ctx context.Context, pageURL string, read func(f Fetcher) (*Chapter, error)) (*Chapter, error) {
+	times, err := w.Snapshots(ctx, pageURL)
 	if err != nil {
 		return nil, err
 	}
 	for _, ts := range times {
-		ch, err := src.Chapter(ctx, w.At(ts), ref)
+		ch, err := read(w.At(ts))
 		if err == nil {
 			return ch, nil
 		}

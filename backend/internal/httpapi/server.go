@@ -174,6 +174,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/import-url", s.handleImportBookURL)
 	mux.HandleFunc("POST /api/books/{id}/source/sync", s.handleSyncBookSource)
 	mux.HandleFunc("POST /api/books/{id}/source/backfill", s.handleBackfillBookSource)
+	mux.HandleFunc("POST /api/books/{id}/source/reparse", s.handleReparseBookSource)
 	mux.HandleFunc("GET /api/books", s.handleListBooks)
 	mux.HandleFunc("GET /api/books/{id}", s.handleGetBook)
 	mux.HandleFunc("DELETE /api/books/{id}", s.handleDeleteBook)

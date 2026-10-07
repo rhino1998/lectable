@@ -765,6 +765,7 @@ func (s *Server) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(audiopath.CoverFile(s.DataDir, id, b.CoverExt))
 	}
 	_ = os.Remove(audiopath.SourceEpubFile(s.DataDir, id))
+	_ = os.RemoveAll(audiopath.SourceRawDir(s.DataDir, id))
 	if s.Exports != nil {
 		_ = s.Exports.DeleteBook(id)
 	}

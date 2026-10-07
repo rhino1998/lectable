@@ -1198,6 +1198,20 @@ interface LectableApi {
     ): QueuedResponseDto
 
     /**
+     * handleReparseBookSource reads every chapter of a book imported from a
+     * website again from its stored pages - no fetching - with the current
+     * import code, and rewrites the book's kept epub with the results. The
+     * library's chapters are untouched: the answer lists the ones that now
+     * read differently, for re-importing one by one (POST
+     * .../chapters/{idx}/reimport). 409 for a book with no source, no kept
+     * epub of its own, or a check running.
+     */
+    @POST("api/books/{id}/source/reparse")
+    suspend fun reparseBookSource(
+        @Path("id") id: String,
+    ): ReparseSourceResponseDto
+
+    /**
      * handleSyncBookSource checks a book's source for chapters it doesn't have
      * and appends them, in the background (joining a check already running).
      * 409 for a book that wasn't imported from a website.

@@ -8,10 +8,12 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/epub"
 	"github.com/rhino1998/lectable/backend/internal/wanderinginn/wanderinginntest"
 	"github.com/rhino1998/lectable/backend/internal/websource"
@@ -349,5 +351,100 @@ func TestImportArchiveOrgItem(t *testing.T) {
 			t.Errorf("%s: %d, want %d", link, resp.StatusCode, want)
 		}
 		resp.Body.Close()
+	}
+}
+
+// TestReparseFromStoredPages: a chapter's page is kept as fetched, so it
+// can be read again - by different import code - with the site gone, and
+// a chapter that now reads differently re-imported from the result.
+func TestReparseFromStoredPages(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	inn := wanderinginntest.New(t)
+	srv.Sources = []websource.Source{inn.Source()}
+	inn.AddChapter(1, "rw1-00", "1.00", `<p>The inn was dark.</p>`)
+	second := inn.AddChapter(1, "rw1-01", "1.01", `<p>Second chapter.</p><p><img src="/wp-content/cover.png" alt="Map"></p>`)
+
+	var created sourceTestBook
+	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: "wanderinginn.com"}, &created); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("import: %d", resp.StatusCode)
+	}
+	book := waitSourceSynced(t, ts.URL, created.ID)
+	if book.ChapterCount != 2 {
+		t.Fatalf("%d chapters, source %+v", book.ChapterCount, book.Source)
+	}
+	rawPath := audiopath.SourceRawFile(srv.DataDir, book.ID, websource.FileKey(second))
+	raw, err := websource.ReadRaw(rawPath)
+	if err != nil {
+		t.Fatalf("the chapter's fetched pages weren't kept: %v", err)
+	}
+	// The page whole, navigation and all, and the image it embeds.
+	if raw.Via != "live" || len(raw.Fetches) != 2 || !strings.Contains(string(raw.Fetches[0].Body), "Next Chapter") || raw.Fetches[1].MediaType != "image/png" {
+		t.Fatalf("raw = via %q, %d fetches", raw.Via, len(raw.Fetches))
+	}
+
+	// A chapter imported before pages were kept gets its own at the next
+	// check, without the chapter changing.
+	firstPath := audiopath.SourceRawFile(srv.DataDir, book.ID, "2017_03_01_rw1-00")
+	if err := os.Remove(firstPath); err != nil {
+		t.Fatal(err)
+	}
+	ch0, _ := s.GetChapterByIdx(book.ID, 0)
+	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/sync", nil, nil).Body.Close()
+	waitSourceSynced(t, ts.URL, book.ID)
+	if _, err := websource.ReadRaw(firstPath); err != nil {
+		t.Errorf("the check didn't fetch the missing pages: %v", err)
+	}
+	if again, _ := s.GetChapterByIdx(book.ID, 0); again.ID != ch0.ID {
+		t.Errorf("fetching its pages replaced the chapter")
+	}
+
+	// From here on there is no site to ask.
+	inn.Server.Close()
+
+	var first reparseSourceResponse
+	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/reparse", nil, &first); resp.StatusCode != http.StatusOK {
+		t.Fatalf("reparse: %d", resp.StatusCode)
+	}
+	if first.Reparsed != 2 || first.Missing != 0 || first.Failed != 0 || len(first.Changed) != 0 {
+		t.Fatalf("reparse of unchanged pages = %+v", first)
+	}
+
+	// Stand in for a change to the import code: the stored page reads
+	// differently now.
+	raw.Fetches[0].Body = bytes.Replace(raw.Fetches[0].Body, []byte("Second chapter."), []byte("Second chapter, read anew."), 1)
+	if err := websource.WriteRaw(rawPath, raw); err != nil {
+		t.Fatal(err)
+	}
+	var again reparseSourceResponse
+	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/reparse", nil, &again)
+	if again.Reparsed != 2 || len(again.Changed) != 1 || again.Changed[0] != 1 {
+		t.Fatalf("reparse after the change = %+v", again)
+	}
+	// Nothing the reader sees has changed yet.
+	if _, texts := chapterTexts(t, s, book.ID, 1); texts[len(texts)-1] != "Second chapter." {
+		t.Errorf("reparse alone changed the chapter: %q", texts)
+	}
+	resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/chapters/1/reimport", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reimport: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if _, texts := chapterTexts(t, s, book.ID, 1); texts[len(texts)-1] != "Second chapter, read anew." {
+		t.Errorf("chapter after reimport = %q", texts)
+	}
+	ch1, _ := s.GetChapterByIdx(book.ID, 1)
+	if imgs, _ := s.ListImages(ch1.ID); len(imgs) != 1 {
+		t.Errorf("the chapter's image didn't survive: %d", len(imgs))
+	}
+	var settled reparseSourceResponse
+	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/reparse", nil, &settled)
+	if len(settled.Changed) != 0 {
+		t.Errorf("still changed after reimport: %+v", settled)
+	}
+
+	// Deleting the book takes its stored pages with it.
+	doJSON(t, http.MethodDelete, ts.URL+"/api/books/"+book.ID, nil, nil).Body.Close()
+	if _, err := os.Stat(audiopath.SourceRawDir(srv.DataDir, book.ID)); !os.IsNotExist(err) {
+		t.Errorf("stored pages left behind: %v", err)
 	}
 }

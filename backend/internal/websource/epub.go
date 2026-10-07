@@ -100,6 +100,18 @@ func FileKey(id string) string {
 // skipped. prev's chapter and image entries are copied as they are, not
 // recompressed.
 func WriteEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter) error {
+	return writeEPUB(w, meta, prev, chapters, false)
+}
+
+// RewriteEPUB writes prev again with each of chapters in place of the
+// chapter of prev that has its id - for when chapters have been cleaned up
+// afresh from their stored pages. Chapters prev doesn't have are ignored;
+// its other chapters, cover and details are kept.
+func RewriteEPUB(w io.Writer, prev *zip.Reader, chapters []*Chapter) error {
+	return writeEPUB(w, Meta{}, prev, chapters, true)
+}
+
+func writeEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter, replace bool) error {
 	idx := epubIndex{Kind: meta.Kind, WorkID: meta.WorkID, URL: meta.URL, Title: meta.Title, Author: meta.Author}
 	prevFiles := map[string]*zip.File{}
 	have := map[string]bool{}
@@ -113,6 +125,9 @@ func WriteEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter) er
 		}
 		idx.Chapters = old.Chapters
 		idx.CoverFile = old.CoverFile
+		if replace {
+			idx.Kind, idx.WorkID, idx.URL, idx.Title, idx.Author = old.Kind, old.WorkID, old.URL, old.Title, old.Author
+		}
 		for _, c := range old.Chapters {
 			have[c.ID] = true
 		}
@@ -150,7 +165,27 @@ func WriteEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter) er
 			idx.CoverFile = ""
 		}
 	}
-	for _, c := range idx.Chapters {
+	fresh := map[string]*Chapter{}
+	if replace {
+		for _, ch := range chapters {
+			fresh[ch.ID] = ch
+		}
+	}
+	for i, c := range idx.Chapters {
+		if ch := fresh[c.ID]; ch != nil {
+			ic := indexChapter{ID: ch.ID, Title: ch.Title, File: c.file()}
+			if err := write(contentDir+chapterDir+ic.File+".xhtml", chapterXHTML(ch)); err != nil {
+				return err
+			}
+			for _, img := range ch.Images {
+				if err := write(contentDir+imageDir+img.Name, img.Data); err != nil {
+					return err
+				}
+				ic.Images = append(ic.Images, img.Name)
+			}
+			idx.Chapters[i] = ic
+			continue
+		}
 		if err := copyEntry(zw, prevFiles, contentDir+chapterDir+c.file()+".xhtml"); err != nil {
 			return fmt.Errorf("chapter %q: %w", c.Title, err)
 		}
@@ -161,7 +196,7 @@ func WriteEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter) er
 		}
 	}
 	for _, ch := range chapters {
-		if have[ch.ID] {
+		if have[ch.ID] || replace {
 			continue
 		}
 		have[ch.ID] = true

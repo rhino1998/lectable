@@ -84,6 +84,32 @@ func (s *SQLiteStore) ChapterSourceIDs(bookID string) ([]string, error) {
 	return out, rows.Err()
 }
 
+// SourcedChapter is one chapter of a book imported from a website.
+type SourcedChapter struct {
+	Idx      int
+	Title    string
+	SourceID string // as stored: several ids space-separated, see ChapterSourceIDs
+}
+
+// SourcedChapters lists bookID's chapters that came from its source, in
+// chapter order.
+func (s *SQLiteStore) SourcedChapters(bookID string) ([]SourcedChapter, error) {
+	rows, err := s.db.Query(`SELECT idx, title, source_id FROM chapters WHERE book_id = ? AND source_id <> '' ORDER BY idx`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourcedChapter
+	for rows.Next() {
+		var c SourcedChapter
+		if err := rows.Scan(&c.Idx, &c.Title, &c.SourceID); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // AddLastChapterSourceID records that bookID's last chapter also stands
 // for the source's chapter sourceID (see ChapterSourceIDs).
 func (s *SQLiteStore) AddLastChapterSourceID(bookID, sourceID string) error {
