@@ -72,6 +72,14 @@ func TestImportBookURL(t *testing.T) {
 	if resp.StatusCode != http.StatusCreated {
 		t.Fatalf("import: %d", resp.StatusCode)
 	}
+	// An import by link starts no narration of its own - only the task
+	// fetching the rest of its chapters.
+	inFlight, queued := srv.Jobs.Snapshot()
+	for _, task := range append(inFlight, queued...) {
+		if task.Kind != "pipeline_source_sync" {
+			t.Errorf("import queued a %s task", task.Kind)
+		}
+	}
 	if created.Title != "The Long Road" || created.Author != "A. Writer" || created.CoverURL == "" {
 		t.Errorf("created = %+v", created)
 	}

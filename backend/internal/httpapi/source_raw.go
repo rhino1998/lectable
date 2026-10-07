@@ -152,6 +152,10 @@ func (s *Server) handleReparseBookSource(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	// Holds off checks for new chapters, which add to the same epub.
+	if queued, running := s.Jobs.BulkState(bookID, sourceSyncJobKey); queued || running {
+		writeError(w, http.StatusConflict, "chapters are being fetched for this book right now - try again when that finishes")
+		return
+	}
 	if _, running := s.sourceSyncs.LoadOrStore(bookID, struct{}{}); running {
 		writeError(w, http.StatusConflict, "chapters are being fetched for this book right now - try again when that finishes")
 		return

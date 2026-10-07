@@ -240,7 +240,7 @@ func (s *Server) handleBackfillBookSource(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusConflict, "this server can't read the site this book came from ("+src.Kind+")")
 		return
 	}
-	if _, running := s.sourceSyncs.Load(bookID); running {
+	if s.sourceBusy(bookID) {
 		writeError(w, http.StatusConflict, "chapters are being fetched for this book right now - try again when that finishes")
 		return
 	}

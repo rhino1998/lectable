@@ -17,6 +17,7 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/epub"
+	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/royalroad"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/wanderinginn"
@@ -237,7 +238,7 @@ func (s *Server) bookSource(bookID string) (*bookSourceDTO, error) {
 	if err != nil || src == nil {
 		return nil, err
 	}
-	_, syncing := s.sourceSyncs.Load(bookID)
+	syncing := s.sourceBusy(bookID)
 	name := src.Kind
 	if r, _, ok := s.readerForBook(src); ok {
 		name = r.name()
@@ -258,7 +259,8 @@ func (s *Server) bookSource(bookID string) (*bookSourceDTO, error) {
 // Royal Road fiction, a volume of The Wandering Inn, either of them as a
 // Wayback Machine link - picking the site by the link: its first chapter
 // now, the rest in the background (the book's source.syncing /
-// remoteChapters show the progress). 409 book_exists if the library
+// remoteChapters show the progress). Nothing is generated for it until
+// it is read or asked for. 409 book_exists if the library
 // already has that work - check it for new chapters instead. A link to an
 // archive.org item instead downloads its epub and imports that, as an
 // upload would.
@@ -386,16 +388,15 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 	if len(work.Chapters) > 1 {
 		s.startSourceSync(bookID, nil)
 	}
-	summary, chapters, err := s.buildBookSummary(*b)
+	summary, _, err := s.buildBookSummary(*b)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if len(chapters) > 0 {
-		// As for an uploaded book - see handleUploadBook.
-		s.Jobs.EnqueueSample(bookID, chapters[0].ID, chapters[0].Idx, 1000)
-		s.Jobs.EnqueueLengthEstimate(bookID, chapters[0].ID, 300)
-	}
+	// Unlike an upload, nothing is queued for the first chapter - no sample
+	// narration, no length estimate: links come in by the handful (a
+	// serial's volumes one after another), and each would otherwise start
+	// rendering at once. The book generates when it is read or asked to.
 	writeJSON(w, http.StatusCreated, summary)
 }
 
@@ -473,7 +474,8 @@ func (s *Server) archivedChapter(ctx context.Context, r sourceReader, ref websou
 }
 
 // handleSyncBookSource checks a book's source for chapters it doesn't have
-// and appends them, in the background (joining a check already running).
+// and appends them, as a job-queue task (joining a check already queued or
+// running - see startSourceSync).
 // 409 for a book that wasn't imported from a website.
 func (s *Server) handleSyncBookSource(w http.ResponseWriter, r *http.Request) {
 	bookID := r.PathValue("id")
@@ -517,30 +519,61 @@ func writeSourceError(w http.ResponseWriter, site websource.Source, err error, s
 	writeError(w, status, err.Error())
 }
 
-// startSourceSync runs syncBookSource for bookID in the background, unless
-// one is already running (false). fill, if not nil, is an uploaded epub to
-// take chapters from where the site won't serve them.
+// sourceSyncJobKey is the jobs.BulkGroup.Key of a book's check for new
+// chapters (startSourceSync).
+const sourceSyncJobKey = "source_sync"
+
+// sourceBusy reports whether bookID's check for new chapters is queued or
+// running, or its stored pages are being re-read (which holds sourceSyncs
+// too).
+func (s *Server) sourceBusy(bookID string) bool {
+	if _, held := s.sourceSyncs.Load(bookID); held {
+		return true
+	}
+	queued, running := s.Jobs.BulkState(bookID, sourceSyncJobKey)
+	return queued || running
+}
+
+// startSourceSync queues syncBookSource for bookID as a job-queue task (a
+// Jobs-page row, Kind "pipeline_source_sync"), unless one is already
+// queued or running (false). Cancelling the row stops the check, keeping
+// the chapters it has added. fill, if not nil, is an uploaded epub to take
+// chapters from where the site won't serve them.
 func (s *Server) startSourceSync(bookID string, fill *epubFill) bool {
-	if _, running := s.sourceSyncs.LoadOrStore(bookID, struct{}{}); running {
+	if s.sourceBusy(bookID) {
 		return false
 	}
-	// A write, so the book's live topics show it syncing (and drop the
-	// last check's error) right away.
+	label := "New chapters"
 	if src, err := s.Store.GetBookSource(bookID); err == nil && src != nil {
-		src.Error = ""
-		_ = s.Store.SetBookSource(bookID, *src)
+		if r, _, ok := s.readerForBook(src); ok {
+			label = "New chapters from " + r.name()
+		}
 	}
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), sourceSyncTimeout)
+	if fill != nil {
+		label += " (with an epub)"
+	}
+	s.Jobs.EnqueueBulk(bookID, jobs.BulkGroup{
+		Kind:  "pipeline_source_sync",
+		Key:   sourceSyncJobKey,
+		Label: label,
+		Tier:  jobs.TierNormal,
+	}, func(ctx context.Context, _ func() int) error {
+		// Held while it runs, against a re-read of the stored pages.
+		if _, held := s.sourceSyncs.LoadOrStore(bookID, struct{}{}); held {
+			return errors.New("this book's stored pages are being re-read")
+		}
+		ctx, cancel := context.WithTimeout(ctx, sourceSyncTimeout)
 		defer cancel()
 		added, err := s.syncBookSource(ctx, bookID, fill)
+		// A cancelled check isn't a failed one.
+		if errors.Is(err, context.Canceled) {
+			err = nil
+		}
 		if err != nil {
 			log.Printf("source: checking %s stopped after %d new chapters: %v", bookID, added, err)
 		} else if added > 0 {
 			log.Printf("source: added %d chapters to %s", added, bookID)
 		}
-		// Cleared before the final write, so the rebuild that write
-		// triggers already shows the check as over.
 		s.sourceSyncs.Delete(bookID)
 		if src, gerr := s.Store.GetBookSource(bookID); gerr == nil && src != nil {
 			src.CheckedAt = time.Now().Unix()
@@ -550,7 +583,14 @@ func (s *Server) startSourceSync(bookID string, fill *epubFill) bool {
 			}
 			_ = s.Store.SetBookSource(bookID, *src)
 		}
-	}()
+		return nil
+	})
+	// A write, so the book's live topics show it syncing (and drop the
+	// last check's error) right away.
+	if src, err := s.Store.GetBookSource(bookID); err == nil && src != nil {
+		src.Error = ""
+		_ = s.Store.SetBookSource(bookID, *src)
+	}
 	return true
 }
 

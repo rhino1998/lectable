@@ -15,8 +15,9 @@ import (
 
 // An archive.org item (archive.org/details/<item>) is a folder of files.
 // One with a freely downloadable epub can be imported by its link: the
-// epub is downloaded and imported exactly as if it had been uploaded - an
-// ordinary book, with no source to check for more chapters. Items that are
+// epub is downloaded and imported as if it had been uploaded - an ordinary
+// book, with no source to check for more chapters - except that, as for
+// any import by link, nothing is generated for it yet. Items that are
 // only lent (their epub encrypted) have nothing to download.
 
 // maxArchiveEpub bounds a downloaded epub.
@@ -112,7 +113,7 @@ func (s *Server) importArchiveOrgItem(ctx context.Context, item archiveItem) (bo
 	if title == "" {
 		title = strings.TrimSuffix(name, ".epub")
 	}
-	return s.importEpub(bytes.NewReader(data), int64(len(data)), title, "")
+	return s.importEpub(bytes.NewReader(data), int64(len(data)), title, "", false)
 }
 
 // escapePath escapes a file name that may hold directories.
