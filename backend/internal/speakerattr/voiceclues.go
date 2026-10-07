@@ -1,6 +1,7 @@
 package speakerattr
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -141,6 +142,67 @@ func VoiceClues(tags, paragraphs, names []string, pronouns string, limit int) []
 			dup[c.text] = true
 			out = append(out, c.text)
 		}
+	}
+	return out
+}
+
+// SpokenLine is one of a character's own lines and the dialogue line it
+// answers ("" when it answers none) - store.SpokenLine as plain values.
+type SpokenLine struct {
+	Text  string
+	Asked string
+}
+
+// ageNumber is a number as an age is said or printed.
+const ageNumber = `(?:\d{1,4}|(?:(?:an?|one|two|three|four|five|six|seven|eight|nine)\s+(?:hundred|thousand)(?:\s+and)?[\s,]+)*(?:(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[-\s](?:one|two|three|four|five|six|seven|eight|nine))?|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|two|three|four|five|six|seven|eight|nine)|(?:an?|one|two|three|four|five|six|seven|eight|nine)\s+(?:hundred|thousand))`
+
+var (
+	// ageQuestion is someone asking a person their age.
+	ageQuestion = regexp.MustCompile(`(?i)\bhow old (?:are|were) (?:you|ya)\b|\bhow old you are\b|\bwhat(?:['’]s| is) your age\b|\byour age\?`)
+	// selfAge is a speaker giving their own age: "I'm seventy-six, this
+	// past spring", "I am 19 years old". The number must end the clause
+	// or be followed by "years" - "I'm twenty feet from the door" isn't
+	// one - and "I was twelve" is an age they no longer are.
+	selfAge = regexp.MustCompile(`(?i)\bI(?:['’]m| am| turn(?:ed)?|['’]ll be| will be)\s+(?:(?:only|just|barely|nearly|almost|over|past)\s+)?` + ageNumber + `(?:\s+years?\b|\s+(?:this|next|last)\b|\s*(?:[,.;!?…”"]|$))`)
+)
+
+// maxAskedChars caps the question shown beside a stated age.
+const maxAskedChars = 160
+
+// StatedAges returns up to limit of lines in which the character gives
+// their own age, each with the line it answered: replies to someone
+// asking how old they are first, then lines stating it unasked
+// (selfAge). CharacterizeVoice shows them as "Their age, in their own
+// words". Yen's only stated age in four books is her answer "I'm
+// seventy-six, this past spring" - one of 393 lines, so rarely in the
+// quote sample, naming nobody, so found by no search for her name, and
+// dialogue, which VoiceClues doesn't read for ages. She was cast as a
+// high-pitched young woman.
+func StatedAges(lines []SpokenLine, limit int) []string {
+	var asked, unasked []string
+	dup := map[string]bool{}
+	for _, l := range lines {
+		isAnswer := ageQuestion.MatchString(l.Asked)
+		if !isAnswer && !selfAge.MatchString(l.Text) {
+			continue
+		}
+		clue := oneLine(l.Text)
+		if l.Asked != "" {
+			clue = fmt.Sprintf("%s [answering: %s]", clue, oneLine(truncate(l.Asked, maxAskedChars)))
+		}
+		if dup[clue] {
+			continue
+		}
+		dup[clue] = true
+		if isAnswer {
+			asked = append(asked, clue)
+		} else {
+			unasked = append(unasked, clue)
+		}
+	}
+	out := append(asked, unasked...)
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out
 }

@@ -69,6 +69,8 @@ const (
 	lookupResults = 6
 	// lookupSentenceChars caps each one.
 	lookupSentenceChars = 400
+	// lookupReplyChars caps the reply shown after a matching question.
+	lookupReplyChars = 200
 	// lookupPool is how many index matches are read for the whole-word
 	// check to keep lookupResults of.
 	lookupPool = 200
@@ -86,6 +88,9 @@ const (
 	// speakerattr.TraitStatements to choose castingTraits from.
 	castingTraitPool = 400
 	castingTraits    = 14
+	// castingStatedAges is how many of their own lines giving their age
+	// (speakerattr.StatedAges) it reads.
+	castingStatedAges = 3
 )
 
 // lookupExcerpts answers one of the casting call's lookups
@@ -96,7 +101,9 @@ const (
 // matches substrings ("age" finds "page", "origin" "original"), which is
 // what the first version returned, so each hit is checked again here; the
 // excerpt is cut around the last term, the specific word rather than the
-// name.
+// name. A question that matches is shown with the line answering it
+// (store.LookupMatch.Reply): "how old are you, Yen?" matches Yen + old,
+// and the age is in her answer.
 func (s *Server) lookupExcerpts(bookIDs, names, terms []string) ([]string, error) {
 	named := false
 	for _, t := range terms {
@@ -121,14 +128,27 @@ func (s *Server) lookupExcerpts(bookIDs, names, terms []string) ([]string, error
 	for _, f := range found {
 		whole := true
 		for _, w := range words {
-			if !w.MatchString(f) {
+			if !w.MatchString(f.Text) {
 				whole = false
 				break
 			}
 		}
-		if whole {
-			kept = append(kept, speakerattr.Excerpt(f, terms[len(terms)-1], lookupSentenceChars))
+		if !whole {
+			continue
 		}
+		excerpt := speakerattr.Excerpt(f.Text, terms[len(terms)-1], lookupSentenceChars)
+		if f.Reply != "" && strings.Contains(excerpt, "?") {
+			who := f.ReplySpeaker
+			if who == "" || who == "Unknown" {
+				who = "the reply"
+			}
+			reply := strings.Join(strings.Fields(f.Reply), " ")
+			if len(reply) > lookupReplyChars {
+				reply = reply[:lookupReplyChars] + "..."
+			}
+			excerpt += fmt.Sprintf(" [%s: %s]", who, reply)
+		}
+		kept = append(kept, excerpt)
 	}
 	if len(kept) <= lookupResults {
 		return kept, nil
@@ -179,13 +199,19 @@ func (s *Server) castCharacter(ctx context.Context, book *store.Book, char store
 	names := append([]string{char.Name}, char.Aliases...)
 	setting := s.bookSetting(ctx, book)
 
-	lines, err := s.Store.ParagraphsForSpeaker(bookIDs, char.Name)
+	lines, err := s.Store.SpokenLinesForBooks(bookIDs, char.Name)
 	if err != nil {
 		return casting{}, fmt.Errorf("gather lines: %w", err)
 	}
 	evidence.Idioms = speakerattr.IdiomCounts{}
-	for _, l := range lines {
+	spoken := make([]speakerattr.SpokenLine, len(lines))
+	for i, l := range lines {
 		evidence.Idioms.Add(l.Text)
+		spoken[i] = speakerattr.SpokenLine{Text: l.Text, Asked: l.Asked}
+	}
+	if !char.IsRole {
+		// A role's lines are several people's.
+		evidence.StatedAges = speakerattr.StatedAges(spoken, castingStatedAges)
 	}
 
 	costars, err := s.characterizedCostars(bookIDs, char)

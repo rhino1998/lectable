@@ -53,3 +53,28 @@ func TestGenderContradicts(t *testing.T) {
 		}
 	}
 }
+
+func TestStatedAges(t *testing.T) {
+	lines := []SpokenLine{
+		{Text: "“I am nineteen years old and I know my own mind.”"},
+		{Text: "“I’m twenty feet from the door.”"},
+		{Text: "“I was twelve when the war came.”"},
+		{Text: "“I’m one of them.”"},
+		{Text: "“I…I’m seventy-six, this past spring,”", Asked: "“Look, how old are you, Yen?”"},
+		{Text: "“Old enough.”", Asked: "“And how old are you?”"},
+		{Text: "“I'm fifty-fifty on that.”", Asked: "“Will it hold?”"},
+		{Text: "“I’m a hundred and four.”"},
+	}
+	want := []string{
+		"“I…I’m seventy-six, this past spring,” [answering: “Look, how old are you, Yen?”]",
+		"“Old enough.” [answering: “And how old are you?”]",
+		"“I am nineteen years old and I know my own mind.”",
+		"“I’m a hundred and four.”",
+	}
+	if got := StatedAges(lines, 8); !reflect.DeepEqual(got, want) {
+		t.Fatalf("StatedAges = %q, want %q", got, want)
+	}
+	if got := StatedAges(lines, 1); !reflect.DeepEqual(got, want[:1]) {
+		t.Fatalf("limit 1 = %q", got)
+	}
+}

@@ -421,6 +421,26 @@ retry is expected to succeed.
      rest aside (`castingLines`): shown "mixed: British, General
      American", Jax came back with "a mixed British-General American
      accent".
+     **Stated ages** (2026-10-06, `StatedAges`, `voiceclues.go`): the user
+     turn lists up to 3 of the character's own lines giving their age
+     ("Their age, in their own words"), each with the line it answered -
+     replies to someone asking how old they are (`ageQuestion`, whatever
+     the reply says: "Old enough that I am unsure of your calendars"),
+     then lines stating it unasked (`selfAge`: "I'm nineteen,"; the number
+     must end its clause or be followed by "years", and "I was twelve" is
+     left out). Read from every line they speak with the dialogue line
+     before it (`Store.SpokenLinesForBooks`); roles get none. Underverse's
+     Yen says "I'm seventy-six, this past spring" once in 393 lines:
+     rarely in the quote sample, naming nobody, so no search for her name
+     found it, and dialogue, which voice clues don't read for ages - she
+     was cast "a young woman... high pitch... small, ethereal elf" and
+     sounded like a child. 7 lines match across the library (76839 lines
+     of dialogue), all real ages. The prompt places a long-lived kind by
+     their life among their own people rather than the number (an elf of
+     76 serving beside younger adults is an adult in her prime; the
+     400-year-old Hans kept coming out "elderly"), gives a grown adult an
+     adult's pitch unless the material describes a high one, and takes
+     size from the material, never from the kind's name.
      **Retrieved evidence** (2026-10-04, `httpapi.castCharacter`): the
      material is found by search, not only sampled.
      - *First mentions*: the first 3 narration paragraphs naming the
@@ -488,7 +508,10 @@ the turn. Three designs, each on the same 12 characters at temperature 0:
   words in one paragraph (`httpapi.lookupExcerpts` over
   `Store.ParagraphsContainingAll`; the index matches substrings, so hits
   are re-checked), then the ordinary casting call with a "Searched in the
-  book" section. Two runs: Anders Danish in both (British in every run
+  book" section. A dialogue hit that is a question is shown with the
+  next line of dialogue when someone else speaks it within 3 paragraphs
+  (`store.LookupMatch.Reply`, "[Yen: I'm seventy-six...]"): the question
+  holds the name and the word, the answer neither. Two runs: Anders Danish in both (British in every run
   without lookups), Scylla Greek, Steve Northern, Jonas, Fritz, Bert,
   Ingrid and Zac as without; 2 of 12 changed between runs (4 of 12
   without). Jax came out General American in one of the two, and Hans

@@ -149,14 +149,31 @@ func (s *SQLiteStore) NarrationMatching(bookIDs []string, phrases []string, limi
 // before spreading its sample.
 const lookupPool = 200
 
+// LookupMatch is one paragraph ParagraphsContainingAll found.
+type LookupMatch struct {
+	Text string
+	// Reply is the next dialogue line after a dialogue Text, when someone
+	// else speaks it within lookupReplyReach paragraphs ("" otherwise),
+	// and ReplySpeaker who ("" when unattributed).
+	Reply        string
+	ReplySpeaker string
+}
+
+// lookupReplyReach is how many paragraphs past a dialogue match its Reply
+// may sit: the speech tag between ("I asked, and Yen met my eyes.") is
+// its own paragraph.
+const lookupReplyReach = 3
+
 // ParagraphsContainingAll returns up to limit paragraphs (narration and
 // dialogue alike) across bookIDs whose text contains every one of terms,
 // evenly spread over the matches in reading order - the search behind
 // characterization's lookups (speakerattr.CastingOptions.Lookup). Each
 // term is a substring match on the paragraphs_fts trigram index, in any
 // case; terms under three characters can't be asked and are skipped, and
-// with none left nothing is returned.
-func (s *SQLiteStore) ParagraphsContainingAll(bookIDs []string, terms []string, limit int) ([]string, error) {
+// with none left nothing is returned. A dialogue match carries the line
+// answering it (LookupMatch.Reply): "how old are you, Yen?" names her
+// and holds the word searched for, and her answer does neither.
+func (s *SQLiteStore) ParagraphsContainingAll(bookIDs []string, terms []string, limit int) ([]LookupMatch, error) {
 	var quoted []string
 	for _, t := range terms {
 		if utf8.RuneCountInString(t) >= ftsMinQueryRunes {
@@ -166,26 +183,30 @@ func (s *SQLiteStore) ParagraphsContainingAll(bookIDs []string, terms []string, 
 	if len(quoted) == 0 {
 		return nil, nil
 	}
-	var all []string
+	var all []LookupMatch
 	for _, bookID := range bookIDs {
 		rows, err := s.db.Query(`
-			SELECT p.content
+			SELECT p.content, COALESCE(r.content, ''), COALESCE(r.speaker, '')
 			FROM paragraphs_fts f
 			JOIN paragraphs p ON p.rowid = f.rowid
 			JOIN chapters c ON c.id = p.chapter_id
+			LEFT JOIN paragraphs r ON p.is_quote AND r.speaker != p.speaker AND r.id = (
+				SELECT q.id FROM paragraphs q
+				WHERE q.chapter_id = p.chapter_id AND q.idx > p.idx AND q.idx <= p.idx + ? AND q.is_quote
+				ORDER BY q.idx ASC LIMIT 1)
 			WHERE f.paragraphs_fts MATCH ? AND c.book_id = ?
 			ORDER BY c.idx ASC, p.idx ASC
-			LIMIT ?`, strings.Join(quoted, " AND "), bookID, lookupPool)
+			LIMIT ?`, lookupReplyReach, strings.Join(quoted, " AND "), bookID, lookupPool)
 		if err != nil {
 			return nil, err
 		}
 		for rows.Next() {
-			var text string
-			if err := rows.Scan(&text); err != nil {
+			var m LookupMatch
+			if err := rows.Scan(&m.Text, &m.Reply, &m.ReplySpeaker); err != nil {
 				rows.Close()
 				return nil, err
 			}
-			all = append(all, text)
+			all = append(all, m)
 		}
 		err = rows.Err()
 		rows.Close()

@@ -87,7 +87,7 @@ type Store interface {
 	ParagraphAudioStatuses(paragraphIDs []string, voiceID string) (map[string]AudioState, error)
 	ParagraphSFXStates(paragraphIDs []string) (map[string]SFXState, error)
 	NarrationMatching(bookIDs []string, phrases []string, limit int) ([]string, error)
-	ParagraphsContainingAll(bookIDs []string, terms []string, limit int) ([]string, error)
+	ParagraphsContainingAll(bookIDs []string, terms []string, limit int) ([]LookupMatch, error)
 	ParagraphsForSpeaker(bookIDs []string, name string) ([]SpeakerAppearance, error)
 	PruneSyncTree(version string) error
 	PutSyncTreeNodes(bookID, version string, nodes []SyncTreeNode) error
@@ -147,6 +147,7 @@ type Store interface {
 	SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error
 	SpeakerLineCounts(bookID string) (map[string]int, error)
 	SpeechTagsForBooks(bookIDs []string, characterName string) ([]string, error)
+	SpokenLinesForBooks(bookIDs []string, characterName string) ([]SpokenLine, error)
 	SyncFingerprints(bookID string) (book string, chapters map[int]string, err error)
 	SyncTreeNodes(bookID, version string) (map[int]SyncTreeNode, error)
 	UpdateBookmarkNote(id, note string) error

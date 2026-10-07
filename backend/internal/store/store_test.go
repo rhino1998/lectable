@@ -1830,7 +1830,7 @@ func TestParagraphsContainingAll(t *testing.T) {
 		"Her accent was gone by morning.",
 	)
 	got, err := s.ParagraphsContainingAll([]string{bookID}, []string{"scylla", "accent", "a"}, 10)
-	if err != nil || !slices.Equal(got, []string{"Scylla spoke with a heavy accent."}) {
+	if err != nil || !slices.Equal(got, []LookupMatch{{Text: "Scylla spoke with a heavy accent."}}) {
 		t.Fatalf("ParagraphsContainingAll = %q, %v", got, err)
 	}
 	if got, err := s.ParagraphsContainingAll([]string{bookID}, []string{"Scylla"}, 1); err != nil || len(got) != 1 {
@@ -1838,5 +1838,52 @@ func TestParagraphsContainingAll(t *testing.T) {
 	}
 	if got, err := s.ParagraphsContainingAll([]string{bookID}, []string{"a"}, 10); err != nil || got != nil {
 		t.Fatalf("only short terms = %q, %v", got, err)
+	}
+}
+
+// TestSpokenLinesAndLookupReplies covers the two ways a character's own
+// answer is found: beside each of their lines (SpokenLinesForBooks) and
+// after a matching question (ParagraphsContainingAll).
+func TestSpokenLinesAndLookupReplies(t *testing.T) {
+	s := openTestStore(t)
+	quote := func(text string) BlockInput { return BlockInput{Kind: BlockText, Text: text, IsQuote: true} }
+	bookID, _, err := s.CreateBook("Test Book", "Test Author", "en", ".jpg", "", 0, []ChapterInput{{Title: "One", Blocks: []BlockInput{
+		quote("“We have failed you already.”"),
+		quote("“Look, how old are you, Yen?”"),
+		{Kind: BlockText, Text: "I asked."},
+		quote("“I’m seventy-six, this past spring,”"),
+		quote("“And I serve still.”"),
+	}}})
+	if err != nil {
+		t.Fatalf("CreateBook: %v", err)
+	}
+	paragraphs, err := s.ListParagraphsRawForBook(bookID)
+	if err != nil {
+		t.Fatalf("ListParagraphsRawForBook: %v", err)
+	}
+	for i, speaker := range []string{"Yen", "Jack", "", "Yen", "Yen"} {
+		if speaker == "" {
+			continue
+		}
+		if _, err := s.db.Exec(`UPDATE paragraphs SET speaker = ? WHERE id = ?`, speaker, paragraphs[i].ID); err != nil {
+			t.Fatalf("set speaker: %v", err)
+		}
+	}
+
+	lines, err := s.SpokenLinesForBooks([]string{bookID}, "Yen")
+	want := []SpokenLine{
+		{Text: "“We have failed you already.”"},
+		{Text: "“I’m seventy-six, this past spring,”", Asked: "“Look, how old are you, Yen?”"},
+		// The line before is her own: it answers nobody.
+		{Text: "“And I serve still.”"},
+	}
+	if err != nil || !slices.Equal(lines, want) {
+		t.Fatalf("SpokenLinesForBooks = %q, %v", lines, err)
+	}
+
+	got, err := s.ParagraphsContainingAll([]string{bookID}, []string{"Yen", "old"}, 10)
+	wantMatch := []LookupMatch{{Text: "“Look, how old are you, Yen?”", Reply: "“I’m seventy-six, this past spring,”", ReplySpeaker: "Yen"}}
+	if err != nil || !slices.Equal(got, wantMatch) {
+		t.Fatalf("ParagraphsContainingAll = %q, %v", got, err)
 	}
 }

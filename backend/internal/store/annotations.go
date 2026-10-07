@@ -92,6 +92,52 @@ func (s *SQLiteStore) QuotesForBooks(bookIDs []string, characterName string, lim
 	return spreadSample(all, limit), nil
 }
 
+// SpokenLine is one of a character's lines, with what it answers.
+type SpokenLine struct {
+	Text string
+	// Asked is the dialogue line before it, when someone else spoke it
+	// within lookupReplyReach paragraphs - "" otherwise.
+	Asked string
+}
+
+// SpokenLinesForBooks returns every line characterName speaks across
+// bookIDs, in the given book order (then chapter/paragraph order), each
+// with the line it answers - what speakerattr.StatedAges and IdiomCounts
+// read. A character states their own age in a line that never names
+// them, usually because someone asked.
+func (s *SQLiteStore) SpokenLinesForBooks(bookIDs []string, characterName string) ([]SpokenLine, error) {
+	var out []SpokenLine
+	for _, bookID := range bookIDs {
+		rows, err := s.db.Query(`
+			SELECT p.content, COALESCE(a.content, '')
+			FROM paragraphs p
+			JOIN chapters c ON c.id = p.chapter_id
+			LEFT JOIN paragraphs a ON a.speaker != p.speaker AND a.id = (
+				SELECT q.id FROM paragraphs q
+				WHERE q.chapter_id = p.chapter_id AND q.idx < p.idx AND q.idx >= p.idx - ? AND q.is_quote
+				ORDER BY q.idx DESC LIMIT 1)
+			WHERE c.book_id = ? AND p.speaker = ?
+			ORDER BY c.idx ASC, p.idx ASC`, lookupReplyReach, bookID, characterName)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var l SpokenLine
+			if err := rows.Scan(&l.Text, &l.Asked); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out = append(out, l)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // SpeechTagsForBooks returns the narration that follows each of
 // characterName's own lines in the same source paragraph (QuoteContext's
 // Context, for every line rather than a sample) across bookIDs, in the
