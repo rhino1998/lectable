@@ -3,6 +3,7 @@ package speakerattr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -19,6 +20,16 @@ const summaryMaxTokens = 2048
 // longer chapter is summarized in consecutive windows, merged (see
 // SummarizeChapter).
 const summaryWindowChars = 24000
+
+// summaryMinChars is the chapter text under which an empty summary is an
+// answer rather than a failure: a converter's one-line "Converted Ebook"
+// page or a bare half-title has no story to tell, the model says so, and
+// rejecting that failed the task for good - taking the book's ambience and
+// attribution runs with it. Such a chapter gets empty notes.
+const summaryMinChars = 200
+
+// errEmptySummary is parseSummary's error for an answer with no summary.
+var errEmptySummary = errors.New("empty summary")
 
 // summarySystemPrompt is the per-chapter summary pass: what happens, where
 // each scene is, and who is in the chapter - the shared notes the
@@ -117,7 +128,9 @@ func (s *Scene) promptLines() string {
 // results merged: summaries joined, scenes appended, casts united. Cast
 // names are sanitized and resolved onto the roster like attribution
 // answers (a description becomes a role label - see RoleLabel), and a
-// reference survives only if it appears word for word in the text.
+// reference survives only if it appears word for word in the text. A
+// chapter under summaryMinChars the model finds nothing to say about gets
+// empty notes.
 func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, roster Roster, paragraphs []ParagraphInput) (ChapterSummary, error) {
 	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases).WithFirstPerson(roster.FirstPerson)
 	var out ChapterSummary
@@ -127,6 +140,9 @@ func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle s
 		carry := carryOver(out) + leadIn(prev)
 		raw, err := c.summarizeWindow(ctx, bookTitle, chapterTitle, setting, roster, window, carry, "")
 		prev = window
+		if errors.Is(err, errEmptySummary) && len(strings.TrimSpace(windowText(paragraphs))) < summaryMinChars {
+			return ChapterSummary{}, nil
+		}
 		if err != nil {
 			return out, err
 		}
@@ -448,7 +464,7 @@ func parseSummary(content string) (summaryRaw, error) {
 		return summaryRaw{}, fmt.Errorf("parse JSON object: %w", err)
 	}
 	if strings.TrimSpace(raw.Summary) == "" {
-		return summaryRaw{}, fmt.Errorf("empty summary")
+		return summaryRaw{}, errEmptySummary
 	}
 	return raw, nil
 }

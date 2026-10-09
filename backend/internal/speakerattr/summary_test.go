@@ -32,6 +32,28 @@ func TestParseSummary(t *testing.T) {
 	}
 }
 
+// emptySummaryLLM answers every call with an empty summary.
+type emptySummaryLLM struct{}
+
+func (emptySummaryLLM) LLMGenerate(context.Context, string, string, float32, int) (string, error) {
+	return `{"summary": "", "scenes": [], "cast": []}`, nil
+}
+
+// A chapter with nothing to summarize (Black Ops' one-line "Converted
+// Ebook" page) gets empty notes when the model says as much; a chapter
+// with real text still fails on an empty answer.
+func TestSummarizeChapterNothingToSay(t *testing.T) {
+	c := NewClient(Config{}, emptySummaryLLM{})
+	sum, err := c.SummarizeChapter(context.Background(), "Black Ops", "Converted Ebook", nil, Roster{}, []ParagraphInput{{Idx: 0, Text: "Converted Ebook"}})
+	if err != nil || sum.Summary != "" || len(sum.Scenes) != 0 || len(sum.Cast) != 0 {
+		t.Fatalf("one-line chapter = %+v, %v", sum, err)
+	}
+	long := []ParagraphInput{{Idx: 0, Text: strings.Repeat("Bert and Sid argue. ", 20)}}
+	if _, err := c.SummarizeChapter(context.Background(), "Black Ops", "One", nil, Roster{}, long); err == nil {
+		t.Fatal("an empty summary of a real chapter should fail")
+	}
+}
+
 func TestWithCastAndRefs(t *testing.T) {
 	cast := []CastMember{{Name: "Mocar", Pronouns: PronounsHe, Refs: []string{"the old sailor"}}, {Name: "Guard", Role: true}}
 	r := Roster{Names: []string{"Bert"}}.WithCast(cast)
