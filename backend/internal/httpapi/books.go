@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -390,6 +391,49 @@ func (s *Server) importEpub(src interface {
 	return summary, nil
 }
 
+type renameBookRequest struct {
+	// Title is the book's new title; it can't be blank.
+	Title string `json:"title"`
+	// Author replaces the author when present; omitted, it stays as it is.
+	Author *string `json:"author,omitempty"`
+}
+
+// handleRenameBook sets a book's title and, optionally, its author - what
+// the library shows it as. An import names a book as its source does
+// ("He Who Fights with Monsters 2: A LitRPG Adventure"), which isn't
+// always what its reader calls it.
+func (s *Server) handleRenameBook(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req renameBookRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	title := strings.Join(strings.Fields(req.Title), " ")
+	if title == "" {
+		writeError(w, http.StatusBadRequest, "a book needs a title")
+		return
+	}
+	b, err := s.Store.GetBook(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if b == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	author := b.Author
+	if req.Author != nil {
+		author = strings.Join(strings.Fields(*req.Author), " ")
+	}
+	if err := s.Store.RenameBook(id, title, author); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeNoContent(w)
+}
+
 // handleImportExport restores an uploaded whole-book export (see
 // bookexport.Source.Import) and answers like a fresh upload does. Nothing
 // is queued: the book arrives with its audio already rendered.
@@ -610,17 +654,10 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cancelCtx, cancel := context.WithTimeout(r.Context(), reimportCancelWait)
-	defer cancel()
-	if !s.Jobs.CancelChapter(cancelCtx, ch.ID) {
-		writeError(w, http.StatusConflict, "this chapter still has a job running - try again in a moment")
-		return
-	}
-
 	blocks, imageBytes := chapterBlockInputs(fresh)
-	oldImages, newImages, err := s.Store.ReplaceChapterContent(ch.ID, fresh.Title, blocks)
+	paragraphs, status, err := s.swapChapterContent(r.Context(), bookID, ch, fresh.Title, blocks, imageBytes)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, status, err.Error())
 		return
 	}
 	if b, err := s.Store.GetBook(bookID); err == nil && b != nil {
@@ -628,6 +665,24 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to save characters: "+err.Error())
 			return
 		}
+	}
+	writeJSON(w, http.StatusOK, reimportChapterResponse{Title: fresh.Title, Paragraphs: paragraphs})
+}
+
+// swapChapterContent puts new content in a chapter's place: its jobs are
+// cancelled first (a 409 if one is still running after
+// reimportCancelWait), its paragraphs and images replaced, and the audio
+// made from the old ones removed. Returns how many paragraphs it now has,
+// or the status to answer a failure with.
+func (s *Server) swapChapterContent(ctx context.Context, bookID string, ch *store.Chapter, title string, blocks []store.BlockInput, imageBytes [][]byte) (paragraphs, status int, err error) {
+	cancelCtx, cancel := context.WithTimeout(ctx, reimportCancelWait)
+	defer cancel()
+	if !s.Jobs.CancelChapter(cancelCtx, ch.ID) {
+		return 0, http.StatusConflict, errors.New("this chapter still has a job running - try again in a moment")
+	}
+	oldImages, newImages, err := s.Store.ReplaceChapterContent(ch.ID, title, blocks)
+	if err != nil {
+		return 0, http.StatusInternalServerError, err
 	}
 	// The whole chapter audio dir (narration under every voice, SFX,
 	// music) belonged to the old paragraphs.
@@ -643,14 +698,12 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 			_ = os.WriteFile(audiopath.ImageFile(s.DataDir, bookID, ch.ID, img.ImageID, img.Ext), imageBytes[i], 0o644)
 		}
 	}
-
-	paragraphs := 0
 	for _, b := range blocks {
 		if b.Kind == store.BlockText {
 			paragraphs++
 		}
 	}
-	writeJSON(w, http.StatusOK, reimportChapterResponse{Title: fresh.Title, Paragraphs: paragraphs})
+	return paragraphs, http.StatusOK, nil
 }
 
 func extensionForMediaType(mt string) string {

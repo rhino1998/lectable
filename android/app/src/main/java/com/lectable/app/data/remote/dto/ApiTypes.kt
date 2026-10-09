@@ -182,8 +182,9 @@ object ImportChapterSources {
     const val SITE: ImportChapterSource = "site"
     const val ARCHIVE: ImportChapterSource = "archive"
     const val EPUB: ImportChapterSource = "epub"
+    const val MISSING: ImportChapterSource = "missing"
     const val LOCKED: ImportChapterSource = "locked"
-    val VALUES: List<ImportChapterSource> = listOf(SITE, ARCHIVE, EPUB, LOCKED)
+    val VALUES: List<ImportChapterSource> = listOf(SITE, ARCHIVE, EPUB, MISSING, LOCKED)
 }
 
 /**
@@ -290,6 +291,62 @@ object ResetPasses {
     const val GENERATE: ResetPass = "generate"
     const val LIGHTING: ResetPass = "lighting"
     val VALUES: List<ResetPass> = listOf(ATTRIBUTION, SCARE_QUOTE, DIRECTION, PRONUNCIATION, SUMMARY, AMBIENCE, MUSIC_GENERATION, GENERATE, LIGHTING)
+}
+
+/**
+ * RosterFixKind is a change to a roster a review can propose.
+ *
+ *
+ * Values: see [RosterFixKinds].
+ */
+typealias RosterFixKind = String
+
+/**
+ * [RosterFixKind]'s wire values, in declaration order.
+ */
+object RosterFixKinds {
+    const val MERGE: RosterFixKind = "merge"
+    const val REMOVE_ALIAS: RosterFixKind = "remove_alias"
+    const val MARK_ROLE: RosterFixKind = "mark_role"
+    const val INVALIDATE: RosterFixKind = "invalidate"
+    val VALUES: List<RosterFixKind> = listOf(MERGE, REMOVE_ALIAS, MARK_ROLE, INVALIDATE)
+}
+
+/**
+ * RosterProposalSource is who proposed a RosterProposal.
+ *
+ *
+ * Values: see [RosterProposalSources].
+ */
+typealias RosterProposalSource = String
+
+/**
+ * [RosterProposalSource]'s wire values, in declaration order.
+ */
+object RosterProposalSources {
+    const val RULE: RosterProposalSource = "rule"
+    const val LLM: RosterProposalSource = "llm"
+    const val AGENT: RosterProposalSource = "agent"
+    val VALUES: List<RosterProposalSource> = listOf(RULE, LLM, AGENT)
+}
+
+/**
+ * RosterProposalStatus is where a RosterProposal stands.
+ *
+ *
+ * Values: see [RosterProposalStatuses].
+ */
+typealias RosterProposalStatus = String
+
+/**
+ * [RosterProposalStatus]'s wire values, in declaration order.
+ */
+object RosterProposalStatuses {
+    const val PENDING: RosterProposalStatus = "pending"
+    const val ACCEPTED: RosterProposalStatus = "accepted"
+    const val SKIPPED: RosterProposalStatus = "skipped"
+    const val RULED_OUT: RosterProposalStatus = "ruled_out"
+    val VALUES: List<RosterProposalStatus> = listOf(PENDING, ACCEPTED, SKIPPED, RULED_OUT)
 }
 
 /**
@@ -1137,6 +1194,26 @@ data class CreateExportRequestDto(
     val latents: Boolean = false,
 )
 
+/**
+ * createRosterProposalRequest is POST .../roster-review/proposals' body.
+ * Characters are given by name (or alias), as the roster spells them.
+ */
+@Serializable
+data class CreateRosterProposalRequestDto(
+    val kind: RosterFixKind = "",
+    val subject: String = "",
+    /**
+     * Target is the character to merge Subject into (merge only).
+     */
+    val target: String? = null,
+    /**
+     * Detail is the alias to remove (remove_alias only).
+     */
+    val detail: String? = null,
+    val reason: String? = null,
+    val evidence: List<String> = emptyList(),
+)
+
 @Serializable
 data class CustomVoicePresetDto(
     val id: String = "",
@@ -1251,6 +1328,32 @@ data class EmotionInfoDto(
      * Label is the human-readable name shown in the UI.
      */
     val label: String = "",
+)
+
+@Serializable
+data class EpubChapterDto(
+    /**
+     * Index is the chapter's place in the epub, what "epubChapter" and
+     * "first" take.
+     */
+    val index: Int = 0,
+    val title: String = "",
+    val opening: String = "",
+    val paragraphs: Int = 0,
+    /**
+     * BookChapter is the idx of the book's chapter that opens with the
+     * same text, when a book was named and one does.
+     */
+    val bookChapter: Int? = null,
+)
+
+/**
+ * epubChaptersResponse lists an uploaded epub's chapters
+ * (handleListEpubChapters).
+ */
+@Serializable
+data class EpubChaptersResponseDto(
+    val chapters: List<EpubChapterDto> = emptyList(),
 )
 
 /**
@@ -1404,6 +1507,14 @@ data class ImportPreviewResponseDto(
      * already - an import would be refused.
      */
     val existingBookId: String? = null,
+)
+
+/**
+ * insertChaptersResponse answers handleInsertChapters.
+ */
+@Serializable
+data class InsertChaptersResponseDto(
+    val inserted: Int = 0,
 )
 
 @Serializable
@@ -1689,6 +1800,14 @@ data class MergeCharacterRequestDto(
      * description is no name the target goes by.
      */
     val asRole: Boolean = false,
+)
+
+@Serializable
+data class MoveChapterRequestDto(
+    /**
+     * To is the idx the chapter takes.
+     */
+    val to: Int = 0,
 )
 
 /**
@@ -2114,6 +2233,23 @@ data class QueueTaskDto(
      * left" estimate.
      */
     val chars: Int? = null,
+    /**
+     * Remaining is jobs.QueueTask.Remaining verbatim - for a running
+     * "pipeline_*" row, how many of the tasks it fanned out are still
+     * queued or in flight. Omitted for every other row, and for a group
+     * that hasn't started.
+     */
+    val remaining: Int? = null,
+    /**
+     * RemainingSeconds estimates how long those Remaining tasks take run
+     * on their own, with nothing else in the queue: each kind's count x
+     * how long one has been taking lately over how many run at once, and
+     * narration at the measured rate. Omitted (0) when nothing about them
+     * can be estimated yet. RemainingPartial says some of them couldn't
+     * be, so the real figure is higher.
+     */
+    val remainingSeconds: Double? = null,
+    val remainingPartial: Boolean = false,
 )
 
 /**
@@ -2188,6 +2324,26 @@ data class ReimportChapterResponseDto(
     val paragraphs: Int = 0,
 )
 
+@Serializable
+data class RenameBookRequestDto(
+    /**
+     * Title is the book's new title; it can't be blank.
+     */
+    val title: String = "",
+    /**
+     * Author replaces the author when present; omitted, it stays as it is.
+     */
+    val author: String? = null,
+)
+
+@Serializable
+data class RenameChapterRequestDto(
+    /**
+     * Title is the chapter's new title; it can't be blank.
+     */
+    val title: String = "",
+)
+
 /**
  * renameCharacterRequest is PUT .../characters/{characterId}/name's body.
  */
@@ -2226,6 +2382,51 @@ data class ReviewBookSourceRequestDto(
      */
     val import: List<String> = emptyList(),
     val skip: List<String> = emptyList(),
+)
+
+/**
+ * rosterProposalDTO is one proposed fix to a book's roster.
+ */
+@Serializable
+data class RosterProposalDto(
+    val id: String = "",
+    val kind: RosterFixKind = "",
+    /**
+     * SubjectID/Subject is the character it changes; TargetID/Target the
+     * one it is merged into, or whose name an alias collides with ("" when
+     * none).
+     */
+    val subjectId: String = "",
+    val subject: String = "",
+    val targetId: String = "",
+    val target: String = "",
+    /**
+     * SubjectLines/TargetLines are how many lines of dialogue each has
+     * across the roster's books.
+     */
+    val subjectLines: Int = 0,
+    val targetLines: Int = 0,
+    /**
+     * Detail is the alias to remove (remove_alias).
+     */
+    val detail: String = "",
+    val reason: String = "",
+    /**
+     * Evidence is the passages from the book that show it.
+     */
+    val evidence: List<String> = emptyList(),
+    val source: RosterProposalSource = "",
+    val status: RosterProposalStatus = "",
+    val createdAt: Long = 0L,
+)
+
+/**
+ * rosterReviewResponse is GET .../roster-review's reply and the
+ * rosterReview live topic's value.
+ */
+@Serializable
+data class RosterReviewResponseDto(
+    val proposals: List<RosterProposalDto> = emptyList(),
 )
 
 /**
@@ -2342,6 +2543,12 @@ data class SourceReviewEntryDto(
      * Suspect is true when the title reads like an author's notice.
      */
     val suspect: Boolean = false,
+    /**
+     * Unavailable is true for a chapter that was agreed to but couldn't
+     * be read - a delisted one the Internet Archive has no usable copy
+     * of. "Import" tries it again; "skip" lets the book go on without it.
+     */
+    val unavailable: Boolean = false,
 )
 
 /**

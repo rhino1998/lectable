@@ -44,6 +44,10 @@ type Store interface {
 	CountReadyAudioForSpeaker(bookID, speaker, voiceID string) (int, error)
 	AddLastChapterSourceID(bookID, sourceID string) error
 	AppendChapters(bookID string, chapters []ChapterInput) (images []CreatedImage, err error)
+	InsertChapters(bookID string, at int, chapters []ChapterInput) (images []CreatedImage, err error)
+	MoveChapter(bookID string, from, to int) error
+	RenameChapter(chapterID, title string) error
+	DeleteChapter(bookID string, idx int) (chapterID string, images []CreatedImage, err error)
 	ChapterSourceIDs(bookID string) ([]string, error)
 	FindBookBySource(kind, sourceID string) (string, error)
 	GetBookSource(bookID string) (*BookSource, error)
@@ -51,12 +55,14 @@ type Store interface {
 	SetBookSourcePlan(bookID string, plan SourcePlan) error
 	GetBookSourcePlan(bookID string) (SourcePlan, error)
 	SourcedChapters(bookID string) ([]SourcedChapter, error)
+	ChapterOpenings(bookID string, limit int) ([]ChapterOpening, error)
 	SourcedBooks() ([]SourcedBook, error)
 	SourceCheckHours() (int, error)
 	SetSourceCheckHours(hours int) error
 	CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error)
 	CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error)
 	DeleteBook(id string) error
+	RenameBook(id, title, author string) error
 	DeleteBookRecap(bookID string) error
 	DeleteBookSetting(bookID string) error
 	DeleteBookAudio(bookID string) error
@@ -81,6 +87,10 @@ type Store interface {
 	GetImage(id string) (*Image, error)
 	GetMusicRegion(id string) (*MusicRegion, error)
 	GetBookRecap(bookID string) (*BookRecap, error)
+	GetRosterProposal(id string) (*RosterProposal, error)
+	InsertRosterProposal(p RosterProposal) (inserted bool, err error)
+	ListRosterProposals(scope string) ([]RosterProposal, error)
+	SetRosterProposalStatus(id string, status RosterProposalStatus) error
 	GetBookSetting(bookID string) (*StoredBookSetting, error)
 	GetChapterNotes(chapterID string) (*ChapterNotes, error)
 	GetParagraph(id string) (*Paragraph, error)

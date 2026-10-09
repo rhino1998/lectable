@@ -1705,7 +1705,7 @@ func TestUrgentGenerationDispatchesDespitePoolLLMBacklog(t *testing.T) {
 	// doesn't have, same as every other test in this file that constructs
 	// *task values directly rather than going through the store-backed
 	// public API).
-	const backlogSize = maxAttributionInFlight * 50
+	var backlogSize = maxAttributionInFlight * 50
 	const taskDelay = 15 * time.Millisecond
 	for i := 0; i < backlogSize; i++ {
 		name := fmt.Sprintf("Char %d", i)

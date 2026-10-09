@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rhino1998/lectable/backend/internal/sched"
 )
 
 // durationSamples is how many of a kind's most recent runs kindDurations
@@ -90,4 +92,43 @@ func (m *Manager) WorkLeft(tasks []QueueTask) []KindWork {
 		return cmp.Or(cmp.Compare(b.Left, a.Left), cmp.Compare(b.Tasks, a.Tasks), cmp.Compare(a.Kind, b.Kind))
 	})
 	return out
+}
+
+// groupTimeLeft estimates how long members - the tasks a group is still
+// waiting for - take if they are all the queue does: each kind's count x
+// its typical run time over how many of its pool run at once, as WorkLeft
+// has it, and narration's text at narrationRate (characters a second
+// across every slot, 0 if unmeasured). Kinds are summed, since they share
+// the same models. partial reports members it had no figure for (a kind
+// that hasn't finished a task since startup, a group inside the group).
+func (m *Manager) groupTimeLeft(members []sched.Task, narrationRate float64) (left time.Duration, partial bool) {
+	counts := map[Kind]int{}
+	chars := 0
+	for _, member := range members {
+		t, ok := member.(*task)
+		switch {
+		case !ok:
+			partial = true
+		case t.kind == KindVoiceClone || t.kind == KindVoiceDesign:
+			chars += taskChars(t)
+		default:
+			counts[t.kind]++
+		}
+	}
+	if chars > 0 {
+		if narrationRate > 0 {
+			left += time.Duration(float64(chars) / narrationRate * float64(time.Second))
+		} else {
+			partial = true
+		}
+	}
+	for kind, n := range counts {
+		typical, ok := m.durations.typical(kind)
+		if !ok {
+			partial = true
+			continue
+		}
+		left += time.Duration(n) * typical / time.Duration(max(poolCapacity[poolFor(kind)], 1))
+	}
+	return left, partial
 }

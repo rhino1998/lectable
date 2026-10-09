@@ -133,3 +133,26 @@ type generateParagraphSFXRequest struct {
 	Prompt          string   `json:"prompt"`
 	DurationSeconds *float64 `json:"durationSeconds"`
 }
+
+// epubChaptersResponse lists an uploaded epub's chapters
+// (handleListEpubChapters).
+type epubChaptersResponse struct {
+	Chapters []epubChapterDTO `json:"chapters"`
+}
+
+type epubChapterDTO struct {
+	// Index is the chapter's place in the epub, what "epubChapter" and
+	// "first" take.
+	Index      int    `json:"index"`
+	Title      string `json:"title"`
+	Opening    string `json:"opening"`
+	Paragraphs int    `json:"paragraphs"`
+	// BookChapter is the idx of the book's chapter that opens with the
+	// same text, when a book was named and one does.
+	BookChapter *int `json:"bookChapter,omitempty"`
+}
+
+// insertChaptersResponse answers handleInsertChapters.
+type insertChaptersResponse struct {
+	Inserted int `json:"inserted"`
+}

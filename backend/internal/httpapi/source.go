@@ -268,7 +268,7 @@ func (s *Server) bookSource(bookID string) (*bookSourceDTO, error) {
 	var review []sourceReviewEntryDTO
 	if plan, err := s.Store.GetBookSourcePlan(bookID); err == nil {
 		for _, p := range plan.Pending {
-			review = append(review, sourceReviewEntryDTO{ID: p.ID, Title: p.Title, Suspect: p.Suspect})
+			review = append(review, sourceReviewEntryDTO{ID: p.ID, Title: p.Title, Suspect: p.Suspect, Unavailable: p.Unreadable})
 		}
 	}
 	return &bookSourceDTO{
@@ -528,7 +528,8 @@ func (s *Server) readChapter(ctx context.Context, r sourceReader, ref websource.
 // ErrLocked when there is none - and without looking for a chapter the
 // site's own list marks locked, which was never public (early access).
 func (s *Server) archivedChapter(ctx context.Context, r sourceReader, ref websource.ChapterRef) (sourced, error) {
-	if r.archived() || !ref.Unlocked {
+	// No address: a chapter known only to be missing (withNumberGaps).
+	if r.archived() || !ref.Unlocked || ref.URL == "" {
 		return sourced{}, websource.ErrLocked
 	}
 	// A chapter found in the archive is read straight from the copy it
@@ -547,8 +548,14 @@ func (s *Server) archivedChapter(ctx context.Context, r sourceReader, ref websou
 		return got.ch, err
 	})
 	if err != nil {
-		if !errors.Is(err, websource.ErrLocked) {
-			log.Printf("source: looking for %q in the Wayback Machine: %v", ref.Title, err)
+		if errors.Is(err, websource.ErrLocked) {
+			return sourced{}, websource.ErrLocked
+		}
+		// The archive couldn't be asked: not the same as it having
+		// nothing, for a chapter that only it can give.
+		log.Printf("source: looking for %q in the Wayback Machine: %v", ref.Title, err)
+		if ref.Delisted {
+			return sourced{}, fmt.Errorf("the Internet Archive didn't answer for %q: %w", ref.Title, err)
 		}
 		return sourced{}, websource.ErrLocked
 	}
@@ -725,7 +732,15 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 	src.Blocked = ""
 	// Only entries the reader has agreed to are fetched; the rest wait
 	// for review, and hold back whatever follows them.
-	missing, pending := reviewPlan(&plan, plannedChapters(reader.site, work.Chapters, plan), have)
+	var unreadable []websource.ChapterRef // delisted chapters the archive has no usable copy of
+	planned := plannedChapters(reader.site, work.Chapters, plan)
+	if fill != nil {
+		fill.setNeighbours(planned)
+		if err := s.knowBook(bookID, fill); err != nil {
+			return 0, err
+		}
+	}
+	missing, pending := reviewPlan(&plan, planned, have)
 	plan.Pending = pending
 	if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
 		return 0, err
@@ -769,7 +784,10 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 					// give now it usually gives a little later.
 					for attempt := 1; ; attempt++ {
 						ahead[i].chapters, ahead[i].covered, ahead[i].err = s.readOrFill(ctx, reader, ref, nil)
-						if ahead[i].err == nil || attempt == archiveAttempts || ctx.Err() != nil {
+						// It answering that it has no copy that reads as
+						// the chapter isn't worth asking again.
+						settled := ahead[i].err == nil || errors.Is(ahead[i].err, websource.ErrLocked) || errors.Is(ahead[i].err, websource.ErrNotFound)
+						if settled || attempt == archiveAttempts || ctx.Err() != nil {
 							return
 						}
 						select {
@@ -798,11 +816,20 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 				chapters, covered, err = s.readOrFill(ctx, reader, ref, fill)
 			}
 			if ref.Delisted && (errors.Is(err, websource.ErrNotFound) || errors.Is(err, websource.ErrLocked)) {
-				// The archive didn't give it - often only for now: it
-				// fails in bursts when asked a lot. Chapters can't be put
-				// in later, so the check stops here and the next one
-				// tries again; going on would leave a hole for good.
-				fetchErr = fmt.Errorf("%q could not be read from the Internet Archive - check again to retry", ref.Title)
+				// The archive has no copy of it that reads as a chapter
+				// (what it saved may be the site's "removed" page).
+				// Chapters can't be put in later, so the book doesn't go
+				// on past it by itself: it, and any others like it among
+				// the chapters read ahead, wait for the reader to say skip
+				// or try again.
+				unreadable = append(unreadable, ref)
+				for j := i + 1; j < len(batch); j++ {
+					if a := ahead[j]; a != nil && (errors.Is(a.err, websource.ErrNotFound) || errors.Is(a.err, websource.ErrLocked)) {
+						unreadable = append(unreadable, batch[j])
+					}
+				}
+				dropped += len(batch) - i + len(missing)
+				missing = nil
 				break
 			}
 			if errors.Is(err, websource.ErrNotFound) {
@@ -843,6 +870,12 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 		if err := s.Store.SetBookSource(bookID, *src); err != nil {
 			return added, err
 		}
+		if len(unreadable) > 0 {
+			holdUnreadable(&plan, unreadable)
+			if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
+				return added, err
+			}
+		}
 		if fetchErr != nil {
 			return added, fetchErr
 		}
@@ -852,9 +885,9 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 }
 
 // readOrFill gets one chapter for a check: from the site, and when the
-// site won't serve it, from the uploaded epub (which may give several
-// chapters for it, or report it covered by ones already given) or the
-// Wayback Machine.
+// site won't serve it, from the Wayback Machine, or failing that the
+// uploaded epub (which may give several chapters for it, or report it
+// covered by ones already given).
 func (s *Server) readOrFill(ctx context.Context, r sourceReader, ref websource.ChapterRef, fill *epubFill) (chapters []sourced, covered bool, err error) {
 	// A delisted chapter isn't at the site to ask for.
 	if !ref.Delisted {
@@ -866,7 +899,14 @@ func (s *Server) readOrFill(ctx context.Context, r sourceReader, ref websource.C
 			return nil, false, err
 		}
 	}
-	if fill != nil {
+	// What the site won't give comes from the archive when it has it, and
+	// from the uploaded epub only when it doesn't: the epub is the
+	// published edition, not the serial as it ran.
+	got, err := s.archivedChapter(ctx, r, ref)
+	if err == nil {
+		return []sourced{got}, false, nil
+	}
+	if fill != nil && (errors.Is(err, websource.ErrLocked) || errors.Is(err, websource.ErrNotFound)) {
 		if filled, ok := fill.take(ref); ok {
 			for _, ch := range filled {
 				// No page to keep: the chapter itself is what it was made from.
@@ -875,11 +915,7 @@ func (s *Server) readOrFill(ctx context.Context, r sourceReader, ref websource.C
 			return chapters, len(filled) == 0, nil
 		}
 	}
-	got, err := s.archivedChapter(ctx, r, ref)
-	if err != nil {
-		return nil, false, err
-	}
-	return []sourced{got}, false, nil
+	return nil, false, err
 }
 
 // appendSourceChapters parses fetched chapters and adds them to the end of

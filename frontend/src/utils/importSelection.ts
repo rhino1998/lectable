@@ -15,9 +15,12 @@ export function defaultSelection(chapters: ImportPreviewChapter[]): Set<string> 
 }
 
 // Which entries waiting for review start out as "import": all but the
-// ones that read like a notice.
-export function defaultReview(entries: { id: string; suspect: boolean }[]): Set<string> {
-  return new Set(entries.filter((e) => !e.suspect).map((e) => e.id))
+// ones that read like a notice, and chapters that couldn't be read
+// (unavailable - importing those only tries again).
+export function defaultReview(
+  entries: { id: string; suspect: boolean; unavailable?: boolean }[],
+): Set<string> {
+  return new Set(entries.filter((e) => !e.suspect && !e.unavailable).map((e) => e.id))
 }
 
 // Carries a selection over to a widened preview (the archive searched, an
@@ -60,7 +63,13 @@ export function countBySource(
   chapters: ImportPreviewChapter[],
   selected?: Set<string>,
 ): Record<ImportChapterSource, number> {
-  const counts: Record<ImportChapterSource, number> = { site: 0, archive: 0, epub: 0, locked: 0 }
+  const counts: Record<ImportChapterSource, number> = {
+    site: 0,
+    archive: 0,
+    epub: 0,
+    missing: 0,
+    locked: 0,
+  }
   for (const c of chapters) {
     if (!selected || selected.has(c.id)) counts[c.source]++
   }

@@ -1,5 +1,7 @@
 package com.lectable.app.ui.jobs
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,6 +20,8 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.StopCircle
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -41,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.lectable.app.data.remote.dto.JobTier
 import com.lectable.app.data.remote.dto.QueueTaskDto
 import com.lectable.app.ui.components.ConfirmDialog
 
@@ -173,6 +178,7 @@ fun JobsScreen(
                                 voiceName = voiceName(task, uiState.presetNames),
                                 canceling = uiState.cancelingId == task.id,
                                 onCancel = { viewModel.cancelJob(task) },
+                                onPromote = { tier -> viewModel.promote(task, tier) },
                             )
                         }
                     }
@@ -199,6 +205,7 @@ fun JobsScreen(
                                 voiceName = voiceName(task, uiState.presetNames),
                                 canceling = uiState.cancelingId == task.id,
                                 onCancel = { viewModel.cancelJob(task) },
+                                onPromote = { tier -> viewModel.promote(task, tier) },
                             )
                         }
                         if (queuedTotal > snapshot.queued.size) {
@@ -238,12 +245,47 @@ fun JobsScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun JobRow(task: QueueTaskDto, voiceName: String, canceling: Boolean, onCancel: () -> Unit) {
+private fun JobRow(
+    task: QueueTaskDto,
+    voiceName: String,
+    canceling: Boolean,
+    onCancel: () -> Unit,
+    onPromote: (JobTier) -> Unit,
+) {
+    // Long-press: raise the task's priority - the web Jobs page's tier-badge menu.
+    val upgrades = upgradeTiers(task.tier)
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {},
+                onLongClick = { menuOpen = true },
+                onLongClickLabel = "Raise priority",
+            )
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            if (upgrades.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("Already at the highest priority") },
+                    onClick = { menuOpen = false },
+                    enabled = false,
+                )
+            }
+            upgrades.forEach { tier ->
+                DropdownMenuItem(
+                    text = { Text("Raise to $tier") },
+                    onClick = {
+                        menuOpen = false
+                        onPromote(tier)
+                    },
+                )
+            }
+        }
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(kindLabel(task.kind), style = MaterialTheme.typography.bodyLarge)

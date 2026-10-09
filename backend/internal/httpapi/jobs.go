@@ -74,6 +74,19 @@ type queueTaskDTO struct {
 	// jobsSnapshotDTO.NarrationCharsPerSecond, it's the Jobs views' "time
 	// left" estimate.
 	Chars int `json:"chars,omitempty"`
+	// Remaining is jobs.QueueTask.Remaining verbatim - for a running
+	// "pipeline_*" row, how many of the tasks it fanned out are still
+	// queued or in flight. Omitted for every other row, and for a group
+	// that hasn't started.
+	Remaining int `json:"remaining,omitempty"`
+	// RemainingSeconds estimates how long those Remaining tasks take run
+	// on their own, with nothing else in the queue: each kind's count x
+	// how long one has been taking lately over how many run at once, and
+	// narration at the measured rate. Omitted (0) when nothing about them
+	// can be estimated yet. RemainingPartial says some of them couldn't
+	// be, so the real figure is higher.
+	RemainingSeconds float64 `json:"remainingSeconds,omitempty"`
+	RemainingPartial bool    `json:"remainingPartial,omitempty"`
 }
 
 type jobsSnapshotDTO struct {
@@ -249,6 +262,10 @@ func (s *Server) buildJobsSnapshot(queuedLimit int, keep func(jobs.QueueTask) bo
 			Attempt:      t.Attempt,
 			Emotion:      t.Emotion,
 			Chars:        t.Chars,
+			Remaining:    t.Remaining,
+
+			RemainingSeconds: math.Round(t.RemainingTime.Seconds()),
+			RemainingPartial: t.Remaining > 0 && t.RemainingTimePartial,
 		}
 	}
 

@@ -12,6 +12,7 @@
 static const uint32_t LCG_MTP_MAX_UBATCH = 512;
 
 struct lcg_mtp {
+    llama_context *                   tgt = nullptr;
     llama_context *                   dft = nullptr;
     common_speculative *              spec = nullptr;
     std::vector<llama_tokens>         results;
@@ -63,6 +64,7 @@ lcg_mtp * lcg_mtp_init(llama_context * tgt, llama_context_params dft_params, int
     }
 
     auto * m = new lcg_mtp;
+    m->tgt  = tgt;
     m->dft  = dft;
     m->spec = spec;
     m->results.resize(n_seq);
@@ -84,7 +86,14 @@ llama_context * lcg_mtp_ctx(lcg_mtp * m) {
 }
 
 bool lcg_mtp_process(lcg_mtp * m, llama_batch batch) {
-    return common_speculative_process(m->spec, batch);
+    // common_speculative_process takes a common_batch only (the llama_batch
+    // overload went away upstream); batch.go's batches are token batches
+    // with explicit positions and one sequence id per entry.
+    common_batch cb(m->tgt);
+    for (int32_t i = 0; i < batch.n_tokens; ++i) {
+        cb.add(batch.token[i], batch.pos[i], batch.seq_id[i][0], batch.logits[i] != 0);
+    }
+    return common_speculative_process(m->spec, cb);
 }
 
 void lcg_mtp_draft(lcg_mtp * m, int32_t n, const int32_t * seq_ids, const llama_token * id_last,

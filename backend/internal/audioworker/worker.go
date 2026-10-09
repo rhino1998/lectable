@@ -180,10 +180,12 @@ type Config struct {
 	// for why more than one is the whole point, and Worker.checkoutSession
 	// for the lazy-creation logic itself. Should match (or exceed) however
 	// many Generate calls the caller actually dispatches concurrently for
-	// one clone_model (internal/jobs' own maxInFlight, today 4) - a smaller
-	// pool just means callers beyond the pool size queue for a session the
-	// same way every caller used to queue for the single shared one, only
-	// less often. <= 0 is treated as 1 (today's pre-pooling behavior).
+	// one clone_model (internal/jobs' own maxInFlight, today 8 - sized for
+	// Higgs, whose one session batches that many callers; see cloneFamily.
+	// sessionCallers) - a smaller pool just means callers beyond the pool
+	// size queue for a session the same way every caller used to queue for
+	// the single shared one, only less often. <= 0 is treated as 1 (today's
+	// pre-pooling behavior).
 	ClonePoolSize int
 	// IdleUnloadAfter, if > 0, frees every currently-loaded clone model
 	// (including DefaultCloneModel) once neither Generate, Design, nor

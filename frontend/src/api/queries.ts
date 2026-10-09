@@ -36,6 +36,7 @@ import type {
   RecapSettings,
   SourceSettings,
   BookSettingResponse,
+  RosterReviewResponse,
   ChapterNotes,
   ChapterNotesResponse,
 } from './types'
@@ -78,8 +79,19 @@ export function usePreviewImport() {
 
 export function useBackfillBookSource() {
   return useMutation({
-    mutationFn: (args: { bookId: string; file: File }) =>
-      api.backfillBookSource(args.bookId, args.file),
+    mutationFn: (args: { bookId: string; file: File; first?: number }) =>
+      api.backfillBookSource(args.bookId, args.file, args.first),
+  })
+}
+
+export function useListEpubChapters(bookId: string) {
+  return useMutation({ mutationFn: (file: File) => api.listEpubChapters(file, bookId) })
+}
+
+export function useMatchEpubChapter(bookId: string) {
+  return useMutation({
+    mutationFn: (args: { chapterIdx: number; file: File; epubChapter: number }) =>
+      api.matchEpubChapter(bookId, args.chapterIdx, args.file, args.epubChapter),
   })
 }
 
@@ -92,6 +104,13 @@ export function useReviewBookSource() {
 
 export function useSyncBookSource() {
   return useMutation({ mutationFn: (bookId: string) => api.syncBookSource(bookId) })
+}
+
+export function useRenameBook(bookId: string) {
+  return useMutation({
+    mutationFn: (args: { title: string; author: string }) =>
+      api.renameBook(bookId, args.title, args.author),
+  })
 }
 
 export function useDeleteBook() {
@@ -833,6 +852,11 @@ export function useCheckSources() {
   return useMutation({ mutationFn: () => api.checkSources() })
 }
 
+// The library header's "Prepare recaps" button.
+export function useCheckRecaps() {
+  return useMutation({ mutationFn: () => api.checkRecaps() })
+}
+
 export function useRecapSettings(): LiveResult<RecapSettings> {
   return useLive('recapSettings', {})
 }
@@ -864,6 +888,31 @@ export function useDeriveBookSetting(bookId: string) {
 // Whether bookId's setting pass is queued or running.
 export function useBookSettingDeriving(bookId: string): boolean {
   return useBookJobs(bookId, 'book_setting').length > 0
+}
+
+// The proposed fixes to the book's roster still waiting for a say (live
+// topic), and the review that finds them - see backend
+// httpapi/roster_review.go.
+export function useRosterReview(bookId: string): LiveResult<RosterReviewResponse> {
+  return useLive('rosterReview', { bookId })
+}
+
+export function useRunRosterReview(bookId: string) {
+  return useMutation({ mutationFn: () => api.runRosterReview(bookId) })
+}
+
+// Whether bookId's roster review is queued or running.
+export function useRosterReviewRunning(bookId: string): boolean {
+  return useBookJobs(bookId, 'roster_review').length > 0
+}
+
+export function useDecideRosterProposal(bookId: string) {
+  return useMutation({
+    mutationFn: (args: { proposalId: string; accept: boolean }) =>
+      args.accept
+        ? api.acceptRosterProposal(bookId, args.proposalId)
+        : api.skipRosterProposal(bookId, args.proposalId),
+  })
 }
 
 // The book's series pronunciation lexicon (live topic) and its edits.

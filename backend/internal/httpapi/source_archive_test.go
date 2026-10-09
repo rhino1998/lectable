@@ -324,6 +324,44 @@ func TestEpubFillAliases(t *testing.T) {
 	}
 }
 
+// TestEpubFillRenumbered: a published book numbers its chapters from 1, so
+// its chapters are found by name; a title cut short by the site's address
+// still matches, and a chapter whose title says nothing is the one between
+// its neighbours.
+func TestEpubFillRenumbered(t *testing.T) {
+	text := func(title string) epub.Chapter {
+		return epub.Chapter{Title: title, Blocks: []epub.Block{{Kind: epub.BlockText, Text: title}, {Kind: epub.BlockText, Text: "text of " + title}}}
+	}
+	fill := newEpubFill(&epub.Book{Chapters: []epub.Chapter{
+		text("Contents"),
+		text("69. Particular Appetites"),
+		text("70. Domineering, Territorial and Robust"),
+		text("71. More Shady as We Go Along"),
+		text("73. I Try to Find the Truth, But That’s Your Hiding Place"),
+	}})
+	planned := []websource.ChapterRef{
+		{ID: "182", Title: "Chapter 182: Particular Appetites"},
+		{ID: "183", Title: "X"},
+		{ID: "184", Title: "Chapter 184 More Shady As We Go Along"},
+		{ID: "186", Title: "Chapter 186 I Try To Find The Truth But Thats"},
+		{ID: "190", Title: "Chapter 190: Something Else"},
+	}
+	fill.setNeighbours(planned)
+	// Each takes the source's number, written as the book's chapters are,
+	// with the ebook's wording of the name.
+	want := []string{"Chapter 182: Particular Appetites", "Chapter 183: Domineering, Territorial and Robust", "Chapter 184: More Shady as We Go Along", "Chapter 186: I Try to Find the Truth, But That’s Your Hiding Place", ""}
+	for i, ref := range planned {
+		got, ok := fill.take(ref)
+		title := ""
+		if ok && len(got) == 1 {
+			title = got[0].Title
+		}
+		if title != want[i] {
+			t.Errorf("%q -> %q (ok %v), want %q", ref.Title, title, ok, want[i])
+		}
+	}
+}
+
 // TestImportArchiveOrgItem: an archive.org item link downloads the item's
 // epub and imports it as an uploaded book.
 func TestImportArchiveOrgItem(t *testing.T) {
@@ -678,5 +716,397 @@ func TestPreviewFindsReplacedChapter(t *testing.T) {
 	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/sync", nil, nil).Body.Close()
 	if again := waitSourceSynced(t, ts.URL, book.ID); again.ChapterCount != 3 || again.Source.Error != "" {
 		t.Errorf("after a check: %d chapters, source %+v", again.ChapterCount, again.Source)
+	}
+}
+
+// TestUnreadableDelistedChapter: the archive's only copy of a delisted
+// chapter is the site's "removed" page. The book doesn't go on past it by
+// itself: it waits for the reader, marked unavailable, and skipping it
+// lets the rest in.
+func TestUnreadableDelistedChapter(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	site := royalroadtest.New(t)
+	fake, wayback := newFakeWayback(t)
+	srv.Sources = []websource.Source{site.Source()}
+	srv.Wayback = wayback
+	site.AddChapter("1. One", `<p>First.</p>`)
+	two := site.AddChapter("2. Two", `<p>Second.</p>`)
+	three := site.AddChapter("3. Three", `<p>Third.</p>`)
+	site.AddChapter("4. Four", `<p>Fourth.</p>`)
+	real := func(id string) string {
+		return "https://www.royalroad.com/fiction/" + royalroadtest.FictionID + "/the-long-road/chapter/" + id + "/c"
+	}
+	fake.save(site.URL(), "20230101000000", fetchPage(t, site.URL()))
+	// Chapter two was only saved after it had come down.
+	fake.save(real(two), "20250101000000", `<html><head><title>Forbidden | Royal Road</title></head><body><h1>Forbidden</h1></body></html>`)
+	fake.save(real(three), "20230102000000", fetchPage(t, site.URL()+"/chapter/"+three+"/c"))
+	site.Delist(two)
+	site.Delist(three)
+
+	p, _ := postPreview(t, ts.URL, "url="+url.QueryEscape(fictionLink)+"&archive=true", nil)
+	if previewLine(p) != "1. One=site|2. Two=archive|3. Three=archive|4. Four=site" {
+		t.Fatalf("preview = %q", previewLine(p))
+	}
+	var created sourceTestBook
+	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: fictionLink, PreviewID: p.ID}, &created); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("import: %d", resp.StatusCode)
+	}
+	book := waitSourceSynced(t, ts.URL, created.ID)
+	if book.ChapterCount != 1 || book.Source.Error != "" || len(book.Source.Review) != 1 || book.Source.Review[0].Title != "2. Two" || !book.Source.Review[0].Unavailable {
+		t.Fatalf("stopped at the unreadable chapter? %d chapters, review %+v, source %+v", book.ChapterCount, book.Source.Review, book.Source)
+	}
+	// Trying again finds the same.
+	book = importReviewed(t, ts.URL, book)
+	if book.ChapterCount != 1 || len(book.Source.Review) != 1 || !book.Source.Review[0].Unavailable {
+		t.Fatalf("after a retry: %d chapters, review %+v", book.ChapterCount, book.Source.Review)
+	}
+	// An epub that doesn't have it changes nothing - and in particular
+	// doesn't make the check lose track of it.
+	resp := postFile(t, ts.URL+"/api/books/"+book.ID+"/source/backfill", testEpub(t, `<h1>3. Three</h1><p>From an ebook.</p>`))
+	resp.Body.Close()
+	book = waitSourceSynced(t, ts.URL, book.ID)
+	if book.ChapterCount != 1 || len(book.Source.Review) != 1 || !book.Source.Review[0].Unavailable {
+		t.Fatalf("after an epub without it: %d chapters, review %+v, source %+v", book.ChapterCount, book.Source.Review, book.Source)
+	}
+	// Skipped, the book goes on without it.
+	book = importReviewed(t, ts.URL, book, "2. Two")
+	if book.ChapterCount != 3 || len(book.Source.Review) != 0 || book.Source.Error != "" {
+		t.Fatalf("after skipping it: %d chapters, review %+v, source %+v", book.ChapterCount, book.Source.Review, book.Source)
+	}
+	if title, _ := chapterTexts(t, s, book.ID, 1); title != "3. Three" {
+		t.Errorf("chapter 1 = %q", title)
+	}
+}
+
+func TestTitleKeyAndNumbers(t *testing.T) {
+	for title, want := range map[string]string{
+		"Chapter 184: More Shady As We Go Along": "moreshadyaswegoalong",
+		"23. More Shady as We Go Along":          "moreshadyaswegoalong",
+		"Book 3 Chapter 38 Joyride":              "joyride",
+		"38. Joyride":                            "joyride",
+		"Chapter Seventy Six - 076":              "#76",
+		"Chapter 76":                             "#76",
+		"76":                                     "#76",
+		"1.02":                                   "102",
+		"Chapter 1.02":                           "102",
+		"Interlude – 1.00 R":                     "interlude100r",
+		"Epilogue":                               "epilogue",
+	} {
+		if got := titleKey(title); got != want {
+			t.Errorf("titleKey(%q) = %q, want %q", title, got, want)
+		}
+	}
+}
+
+// TestNumberGapsAndRuns: chapters missing from between numbered neighbours
+// are listed, and an epub fills a whole run of them by position.
+func TestNumberGapsAndRuns(t *testing.T) {
+	listed := withNumberGaps([]websource.ChapterRef{
+		{ID: "100", Title: "Chapter 31: Infusion", Delisted: true, URL: "u"},
+		{ID: "130", Title: "Chapter 34 Conspiracies", Delisted: true, URL: "u"},
+		{ID: "140", Title: "Chapter 35: Later"},
+		{ID: "900", Title: "Chapter 201: Much Later"},
+	})
+	var line []string
+	for _, ref := range listed {
+		line = append(line, ref.ID+"="+ref.Title)
+	}
+	// 32 and 33 are missing; the jump from the delisted stretch to the
+	// site's own list is too, up to a point; 36-200 between two listed
+	// chapters is the site's business.
+	if got := strings.Join(line, "|"); got != "100=Chapter 31: Infusion|100+1=Chapter 32|100+2=Chapter 33|130=Chapter 34 Conspiracies|140=Chapter 35: Later|900=Chapter 201: Much Later" {
+		t.Fatalf("with gaps: %s", got)
+	}
+	text := func(title string) epub.Chapter {
+		return epub.Chapter{Title: title, Blocks: []epub.Block{{Kind: epub.BlockText, Text: title}, {Kind: epub.BlockText, Text: "text of " + title}}}
+	}
+	fill := newEpubFill(&epub.Book{Chapters: []epub.Chapter{
+		text("31. Infusion"), text("32. Vanity"), text("33. Infection"), text("34. Conspiracies"),
+	}})
+	fill.setNeighbours(listed)
+	want := map[string]string{"100+1": "Chapter 32: Vanity", "100+2": "Chapter 33: Infection", "130": "Chapter 34: Conspiracies"}
+	for _, ref := range listed[1:4] {
+		got, ok := fill.take(ref)
+		if !ok || len(got) != 1 || got[0].Title != want[ref.ID] {
+			t.Errorf("%s (%q): %+v ok=%v, want %q", ref.ID, ref.Title, got, ok, want[ref.ID])
+		}
+	}
+	// A renumbered book's "Chapter 1" isn't the serial's chapter 1.
+	renumbered := newEpubFill(&epub.Book{Chapters: []epub.Chapter{text("Chapter 1"), text("Chapter 2")}})
+	renumbered.setNeighbours([]websource.ChapterRef{{ID: "a", Title: "Chapter One - 001"}})
+	if renumbered.has(websource.ChapterRef{ID: "a", Title: "Chapter One - 001"}) {
+		t.Error("a number-only chapter matched an epub that starts at 1")
+	}
+}
+
+func TestInNumberOrder(t *testing.T) {
+	list := func(titles ...string) []websource.ChapterRef {
+		var out []websource.ChapterRef
+		for _, title := range titles {
+			out = append(out, websource.ChapterRef{ID: title, Title: title, Delisted: true})
+		}
+		return out
+	}
+	titles := func(refs []websource.ChapterRef) string {
+		var out []string
+		for _, r := range refs {
+			out = append(out, strings.TrimPrefix(r.Title, "Chapter "))
+		}
+		return strings.Join(out, ",")
+	}
+	// A chapter posted again later, and two posted out of turn.
+	got := titles(inNumberOrder(list("Chapter 39", "Chapter 41", "Chapter 42", "Chapter 46", "Chapter 40", "Chapter 48", "Chapter 47", "Chapter 49")))
+	if got != "39,40,41,42,46,47,48,49" {
+		t.Errorf("out of turn: %s", got)
+	}
+	// Numbers that start over with a new volume are left alone.
+	got = titles(inNumberOrder(list("Chapter 98", "Chapter 99", "Chapter 1", "Chapter 2")))
+	if got != "98,99,1,2" {
+		t.Errorf("a new volume: %s", got)
+	}
+}
+
+func postForm(t *testing.T, url string, data []byte, fields map[string]string) *http.Response {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "book.epub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fw.Write(data)
+	for k, v := range fields {
+		_ = mw.WriteField(k, v)
+	}
+	_ = mw.Close()
+	resp, err := http.Post(url, mw.FormDataContentType(), &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// TestEpubFillByOpening: a published book that only numbers its chapters,
+// from 1, shares no titles with the serial - but the chapters the book
+// already has are found in it by how they open, and the ones after them
+// are counted on from there, as far as the epub's story runs.
+func TestEpubFillByOpening(t *testing.T) {
+	opening := func(n int) string {
+		return fmt.Sprintf("The morning of day %d began the way the others had, with rain on the shutters and nobody willing to say number %d aloud.", n, n*7)
+	}
+	chapter := func(title string, n int) epub.Chapter {
+		return epub.Chapter{Title: title, Blocks: []epub.Block{{Kind: epub.BlockText, Text: title}, {Kind: epub.BlockText, Text: opening(n)}}}
+	}
+	fill := newEpubFill(&epub.Book{Chapters: []epub.Chapter{
+		chapter("Contents", 100),
+		chapter("Chapter 1", 68), chapter("Chapter 2", 69), chapter("Chapter 3", 70), chapter("Chapter 4", 71),
+		chapter("Afterword", 200),
+	}})
+	var planned []websource.ChapterRef
+	for n := 66; n <= 72; n++ {
+		planned = append(planned, websource.ChapterRef{ID: fmt.Sprint(n), Title: fmt.Sprintf("Chapter %d", n)})
+	}
+	fill.setNeighbours(planned)
+	// Nothing known yet: a number alone says nothing in a renumbered book.
+	if fill.has(planned[4]) {
+		t.Fatal("matched with nothing to go by")
+	}
+	// The serial's wording, before the copy-edit.
+	fill.addOpening("68", strings.Replace(opening(68), "began the way", "started the way", 1))
+	fill.addOpening("69", opening(69))
+	fill.addOpening("67", "Something the epub does not have at all, a chapter from the volume before this one, long enough to compare.")
+	for i, want := range []string{"", "", "", "", "Chapter 70", "Chapter 71", ""} {
+		if i < 4 {
+			continue
+		}
+		got, ok := fill.take(planned[i])
+		title, body := "", ""
+		if ok && len(got) == 1 {
+			title, body = got[0].Title, got[0].Body
+		}
+		if title != want || (want != "" && !strings.Contains(body, fmt.Sprintf("day %s began", planned[i].ID))) {
+			t.Errorf("%s -> %q %q (ok %v), want %q", planned[i].Title, title, body, ok, want)
+		}
+	}
+}
+
+// TestMatchEpubChaptersByHand: an epub whose chapters can't be told apart
+// from the book's is used anyway by saying which of its chapters is the
+// first one missing, and a chapter filled from the wrong one is put right
+// in place.
+func TestMatchEpubChaptersByHand(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	inn := wanderinginntest.New(t)
+	_, wayback := newFakeWayback(t)
+	srv.Sources = []websource.Source{inn.Source()}
+	srv.Wayback = wayback
+	inn.AddChapter(1, "rw1-00", "1.00", `<p>From the site.</p>`)
+	for _, slug := range []string{"rw1-01", "rw1-02"} {
+		id := inn.AddChapter(1, slug, strings.Replace(slug, "rw1-", "1.", 1), `<p>Never served.</p>`)
+		inn.SetLocked(id, true)
+	}
+	var created sourceTestBook
+	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: "wanderinginn.com"}, &created); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("import: %d", resp.StatusCode)
+	}
+	book := waitSourceSynced(t, ts.URL, created.ID)
+	data := testEpub(t,
+		`<h1>Dawn</h1><p>From the site.</p>`,
+		`<h1>Noon</h1><p>The second one, as published.</p>`,
+		`<h1>Dusk</h1><p>The third one, as published.</p>`,
+		`<h1>Night</h1><p>A fourth, as published.</p>`,
+	)
+
+	resp := postForm(t, ts.URL+"/api/epub/chapters", data, map[string]string{"bookId": book.ID})
+	var listed epubChaptersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil || resp.StatusCode != http.StatusOK || len(listed.Chapters) != 4 {
+		t.Fatalf("list: %d %+v %v", resp.StatusCode, listed, err)
+	}
+	resp.Body.Close()
+	if c := listed.Chapters[1]; c.Title != "Noon" || c.Opening != "The second one, as published." || c.Paragraphs != 2 {
+		t.Errorf("listed chapter = %+v", c)
+	}
+
+	// Nothing matches by title; told where to start, the rest follow on.
+	resp = postForm(t, ts.URL+"/api/books/"+book.ID+"/source/backfill", data, nil)
+	if resp.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("backfill with nothing to go by: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	resp = postForm(t, ts.URL+"/api/books/"+book.ID+"/source/backfill", data, map[string]string{"first": "2"})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("backfill from a named chapter: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	book = waitSourceSynced(t, ts.URL, book.ID)
+	if book.ChapterCount != 3 || book.Source.Blocked != "" {
+		t.Fatalf("after: %d chapters, source %+v", book.ChapterCount, book.Source)
+	}
+	title1, texts1 := chapterTexts(t, s, book.ID, 1)
+	_, texts2 := chapterTexts(t, s, book.ID, 2)
+	if texts1[len(texts1)-1] != "The third one, as published." || texts2[len(texts2)-1] != "A fourth, as published." {
+		t.Fatalf("filled = %q, %q", texts1, texts2)
+	}
+
+	// That was one too far along: chapter 1 is the epub's second.
+	resp = postForm(t, ts.URL+"/api/books/"+book.ID+"/chapters/1/match-epub", data, map[string]string{"epubChapter": "1"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("match: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	check := func(when string) {
+		t.Helper()
+		title, texts := chapterTexts(t, s, book.ID, 1)
+		if title != title1 || texts[len(texts)-1] != "The second one, as published." {
+			t.Errorf("%s: %q %q, want title %q", when, title, texts, title1)
+		}
+	}
+	check("matched")
+	if after, _ := s.CountChapters(book.ID); after != 3 {
+		t.Errorf("chapters = %d", after)
+	}
+	// The kept epub has it too, so a re-import gives the same text.
+	resp = doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/chapters/1/reimport", nil, nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("reimport: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	check("re-imported")
+	resp = postForm(t, ts.URL+"/api/books/"+book.ID+"/chapters/1/match-epub", data, map[string]string{"epubChapter": "9"})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("a chapter the epub lacks: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+// TestRestructureChapters: a chapter the book skipped is put in from an
+// epub, a chapter is moved and another removed - the rest keep their text,
+// the reading position follows its chapter, the kept epub follows the
+// book, and a removed chapter isn't fetched again.
+func TestRestructureChapters(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	inn := wanderinginntest.New(t)
+	_, wayback := newFakeWayback(t)
+	srv.Sources = []websource.Source{inn.Source()}
+	srv.Wayback = wayback
+	for i, slug := range []string{"rw1-00", "rw1-01", "rw1-02"} {
+		inn.AddChapter(1, slug, fmt.Sprintf("1.0%d", i), fmt.Sprintf(`<p>Site text %d.</p>`, i))
+	}
+	var created sourceTestBook
+	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: "wanderinginn.com"}, &created); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("import: %d", resp.StatusCode)
+	}
+	book := waitSourceSynced(t, ts.URL, created.ID)
+	if book.ChapterCount != 3 {
+		t.Fatalf("chapters = %d", book.ChapterCount)
+	}
+	if err := s.UpdatePosition(book.ID, 1, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	titles := func() string {
+		t.Helper()
+		n, _ := s.CountChapters(book.ID)
+		var out []string
+		for idx := range n {
+			title, texts := chapterTexts(t, s, book.ID, idx)
+			out = append(out, title+"="+texts[len(texts)-1])
+		}
+		return strings.Join(out, "|")
+	}
+	data := testEpub(t, `<h1>Front</h1><p>Not story.</p>`, `<h1>Interval A</h1><p>Only in the book A.</p>`, `<h1>Interval B</h1><p>Only in the book B.</p>`)
+
+	resp := postForm(t, ts.URL+"/api/books/"+book.ID+"/chapters/insert", data, map[string]string{"epubChapter": "1", "count": "2", "at": "1"})
+	var inserted insertChaptersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&inserted); err != nil || resp.StatusCode != http.StatusOK || inserted.Inserted != 2 {
+		t.Fatalf("insert: %d %+v %v", resp.StatusCode, inserted, err)
+	}
+	resp.Body.Close()
+	if got, want := titles(), "1.00=Site text 0.|Interval A=Only in the book A.|Interval B=Only in the book B.|1.01=Site text 1.|1.02=Site text 2."; got != want {
+		t.Fatalf("after insert: %q", got)
+	}
+	if b, _ := s.GetBook(book.ID); b.PosChapterIdx != 3 {
+		t.Errorf("position after insert = %d, want 3", b.PosChapterIdx)
+	}
+
+	if resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/chapters/4/move", moveChapterRequest{To: 1}, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("move: %d", resp.StatusCode)
+	}
+	if got, want := titles(), "1.00=Site text 0.|1.02=Site text 2.|Interval A=Only in the book A.|Interval B=Only in the book B.|1.01=Site text 1."; got != want {
+		t.Fatalf("after move: %q", got)
+	}
+	if b, _ := s.GetBook(book.ID); b.PosChapterIdx != 4 {
+		t.Errorf("position after move = %d, want 4", b.PosChapterIdx)
+	}
+
+	if resp := doJSON(t, http.MethodDelete, ts.URL+"/api/books/"+book.ID+"/chapters/1", nil, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete: %d", resp.StatusCode)
+	}
+	want := "1.00=Site text 0.|Interval A=Only in the book A.|Interval B=Only in the book B.|1.01=Site text 1."
+	if got := titles(); got != want {
+		t.Fatalf("after delete: %q", got)
+	}
+	if resp := doJSON(t, http.MethodPut, ts.URL+"/api/books/"+book.ID+"/chapters/3/title", renameChapterRequest{Title: "One point oh one"}, nil); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("rename: %d", resp.StatusCode)
+	}
+	want = strings.Replace(want, "1.01=", "One point oh one=", 1)
+	if _, texts := chapterTexts(t, s, book.ID, 3); texts[0] != "One point oh one" {
+		t.Errorf("renamed chapter opens %q", texts[0])
+	}
+	// The kept epub follows: every chapter re-imports as itself.
+	for idx := range 4 {
+		resp := doJSON(t, http.MethodPost, fmt.Sprintf("%s/api/books/%s/chapters/%d/reimport", ts.URL, book.ID, idx), nil, nil)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("reimport %d: %d", idx, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+	if got := titles(); got != want {
+		t.Errorf("after re-import: %q", got)
+	}
+	// A check doesn't bring the removed chapter back.
+	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+book.ID+"/source/sync", nil, nil).Body.Close()
+	after := waitSourceSynced(t, ts.URL, book.ID)
+	if got := titles(); got != want || after.Source.Error != "" || len(after.Source.Review) != 0 {
+		t.Errorf("after a check: %q, source %+v", got, after.Source)
 	}
 }

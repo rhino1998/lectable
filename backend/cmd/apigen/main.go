@@ -19,7 +19,9 @@
 //   - Live topics (live.go): httpapi.registerLiveTopics' Register calls.
 //   - Routes (routes.go): every mux.HandleFunc route, with its path/query
 //     params, request body, response, and error codes worked out from the
-//     handler's body.
+//     handler's body. These also become cmd/lectable-mcp's route catalog
+//     (render_mcp.go), so the MCP server's `routes` tool lists what the
+//     backend really serves.
 //
 // Struct tags override one field's client type: `tstype:"X"` (a TS type
 // expression; any identifier in it that isn't generated must be declared
@@ -68,6 +70,7 @@ const (
 	ktTypesOut  = ktRemoteDir + "dto/ApiTypes.kt"
 	ktAPIOut    = ktRemoteDir + "LectableApi.kt"
 	ktLiveOut   = ktRemoteDir + "LiveTopics.kt"
+	mcpOut      = "cmd/lectable-mcp/routes_gen.go"
 
 	ktDTOPackage    = "com.lectable.app.data.remote.dto"
 	ktRemotePackage = "com.lectable.app.data.remote"
@@ -152,10 +155,15 @@ func generate(dir string) (map[string][]byte, error) {
 	if err := g.drain(); err != nil {
 		return nil, err
 	}
+	mcpRoutes, err := g.renderMCPRoutes(routes)
+	if err != nil {
+		return nil, err
+	}
 	return map[string][]byte{
 		filepath.Join(dir, tsOut):      g.renderTS(cat, topics, routes),
 		filepath.Join(dir, ktTypesOut): g.renderKotlinTypes(cat),
 		filepath.Join(dir, ktAPIOut):   g.renderKotlinAPI(routes),
 		filepath.Join(dir, ktLiveOut):  g.renderKotlinLive(topics),
+		filepath.Join(dir, mcpOut):     mcpRoutes,
 	}, nil
 }

@@ -406,7 +406,8 @@ func (s *Server) preprocessAttributionPhase(book *store.Book, chapters []store.C
 
 // preprocessCharacterizationPhase is Phase 2 - characterization for every
 // character discovered so far (including ones from earlier books in the
-// same series - see store.SeriesScope) who isn't characterized yet;
+// same series - see store.SeriesScope) who speaks in this book
+// (speakingCharacters) and isn't characterized yet;
 // ensureCharacterized's own fast path skips anyone who already is. Listed
 // fresh here (unlike Phase 1's chapters, which the pipeline's caller
 // hoists once and shares with Phase 4's own direction-tagging phase) since
@@ -425,10 +426,7 @@ func (s *Server) preprocessCharacterizationPhase(book *store.Book) jobs.Pipeline
 			log.Printf("httpapi: preprocess book %s: list characters: %v", book.ID, err)
 		}
 		var wg sync.WaitGroup
-		for _, char := range characters {
-			if char.Invalid {
-				continue
-			}
+		for _, char := range s.speakingCharacters(book, characters) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -443,6 +441,31 @@ func (s *Server) preprocessCharacterizationPhase(book *store.Book) jobs.Pipeline
 		}
 		return nil
 	}
+}
+
+// speakingCharacters narrows characters to the ones worth characterizing
+// ahead of time for book: valid, and credited with at least one line of
+// its dialogue. A characterization exists to give a character a voice, and
+// the roster also holds everyone attribution only ever met as a name - a
+// cast member who never speaks, or one from another book of the series
+// who doesn't appear in this one. Whoever is skipped is still characterized
+// the moment a line of theirs needs a voice
+// (jobs.Manager.characterizationDependency), and by the Speakers page's
+// own buttons. If the line counts can't be read, nobody is skipped.
+func (s *Server) speakingCharacters(book *store.Book, characters []store.Character) []store.Character {
+	lines, err := s.Store.SpeakerLineCounts(book.ID)
+	if err != nil {
+		log.Printf("httpapi: preprocess book %s: count speaker lines: %v", book.ID, err)
+		lines = nil
+	}
+	var out []store.Character
+	for _, char := range characters {
+		if char.Invalid || lines != nil && lines[char.Name] == 0 {
+			continue
+		}
+		out = append(out, char)
+	}
+	return out
 }
 
 // preprocessDirectionPhase is Phase 4 - speech-direction tagging for every

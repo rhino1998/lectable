@@ -587,6 +587,70 @@ prompt up front is what makes it safe for several concurrent
 `LLMGenerate` calls to each copy from the same already-decoded prefix
 into their own slot without racing to prime it first.
 
+**Roster review** (2026-10-08, `rosterreview.go`, `httpapi/roster_review.go`,
+`jobs.KindRosterReview`): a pass over a whole roster that proposes fixes
+for the reader to accept or skip - it never changes the roster, since a
+merge deletes the merged name's voice and can't be undone. Audited first
+on the live library (17 rosters of 30+ characters, 3,511 characters): 407
+pairs of non-role names sharing a distinctive word, 23 aliases that are
+another character's name, 99 lower-case names not marked as roles, and a
+handful of kind words that had taken several people's names as aliases
+(Underverse's "leader": Balthazar, Darius, Dwarrow, Musiah, Vectus).
+Chapter co-occurrence doesn't tell duplicates from different people -
+"Centurion Primus Restun" and "Primus Restun" both speak in 61 chapters
+and are one man, Darakin and "Legionnaire Daralen" share 15 and aren't -
+so pairs need the text read.
+- *Rules* (`RosterRuleFixes`, no model): a name that names nobody is
+  invalidated; a description is marked a role; a single word the book
+  mostly writes in lower case (`WordCaseCounts` over the whole text) that
+  holds two or more aliases loses them and becomes a role; an alias that
+  is another character's name is removed when their pronouns differ or the
+  holder is a bare title ("Baron", also called "Joshua"). The lower-case
+  test counts uses: with a plain "does the book ever write it lower case"
+  (`LowercaseWords`), Underverse's protagonist Jack (27,200 lines; the
+  book has a "jack" somewhere) was proposed as a role.
+- *First names* (`shortNameTarget`, dedupe's rule 4) are proposed, not
+  merged - except a rank ("Baron" into "Baron Sanguis") or a name inside
+  "X of Y" ("Issa" into "Priest of Issa", a god and his priest).
+- *Pairs* (`RosterPairs`): one has the other's name as an alias, or one's
+  distinctive words (titles and ranks dropped) are all among the other's.
+  Possessives ("Daana's mother") and numbered names are never paired. Up
+  to `maxRosterPairsPerRun` (40) a run, most lines first; a pair decided
+  once is never asked again.
+- *Unwritten names* (`RosterPair.UnwrittenName`): when the book never
+  writes one of a pair's names on its own ("Centurion Restun" not at all,
+  "Legionnaire Daralen" only as "Legionnaire Primus Daralen"), attribution
+  made the name up - a merge is proposed without asking the model.
+- *Verdict* (`Client.JudgeSamePerson`, temperature 0): `PairPassages` finds
+  up to 3 paragraphs naming both and 3 naming each alone (a name inside
+  the other's counts only as the longer one; the alias in question is
+  taken off its holder first, or every passage naming one would name
+  both), and the model answers same / different / unclear with the words
+  that show it. "Same" stands only when those words are in a passage that
+  names both: shown "I am Othair, my lord" the model called Othair, a
+  butler, the same as the god Darakin whose alias he was. "Different" on
+  an alias pair proposes removing the alias; anything else is stored
+  `ruled_out`.
+
+Measured on a copy of Underverse (530 characters, 12 books;
+`cmd/rosterreview`, the live worker shared with a running queue): 3s
+without the model; with it 14 calls and 39s in all. 63 proposals: 19 rule
+merges (15 first names, 3 unwritten names, 1 markup), 21 alias removals,
+17 roles, 1 invalid name, 3 model merges and 2 model alias removals
+(Darakin's "Othair", Oracle's "Hellenica"); 11 pairs ruled out. Read by
+hand, not scored against labels. Of the model's three merges two are
+right (Restun; "Sanguis" into "Baron Sanguis" on "Baron Sanguis—no, just
+Sanguis now") and one is wrong: "Lord Barabarattas" into "Mal", on "City
+Lord Barabarattas was going to go apeshit..., and Mal loved it" - a
+passage naming both that shows two people. The run before had called the
+same pair unclear, so verdicts aren't repeatable across runs either.
+Doubtful among the rules': "Grey" into "Grey Rat", and "Centurion Restun"
+proposed into both Restuns (one person - accepting either makes the other
+moot). Not found: anything needing more than six passages or knowledge of
+the plot - what the Claude subagent (`.claude/agents/roster-fixer.md`)
+files through `POST .../roster-review/proposals`. Its prompt is not in
+`SystemPrompts`.
+
 **Malformed-response retry**: every batch call in this package
 (`attributeBatch`, `describeBatch`, `emotionBatch`,
 `CharacterizeVoice`) goes through `generateAndParse`/`retryParse`
@@ -685,18 +749,56 @@ call renders narration and quote together).
 task, `Passes.Direction`, `POST .../tag-directions` and the preprocess
 direction phase all keep their old "direction" names) sends a chapter
 in batches of `emotionBatchParagraphs` (30), narration included as
-context with dialogue lines marked `(dialogue)`, and asks for plain
-`idx: label` lines only for clearly emotional dialogue.
-`parseEmotionLines` drops anything that isn't a dialogue idx from the
-batch with a known label, line by line - never failing the batch.
-`emotionSystemPrompt` is built from `emotions.All`, so the offered labels
-can't drift from what the app renders. Runs under any clone model.
+context with dialogue lines marked `(dialogue)`, and gets a label for
+the clearly emotional dialogue lines (how it asks is below). Both prompts
+are built from `emotions.All`, so the offered labels can't drift from
+what the app renders. Runs under any clone model.
 Rewrites every processed line's stored label (clearing stale ones) but
 only invalidates audio for paragraphs whose *effective* emotion changed
 (`Server.invalidateParagraphAudio`). A paused/failed run requeues just
 the unreached paragraphs via `onlyIdx`, the same shape as before; with
 `Book.SpeechDirection` on, `speechDirectionDependency` makes a chapter's
 generation wait for it under any clone model.
+
+**Decided, not generated** (since 2026-10-08): with a backend that can
+decide (`llmDecider` - the live worker), `emotionBatch` asks
+`emotionDenseSystemPrompt` - the same prompt wanting a verdict on *every*
+dialogue line, "neutral" included - and reads each verdict from the
+model's logits over neutral and the labels (`emotionSteps`, one decode
+round a line, each conditioned on the verdicts before it); a line is
+labeled when an emotion outscores neutral. The generated list of only the
+emotional lines (`emotionSystemPrompt`, `parseEmotionLines`) is now the
+fallback for a backend with no decide call (test fakes) or a tokenizer
+that starts two labels with one token. Chapters keep the labels they have
+until their pass is re-run.
+
+Measured on Qwen3.6-35B-A3B over 11 chapters of Arise: Alpha, Spire's
+Spite, Jake's Magical Market 3 and The Wandering Inn, 981 dialogue lines
+(`Client.EmotionProbe`, `cmd/sqdecide -emotion`). No reviewed labels
+exist, so quality is a read of 54 sampled disagreements, not a score:
+- The generated list labeled a third of all dialogue (327 lines; 75 of
+  117 in The Wandering Inn) and wasn't stable - a second run agreed on 893
+  of 981 lines. The dense prompt labels half as many (162 generated, 163
+  decided, agreeing on 941 lines; decided twice, 952).
+- Of 24 sampled lines only the list labeled and the decide call put at
+  0.98+ neutral, about 20 read as wrong or unearned ("Blue juice?"
+  whisper, "Greetings. May we come in?" cold, "Shit." cold); of 16 only
+  the dense prompt labeled, about 12 read right, one with "anger edging
+  his voice" in its own tag.
+- The decide call's P(neutral) (`EmotionVerdict.Neutral`) is a dial the
+  pass doesn't use yet - it labels at the argmax: labelling under 0.3 /
+  0.5 / 0.7 would give 128 / 174 / 224 lines. Picking one needs reviewed
+  labels.
+- Cost, same chapters: list 33s, dense generated 82s, dense decided 57s
+  (35s with MTP off). The extra is per decide step with MTP on, and not
+  the draft context's feed: keeping decide slots out of it changed nothing
+  (57s). Unverified guess: `n_rs_seq` > 0, which MTP rollback needs, makes
+  llama.cpp keep each sequence's trailing tokens in one ubatch, so a round
+  of several slots' short step chunks splits into several computes.
+- Rejected: reading the whole batch in one pass, each line's verdict
+  written as neutral before the next is read. 27s, but a transcript of
+  neutrals talks the model out of emotional runs - 83 labels instead of
+  157, a villain's "Kill them as well." going from 1% neutral to 98%.
 
 Stored in `paragraphs.emotion` (`Store.SetParagraphEmotions`). A reader
 overrides one line via `PUT .../paragraphs/{pidx}/emotion`
@@ -813,7 +915,13 @@ teardrop, "heavy as lead" → metal, "a slight bow" → gesture, and so on.
 Only terms no rule settles reach the model, whose only job is picking a
 lettered option per span (reply shape `{"0": "A", ...}`), so it can
 never invent replacement text - the safety property that makes this safe
-to change what's spoken at all. Each term is shown as its own short
+to change what's spoken at all. The reply isn't generated: the pass
+writes everything but the letters itself and reads each letter from the
+model's logits over that term's options (`pronunciationSteps`,
+`llmDecider` - `ttsworker.Manager.LLMDecide`, the worker's `/llm/decide`),
+one decode round a term in the same LLM slots as every other pass. A
+backend with no decide call (test fakes) still generates and parses
+(`pronunciationGenerate`). Each term is shown as its own short
 passage with the word marked `⟦inline⟧` and each option described by
 *meaning* (`pronunciationCandidate.senses`), not by respelling. A
 response entry that's missing, malformed, or out-of-range defaults
@@ -832,6 +940,22 @@ call. Known remaining misses: "lead" misspelled for past-tense "led"
 in narration, weapon-vs-gesture "bow" with no archery words nearby, and
 "read" in present-tense narration (the rules assume past-tense
 narration - `pronunciationNarrationPastTense`).
+
+**Decided vs generated** (2026-10-08, Qwen3.6-35B-A3B, `cmd/sqdecide
+-pron` over the same set - 447 of its terms are still two-way choices):
+generated 425 right, decided 423, the two agreeing on 606 of 617 terms
+asked; on the 91 no rule settles, 85 and 86. Decided is ~30% faster (51s
+vs 71s; 9.8s vs 14.5s on the rule-unsettled terms) - the JSON reply was
+6.3K generated tokens. One term per call scored 430 in 64s, and that with
+both option orders averaged 422 at twice the cost, so neither is used.
+Each decision carries the model's probability
+(`ttsproto.LLMDecision.Probs`), which the pass doesn't keep yet: on that
+run the 25 terms under 0.75 held 14 of the 24 errors and the 304 at 0.99
+or more held one, but neither falling back to the default reading when
+unsure nor letting a confident model overrule a rule changed the score.
+The same call on the scare-quote pass (`Client.ScareQuoteDecide`, bench
+only) matched generation in accuracy and time - its reply is a few
+tokens - so that pass still generates.
 
 Running the pass (`httpapi.pronounceChapter`) invalidates audio for
 every paragraph it touches - one it finds a substitution in, or one

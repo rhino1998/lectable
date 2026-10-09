@@ -48,6 +48,8 @@ import (
 	"sync"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
 
 // Config carries the caller-side prompting knobs that stay in this package
@@ -147,6 +149,13 @@ func ConfigFromEnv() Config {
 // doc comment for why it still lives in ttsworker anyway).
 type llmBackend interface {
 	LLMGenerate(ctx context.Context, systemPrompt, userPrompt string, temp float32, maxTokens int) (string, error)
+}
+
+// llmDecider is the optional half of an llmBackend that can answer
+// closed-set questions by reading logits instead of generating
+// (llmworker.Worker.LLMDecide).
+type llmDecider interface {
+	LLMDecide(ctx context.Context, systemPrompt, userPrompt string, steps []ttsproto.LLMDecideStep) ([]ttsproto.LLMDecision, error)
 }
 
 // Client is a thin caller-side wrapper around an llmBackend: batching,
@@ -2149,7 +2158,7 @@ func truncate(s string, n int) string {
 // SystemPrompts returns every distinct system-prompt string this package's
 // Client will ever call generate with - the fixed, package-level constants
 // backing AttributeChapter (systemPrompt), CharacterizeVoice (characterizeSystemPrompt),
-// EmotionChapter (emotionSystemPrompt),
+// EmotionChapter (emotionDenseSystemPrompt - the one its decide call uses),
 // ResolvePronunciation (pronunciationSystemPrompt), and ScoreMusic's own
 // two passes (musicSystemPrompt, musicDescribeSystemPrompt) - the latter
 // especially worth priming since ScoreMusic now issues one
@@ -2166,7 +2175,7 @@ func SystemPrompts() []string {
 	return []string{
 		systemPrompt,
 		characterizeSystemPrompt,
-		emotionSystemPrompt,
+		emotionDenseSystemPrompt,
 		pronunciationSystemPrompt,
 		scareQuoteSystemPrompt,
 		musicSystemPrompt,

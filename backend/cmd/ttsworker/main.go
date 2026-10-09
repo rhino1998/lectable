@@ -98,10 +98,11 @@ func main() {
 
 	audioWorker, err := audioworker.New(audioworker.Config{
 		DefaultCloneModel: defaultCloneModel,
-		// Matches internal/jobs' own maxInFlight (4, poolGeneration's
-		// concurrent-Generate-call cap) by default - see audioworker.
-		// Config.ClonePoolSize's own doc comment for why a smaller pool
-		// just reintroduces today's queueing, only less of it.
+		// Half of internal/jobs' own maxInFlight (8, poolGeneration's
+		// concurrent-Generate-call cap, sized for Higgs batching, which
+		// shares one session): calls beyond the pool wait for a session
+		// - see audioworker.Config.ClonePoolSize's own doc comment. Most
+		// families override it anyway (cloneFamily.poolSizeOverride).
 		ClonePoolSize:   envIntOr("LECTABLE_AUDIOCPP_CLONE_POOL_SIZE", 4),
 		IdleUnloadAfter: idleUnloadAfter,
 		BeforeLoad:      audioBeforeLoad,
@@ -161,6 +162,7 @@ func main() {
 	mux.HandleFunc("POST /codec-decode", audioWorker.HandleCodecDecode)
 	mux.HandleFunc("POST /unload", audioWorker.HandleUnload)
 	mux.HandleFunc("POST /llm/generate", llmWorker.HandleGenerate)
+	mux.HandleFunc("POST /llm/decide", llmWorker.HandleDecide)
 	mux.HandleFunc("POST /llm/unload", llmWorker.HandleUnload)
 	mux.HandleFunc("GET /health", func(rw http.ResponseWriter, r *http.Request) {
 		// llmWorker.Loaded() is read fresh on every request (not captured

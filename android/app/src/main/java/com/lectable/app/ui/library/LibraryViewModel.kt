@@ -318,6 +318,15 @@ class LibraryViewModel @Inject constructor(
         _uiState.update { it.copy(notice = null) }
     }
 
+    /** Long-press menu's "Rename": the title and author the library shows. The row's change
+     *  arrives on the live books topic. */
+    fun renameBook(id: String, title: String, author: String) {
+        viewModelScope.launch {
+            runCatching { repository.renameBook(id, title.trim(), author.trim()) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
     fun deleteBook(id: String) {
         viewModelScope.launch {
             runCatching { repository.deleteBook(id) }
@@ -341,6 +350,17 @@ class LibraryViewModel @Inject constructor(
     fun preprocessBook(bookId: String) {
         viewModelScope.launch {
             runCatching { repository.preprocessBook(bookId) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    /** Long-press menu's "Make a recap" - queues the "previously on" recap for where the book's
+     *  reader is (the reader's own Recap entry, from the library), so it is written and spoken
+     *  before the book is opened. Shows on the Jobs screen while it is made; nothing is queued
+     *  when the book already has one for that spot. */
+    fun makeRecap(bookId: String) {
+        viewModelScope.launch {
+            runCatching { repository.prepareRecap(bookId, force = false) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }

@@ -58,6 +58,17 @@ type QueueTask struct {
 	// taskChars) - 0 for every other kind. With Manager.Throughput, what
 	// the Jobs views estimate time left from.
 	Chars int
+	// Remaining is, for a preprocessing phase or bulk group that has
+	// started, how many of the tasks it asked for are still queued or
+	// running - what it is waiting on. 0 for every other task, and for a
+	// group still queued itself (it hasn't asked for anything yet).
+	Remaining int
+	// RemainingTime estimates how long those Remaining tasks take run on
+	// their own, with nothing else in the queue (see Manager.groupTimeLeft);
+	// 0 when none of them can be estimated yet. RemainingTimePartial says
+	// some of them couldn't be, so the real figure is higher.
+	RemainingTime        time.Duration
+	RemainingTimePartial bool
 }
 
 // taskEmotion is the emotion t's line generates in, for display: the
@@ -98,6 +109,10 @@ func toQueueTask(t *task, tier int) QueueTask {
 // considered in, each at its effective tier. Preprocessing phases and bulk
 // groups are rows like any other.
 func (m *Manager) Snapshot() (inFlight, queued []QueueTask) {
+	narrationRate, ok := m.Throughput()
+	if !ok {
+		narrationRate, _ = m.LastThroughput()
+	}
 	for _, info := range m.sched.Snapshot() {
 		var qt QueueTask
 		switch t := info.Task.(type) {
@@ -106,6 +121,8 @@ func (m *Manager) Snapshot() (inFlight, queued []QueueTask) {
 			qt.Attempt = info.Attempt
 		case *pipelineTask:
 			qt = toPipelineQueueTask(t, info.Priority)
+			qt.Remaining = len(info.Members)
+			qt.RemainingTime, qt.RemainingTimePartial = m.groupTimeLeft(info.Members, narrationRate)
 		default:
 			continue
 		}

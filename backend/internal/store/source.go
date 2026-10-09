@@ -83,6 +83,10 @@ type PlannedChapter struct {
 	// Suspect marks a pending entry whose title reads like an author's
 	// notice rather than a chapter.
 	Suspect bool `json:"suspect,omitempty"`
+	// Unreadable marks a pending entry that was agreed to but couldn't be
+	// read: a delisted chapter the archive has no usable copy of. The
+	// reader says skip it (the book goes on without) or try again.
+	Unreadable bool `json:"unreadable,omitempty"`
 }
 
 // SetBookSourcePlan stores bookID's plan, replacing any it had.
@@ -256,6 +260,46 @@ func (s *SQLiteStore) SourcedBooks() ([]SourcedBook, error) {
 			return nil, err
 		}
 		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// ChapterOpening is how one chapter starts: see ChapterOpenings.
+type ChapterOpening struct {
+	Idx      int
+	Title    string
+	SourceID string
+	Text     string
+}
+
+// ChapterOpenings returns how each of bookID's chapters opens, in order:
+// its first paragraphs joined, up to about limit characters. For telling
+// which chapter of another edition a chapter is.
+func (s *SQLiteStore) ChapterOpenings(bookID string, limit int) ([]ChapterOpening, error) {
+	rows, err := s.db.Query(`
+		SELECT c.idx, c.title, c.source_id, p.content
+		FROM chapters c JOIN paragraphs p ON p.chapter_id = c.id
+		WHERE c.book_id = ? AND p.idx < 12
+		ORDER BY c.idx, p.idx`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChapterOpening
+	for rows.Next() {
+		var o ChapterOpening
+		var content string
+		if err := rows.Scan(&o.Idx, &o.Title, &o.SourceID, &content); err != nil {
+			return nil, err
+		}
+		if len(out) == 0 || out[len(out)-1].Idx != o.Idx {
+			out = append(out, o)
+		}
+		last := &out[len(out)-1]
+		// The title is the chapter's first paragraph; it isn't its text.
+		if content != o.Title && len(last.Text) < limit {
+			last.Text += content + " "
+		}
 	}
 	return out, rows.Err()
 }

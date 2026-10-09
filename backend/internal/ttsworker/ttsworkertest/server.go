@@ -84,6 +84,9 @@ type Server struct {
 	// completeness check reads as "no extra words".
 	OnTranscribe  func(ttsproto.TranscribeRequest) (string, error)
 	OnLLMGenerate func(ttsproto.LLMGenerateRequest) (string, error)
+	// OnLLMDecide answers POST /llm/decide; unset, every step takes its
+	// first option.
+	OnLLMDecide func(ttsproto.LLMDecideRequest) ([]ttsproto.LLMDecision, error)
 }
 
 // New starts a fake ttsworker and registers its shutdown with t.Cleanup.
@@ -97,6 +100,7 @@ func New(t testing.TB) *Server {
 	mux.HandleFunc("POST /align", s.handleAlign)
 	mux.HandleFunc("POST /transcribe", s.handleTranscribe)
 	mux.HandleFunc("POST /llm/generate", s.handleLLMGenerate)
+	mux.HandleFunc("POST /llm/decide", s.handleLLMDecide)
 	mux.HandleFunc("POST /unload", s.handleUnloadTTS)
 	mux.HandleFunc("POST /llm/unload", s.handleUnloadLLM)
 	s.Server = httptest.NewServer(mux)
@@ -316,6 +320,32 @@ func (s *Server) handleLLMGenerate(w http.ResponseWriter, r *http.Request) {
 	// what it was asked, without needing a real model.
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ttsproto.LLMGenerateResponse{Text: "[fake reply to] " + req.UserPrompt})
+}
+
+func (s *Server) handleLLMDecide(w http.ResponseWriter, r *http.Request) {
+	var req ttsproto.LLMDecideRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.mu.Lock()
+	hook := s.OnLLMDecide
+	s.mu.Unlock()
+
+	decisions := make([]ttsproto.LLMDecision, len(req.Steps))
+	for i, st := range req.Steps {
+		decisions[i] = ttsproto.LLMDecision{Probs: make([]float64, len(st.Options)), Mass: 1}
+		decisions[i].Probs[0] = 1
+	}
+	if hook != nil {
+		var err error
+		if decisions, err = hook(req); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ttsproto.LLMDecideResponse{Decisions: decisions})
 }
 
 func (s *Server) handleUnloadTTS(w http.ResponseWriter, r *http.Request) {

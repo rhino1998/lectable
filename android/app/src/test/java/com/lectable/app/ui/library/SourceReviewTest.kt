@@ -15,6 +15,8 @@ class SourceReviewTest {
     fun importsByDefaultUnlessSuspect() {
         assertTrue(reviewImports(entry("1"), emptyMap()))
         assertFalse(reviewImports(entry("2", suspect = true), emptyMap()))
+        // A chapter that couldn't be read starts as skip: importing only tries it again.
+        assertFalse(reviewImports(SourceReviewEntryDto(id = "9", title = "Chapter 9", unavailable = true), emptyMap()))
         assertEquals(ReviewDecision(import = listOf("1", "3"), skip = listOf("2", "4")), reviewDecision(entries, emptyMap()))
     }
 

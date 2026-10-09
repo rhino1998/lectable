@@ -856,22 +856,46 @@ func recapChunks(text string) []string {
 // next book in the series' recap of it instead. Each position is looked
 // at once per run of the server. Does nothing without the LLM.
 func (s *Server) PrepareIdleRecaps(ctx context.Context) error {
+	_, err := s.prepareIdleRecaps(ctx, false)
+	return err
+}
+
+// handleCheckRecaps runs PrepareIdleRecaps' pass now, looking again at
+// positions it has already looked at since the server started - the
+// library's "prepare recaps" button. 202 with how many recaps it queued,
+// 503 without the LLM.
+func (s *Server) handleCheckRecaps(w http.ResponseWriter, r *http.Request) {
+	if s.Speaker == nil {
+		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
+		return
+	}
+	queued, err := s.prepareIdleRecaps(r.Context(), true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
+}
+
+// prepareIdleRecaps is PrepareIdleRecaps, reporting how many recaps it
+// queued; again also looks at positions an earlier pass already has.
+func (s *Server) prepareIdleRecaps(ctx context.Context, again bool) (queued int, err error) {
 	if s.Speaker == nil || s.Jobs == nil {
-		return nil
+		return 0, nil
 	}
 	after, err := s.Store.RecapAfterMinutes()
 	if err != nil || after < 0 {
-		return err
+		return 0, err
 	}
 	idleAfter := max(time.Duration(after)*time.Minute, recapIdleFloor)
 	books, err := s.Store.ListBooks()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	now := time.Now()
 	for i := range books {
 		if ctx.Err() != nil {
-			return nil
+			return queued, nil
 		}
 		b := &books[i]
 		if b.LastReadAt == 0 {
@@ -882,36 +906,39 @@ func (s *Server) PrepareIdleRecaps(ctx context.Context) error {
 			continue
 		}
 		at := fmt.Sprintf("%d:%d", b.PosChapterIdx, b.PosParagraphIdx)
-		if prev, _ := s.idleRecapTried.Swap(b.ID, at); prev == at {
+		if prev, _ := s.idleRecapTried.Swap(b.ID, at); prev == at && !again {
 			continue
 		}
-		if err := s.prepareIdleRecap(b); err != nil {
+		did, err := s.prepareIdleRecap(b)
+		if err != nil {
 			log.Printf("httpapi: idle recap for book %s: %v", b.ID, err)
 		}
+		if did {
+			queued++
+		}
 	}
-	return nil
+	return queued, nil
 }
 
 // prepareIdleRecap queues book's recap for where its reader stopped - or,
 // when they stopped at its end, the recap of it that the next book in the
-// series opens with.
-func (s *Server) prepareIdleRecap(book *store.Book) error {
+// series opens with - and reports whether it queued one.
+func (s *Server) prepareIdleRecap(book *store.Book) (bool, error) {
 	extents, err := s.Store.ChapterExtents(book.ID)
 	if err != nil || len(extents) == 0 {
-		return err
+		return false, err
 	}
 	if last := extents[len(extents)-1]; book.PosChapterIdx >= last.Idx && book.PosParagraphIdx >= last.Paragraphs-1 {
 		next, err := s.nextInSeries(book)
 		if err != nil || next == nil {
-			return err
+			return false, err
 		}
 		// Only for a reader yet to start it - a next book already read or
 		// under way has its own recaps, when it is read again.
 		if plan, err := s.planRecap(next); err != nil || plan == nil || plan.kind != store.RecapSeries {
-			return err
+			return false, err
 		}
 		book = next
 	}
-	_, err = s.prepareRecap(book, jobs.TierBackground, false, true)
-	return err
+	return s.prepareRecap(book, jobs.TierBackground, false, true)
 }

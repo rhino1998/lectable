@@ -118,7 +118,11 @@ fun RecapInline(
                     // No controls of its own: the playback bar's play/pause drives its clip.
                     if (recap.audioUrl == null) {
                         Text(
-                            if (state.preparing) "Its narration is on the way…" else "Not narrated yet.",
+                            when {
+                                state.waiting -> "Its narration is on the way - the book starts after it. Press play again to skip."
+                                state.preparing -> "Its narration is on the way…"
+                                else -> "Not narrated yet."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -134,7 +138,7 @@ fun RecapInline(
                 state.preparing -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
                     CircularProgressIndicator(modifier = Modifier.width(20.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(12.dp))
-                    Text("Writing the recap…")
+                    Text(if (state.waiting) "Writing the recap - the book starts after it. Press play again to skip." else "Writing the recap…")
                 }
                 recap?.error != null && recap.chapterIdx == state.pos.first -> Text(
                     "The recap couldn’t be written: ${recap.error}",

@@ -100,8 +100,8 @@ function DirectionCaret({ tag }: { tag: string }) {
   )
 }
 
-// A strikeout drawn directly through the exact word a pronunciation fix applies to - marks "this
-// specific word is read differently than written" right on the word itself, in the same
+// An underline on the exact word a pronunciation fix applies to (it used to be a strikeout,
+// hence the name) - marks "this specific word is read differently than written" right on the word itself, in the same
 // --pronunciation-caret color as DirectionCaret's own before-word up-arrow (delivery-tag
 // insertions), so the two still read as related even though this one isn't a caret shape.
 function PronunciationStrike({ mark, children }: { mark: PronunciationMark; children: ReactNode }) {

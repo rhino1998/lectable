@@ -252,6 +252,12 @@ const (
 	// (internal/speakerattr.Client.Recap/SeriesRecap, via
 	// httpapi.writeRecap) - one per book, keyed by it; see RunRecap.
 	KindRecap Kind = "recap"
+	// KindRosterReview reviews one roster (a series', or a lone book's)
+	// for duplicate and mislabeled characters and stores what it finds as
+	// proposals (httpapi.ReviewRoster) - rules first, then one short LLM
+	// call per pair of names that may be one person. Keyed by roster
+	// scope, so two books of a series share one run.
+	KindRosterReview Kind = "roster_review"
 	// KindRecapNarration speaks that recap in the book's narrator voice
 	// (RunRecapNarration) - KindVoiceProvision's shape, in poolGeneration.
 	KindRecapNarration Kind = "recap_narration"
@@ -650,6 +656,8 @@ func (t *task) dedupKey() string {
 		return "book_setting:" + t.llmKey
 	case KindRecap:
 		return "recap:" + t.llmKey
+	case KindRosterReview:
+		return "roster_review:" + t.llmKey
 	case KindRecapNarration:
 		return "recap_narration:" + t.llmKey
 	default:
@@ -708,6 +716,7 @@ var kindCompare = map[Kind]func(a, b *task, priority int) int{
 	KindSummary:                 comparePosition,
 	KindBookSetting:             comparePosition,
 	KindRecap:                   comparePosition,
+	KindRosterReview:            comparePosition,
 }
 
 // lessTask breaks a tie between two tasks of equal effective priority:

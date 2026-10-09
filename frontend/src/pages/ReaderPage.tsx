@@ -515,9 +515,9 @@ export function ReaderPage() {
     artist: bookQuery.data?.author ?? '',
     album: bookQuery.data?.title ?? '',
     artworkUrl: bookQuery.data?.coverUrl,
-    isPlaying: playback.isPlaying,
-    onPlay: playback.play,
-    onPause: playback.pause,
+    isPlaying: barPlayback.isPlaying,
+    onPlay: barPlayback.play,
+    onPause: barPlayback.pause,
     onNextTrack: () => skipParagraph(1),
     onPreviousTrack: () => skipParagraph(-1),
     currentTime: playback.currentTime,
@@ -809,7 +809,7 @@ export function ReaderPage() {
         chapter={currentChapter}
         bookChapters={book.chapters}
         playback={barPlayback}
-        statusOverride={recapTransport ? 'Previously on…' : undefined}
+        statusOverride={recapTransport?.label}
         autoFollow={autoFollow}
         onJumpToCurrent={jumpToCurrentParagraph}
         onJumpToChapter={jumpToChapter}

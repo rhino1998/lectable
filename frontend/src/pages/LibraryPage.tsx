@@ -10,6 +10,7 @@ import {
   RiDownload2Line,
   RiFileUploadLine,
   RiHeadphoneLine,
+  RiHistoryLine,
   RiLinksLine,
   RiLoader4Line,
   RiMagicLine,
@@ -21,6 +22,8 @@ import {
 import {
   useBackfillBookSource,
   useBooks,
+  useCheckRecaps,
+  usePrepareBookRecap,
   useCheckSources,
   useCancelBookJobs,
   useDeleteBook,
@@ -156,6 +159,9 @@ function BookCard({
   // through loses its place - worth a confirm; a finished or unopened one
   // has nothing to lose.
   const markRead = useMarkRead()
+  // Queues the recap for the book's saved position (the reader's Recap
+  // button, from here); it shows on the Jobs page while it is made.
+  const prepareRecap = usePrepareBookRecap(book.id)
   const handleMarkRead = () => {
     const read = !book.finished
     if (read && percent > 0 && !confirm(`Mark "${book.title}" as read? Your place in it is lost.`))
@@ -333,6 +339,14 @@ function BookCard({
         {book.finished ? <RiArrowGoBackLine /> : <RiCheckLine />}
       </button>
       <button
+        className="icon-button icon-button-recap"
+        title="Make a “previously on” recap of where you are in this book"
+        onClick={() => prepareRecap.mutate(false)}
+        disabled={prepareRecap.isPending}
+      >
+        <RiHistoryLine className={prepareRecap.isPending ? 'spin' : undefined} />
+      </button>
+      <button
         className="icon-button icon-button-cancel-jobs"
         title="Cancel every queued and running job for this book"
         onClick={handleCancelJobs}
@@ -354,7 +368,7 @@ function BookCard({
           <RiRefreshLine className={book.source.syncing ? 'spin' : undefined} />
         </button>
       )}
-      {book.source?.blocked && (
+      {(book.source?.blocked || book.source?.review?.some((e) => e.unavailable)) && (
         <>
           <button
             className="icon-button icon-button-backfill"
@@ -460,7 +474,38 @@ export function LibraryPage() {
   // "Choose chapters…" looks the link over first: the picker below the
   // form shows the work's chapter list, which can be widened (the Internet
   // Archive, an epub) before importing what is ticked.
+  // The header's library-wide rescans; each reports what it queued.
   const checkSources = useCheckSources()
+  const checkRecaps = useCheckRecaps()
+  const [rescanNote, setRescanNote] = useState<string | null>(null)
+  const runCheckSources = () => {
+    setUploadError(null)
+    setRescanNote(null)
+    checkSources.mutate(undefined, {
+      onSuccess: ({ queued }) =>
+        setRescanNote(
+          queued > 0
+            ? `Checking ${queued} ${queued === 1 ? 'book' : 'books'} for new chapters.`
+            : 'No books to check for new chapters (none came from a website, or all are being checked already).',
+        ),
+      onError: (err) =>
+        setUploadError(err instanceof ApiError ? err.message : 'Could not start the check'),
+    })
+  }
+  const runCheckRecaps = () => {
+    setUploadError(null)
+    setRescanNote(null)
+    checkRecaps.mutate(undefined, {
+      onSuccess: ({ queued }) =>
+        setRescanNote(
+          queued > 0
+            ? `Preparing ${queued} ${queued === 1 ? 'recap' : 'recaps'}.`
+            : 'No recaps to prepare - nothing you have been away from long enough is missing one.',
+        ),
+      onError: (err) =>
+        setUploadError(err instanceof ApiError ? err.message : 'Could not prepare recaps'),
+    })
+  }
   const previewImport = usePreviewImport()
   const [preview, setPreview] = useState<ImportPreviewResponse | null>(null)
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -634,6 +679,24 @@ export function LibraryPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <div className="speakers-roster-actions">
+          <button
+            className="icon-action-button"
+            title="Check every book imported from a website for new chapters now. What is found waits for you to review."
+            onClick={runCheckSources}
+            disabled={checkSources.isPending}
+          >
+            <RiRefreshLine className={checkSources.isPending ? 'spin' : undefined} />
+          </button>
+          <button
+            className="icon-action-button"
+            title="Prepare “previously on” recaps now, for every book you have been away from long enough to be offered one"
+            onClick={runCheckRecaps}
+            disabled={checkRecaps.isPending}
+          >
+            <RiHistoryLine className={checkRecaps.isPending ? 'spin' : undefined} />
+          </button>
+        </div>
         <div className="library-add-menu" ref={addMenuRef}>
           <button
             className="primary-button"
@@ -672,21 +735,6 @@ export function LibraryPage() {
                 }}
               >
                 <RiLinksLine /> Import from a link
-              </button>
-              <button
-                role="menuitem"
-                title="Check every book imported from a website for new entries now. What is found waits for you to review."
-                onClick={() => {
-                  setAddMenuOpen(false)
-                  checkSources.mutate(undefined, {
-                    onError: (err) =>
-                      setUploadError(
-                        err instanceof ApiError ? err.message : 'Could not start the check',
-                      ),
-                  })
-                }}
-              >
-                <RiRefreshLine /> Check all for new chapters
               </button>
             </div>
           )}
@@ -771,6 +819,7 @@ export function LibraryPage() {
       )}
 
       {uploadError && <p className="error-text">{uploadError}</p>}
+      {rescanNote && <p className="muted">{rescanNote}</p>}
 
       {(booksQuery.data ?? [])
         .filter((b) => (b.source?.review?.length ?? 0) > 0)

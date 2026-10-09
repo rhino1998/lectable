@@ -17,6 +17,7 @@ import {
   recapKey,
   recapWords,
   saveDismissedRecap,
+  shouldHoldForRecap,
   shouldOfferRecap,
   shouldRequestRecap,
   type RecapPos,
@@ -29,6 +30,8 @@ export interface RecapTransport {
   isPlaying: boolean
   play: () => void
   pause: () => void
+  // Shown in the bar in place of the chapter/paragraph line.
+  label?: string
 }
 
 interface Props {
@@ -104,22 +107,53 @@ export function RecapPanel({
   }, [isPlaying])
 
   const current = recapIsCurrent(recap, pos)
+  const loaded = recapQuery.data !== undefined && settingsQuery.data !== undefined
 
-  // The clip has no controls of its own: while the recap is open the
-  // player bar's are its controls.
+  // The clip has no controls of its own: while the recap is open with a
+  // clip, the player bar's are its controls ("recap"). The bar's play is
+  // also what the recap waits behind: with the recap due - the reader is
+  // back after a while and it is ready or being written - play opens it to
+  // be heard first ("hold"), and pressed again while it is still on its way
+  // ("waiting") skips it and starts the book.
   const [recapPlaying, setRecapPlaying] = useState(false)
   const engaged = open && current && !!recap?.audioUrl
+  const waiting = open && autoPlay && !engaged
+  const hold =
+    !open &&
+    !played &&
+    loaded &&
+    shouldHoldForRecap(
+      recap,
+      pos,
+      { lastReadAt: opened.lastReadAt, seriesIndex },
+      opened.at,
+      afterMinutes,
+      dismissed,
+      preparing || !prepare.isIdle,
+    )
+  const mode = engaged ? 'recap' : waiting ? 'waiting' : hold ? 'hold' : null
+  const actions = useRef({ show: () => {}, skip: () => {} })
   useEffect(() => {
-    if (!engaged) {
+    if (mode === 'recap') {
+      onTransport({
+        isPlaying: recapPlaying,
+        play: () => void audioRef.current?.play(),
+        pause: () => audioRef.current?.pause(),
+        label: 'Previously on…',
+      })
+    } else if (mode === 'waiting') {
+      onTransport({
+        isPlaying: false,
+        play: () => actions.current.skip(),
+        pause: () => {},
+        label: 'Preparing the recap - press play again to skip',
+      })
+    } else if (mode === 'hold') {
+      onTransport({ isPlaying: false, play: () => actions.current.show(), pause: () => {} })
+    } else {
       onTransport(null)
-      return
     }
-    onTransport({
-      isPlaying: recapPlaying,
-      play: () => void audioRef.current?.play(),
-      pause: () => audioRef.current?.pause(),
-    })
-  }, [engaged, recapPlaying, onTransport])
+  }, [mode, recapPlaying, onTransport])
   useEffect(() => () => onTransport(null), [onTransport])
   useEffect(() => {
     if (audioRef.current) audioRef.current.playbackRate = playbackRate
@@ -128,7 +162,6 @@ export function RecapPanel({
   // Back after a while with nothing ready (the backend usually has one
   // prepared): ask once.
   const requested = useRef(false)
-  const loaded = recapQuery.data !== undefined && settingsQuery.data !== undefined
   useEffect(() => {
     if (!loaded || requested.current || preparing) return
     if (
@@ -155,11 +188,24 @@ export function RecapPanel({
     setAutoPlay(play)
     onOpenChange(true)
   }
+  // Closed - by hand or by its clip ending - the recap is done with for this
+  // visit: play is the book's again.
   const close = () => {
     dismiss()
+    setPlayed(true)
     setAutoPlay(true)
     onOpenChange(false)
   }
+  // What the bar's play does in the "hold" and "waiting" modes above.
+  useEffect(() => {
+    actions.current = {
+      show: () => show(true),
+      skip: () => {
+        close()
+        onPlay()
+      },
+    }
+  })
   // Opened with nothing for this spot: ask for one, once per opening - even
   // while one is already being prepared, since asking is also what moves a
   // recap the backend was preparing in the background to the front of the
@@ -259,7 +305,11 @@ export function RecapPanel({
           )}
         </>
       ) : preparing ? (
-        <p className="muted">Writing the recap…</p>
+        <p className="muted">
+          {waiting
+            ? 'Writing the recap - the book starts after it. Press play again to skip.'
+            : 'Writing the recap…'}
+        </p>
       ) : failedHere ? (
         <p className="error-text">The recap couldn’t be written: {recap?.error}</p>
       ) : (

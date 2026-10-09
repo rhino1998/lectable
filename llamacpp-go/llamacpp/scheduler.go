@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 )
@@ -75,6 +76,32 @@ type GenRequest struct {
 	// cancellation - the Scheduler may still be running the request then,
 	// so it never writes here directly).
 	Stats *GenStats
+
+	// Steps makes this a Decide request (see Scheduler.Decide): nothing is
+	// sampled, Sampler and MaxTokens are unused.
+	Steps []DecideStep
+}
+
+// DecideStep is one closed-set decision in a Decide request: Prefix is
+// decoded after whatever came before it, and the model's next-token logits
+// there are read over each option's first token.
+type DecideStep struct {
+	Prefix  []Token
+	Options [][]Token // each non-empty, with a first token no other option shares
+}
+
+// Decision is the outcome of one DecideStep.
+type Decision struct {
+	// Choice indexes the step's Options: the one whose first token scored
+	// highest.
+	Choice int
+	// Probs is the softmax over the options' first-token logits alone, in
+	// Options order.
+	Probs []float64
+	// Mass is how much of the model's whole next-token distribution those
+	// first tokens hold - low when the model wanted to say something that
+	// isn't an option.
+	Mass float64
 }
 
 // GenStats is one Scheduler request's timing breakdown - where its wall
@@ -177,9 +204,10 @@ type schedRequest struct {
 }
 
 type schedResult struct {
-	text  string
-	err   error
-	stats GenStats
+	text      string
+	decisions []Decision
+	err       error
+	stats     GenStats
 }
 
 // NewScheduler starts a Scheduler backed by ctx, using nSlots of its
@@ -263,6 +291,75 @@ func (s *Scheduler) Generate(ctx context.Context, req GenRequest) (string, error
 	}
 }
 
+// Decide runs req.Steps in order through one slot, sharing rounds with
+// every other request like Generate: after the prompt and a step's Prefix
+// are decoded, the next-token logits are read over that step's options
+// instead of sampled, the winning option's tokens are decoded as if the
+// model had written them, and the next step follows. So a reply of several
+// answers is built the way greedy generation would build it, one decode
+// round per answer, and each answer comes with its probability. Prefix
+// reuse (StartPos/PrimedSeq/PrefixState) and ctx work as in Generate.
+func (s *Scheduler) Decide(ctx context.Context, req GenRequest) ([]Decision, error) {
+	if len(req.Steps) == 0 {
+		return nil, errors.New("llamacpp: decide: no steps")
+	}
+	for i, st := range req.Steps {
+		if len(st.Options) < 2 {
+			return nil, fmt.Errorf("llamacpp: decide: step %d has fewer than two options", i)
+		}
+		first := make(map[Token]bool, len(st.Options))
+		for _, o := range st.Options {
+			if len(o) == 0 || first[o[0]] {
+				return nil, fmt.Errorf("llamacpp: decide: step %d's options must each start with a distinct token", i)
+			}
+			first[o[0]] = true
+		}
+	}
+	req.Sampler = nil
+	sr := &schedRequest{ctx: ctx, req: req, result: make(chan schedResult, 1), submitted: time.Now()}
+	select {
+	case s.submit <- sr:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.closed:
+		return nil, errSchedulerClosed
+	}
+	select {
+	case res := <-sr.result:
+		if req.Stats != nil {
+			*req.Stats = res.stats
+		}
+		return res.decisions, res.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// decide reads logits (one decoded row) over step's options.
+func decide(logits []float32, step DecideStep) Decision {
+	d := Decision{Probs: make([]float64, len(step.Options))}
+	maxAll := float64(logits[0])
+	for _, l := range logits {
+		maxAll = math.Max(maxAll, float64(l))
+	}
+	var sumAll, sumOpts float64
+	for _, l := range logits {
+		sumAll += math.Exp(float64(l) - maxAll)
+	}
+	for i, o := range step.Options {
+		d.Probs[i] = math.Exp(float64(logits[o[0]]) - maxAll)
+		sumOpts += d.Probs[i]
+		if d.Probs[i] > d.Probs[d.Choice] {
+			d.Choice = i
+		}
+	}
+	for i := range d.Probs {
+		d.Probs[i] /= sumOpts
+	}
+	d.Mass = sumOpts / sumAll
+	return d
+}
+
 // slot is one of the Scheduler's nSlots rotating sequence ids and whatever
 // request currently occupies it, if any.
 type slot struct {
@@ -275,6 +372,8 @@ type slot struct {
 	nextTok   Token   // sampled token waiting to be decoded next round
 	haveNext  bool    // whether nextTok is actually set yet (false on a slot's very first round)
 	left      int     // generation tokens still allowed before MaxTokens is hit
+
+	decisions []Decision // a Decide request's answers so far
 
 	// MTP only: draft is this round's drafted continuation of nextTok,
 	// decoded right after it; posBase is nextTok's own position.
@@ -569,6 +668,28 @@ func (s *Scheduler) run() {
 			if sl.prefillDone.IsZero() {
 				sl.prefillDone = decoded
 			}
+			if steps := sl.req.req.Steps; steps != nil {
+				// A Decide request: read this step's answer off the row,
+				// then prefill the answer itself and the next step's prefix.
+				step := steps[len(sl.decisions)]
+				logits := s.ctx.LogitsIth(outputIdx[i])
+				if logits == nil {
+					s.ctx.TrimSequence(int32(i), 0)
+					s.kept[i] = keptPrefix{}
+					sl.finish(schedResult{err: errors.New("llamacpp: decide: no logits for the step's last token")})
+					continue
+				}
+				d := decide(logits, step)
+				sl.decisions = append(sl.decisions, d)
+				if len(sl.decisions) == len(steps) {
+					s.release(int32(i), sl)
+					sl.finish(schedResult{decisions: sl.decisions})
+					continue
+				}
+				sl.remaining = append(append([]Token{}, step.Options[d.Choice]...), steps[len(sl.decisions)].Prefix...)
+				sl.stats.PromptTokens += len(sl.remaining)
+				continue
+			}
 			if sl.left <= 0 {
 				// MaxTokens <= 0: the prompt is decoded (same as
 				// GenerateFrom always does, unconditionally) but nothing is
@@ -717,6 +838,9 @@ func (s *Scheduler) admitInto(slotID int32, sl *slot, sr *schedRequest, vocab *V
 	}
 	if len(tokens) == 0 {
 		return fmt.Errorf("llamacpp: empty prompt tokenized to zero tokens")
+	}
+	if len(sr.req.Steps) > 0 {
+		tokens = append(tokens, sr.req.Steps[0].Prefix...)
 	}
 	startPos := sr.req.StartPos
 	if int(startPos) > len(tokens) {

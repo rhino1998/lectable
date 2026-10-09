@@ -132,10 +132,37 @@ export const api = {
   // Checks a book's source with an epub at hand: chapters the site lists
   // but won't serve are filled from the epub's, matched by title (see
   // httpapi.handleBackfillBookSource). Answers with how many it could fill.
-  backfillBookSource: (id: string, file: File) => {
+  // first, when given, names the epub chapter (its index, as
+  // listEpubChapters gives it) that is the first one the book is missing:
+  // the rest are counted on from it.
+  backfillBookSource: (id: string, file: File, first?: number) => {
     const body = new FormData()
     body.append('file', file)
+    if (first !== undefined) body.append('first', String(first))
     return call('POST /api/books/{id}/source/backfill', { path: { id }, body })
+  },
+
+  // An epub's chapters, for choosing one by hand; with bookId, each also
+  // names the book's chapter that opens with the same text
+  // (httpapi.handleListEpubChapters). Nothing is stored.
+  listEpubChapters: (file: File, bookId?: string) => {
+    const body = new FormData()
+    body.append('file', file)
+    if (bookId) body.append('bookId', bookId)
+    return call('POST /api/epub/chapters', { body })
+  },
+
+  // Replaces one chapter's content, in place, with a chosen chapter of an
+  // epub (httpapi.handleMatchEpubChapter). The chapter keeps its title
+  // and position; its audio and speakers start over.
+  matchEpubChapter: (bookId: string, chapterIdx: number, file: File, epubChapter: number) => {
+    const body = new FormData()
+    body.append('file', file)
+    body.append('epubChapter', String(epubChapter))
+    return call('POST /api/books/{id}/chapters/{idx}/match-epub', {
+      path: { id: bookId, idx: chapterIdx },
+      body,
+    })
   },
 
   // The reader's say on entries a check found (BookSummary.source.review):
@@ -151,6 +178,11 @@ export const api = {
   syncBookSource: (id: string) => call('POST /api/books/{id}/source/sync', { path: { id } }),
 
   deleteBook: (id: string) => call('DELETE /api/books/{id}', { path: { id } }),
+
+  // Renames a book as the library shows it: its title and author
+  // (httpapi.handleRenameBook).
+  renameBook: (id: string, title: string, author: string) =>
+    call('PUT /api/books/{id}/title', { path: { id }, body: { title, author } }),
 
   // Queues building (or rebuilding - same settings, same export) a book
   // export in the background; its progress and file show up on the
@@ -661,6 +693,24 @@ export const api = {
   deriveBookSetting: (bookId: string) =>
     call('POST /api/books/{id}/setting/derive', { path: { id: bookId } }),
 
+  // Queues a review of the book's roster (a roster_review job): duplicate
+  // names, wrong aliases, descriptions not marked as roles. What it finds
+  // arrives on the rosterReview topic - see backend httpapi/roster_review.go.
+  runRosterReview: (bookId: string) =>
+    call('POST /api/books/{id}/roster-review/run', { path: { id: bookId } }),
+
+  // Applies one proposed roster fix. A merge can't be undone.
+  acceptRosterProposal: (bookId: string, proposalId: string) =>
+    call('POST /api/books/{id}/roster-review/proposals/{proposalId}/accept', {
+      path: { id: bookId, proposalId },
+    }),
+
+  // Declines one proposed roster fix; it isn't proposed again.
+  skipRosterProposal: (bookId: string, proposalId: string) =>
+    call('POST /api/books/{id}/roster-review/proposals/{proposalId}/skip', {
+      path: { id: bookId, proposalId },
+    }),
+
   // Queues the "previously on" recap for the book's saved position (a
   // pipeline_recap job); force writes it again even if it has one - see
   // backend handlePrepareBookRecap.
@@ -679,6 +729,11 @@ export const api = {
   // Queues a check for new entries on every book that has a source, now
   // (backend handleCheckSources).
   checkSources: () => call('POST /api/sources/check'),
+
+  // Prepares the "previously on" recap now for every book its reader has
+  // been away from long enough to be offered one (backend
+  // handleCheckRecaps).
+  checkRecaps: () => call('POST /api/recaps/check'),
 
   // Sets how long away brings the recap offer, library-wide - see backend
   // handleSetRecapSettings.

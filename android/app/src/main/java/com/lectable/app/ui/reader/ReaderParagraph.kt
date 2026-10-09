@@ -694,7 +694,7 @@ internal fun ParagraphBodyText(
                             val end = (start + mark.length).coerceIn(start, segSpan.textOffset + segSpan.text.length)
                             val token = WordToken(mark.original, start, end)
                             for (bounds in wordLineBounds(layout, token)) {
-                                drawPronunciationStrike(bounds, pronunciationCaretColor)
+                                drawPronunciationUnderline(bounds, pronunciationCaretColor)
                             }
                         }
                     }
@@ -823,11 +823,13 @@ private fun DrawScope.drawDirectionCaret(x: Float, lineBottom: Float, color: Col
 // ParagraphText.tsx).
 private val PronunciationStrikeWidth = 1.4.dp
 
-/** Draws a strikeout line through the vertical center of [bounds] (one line-fragment of the word
- *  a pronunciation fix applies to - see wordLineBounds) - marks "this word is read differently
- *  than written" directly on the word itself, rather than a caret sitting near it. */
-internal fun DrawScope.drawPronunciationStrike(bounds: Rect, color: Color) {
-    val y = (bounds.top + bounds.bottom) / 2f
+/** Draws an underline at the foot of [bounds] (one line-fragment of the word a pronunciation
+ *  fix applies to - see wordLineBounds) - marks "this word is read differently than written"
+ *  directly on the word itself. It was a strikeout, which read as the word being deleted. Sits
+ *  right under the letters, above annotations mode's own underline and the dashed scare-quote
+ *  one, so a word carrying several shows them all. */
+internal fun DrawScope.drawPronunciationUnderline(bounds: Rect, color: Color) {
+    val y = bounds.bottom - PronunciationStrikeWidth.toPx() / 2f
     drawLine(
         color = color,
         start = Offset(bounds.left, y),

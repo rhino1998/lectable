@@ -63,7 +63,7 @@ export type ExportFormat = (typeof EXPORT_FORMATS)[number]
 /**
  * importChapterSource says where a previewed chapter's text would come from.
  */
-export const IMPORT_CHAPTER_SOURCES = ['site', 'archive', 'epub', 'locked'] as const
+export const IMPORT_CHAPTER_SOURCES = ['site', 'archive', 'epub', 'missing', 'locked'] as const
 export type ImportChapterSource = (typeof IMPORT_CHAPTER_SOURCES)[number]
 
 /**
@@ -102,6 +102,24 @@ export type RecapKind = (typeof RECAP_KINDS)[number]
  */
 export const RESET_PASSES = ['attribution', 'scare_quote', 'direction', 'pronunciation', 'summary', 'ambience', 'music_generation', 'generate', 'lighting'] as const
 export type ResetPass = (typeof RESET_PASSES)[number]
+
+/**
+ * RosterFixKind is a change to a roster a review can propose.
+ */
+export const ROSTER_FIX_KINDS = ['merge', 'remove_alias', 'mark_role', 'invalidate'] as const
+export type RosterFixKind = (typeof ROSTER_FIX_KINDS)[number]
+
+/**
+ * RosterProposalSource is who proposed a RosterProposal.
+ */
+export const ROSTER_PROPOSAL_SOURCES = ['rule', 'llm', 'agent'] as const
+export type RosterProposalSource = (typeof ROSTER_PROPOSAL_SOURCES)[number]
+
+/**
+ * RosterProposalStatus is where a RosterProposal stands.
+ */
+export const ROSTER_PROPOSAL_STATUSES = ['pending', 'accepted', 'skipped', 'ruled_out'] as const
+export type RosterProposalStatus = (typeof ROSTER_PROPOSAL_STATUSES)[number]
 
 /**
  * SFXEngine picks which generation engine a standalone SFX/music test
@@ -803,6 +821,25 @@ export interface CreateExportRequest {
   latents: boolean
 }
 
+/**
+ * createRosterProposalRequest is POST .../roster-review/proposals' body.
+ * Characters are given by name (or alias), as the roster spells them.
+ */
+export interface CreateRosterProposalRequest {
+  kind: RosterFixKind
+  subject: string
+  /**
+   * Target is the character to merge Subject into (merge only).
+   */
+  target?: string
+  /**
+   * Detail is the alias to remove (remove_alias only).
+   */
+  detail?: string
+  reason?: string
+  evidence?: string[]
+}
+
 export interface CustomVoicePreset {
   id: string
   name: string
@@ -911,6 +948,30 @@ export interface EmotionInfo {
    * Label is the human-readable name shown in the UI.
    */
   label: string
+}
+
+export interface EpubChapter {
+  /**
+   * Index is the chapter's place in the epub, what "epubChapter" and
+   * "first" take.
+   */
+  index: number
+  title: string
+  opening: string
+  paragraphs: number
+  /**
+   * BookChapter is the idx of the book's chapter that opens with the
+   * same text, when a book was named and one does.
+   */
+  bookChapter?: number | null
+}
+
+/**
+ * epubChaptersResponse lists an uploaded epub's chapters
+ * (handleListEpubChapters).
+ */
+export interface EpubChaptersResponse {
+  chapters: EpubChapter[]
 }
 
 /**
@@ -1055,6 +1116,13 @@ export interface ImportPreviewResponse {
    * already - an import would be refused.
    */
   existingBookId?: string
+}
+
+/**
+ * insertChaptersResponse answers handleInsertChapters.
+ */
+export interface InsertChaptersResponse {
+  inserted: number
 }
 
 export interface Instance {
@@ -1325,6 +1393,13 @@ export interface MergeCharacterRequest {
    * description is no name the target goes by.
    */
   asRole?: boolean
+}
+
+export interface MoveChapterRequest {
+  /**
+   * To is the idx the chapter takes.
+   */
+  to: number
 }
 
 /**
@@ -1740,6 +1815,23 @@ export interface QueueTask {
    * left" estimate.
    */
   chars?: number
+  /**
+   * Remaining is jobs.QueueTask.Remaining verbatim - for a running
+   * "pipeline_*" row, how many of the tasks it fanned out are still
+   * queued or in flight. Omitted for every other row, and for a group
+   * that hasn't started.
+   */
+  remaining?: number
+  /**
+   * RemainingSeconds estimates how long those Remaining tasks take run
+   * on their own, with nothing else in the queue: each kind's count x
+   * how long one has been taking lately over how many run at once, and
+   * narration at the measured rate. Omitted (0) when nothing about them
+   * can be estimated yet. RemainingPartial says some of them couldn't
+   * be, so the real figure is higher.
+   */
+  remainingSeconds?: number
+  remainingPartial?: boolean
 }
 
 /**
@@ -1808,6 +1900,24 @@ export interface ReimportChapterResponse {
   paragraphs: number
 }
 
+export interface RenameBookRequest {
+  /**
+   * Title is the book's new title; it can't be blank.
+   */
+  title: string
+  /**
+   * Author replaces the author when present; omitted, it stays as it is.
+   */
+  author?: string | null
+}
+
+export interface RenameChapterRequest {
+  /**
+   * Title is the chapter's new title; it can't be blank.
+   */
+  title: string
+}
+
 /**
  * renameCharacterRequest is PUT .../characters/{characterId}/name's body.
  */
@@ -1843,6 +1953,49 @@ export interface ReviewBookSourceRequest {
    */
   import: string[]
   skip: string[]
+}
+
+/**
+ * rosterProposalDTO is one proposed fix to a book's roster.
+ */
+export interface RosterProposal {
+  id: string
+  kind: RosterFixKind
+  /**
+   * SubjectID/Subject is the character it changes; TargetID/Target the
+   * one it is merged into, or whose name an alias collides with ("" when
+   * none).
+   */
+  subjectId: string
+  subject: string
+  targetId: string
+  target: string
+  /**
+   * SubjectLines/TargetLines are how many lines of dialogue each has
+   * across the roster's books.
+   */
+  subjectLines: number
+  targetLines: number
+  /**
+   * Detail is the alias to remove (remove_alias).
+   */
+  detail: string
+  reason: string
+  /**
+   * Evidence is the passages from the book that show it.
+   */
+  evidence: string[]
+  source: RosterProposalSource
+  status: RosterProposalStatus
+  createdAt: number
+}
+
+/**
+ * rosterReviewResponse is GET .../roster-review's reply and the
+ * rosterReview live topic's value.
+ */
+export interface RosterReviewResponse {
+  proposals: RosterProposal[]
 }
 
 /**
@@ -1944,6 +2097,12 @@ export interface SourceReviewEntry {
    * Suspect is true when the title reads like an author's notice.
    */
   suspect: boolean
+  /**
+   * Unavailable is true for a chapter that was agreed to but couldn't
+   * be read - a delisted one the Internet Archive has no usable copy
+   * of. "Import" tries it again; "skip" lets the book go on without it.
+   */
+  unavailable: boolean
 }
 
 /**
@@ -2436,6 +2595,10 @@ export interface LiveTopics {
    */
   chapterNotes: { params: { bookId: string; chapterIdx: number }; data: ChapterNotesResponse }
   /**
+   * buildRosterReview is the rosterReview live topic's value.
+   */
+  rosterReview: { params: { bookId: string }; data: RosterReviewResponse }
+  /**
    * buildBookSetting is the bookSetting live topic's value and GET
    * .../setting's reply.
    */
@@ -2643,11 +2806,43 @@ export interface Routes {
     response: QueuedResponse
     errorCode: never
   }
+  /**
+   * handleInsertChapters puts chapters of an uploaded epub into a book at a
+   * chosen place (multipart "file"; "epubChapter" the first one's index as
+   * handleListEpubChapters lists it, "count" how many consecutive ones,
+   * default 1; "at" the idx the first takes - the chapters from there on
+   * move down, and the chapter count appends; "title" renames a single
+   * one). For chapters a book skipped past and can now get - nothing
+   * already in the book changes but its numbering. Answers how many went
+   * in. 409 for a book that wasn't imported from a website, or while its
+   * source is being checked.
+   */
+  'POST /api/books/{id}/chapters/insert': {
+    path: { id: string }
+    query: Record<never, never>
+    body: FormData
+    response: InsertChaptersResponse
+    errorCode: never
+  }
   'GET /api/books/{id}/chapters/{idx}': {
     path: { id: string; idx: number }
     query: Record<never, never>
     body: never
     response: ChapterDetail
+    errorCode: never
+  }
+  /**
+   * handleDeleteChapter removes one chapter from its book for good - a
+   * notice that was imported as a chapter, a duplicate - with its audio,
+   * and closes the gap. The chapter's jobs are cancelled first (409 if one
+   * won't stop), and its source ids join the book's skip list, so a later
+   * check doesn't fetch it again. 409 as handleInsertChapters.
+   */
+  'DELETE /api/books/{id}/chapters/{idx}': {
+    path: { id: string; idx: number }
+    query: Record<never, never>
+    body: never
+    response: void
     errorCode: never
   }
   /**
@@ -2737,6 +2932,38 @@ export interface Routes {
     query: Record<never, never>
     body: never
     response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleMatchEpubChapter replaces one chapter's content with a chapter of
+   * an uploaded epub chosen by hand (multipart "file", "epubChapter" its
+   * index as handleListEpubChapters lists it) - for a chapter that was
+   * filled from the wrong one, or whose published text is wanted instead.
+   * The chapter keeps its place, its source id and - unless "title" gives
+   * another - its title, so nothing else in the book moves. Like a
+   * re-import, everything derived from the old text goes (audio, speakers,
+   * passes) and the chapter's jobs are cancelled first (409 if one won't
+   * stop). For a book imported from a website the kept epub and the
+   * chapter's stored pages are updated too, so a later re-import or reparse
+   * gives the same text; an uploaded book's kept epub is left alone.
+   */
+  'POST /api/books/{id}/chapters/{idx}/match-epub': {
+    path: { id: string; idx: number }
+    query: Record<never, never>
+    body: FormData
+    response: ReimportChapterResponse
+    errorCode: never
+  }
+  /**
+   * handleMoveChapter moves one chapter to another place in its book
+   * (`{"to": idx}`); the chapters between shift by one. The chapter itself -
+   * text, speakers, audio - is untouched. 409 as handleInsertChapters.
+   */
+  'POST /api/books/{id}/chapters/{idx}/move': {
+    path: { id: string; idx: number }
+    query: Record<never, never>
+    body: MoveChapterRequest
+    response: void
     errorCode: never
   }
   /**
@@ -3064,6 +3291,21 @@ export interface Routes {
     query: Record<never, never>
     body: never
     response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleRenameChapter gives one chapter a new title (`{"title"}`). The
+   * title is also the chapter's opening line, so that line's audio is made
+   * again; the rest of the chapter is untouched. For a book imported from a
+   * website the kept epub and the chapter's stored pages take the title
+   * too, so a re-import gives it back (a chapter renamed this way is no
+   * longer re-read from its pages by a reparse - it is kept as it now is).
+   */
+  'PUT /api/books/{id}/chapters/{idx}/title': {
+    path: { id: string; idx: number }
+    query: Record<never, never>
+    body: RenameChapterRequest
+    response: void
     errorCode: never
   }
   'GET /api/books/{id}/characters': {
@@ -3762,6 +4004,70 @@ export interface Routes {
     response: InvalidatedResponse
     errorCode: never
   }
+  /**
+   * handleGetRosterReview serves GET /api/books/{id}/roster-review - see
+   * docs/api.md.
+   */
+  'GET /api/books/{id}/roster-review': {
+    path: { id: string }
+    query: { all?: string | number | boolean }
+    body: never
+    response: RosterReviewResponse
+    errorCode: never
+  }
+  /**
+   * handleCreateRosterProposal serves POST
+   * /api/books/{id}/roster-review/proposals: files a proposal from outside
+   * the review pass, pending like any other. 400 for one that names no
+   * character of the roster or wouldn't change anything; 409 when the same
+   * fix was already proposed (whatever became of it).
+   */
+  'POST /api/books/{id}/roster-review/proposals': {
+    path: { id: string }
+    query: Record<never, never>
+    body: CreateRosterProposalRequest
+    response: IdResponse
+    errorCode: never
+  }
+  /**
+   * handleAcceptRosterProposal serves POST
+   * /api/books/{id}/roster-review/proposals/{proposalId}/accept: makes the
+   * proposed change. A merge moves the character's lines across the whole
+   * series, keeps its name as the other's alias and deletes its voice - it
+   * can't be undone. 409 when the proposal was already decided, or no longer
+   * applies to the roster.
+   */
+  'POST /api/books/{id}/roster-review/proposals/{proposalId}/accept': {
+    path: { id: string; proposalId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleSkipRosterProposal serves POST
+   * /api/books/{id}/roster-review/proposals/{proposalId}/skip: declines the
+   * proposal, which is then never made again.
+   */
+  'POST /api/books/{id}/roster-review/proposals/{proposalId}/skip': {
+    path: { id: string; proposalId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleRunRosterReview serves POST /api/books/{id}/roster-review/run:
+   * queues a review of the book's roster. The rosterReview live topic carries
+   * what it proposes.
+   */
+  'POST /api/books/{id}/roster-review/run': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
+    errorCode: never
+  }
   'GET /api/books/{id}/search': {
     path: { id: string }
     query: { q?: string | number | boolean }
@@ -3956,6 +4262,19 @@ export interface Routes {
     response: QueuedResponse
     errorCode: never
   }
+  /**
+   * handleRenameBook sets a book's title and, optionally, its author - what
+   * the library shows it as. An import names a book as its source does
+   * ("He Who Fights with Monsters 2: A LitRPG Adventure"), which isn't
+   * always what its reader calls it.
+   */
+  'PUT /api/books/{id}/title': {
+    path: { id: string }
+    query: Record<never, never>
+    body: RenameBookRequest
+    response: void
+    errorCode: never
+  }
   'GET /api/books/{id}/voice': {
     path: { id: string }
     query: Record<never, never>
@@ -3980,6 +4299,20 @@ export interface Routes {
     query: { v?: string | number | boolean }
     body: never
     response: Blob
+    errorCode: never
+  }
+  /**
+   * handleListEpubChapters reads an uploaded epub (multipart "file") and
+   * lists its chapters - title, how each opens - for choosing one by hand
+   * (handleMatchEpubChapter, or handleBackfillBookSource's "first"). With a
+   * "bookId" field, each also names the chapter of that book that opens
+   * with the same text, if one does. Nothing is stored.
+   */
+  'POST /api/epub/chapters': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: FormData
+    response: EpubChaptersResponse
     errorCode: never
   }
   'GET /api/images/{id}': {
@@ -4205,6 +4538,19 @@ export interface Routes {
     query: Record<never, never>
     body: never
     response: Blob
+    errorCode: never
+  }
+  /**
+   * handleCheckRecaps runs PrepareIdleRecaps' pass now, looking again at
+   * positions it has already looked at since the server started - the
+   * library's "prepare recaps" button. 202 with how many recaps it queued,
+   * 503 without the LLM.
+   */
+  'POST /api/recaps/check': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
     errorCode: never
   }
   /**
@@ -4542,12 +4888,16 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/bookmarks': 'json',
   'POST /api/books/{id}/bookmarks': 'json',
   'POST /api/books/{id}/bulk/{action}': 'json',
+  'POST /api/books/{id}/chapters/insert': 'json',
   'GET /api/books/{id}/chapters/{idx}': 'json',
+  'DELETE /api/books/{id}/chapters/{idx}': 'none',
   'POST /api/books/{id}/chapters/{idx}/attribute-speakers': 'json',
   'POST /api/books/{id}/chapters/{idx}/attribute-speakers/preview': 'json',
   'DELETE /api/books/{id}/chapters/{idx}/audio': 'none',
   'POST /api/books/{id}/chapters/{idx}/generate': 'json',
   'POST /api/books/{id}/chapters/{idx}/generate-music': 'json',
+  'POST /api/books/{id}/chapters/{idx}/match-epub': 'json',
+  'POST /api/books/{id}/chapters/{idx}/move': 'none',
   'GET /api/books/{id}/chapters/{idx}/music': 'json',
   'GET /api/books/{id}/chapters/{idx}/notes': 'json',
   'PUT /api/books/{id}/chapters/{idx}/notes': 'none',
@@ -4565,6 +4915,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/run-ambience': 'json',
   'POST /api/books/{id}/chapters/{idx}/summarize': 'json',
   'POST /api/books/{id}/chapters/{idx}/tag-directions': 'json',
+  'PUT /api/books/{id}/chapters/{idx}/title': 'none',
   'GET /api/books/{id}/characters': 'json',
   'POST /api/books/{id}/characters/characterize': 'json',
   'POST /api/books/{id}/characters/dedupe': 'json',
@@ -4608,6 +4959,11 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/recap': 'json',
   'GET /api/books/{id}/recap/audio': 'binary',
   'POST /api/books/{id}/reset/{pass}': 'json',
+  'GET /api/books/{id}/roster-review': 'json',
+  'POST /api/books/{id}/roster-review/proposals': 'json',
+  'POST /api/books/{id}/roster-review/proposals/{proposalId}/accept': 'none',
+  'POST /api/books/{id}/roster-review/proposals/{proposalId}/skip': 'none',
+  'POST /api/books/{id}/roster-review/run': 'json',
   'GET /api/books/{id}/search': 'json',
   'GET /api/books/{id}/setting': 'json',
   'PUT /api/books/{id}/setting': 'json',
@@ -4620,9 +4976,11 @@ export const ROUTE_RESPONSE_KINDS = {
   'DELETE /api/books/{id}/speakers': 'none',
   'POST /api/books/{id}/speakers/reattribute': 'json',
   'POST /api/books/{id}/speakers/variants/regenerate': 'json',
+  'PUT /api/books/{id}/title': 'none',
   'GET /api/books/{id}/voice': 'json',
   'PUT /api/books/{id}/voice': 'json',
   'GET /api/clips/{key}': 'binary',
+  'POST /api/epub/chapters': 'json',
   'GET /api/images/{id}': 'binary',
   'GET /api/instance': 'json',
   'GET /api/jobs': 'json',
@@ -4637,6 +4995,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/music-regions/{id}/regenerate': 'json',
   'GET /api/paragraphs/{id}/audio': 'binary',
   'GET /api/paragraphs/{id}/sfx-audio': 'binary',
+  'POST /api/recaps/check': 'json',
   'GET /api/settings/recap': 'json',
   'PUT /api/settings/recap': 'none',
   'GET /api/settings/sources': 'json',

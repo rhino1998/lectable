@@ -186,24 +186,33 @@ func (s *Source) ListedChapters(ctx context.Context, f websource.Fetcher, work *
 	return fic.Chapters, nil
 }
 
-// Before orders chapters by id. An earlier chapter the site has since
-// replaced shares the id of what replaced it ("<id>@<slug>"), and comes
-// first: it is where the story was.
+// Before orders chapters by id. Two kinds of entry share a real chapter's
+// id: an earlier chapter the site has since replaced ("<id>@<slug>"),
+// which comes first - it is where the story was - and a chapter known only
+// to be missing after it ("<id>+<n>"), which comes after, in order of n.
 func (s *Source) Before(a, b websource.ChapterRef) bool {
-	num := func(id string) (uint64, bool, bool) {
-		plain, _, earlier := strings.Cut(id, "@")
-		n, err := strconv.ParseUint(plain, 10, 64)
-		return n, earlier, err == nil
+	rank := func(id string) (base uint64, rank int, ok bool) {
+		plain := id
+		if i := strings.IndexAny(id, "@+"); i >= 0 {
+			plain = id[:i]
+			rank = -1
+			if id[i] == '+' {
+				n, _ := strconv.Atoi(id[i+1:])
+				rank = max(n, 1)
+			}
+		}
+		base, err := strconv.ParseUint(plain, 10, 64)
+		return base, rank, err == nil
 	}
-	x, xEarlier, okA := num(a.ID)
-	y, yEarlier, okB := num(b.ID)
+	x, xr, okA := rank(a.ID)
+	y, yr, okB := rank(b.ID)
 	if !okA || !okB {
 		return a.ID < b.ID
 	}
 	if x != y {
 		return x < y
 	}
-	return xEarlier && !yEarlier
+	return xr < yr
 }
 
 // pageHeading returns a chapter page's first <h1>, which is the chapter's

@@ -19,6 +19,10 @@ export LECTABLE_SPEAKER_LLM_GPU_LAYERS="${LECTABLE_SPEAKER_LLM_GPU_LAYERS:--1}"
 # Primed system prompts as restored KV snapshots (~28% faster LLM passes,
 # +1.4GB ttsworker RSS) - see llmworker.Config.PrimeAsState.
 export LECTABLE_SPEAKER_LLM_PRIME_STATE="${LECTABLE_SPEAKER_LLM_PRIME_STATE:-true}"
+# Concurrent LLM calls: the worker's slots and the job queue's LLM pool both
+# read this. Each slot reserves ~0.9 GB of VRAM (12,288 tokens of context);
+# 4 is ~3.5 GB beside the 18 GB model on a 24.5 GB card.
+export LECTABLE_SPEAKER_LLM_MAX_CONCURRENT="${LECTABLE_SPEAKER_LLM_MAX_CONCURRENT:-4}"
 
 BUILD=0
 FOREGROUND=0

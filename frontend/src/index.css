@@ -398,6 +398,56 @@ label {
   border: 1px solid var(--border);
   border-radius: 10px;
 }
+/* A book's title and author, on its settings page (BookDetailsForm.tsx). */
+.book-details-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+.book-details-form label {
+  flex: 1 1 16rem;
+}
+.book-details-form input {
+  font: inherit;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* Matching an epub's chapters to the book's by hand (EpubMatchPanel.tsx). */
+.epub-match {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 2rem;
+}
+.epub-match-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+.epub-match-pair label {
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+.epub-match-pair select {
+  width: 100%;
+  font: inherit;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.epub-match-opening {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
 /* New entries in a book's source, waiting for a say (SourceReviewPanel.tsx);
    shares the picker's list and button rows. */
 .source-review {
@@ -411,6 +461,38 @@ label {
 }
 .source-review .import-preview-list input {
   flex: none;
+}
+/* Suggested fixes to a book's speakers (RosterReviewPanel.tsx). */
+.roster-review-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 28rem;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.roster-review-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.9rem;
+}
+.roster-review-what {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.roster-review-evidence {
+  margin: 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--border);
+  font-style: italic;
+}
+.roster-review-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 .import-preview-head {
   display: flex;
@@ -684,26 +766,29 @@ label {
 .icon-button-read {
   top: 7rem;
 }
-.icon-button-cancel-jobs {
+.icon-button-recap {
   top: 8.65rem;
 }
-.icon-button-source {
+.icon-button-cancel-jobs {
   top: 10.3rem;
 }
-.icon-button-backfill {
+.icon-button-source {
   top: 11.95rem;
+}
+.icon-button-backfill {
+  top: 13.6rem;
 }
 /* Delete closes the column, in red, under whichever of the source buttons
    the card has. */
 .icon-button-delete {
-  top: 10.3rem;
+  top: 11.95rem;
   background: color-mix(in srgb, var(--error) 40%, rgba(0, 0, 0, 0.6));
 }
 .book-card:has(.icon-button-source) .icon-button-delete {
-  top: 11.95rem;
+  top: 13.6rem;
 }
 .book-card:has(.icon-button-backfill) .icon-button-delete {
-  top: 13.6rem;
+  top: 15.25rem;
 }
 .icon-button-source:disabled {
   cursor: default;
@@ -799,6 +884,10 @@ label {
 .jobs-table tbody tr:last-child td {
   border-bottom: none;
 }
+.job-remaining {
+  white-space: nowrap;
+}
+
 .jobs-table td:last-child {
   text-align: right;
   white-space: nowrap;
@@ -2242,19 +2331,21 @@ label {
   flex-shrink: 0;
 }
 
-/* Pronunciation strikeout (ParagraphText.PronunciationStrike) - a line straight through the word
-   itself rather than a caret sitting near it, in the same --pronunciation-caret color the caret
-   version used. Plain text-decoration, not an absolute-positioned element, so this needs no
-   wrapper/positioning tricks the way the caret version did. */
+/* Pronunciation mark (ParagraphText.PronunciationStrike) - a solid underline on the word itself
+   ("read differently than written"), in --pronunciation-caret. It was a strikeout, which read as
+   the word being deleted. Sits a little lower than the dashed scare-quote underline, so a word
+   carrying both shows both. Plain text-decoration, no wrapper/positioning tricks. */
 .pronunciation-strike {
-  text-decoration: line-through;
+  text-decoration: underline;
   text-decoration-color: var(--pronunciation-caret);
   text-decoration-thickness: 0.14em;
+  text-underline-offset: 0.34em;
+  text-decoration-skip-ink: none;
   cursor: help;
 }
 
 /* Legend swatch (PlayerBar's floating panel) - a short static line in the same color/thickness,
-   standing in for the strikeout itself since there's no single word to draw it through here. */
+   standing in for the underline itself since there's no single word to draw it under here. */
 .pronunciation-legend-swatch {
   display: inline-block;
   width: var(--annotation-legend-marker-width);

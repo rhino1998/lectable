@@ -296,3 +296,19 @@ func TestMusicSeamContextCountsNumberedLines(t *testing.T) {
 		t.Fatalf("musicSeamContext() of 2 paragraphs = %d, want all of them", len(short))
 	}
 }
+
+// A stretch with nothing to score - a title and copyright page, "About the
+// Author" - gets an empty answer however often it is asked. That is one
+// region for the batch (or the seam's tone carrying on), not a failure.
+func TestParseMusicBoundariesNothingMarked(t *testing.T) {
+	batch := []ParagraphInput{{Idx: 0, Text: "Converted Ebook"}, {Idx: 1, Text: "Text copyright © 2016"}}
+	got, err := parseMusicBoundaries(`[]`, batch, 0)
+	if err != nil || len(got) != 1 || got[0].StartIdx != 0 || got[0].Transition != "cut" {
+		t.Fatalf("parseMusicBoundaries([]) at a chapter's start = %+v, %v; want one region at 0", got, err)
+	}
+	shown := []ParagraphInput{{Idx: 16, Text: "seam"}, {Idx: 20, Text: "About the Author"}}
+	got, err = parseMusicBoundaries(`[]`, shown, 20)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("parseMusicBoundaries([]) after a seam = %+v, %v; want no boundaries", got, err)
+	}
+}

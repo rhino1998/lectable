@@ -56,6 +56,12 @@ object LiveTopics {
         LiveTopic("chapterNotes", mapOf("bookId" to bookId, "chapterIdx" to chapterIdx), serializer<ChapterNotesResponseDto>())
 
     /**
+     * buildRosterReview is the rosterReview live topic's value.
+     */
+    fun rosterReview(bookId: String): LiveTopic<RosterReviewResponseDto> =
+        LiveTopic("rosterReview", mapOf("bookId" to bookId), serializer<RosterReviewResponseDto>())
+
+    /**
      * buildBookSetting is the bookSetting live topic's value and GET
      * .../setting's reply.
      */

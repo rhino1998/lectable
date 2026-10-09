@@ -40,6 +40,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pronunciation: 'Pronunciation',
   chapter_summary: 'Summary',
   book_setting: 'Book Setting',
+  roster_review: 'Roster Review',
   recap: 'Recap Text',
   recap_narration: 'Recap Narration',
   // The phases of a book's own "Preprocess" run (see LibraryPage's
@@ -288,7 +289,20 @@ function TaskTable({
           <tr key={t.id}>
             <td>{KIND_LABELS[t.kind]}</td>
             <td>{t.bookTitle}</td>
-            <td>{targetLabel(t)}</td>
+            <td>
+              {targetLabel(t)}
+              {!!t.remaining && (
+                <span
+                  className="muted job-remaining"
+                  title="Tasks this row started that are still queued or running, and how long they would take on their own - each kind's count × how long one has been taking lately, over how many run at once - not counting anything else in the queue"
+                >
+                  {' '}
+                  · {t.remaining} left
+                  {!!t.remainingSeconds &&
+                    `, ~${formatEta(t.remainingSeconds)}${t.remainingPartial ? ' or more' : ''}`}
+                </span>
+              )}
+            </td>
             <td>{PARAGRAPH_SCOPED_KINDS.has(t.kind) ? t.paragraphIdx + 1 : '—'}</td>
             <td>{voiceName(t)}</td>
             <td>

@@ -4,6 +4,7 @@ import {
   RiDeleteBinLine,
   RiGitMergeLine,
   RiRefreshLine,
+  RiSearchEyeLine,
   RiUserHeartLine,
   RiUserVoiceLine,
   RiVoiceprintLine,
@@ -28,6 +29,8 @@ import {
   useSetCharacterInvalid,
   useSetCharacterRole,
   useDedupeCharacters,
+  useRosterReviewRunning,
+  useRunRosterReview,
   useSpeakers,
   useVoice,
   useVoicePresets,
@@ -38,8 +41,11 @@ import { JobLists } from './JobsPage'
 import { SpeakerRow } from '../components/speakers/SpeakerRow'
 import { ChapterPassTable } from '../components/speakers/ChapterPassTable'
 import { SpeakerSettings } from '../components/speakers/SpeakerSettings'
+import { BookDetailsForm } from '../components/BookDetailsForm'
+import { EpubMatchPanel } from '../components/EpubMatchPanel'
 import { LexiconPanel } from '../components/speakers/LexiconPanel'
 import { SettingPanel } from '../components/speakers/SettingPanel'
+import { RosterReviewPanel } from '../components/speakers/RosterReviewPanel'
 import { sortedRoster } from '../utils/speakerOrder'
 import { BOOK_SETTINGS_TABS, type BookSettingsTab } from '../utils/bookSettingsTabs'
 import { DEFAULT_CLONE_MODEL } from '../api/types'
@@ -118,6 +124,8 @@ export function BookSettingsPage() {
   const setCharacterRole = useSetCharacterRole(bookId)
   const dedupeCharacters = useDedupeCharacters(bookId)
   const [dedupeNote, setDedupeNote] = useState<string | null>(null)
+  const runRosterReview = useRunRosterReview(bookId)
+  const rosterReviewRunning = useRosterReviewRunning(bookId)
   const [togglingRoleId, setTogglingRoleId] = useState<string | null>(null)
   const mergeCharacter = useMergeCharacter(bookId)
   const reattributeSpeaker = useReattributeSpeaker(bookId)
@@ -484,6 +492,7 @@ export function BookSettingsPage() {
 
       {tab === 'general' && (
         <>
+          <BookDetailsForm bookId={bookId} title={book.title} author={book.author} />
           <SettingPanel bookId={bookId} />
           <SpeakerSettings bookId={bookId} cloneModel={effectiveCloneModel} />
         </>
@@ -494,13 +503,16 @@ export function BookSettingsPage() {
       {tab === 'jobs' && <BookJobsTab bookId={bookId} bookTitle={book.title} />}
 
       {tab === 'chapters' && (
-        <ChapterPassTable
-          bookId={bookId}
-          book={book}
-          bulkRunning={bulkRunning}
-          runBulk={runBulk}
-          onBulkError={setBulkError}
-        />
+        <>
+          <ChapterPassTable
+            bookId={bookId}
+            book={book}
+            bulkRunning={bulkRunning}
+            runBulk={runBulk}
+            onBulkError={setBulkError}
+          />
+          <EpubMatchPanel bookId={bookId} chapters={book.chapters} source={book.source} />
+        </>
       )}
 
       {tab === 'characters' && (
@@ -581,6 +593,14 @@ export function BookSettingsPage() {
                 </button>
                 <button
                   className="icon-action-button"
+                  onClick={() => runRosterReview.mutate()}
+                  disabled={runRosterReview.isPending || rosterReviewRunning}
+                  title="Review the roster — look for one person under two names, aliases that are someone else's name and descriptions not marked as roles. Suggestions appear below for you to accept or skip; nothing changes on its own"
+                >
+                  <RiSearchEyeLine className={rosterReviewRunning ? 'spin' : undefined} />
+                </button>
+                <button
+                  className="icon-action-button"
                   onClick={runDeleteSpeakerData}
                   disabled={deleteSpeakerData.isPending}
                   title="Delete all speaker data for this book"
@@ -590,6 +610,7 @@ export function BookSettingsPage() {
               </div>
             )}
           </div>
+          <RosterReviewPanel bookId={bookId} />
           {speakersQuery.isLoading && <p>Loading…</p>}
           {speakersQuery.isError && <p className="error-text">Could not load speakers.</p>}
           {speakers.length === 0 && !speakersQuery.isLoading && (

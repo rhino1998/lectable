@@ -41,7 +41,7 @@ only works with both living in the same process.
   `speculative.h` and `llama-cpp.h` (from `common/` and `include/`) are
   vendored too, for `mtp.cpp`: it passes C++ structs across into
   `libllama-common`, so they must come from the exact commit that library
-  was built from (currently `~/llama.cpp-latest` at 526c43b).
+  was built from (currently `~/llama.cpp-latest` at 71ad059).
 - `llamacpp/smoke_test.go` -- an unconditional library-info test (still
   needs libllama linked) plus a generation test gated on
   `LLAMACPP_TEST_MODEL` pointing at a real local GGUF file (llama.cpp
@@ -123,6 +123,22 @@ instead of paid once per request. `Generate` (a `GenRequest` in, a
 `string` out) is the public API; `GenRequest.StartPos`/`PrimedSeq` opt
 into `CopySeq`-based prefix reuse from a separately-primed sequence (see
 "Scope" above).
+
+`Scheduler.Decide` answers closed-set questions through the same slots
+without sampling: a request carries `GenRequest.Steps`, each a prefix to
+decode and a set of options, and after each prefix the next-token logits
+are read over the options' first tokens (`Decision`: the winner, the
+probabilities over the options, and `Mass` - how much of the whole
+distribution they hold). The winning option's tokens are then decoded as
+if generated, so a reply of several answers costs one decode round each
+and later answers are conditioned on earlier ones, as greedy generation
+would be. Options in a step must start with distinct tokens. MTP never
+drafts for such a slot, and generations that follow one in the same slot
+draft as before (`TestSchedulerMTPAfterDecide`). With MTP on, a decide
+step measured ~3x the cost it has with MTP off on Qwen3.6-35B-A3B (see
+"The emotion pass" in `backend/docs/speakerattr.md`); not from feeding the
+draft context. `TestSchedulerDecideMatchesGreedy` checks it against plain
+decoding.
 
 Two real bugs surfaced building this, both now covered by
 `scheduler_test.go` (gated on `LLAMACPP_TEST_MODEL`, same as

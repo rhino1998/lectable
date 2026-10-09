@@ -474,6 +474,12 @@ func TestAdoptedTasksFollowAndEndWithTheirParent(t *testing.T) {
 	s.Adopt("group", kept)
 	s.Request("person", 3, kept)
 
+	for _, info := range s.Snapshot() {
+		if want := map[string]int{"group": 2}[info.Task.Key()]; len(info.Members) != want {
+			t.Fatalf("%s reports %d members, want %d", info.Task.Key(), len(info.Members), want)
+		}
+	}
+
 	s.Bump("group", 1)
 	if got := priority(t, s, child); got != 1 {
 		t.Fatalf("child priority = %d, want the bumped group's 1", got)

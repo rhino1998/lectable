@@ -95,4 +95,21 @@ class RecapTest {
         assertEquals(listOf(2.1, 2.6, 3.0), recapWordTimes(aligned))
         assertEquals(listOf(10.0, 13.0), recapWordTimes(RecapSegmentDto(text = "ab cd", start = 10.0, end = 15.0)))
     }
+
+    @Test
+    fun `play waits for a recap that is ready or on its way`() {
+        val away = nowS - 30 * hour
+        // Ready to be offered.
+        assertTrue(shouldHoldForRecap(recap(), 4 to 12, away, 0.0, now, day, null, awaited = false))
+        // Not written yet, but asked for.
+        assertTrue(shouldHoldForRecap(null, 4 to 12, away, 0.0, now, day, null, awaited = true))
+        assertTrue(shouldHoldForRecap(recap(chapterIdx = 2), 4 to 12, away, 0.0, now, day, null, awaited = true))
+        assertTrue(shouldHoldForRecap(null, 0 to 0, null, 2.0, now, day, null, awaited = true))
+        // Nothing on its way, not away long enough, turned down, failed, or never offered.
+        assertFalse(shouldHoldForRecap(null, 4 to 12, away, 0.0, now, day, null, awaited = false))
+        assertFalse(shouldHoldForRecap(null, 4 to 12, nowS - hour, 0.0, now, day, null, awaited = true))
+        assertFalse(shouldHoldForRecap(recap(), 4 to 12, away, 0.0, now, day, recapKey(recap()), awaited = true))
+        assertFalse(shouldHoldForRecap(recap(text = ""), 4 to 12, away, 0.0, now, day, null, awaited = true))
+        assertFalse(shouldHoldForRecap(recap(), 4 to 12, away, 0.0, now, RECAP_NEVER, null, awaited = true))
+    }
 }

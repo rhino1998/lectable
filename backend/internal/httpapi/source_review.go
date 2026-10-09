@@ -42,6 +42,10 @@ type sourceReviewEntryDTO struct {
 	Title string `json:"title"`
 	// Suspect is true when the title reads like an author's notice.
 	Suspect bool `json:"suspect"`
+	// Unavailable is true for a chapter that was agreed to but couldn't
+	// be read - a delisted one the Internet Archive has no usable copy
+	// of. "Import" tries it again; "skip" lets the book go on without it.
+	Unavailable bool `json:"unavailable"`
 }
 
 type reviewBookSourceRequest struct {
@@ -130,14 +134,35 @@ func reviewPlan(plan *store.SourcePlan, planned []websource.ChapterRef, have map
 	for _, id := range plan.Approved {
 		approved[id] = true
 	}
+	// What an earlier check couldn't read keeps saying so.
+	unreadable := map[string]bool{}
+	for _, p := range plan.Pending {
+		if p.Unreadable {
+			unreadable[p.ID] = true
+		}
+	}
 	for _, ref := range planned {
 		switch {
 		case have[ref.ID]:
 		case !approved[ref.ID]:
-			pending = append(pending, store.PlannedChapter{ID: ref.ID, Title: ref.Title, URL: ref.URL, Suspect: suspectTitle(ref.Title)})
+			pending = append(pending, store.PlannedChapter{ID: ref.ID, Title: ref.Title, URL: ref.URL, Suspect: suspectTitle(ref.Title), Unreadable: unreadable[ref.ID]})
 		case len(pending) == 0:
 			fetch = append(fetch, ref)
 		}
 	}
 	return fetch, pending
+}
+
+// holdUnreadable moves chapters that were agreed to but couldn't be read
+// back to waiting for the reader, marked as such, ahead of whatever else
+// waits.
+func holdUnreadable(plan *store.SourcePlan, refs []websource.ChapterRef) {
+	held := make(map[string]bool, len(refs))
+	var entries []store.PlannedChapter
+	for _, ref := range refs {
+		held[ref.ID] = true
+		entries = append(entries, store.PlannedChapter{ID: ref.ID, Title: ref.Title, URL: ref.URL, Unreadable: true})
+	}
+	plan.Approved = slices.DeleteFunc(plan.Approved, func(id string) bool { return held[id] })
+	plan.Pending = append(entries, slices.DeleteFunc(plan.Pending, func(p store.PlannedChapter) bool { return held[p.ID] })...)
 }

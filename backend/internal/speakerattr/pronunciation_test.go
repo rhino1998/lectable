@@ -1,9 +1,14 @@
 package speakerattr
 
 import (
+	"context"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
 
 // findTextFor returns the first pronunciationTerm found for text whose
@@ -421,5 +426,52 @@ func TestParsePronunciationChoices(t *testing.T) {
 		if got[id] != w {
 			t.Errorf("choice[%d] = %d, want %d", id, got[id], w)
 		}
+	}
+}
+
+// decidingLLM is an llmBackend with a decide call: every step takes the
+// option at pick, and a generated reply would be the other reading.
+type decidingLLM struct {
+	pick  int
+	steps [][]ttsproto.LLMDecideStep
+}
+
+func (l *decidingLLM) LLMGenerate(context.Context, string, string, float32, int) (string, error) {
+	return "", fmt.Errorf("generated although the backend can decide")
+}
+
+func (l *decidingLLM) LLMDecide(_ context.Context, _, _ string, steps []ttsproto.LLMDecideStep) ([]ttsproto.LLMDecision, error) {
+	l.steps = append(l.steps, steps)
+	out := make([]ttsproto.LLMDecision, len(steps))
+	for i := range steps {
+		out[i] = ttsproto.LLMDecision{Choice: l.pick}
+	}
+	return out, nil
+}
+
+// TestResolvePronunciationDecides checks that a backend with a decide call
+// is asked for letters, not a generated reply, and that its choices are
+// the substitutions.
+func TestResolvePronunciationDecides(t *testing.T) {
+	llm := &decidingLLM{pick: 1}
+	c := NewClient(Config{}, llm)
+	paragraphs := []ParagraphInput{{Idx: 0, Text: "We met Dr. Hale on St. Anne."}}
+	out, remaining, err := c.ResolvePronunciation(context.Background(), "", "", paragraphs, nil)
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("ResolvePronunciation: remaining %d, err %v", len(remaining), err)
+	}
+	var got []string
+	for _, s := range out[0] {
+		got = append(got, s.Replacement)
+	}
+	if want := []string{"Drive", "Saint"}; !slices.Equal(got, want) {
+		t.Errorf("replacements = %v, want %v", got, want)
+	}
+	want := []ttsproto.LLMDecideStep{
+		{Prefix: `{"0": "`, Options: []string{"A", "B"}},
+		{Prefix: `", "1": "`, Options: []string{"A", "B"}},
+	}
+	if len(llm.steps) != 1 || !reflect.DeepEqual(llm.steps[0], want) {
+		t.Errorf("steps = %+v, want one call of %+v", llm.steps, want)
 	}
 }

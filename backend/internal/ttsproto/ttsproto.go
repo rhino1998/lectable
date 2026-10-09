@@ -295,6 +295,45 @@ type LLMGenerateResponse struct {
 	Text string `json:"text"`
 }
 
+// LLMDecideRequest is POST /llm/decide's body: the same chat completion
+// as LLMGenerateRequest, but the reply is Steps - written and decided,
+// never sampled.
+type LLMDecideRequest struct {
+	SystemPrompt string          `json:"systemPrompt"`
+	UserPrompt   string          `json:"userPrompt"`
+	Steps        []LLMDecideStep `json:"steps"`
+}
+
+// LLMDecideResponse is POST /llm/decide's response body: one decision per
+// step, in order.
+type LLMDecideResponse struct {
+	Decisions []LLMDecision `json:"decisions"`
+}
+
+// LLMDecideStep is one closed-set question in an LLMDecide call: Prefix is
+// written into the model's reply, and the model's next-token distribution
+// there is read over Options instead of generating anything. The winning
+// option is then written into the reply too, so a later step's answer is
+// conditioned on it the way generated text would be.
+type LLMDecideStep struct {
+	Prefix string `json:"prefix"`
+	// Options must each begin with a different token (the worker refuses
+	// the call otherwise).
+	Options []string `json:"options"`
+}
+
+// LLMDecision answers one LLMDecideStep.
+type LLMDecision struct {
+	// Choice indexes the step's Options.
+	Choice int `json:"choice"`
+	// Probs is the model's probability of each option, normalized over the
+	// options alone. Not calibrated: a ranking, not a chance of being right.
+	Probs []float64 `json:"probs"`
+	// Mass is the share of the model's whole next-token distribution the
+	// options hold between them - low when it wanted to say something else.
+	Mass float64 `json:"mass"`
+}
+
 // HealthResponse is GET /health's response body.
 type HealthResponse struct {
 	Status            string   `json:"status"`

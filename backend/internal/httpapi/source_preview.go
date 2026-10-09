@@ -2,10 +2,12 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,7 +25,8 @@ import (
 //     work's list (websource.Delister - Royal Road's "stubbed" fictions):
 //     every chapter the archive has a copy of joins the list, in order;
 //   - with an epub of the published part, whose chapters stand in for the
-//     ones the site won't serve, matched by title (source_fill.go).
+//     ones neither the site nor the archive will give, matched by name
+//     (source_fill.go).
 //
 // A preview lives in memory (Server.importPreviews) for previewTTL; the
 // import turns it into the book's store.SourcePlan - what was left out,
@@ -56,6 +59,11 @@ const (
 	chapterFromArchive importChapterSource = "archive"
 	// chapterFromEpub: the site won't serve it, and the attached epub has it.
 	chapterFromEpub importChapterSource = "epub"
+	// chapterMissing: nothing on the web has it - it is known only from a
+	// gap in the chapter numbers either side (the archive never saved it).
+	// Only an attached epub can supply it; otherwise the import stops at it
+	// for the reader to skip.
+	chapterMissing importChapterSource = "missing"
 	// chapterLocked: the site lists it but marks it unreadable (early
 	// access), and nothing else has it: an import stops at it.
 	chapterLocked importChapterSource = "locked"
@@ -149,7 +157,7 @@ func (s *Server) handlePreviewImportURL(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadGateway, "could not search the Internet Archive: "+err.Error())
 			return
 		}
-		p.chapters, p.archive = all, true
+		p.chapters, p.archive = withNumberGaps(inNumberOrder(all)), true
 	}
 	// Optional, as on chapter re-import: a request with no file isn't
 	// multipart at all.
@@ -161,6 +169,9 @@ func (s *Server) handlePreviewImportURL(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		p.fill = fill
+	}
+	if p.fill != nil {
+		p.fill.setNeighbours(p.chapters)
 	}
 
 	resp := importPreviewResponse{
@@ -175,10 +186,18 @@ func (s *Server) handlePreviewImportURL(w http.ResponseWriter, r *http.Request) 
 	for _, ref := range p.chapters {
 		src := chapterFromSite
 		switch {
-		case (ref.Delisted || !ref.Unlocked) && p.fill != nil && p.fill.has(ref):
+		// The archive comes before the epub (readOrFill): the epub
+		// shows only where it is the one thing that has the chapter. A
+		// delisted chapter the archive turns out not to have still falls
+		// back to it at import.
+		case ref.Delisted && ref.URL == "" && p.fill != nil && p.fill.has(ref):
 			src = chapterFromEpub
+		case ref.Delisted && ref.URL == "":
+			src = chapterMissing
 		case ref.Delisted:
 			src = chapterFromArchive
+		case !ref.Unlocked && p.fill != nil && p.fill.has(ref):
+			src = chapterFromEpub
 		case !ref.Unlocked:
 			src = chapterLocked
 		}
@@ -303,8 +322,9 @@ func plannedChapters(site websource.Source, listed []websource.ChapterRef, plan 
 	}
 	var extra []websource.ChapterRef
 	for _, c := range plan.Extra {
-		// Relisted since: the site's own entry stands.
-		if !have[c.ID] {
+		// Relisted since: the site's own entry stands. Skipped since (one
+		// the archive couldn't give): gone.
+		if !have[c.ID] && !skip[c.ID] {
 			extra = append(extra, websource.ChapterRef{ID: c.ID, Title: c.Title, URL: c.URL, Unlocked: true, Delisted: true, Archived: c.Archived})
 		}
 	}
@@ -324,4 +344,96 @@ func plannedChapters(site websource.Source, listed []websource.ChapterRef, plan 
 		out = append(out, ref)
 	}
 	return append(out, extra...)
+}
+
+// maxNumberGap is the widest run of missing chapter numbers withNumberGaps
+// fills in: past it, the numbers more likely restarted than ran on.
+const maxNumberGap = 60
+
+// withNumberGaps adds a stand-in for every chapter the list shows to be
+// missing: where two neighbouring chapters are numbered 76 and 78, there
+// was a 77 that the site no longer lists and the archive never saved. Left
+// out, it would be a hole nobody was told about; listed, the import stops
+// at it, an epub can fill it, or the reader skips it knowingly. A stand-in
+// is a delisted chapter with no address; its id is the chapter before's
+// with "+n" (which the source's ordering places after it).
+func withNumberGaps(chapters []websource.ChapterRef) []websource.ChapterRef {
+	out := make([]websource.ChapterRef, 0, len(chapters))
+	for i, ref := range chapters {
+		if i > 0 {
+			prev := chapters[i-1]
+			a, okA := chapterNumber(prev.Title)
+			b, okB := chapterNumber(ref.Title)
+			// Only where the archive is in play: a site's own list is
+			// what its author made it.
+			// Numbers that start over in each book only run on within one.
+			if okA && okB && b-a >= 2 && b-a <= maxNumberGap+1 && (prev.Delisted || ref.Delisted) && volumeOf(prev.Title) == volumeOf(ref.Title) {
+				stem := "Chapter"
+				if v := volumeOf(prev.Title); v != "" {
+					stem = "Book " + v + " Chapter"
+				}
+				for n := a + 1; n < b; n++ {
+					out = append(out, websource.ChapterRef{
+						ID:       fmt.Sprintf("%s+%d", strings.SplitN(prev.ID, "+", 2)[0], n-a),
+						Title:    fmt.Sprintf("%s %d", stem, n),
+						Unlocked: true,
+						Delisted: true,
+					})
+				}
+			}
+		}
+		out = append(out, ref)
+	}
+	return out
+}
+
+// orderReach is how far back inNumberOrder will move a chapter.
+const orderReach = 12
+
+// inNumberOrder puts back in place delisted chapters that the source's
+// ordering has a little out of it. Chapters found in an archive are
+// ordered by the site's ids, which follow when a chapter was written -
+// usually the reading order, but not for a chapter posted again later, or
+// two posted out of turn: "Chapter 40" landing after "Chapter 46". A
+// delisted chapter numbered lower than the one before it moves back to
+// where its number fits, if that is close by. Only close by: a serial
+// whose numbers start over with each volume has a real drop from 99 to 1,
+// which nothing nearby explains.
+func inNumberOrder(chapters []websource.ChapterRef) []websource.ChapterRef {
+	out := append([]websource.ChapterRef(nil), chapters...)
+	for i := 1; i < len(out); i++ {
+		ref := out[i]
+		n, ok := chapterNumber(ref.Title)
+		if !ok || !ref.Delisted {
+			continue
+		}
+		if prev, okPrev := chapterNumber(out[i-1].Title); !okPrev || n >= prev || volumeOf(out[i-1].Title) != volumeOf(ref.Title) {
+			continue
+		}
+		// The nearest earlier place where it sits between a lower number
+		// and a higher one.
+		for j := i - 1; j >= 0 && j >= i-orderReach; j-- {
+			at, okAt := chapterNumber(out[j].Title)
+			if !okAt || volumeOf(out[j].Title) != volumeOf(ref.Title) {
+				break
+			}
+			if at < n {
+				break
+			}
+			before := -1
+			if j > 0 {
+				if b, okB := chapterNumber(out[j-1].Title); okB && volumeOf(out[j-1].Title) == volumeOf(ref.Title) {
+					before = b
+				} else {
+					continue
+				}
+			}
+			if before < n && n < at && at-n <= orderReach {
+				copy(out[j+1:i+1], out[j:i])
+				out[j] = ref
+				break
+			}
+		}
+	}
+	return out
 }

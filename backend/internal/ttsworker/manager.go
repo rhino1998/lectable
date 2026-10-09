@@ -789,6 +789,29 @@ func (m *Manager) LLMGenerate(ctx context.Context, systemPrompt, userPrompt stri
 	return out.Text, err
 }
 
+// LLMDecide is LLMGenerate for a reply made only of closed-set answers:
+// the worker writes each step's Prefix into the reply and reads the
+// model's choice among its Options from the logits, generating nothing
+// (llmworker.Worker.LLMDecide). It runs in the same worker slots as
+// LLMGenerate, so the same concurrency bound and restart gating apply.
+func (m *Manager) LLMDecide(ctx context.Context, systemPrompt, userPrompt string, steps []ttsproto.LLMDecideStep) ([]ttsproto.LLMDecision, error) {
+	m.restartGate.RLock()
+	defer m.restartGate.RUnlock()
+	jobID := m.beginJob()
+	defer m.endJob(jobID)
+
+	var out ttsproto.LLMDecideResponse
+	err := m.do(ctx, http.MethodPost, "/llm/decide", ttsproto.LLMDecideRequest{
+		SystemPrompt: systemPrompt,
+		UserPrompt:   userPrompt,
+		Steps:        steps,
+	}, &out)
+	if err == nil && len(out.Decisions) != len(steps) {
+		err = fmt.Errorf("ttsworker: /llm/decide answered %d of %d steps", len(out.Decisions), len(steps))
+	}
+	return out.Decisions, err
+}
+
 // UnloadTTS asks the worker to free every currently-loaded TTS clone
 // model right now (audioworker.Worker.UnloadAll, via POST /unload) rather
 // than waiting for its own idle timer (LECTABLE_MODEL_IDLE_UNLOAD_AFTER) - called

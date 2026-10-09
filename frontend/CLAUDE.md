@@ -166,16 +166,24 @@ byte-for-byte.
   mirrored in android's `ui/reader/RemotePosition.kt`), and
   `components/RecapPanel` + `utils/recap.ts` (the "previously on" recap,
   `bookRecap` live topic: the player bar's Recap button, and the offer
-  floating above the bar (`.recap-float`) on coming back to a book after a
-  while - the threshold is per browser, `lectable.recapAfterMinutes`, what
-  was turned down `lectable.recapDismissed`. Open, it is portalled into
-  the `.recap-slot` that `ChapterSection` renders above the paragraph the
-  reader was at (`recapSlotIdx`), floating instead only when that
-  paragraph isn't mounted. Opening asks for one if none is current and
-  plays it once it has a clip; its `<audio>` pauses the book and resumes
-  it when the recap ends, and `RecapText` highlights the word being spoken
-  from the clip's `segments` (`recapWords`), a click seeking to it;
-  mirrored in android's `ui/reader/Recap.kt`),
+  floating above the bar (`.recap-float`) on coming back to a book after
+  the library's offer threshold - the `recapSettings` topic, set from the
+  recap itself or the Settings page; what was turned down is per browser,
+  `lectable.recapDismissed`. Open, it is portalled into the `.recap-slot`
+  that `ChapterSection` renders above the paragraph the reader was at
+  (`recapSlotIdx`), floating instead only when that paragraph isn't
+  mounted. Opening asks for one if none is current and plays it once it
+  has a clip. Its `<audio>` has no controls: while it is open it hands
+  ReaderPage a `RecapTransport`, and `barPlayback` points the player bar's
+  play/pause, the keyboard shortcut and the sleep timer at it (at the
+  book's speed); it pauses the book and resumes it when the recap ends.
+  The same transport is how play waits for a due recap: in its "hold"
+  mode the bar's play opens the recap to be heard first, in "waiting" (open,
+  not yet narrated) it skips it (`shouldHoldForRecap`). The library card's
+  history icon queues a book's recap from there.
+  `RecapText` highlights the word being spoken from the clip's `segments`
+  (`recapWords`), a click seeking to it; mirrored in android's
+  `ui/reader/Recap.kt`),
   `components/ChapterNotesBlock` (annotations view's chapter summary under
   the heading, editable in place: summary, cast with role/pronouns/what the
   text calls them, scenes with who is present as toggle chips - saved via

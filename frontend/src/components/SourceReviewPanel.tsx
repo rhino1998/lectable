@@ -64,6 +64,14 @@ export function SourceReviewPanel({ book }: { book: BookSummary }) {
                   notice?
                 </span>
               )}
+              {e.unavailable && (
+                <span
+                  className="import-preview-source"
+                  title="The Internet Archive has no usable copy of this chapter (what it saved is the site’s “removed” page). Leave it unticked to go on without it, or tick it to try again."
+                >
+                  not in the archive
+                </span>
+              )}
             </label>
           </li>
         ))}

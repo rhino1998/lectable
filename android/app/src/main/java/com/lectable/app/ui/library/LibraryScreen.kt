@@ -20,8 +20,10 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.Headphones
@@ -93,6 +95,7 @@ fun LibraryScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     var pendingDelete by remember { mutableStateOf<BookSummaryDto?>(null) }
+    var pendingRename by remember { mutableStateOf<BookSummaryDto?>(null) }
     var pendingDeleteLocal by remember { mutableStateOf<BookSummaryDto?>(null) }
     val libraryEntries = remember(uiState.books) { groupBySeries(uiState.books) }
     // The "Continue reading" entry: the unfinished book read most recently (it keeps its usual
@@ -224,6 +227,7 @@ fun LibraryScreen(
                                 narrationRate = uiState.narrationRate,
                                 onClick = { onOpenBook(item.summary.id) },
                                 onPreprocess = { viewModel.preprocessBook(item.summary.id) },
+                                onMakeRecap = { viewModel.makeRecap(item.summary.id) },
                                 onOpenSpeakers = { onOpenSpeakers(item.summary.id) },
                                 onOpenLexicon = { onOpenLexicon(item.summary.id) },
                                 onGenerate = { viewModel.generateBook(item.summary.id) },
@@ -238,6 +242,7 @@ fun LibraryScreen(
                                 },
                                 onReviewSource = { reviewBookId = item.summary.id },
                                 onDeleteLocal = { pendingDeleteLocal = item.summary },
+                                onRename = { pendingRename = item.summary },
                                 onDelete = { pendingDelete = item.summary },
                             )
                         }
@@ -293,6 +298,14 @@ fun LibraryScreen(
                 onDismiss = { reviewBookId = null },
             )
         }
+    }
+
+    pendingRename?.let { book ->
+        RenameBookDialog(
+            book = book,
+            onDismiss = { pendingRename = null },
+            onRename = { title, author -> pendingRename = null; viewModel.renameBook(book.id, title, author) },
+        )
     }
 
     pendingDelete?.let { book ->
@@ -368,6 +381,7 @@ private fun BookRow(
     narrationRate: Double,
     onClick: () -> Unit,
     onPreprocess: () -> Unit,
+    onMakeRecap: () -> Unit,
     onOpenSpeakers: () -> Unit,
     onOpenLexicon: () -> Unit,
     onGenerate: () -> Unit,
@@ -379,6 +393,7 @@ private fun BookRow(
     onBackfill: () -> Unit,
     onReviewSource: () -> Unit,
     onDeleteLocal: () -> Unit,
+    onRename: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val book = item.summary
@@ -510,6 +525,11 @@ private fun BookRow(
                 onClick = { onPreprocess(); showMenu = false },
             )
             DropdownMenuItem(
+                text = { Text("Make a recap") },
+                leadingIcon = { Icon(Icons.Filled.History, contentDescription = null) },
+                onClick = { onMakeRecap(); showMenu = false },
+            )
+            DropdownMenuItem(
                 text = { Text("Speakers") },
                 leadingIcon = { Icon(Icons.Filled.RecordVoiceOver, contentDescription = null) },
                 onClick = { onOpenSpeakers(); showMenu = false },
@@ -588,7 +608,8 @@ private fun BookRow(
                     )
                 }
                 // Stopped at a chapter the site won't serve: an epub of that stretch can fill it.
-                if (!source.blocked.isNullOrEmpty()) {
+                // ...or at chapters the archive has no usable copy of (source.review, unavailable).
+                if (!source.blocked.isNullOrEmpty() || source.review.orEmpty().any { it.unavailable }) {
                     DropdownMenuItem(
                         text = { Text("Fill locked chapters from an epub") },
                         leadingIcon = { Icon(Icons.Filled.UploadFile, contentDescription = null) },
@@ -604,6 +625,11 @@ private fun BookRow(
                     onClick = { onDeleteLocal(); showMenu = false },
                 )
             }
+            DropdownMenuItem(
+                text = { Text("Rename") },
+                leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                onClick = { onRename(); showMenu = false },
+            )
             DropdownMenuItem(
                 text = { Text("Delete book") },
                 leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
@@ -685,6 +711,28 @@ private fun ImportLinkDialog(onDismiss: () -> Unit, onImport: (String) -> Unit, 
                 TextButton(onClick = { onChooseChapters(link) }, enabled = link.isNotBlank()) { Text("Choose chapters…") }
                 TextButton(onClick = { onImport(link) }, enabled = link.isNotBlank()) { Text("Import") }
             }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** Long-press "Rename": the title and author the library shows a book under. An import names a
+ *  book as its source does, which isn't always what its reader calls it. */
+@Composable
+private fun RenameBookDialog(book: BookSummaryDto, onDismiss: () -> Unit, onRename: (title: String, author: String) -> Unit) {
+    var title by remember(book.id) { mutableStateOf(book.title) }
+    var author by remember(book.id) { mutableStateOf(book.author) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = author, onValueChange = { author = it }, label = { Text("Author") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onRename(title, author) }, enabled = title.isNotBlank()) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

@@ -170,3 +170,88 @@ func requireGreedy(t *testing.T, model *llamacpp.Model, prompt, out string) {
 		}
 	}
 }
+
+// TestSchedulerMTPAfterDecide checks that a Decide request, which never
+// drafts, leaves its slot fit for drafting again: generations that follow
+// it in the same slot - from the prefix it left there, and from scratch -
+// must still be greedy and still have drafts accepted.
+func TestSchedulerMTPAfterDecide(t *testing.T) {
+	initBackend()
+	model, err := llamacpp.LoadModel(testMTPModelPath(t), llamacpp.ModelParams{NGPULayers: -1, LoadMTP: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer model.Close()
+	vocab := model.Vocab()
+
+	const nDraft = 3
+	system := "You label dialogue in fiction. For every quoted line, output one JSON object per line: " +
+		`{"line": <n>, "speaker": <name>, "emotion": <one word>}. Output only the JSON lines.`
+	render := func(user string) string {
+		msgs := []llamacpp.ChatMessage{{Role: "system", Content: system}}
+		if user != "" {
+			msgs = append(msgs, llamacpp.ChatMessage{Role: "user", Content: user})
+		}
+		s, err := vocab.ApplyChatTemplate(model.ChatTemplate(""), msgs, user != "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	tokens := func(s string) []llamacpp.Token {
+		toks, err := vocab.Tokenize(s, false, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return toks
+	}
+	prompt := render(`1. "Get down!" Mara shouted. 2. "Why?" asked Tom. 3. "Because they're shooting at us," she said.`)
+
+	params := llamacpp.ContextParams{NCtx: 4096, NSeqMax: 1, NUBatch: 2048, NOutputsMax: 1 + nDraft, NRsSeq: nDraft}
+	ctx, err := model.NewContext(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ctx.Close()
+	if err := ctx.EnableMTP(params, nDraft); err != nil {
+		t.Fatal(err)
+	}
+	n, err := ctx.DecodePromptSeq(render(""), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := ctx.SaveSeq(0)
+	ctx.TrimSequence(0, 0)
+
+	sched := llamacpp.NewScheduler(ctx, 1)
+	defer sched.Close()
+	decide := func() {
+		options := [][]llamacpp.Token{tokens(" yes"), tokens(" no")}
+		decisions, err := sched.Decide(t.Context(), llamacpp.GenRequest{
+			Prompt: prompt, StartPos: n, PrefixState: state,
+			Steps: []llamacpp.DecideStep{{Prefix: tokens("1:"), Options: options}, {Prefix: tokens("\n2:"), Options: options}, {Prefix: tokens("\n3:"), Options: options}},
+		})
+		if err != nil || len(decisions) != 3 {
+			t.Fatalf("Decide: %d decisions, %v", len(decisions), err)
+		}
+	}
+	generate := func(fromPrefix bool) {
+		req := llamacpp.GenRequest{Prompt: prompt, Sampler: llamacpp.NewSampler(llamacpp.SamplerParams{}), MaxTokens: 100}
+		if fromPrefix {
+			req.StartPos, req.PrefixState = n, state
+		}
+		out, err := sched.Generate(t.Context(), req)
+		if err != nil {
+			t.Fatalf("Generate (fromPrefix=%v): %v", fromPrefix, err)
+		}
+		requireGreedy(t, model, prompt, out)
+	}
+
+	decide()
+	generate(true)
+	decide()
+	generate(false)
+	if rs := sched.RoundStats(); rs.DraftTokens == 0 || 2*rs.DraftAccepted < rs.DraftTokens {
+		t.Errorf("after Decide requests, MTP drafted %d tokens and had %d accepted", rs.DraftTokens, rs.DraftAccepted)
+	}
+}

@@ -48,6 +48,7 @@ describe('import selection', () => {
     expect([...defaultSelection(withNotice)]).toEqual(['1', '9'])
     expect([...mergeSelection(live, new Set(['1']), withNotice)]).toEqual(['1'])
     expect([...defaultReview([ch('1', 'site'), ch('2', 'site', true)])]).toEqual(['1'])
+    expect([...defaultReview([{ id: '3', suspect: false, unavailable: true }])]).toEqual([])
   })
 
   it('selects exactly a range, clamped and in either order', () => {
@@ -58,7 +59,13 @@ describe('import selection', () => {
   })
 
   it('counts by source, optionally only the ticked', () => {
-    expect(countBySource(live)).toEqual({ site: 2, archive: 0, epub: 0, locked: 1 })
-    expect(countBySource(live, new Set(['1']))).toEqual({ site: 1, archive: 0, epub: 0, locked: 0 })
+    expect(countBySource(live)).toEqual({ site: 2, archive: 0, epub: 0, missing: 0, locked: 1 })
+    expect(countBySource(live, new Set(['1']))).toEqual({
+      site: 1,
+      archive: 0,
+      epub: 0,
+      missing: 0,
+      locked: 0,
+    })
   })
 })

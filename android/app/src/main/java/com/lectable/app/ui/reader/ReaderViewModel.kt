@@ -158,6 +158,11 @@ data class RecapUiState(
     val engaged: Boolean = false,
     // The recap's own clip is playing (ReaderViewModel.toggleRecapPlayback).
     val playing: Boolean = false,
+    // Pressing play should wait for the recap rather than start the book (shouldHoldForRecap,
+    // and the book hasn't played this visit); [waiting] - it is open and will play by itself
+    // the moment it has a clip.
+    val hold: Boolean = false,
+    val waiting: Boolean = false,
     // The library-wide offer threshold (RECAP_NEVER until it has arrived).
     val afterMinutes: Int = RECAP_NEVER,
     // When the book was last read as of opening it, before this visit saved anything, and when
@@ -172,8 +177,15 @@ private data class RecapLocal(
     val openPos: ParagraphPos = 0 to 0,
     val lastReadAtOnOpen: Long? = null,
     val openedAtMs: Long = 0L,
+    val seriesIndex: Double = 0.0,
+    // The book has played this visit, or the reader turned the recap down: it is no longer
+    // offered, and play starts the book.
     val played: Boolean = false,
+    // This visit asked the backend for a recap.
+    val requested: Boolean = false,
     val open: Boolean = false,
+    // Open, and to play by itself once it has a clip.
+    val autoPlay: Boolean = false,
     val playing: Boolean = false,
 )
 
@@ -282,6 +294,11 @@ class ReaderViewModel @Inject constructor(
             open = local.open,
             engaged = local.open && recapIsCurrent(recap, pos) && recap?.audioUrl != null,
             playing = local.playing,
+            hold = local.opened && !local.played && shouldHoldForRecap(
+                recap, pos, local.lastReadAtOnOpen, local.seriesIndex, local.openedAtMs, afterMinutes, dismissed,
+                awaited = local.requested || live.data?.preparing == true,
+            ),
+            waiting = local.open && local.autoPlay,
             afterMinutes = afterMinutes,
             lastReadAtOnOpen = local.lastReadAtOnOpen,
             openedAtMs = local.openedAtMs,
@@ -300,13 +317,30 @@ class ReaderViewModel @Inject constructor(
             player.state.collect { playback -> _uiState.update { withRemotePosition(it.copy(playback = playback)) } }
         }
 
-        // Once the book plays, the reader has picked it back up: no more offer this visit, and
-        // the book and its recap never talk over each other.
+        // The book starting to play - from the bar, a headset, the notification - while its
+        // recap is due waits for the recap instead (holdForRecap); started again while already
+        // waiting, it means "skip it". Otherwise the reader has picked the book back up: no
+        // more offer this visit, and the book and its recap never talk over each other.
         viewModelScope.launch {
             player.state.map { it.isPlaying }.distinctUntilChanged().collect { playing ->
-                if (playing) {
-                    recapLocal.update { it.copy(played = true) }
+                if (!playing) return@collect
+                val local = recapLocal.value
+                if (recapState.value.hold && !local.played && !(local.open && local.autoPlay)) {
+                    player.pause()
+                    holdForRecap()
+                } else {
+                    recapLocal.update { it.copy(played = true, autoPlay = false) }
                     stopRecap()
+                }
+            }
+        }
+        // A recap opened to be played starts as soon as it has a clip - at once, or when its
+        // narration arrives. (Also keeps recapState current for the checks above.)
+        viewModelScope.launch {
+            recapState.collect { st ->
+                if (st.waiting && st.engaged && recapPlayer == null) {
+                    recapLocal.update { it.copy(autoPlay = false) }
+                    toggleRecapPlayback()
                 }
             }
         }
@@ -788,10 +822,21 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    /** The playback bar's play/pause: the book's - or, while the recap is open with a clip, the
-     *  recap's (it has no controls of its own). */
+    /** The playback bar's play/pause. While the recap is open with a clip it is the recap's (it
+     *  has no controls of its own). With the recap due - the reader is back after a while and
+     *  it is ready or being written - the first press waits for it and plays it before the
+     *  book; pressed again while still waiting, it skips the recap. */
     fun togglePlayPause() {
-        if (recapState.value.engaged) toggleRecapPlayback() else player.togglePlayPause()
+        val st = recapState.value
+        when {
+            st.engaged -> toggleRecapPlayback()
+            st.waiting -> {
+                declineRecap()
+                if (!player.state.value.isPlaying) player.togglePlayPause()
+            }
+            st.hold && !player.state.value.isPlaying -> holdForRecap()
+            else -> player.togglePlayPause()
+        }
     }
 
     fun playParagraph(chapterIdx: Int, paragraphIdx: Int, startSeconds: Double = 0.0) {
@@ -1132,6 +1177,7 @@ class ReaderViewModel @Inject constructor(
                 openPos = book.posChapterIdx to book.posParagraphIdx,
                 lastReadAtOnOpen = book.lastReadAt?.takeIf { at -> at > 0 },
                 openedAtMs = now,
+                seriesIndex = book.seriesIndex ?: 0.0,
                 played = following,
             )
         }
@@ -1142,6 +1188,7 @@ class ReaderViewModel @Inject constructor(
                 val afterMinutes = liveStore.recapSettings().first { it.data != null }.data?.afterMinutes ?: RECAP_NEVER
                 val pos = book.posChapterIdx to book.posParagraphIdx
                 if (shouldRequestRecap(recap, pos, book.lastReadAt, book.seriesIndex ?: 0.0, now, afterMinutes)) {
+                    recapLocal.update { it.copy(requested = true) }
                     libraryRepository.prepareRecap(bookId, force = false)
                 }
             }
@@ -1169,10 +1216,29 @@ class ReaderViewModel @Inject constructor(
         }
     }
 
-    /** Opens or closes the recap in the text (RecapInline). Closing stops its clip. */
-    fun setRecapOpen(open: Boolean) {
-        recapLocal.update { it.copy(open = open) }
-        if (!open) stopRecap()
+    /** Opens or closes the recap in the text (RecapInline). Opened with [autoPlay] it plays
+     *  as soon as it has a clip; opened with nothing written for this spot, one is asked for -
+     *  even while one is being prepared, since asking also moves a recap the backend was
+     *  preparing in the background to the front of the queue. Closing stops its clip. */
+    fun setRecapOpen(open: Boolean, autoPlay: Boolean = false) {
+        recapLocal.update { it.copy(open = open, autoPlay = open && autoPlay) }
+        if (!open) {
+            stopRecap()
+        } else if (!recapState.value.current) {
+            prepareRecap(force = false)
+        }
+    }
+
+    /** Play was pressed with the recap due: opens it to play first (when it ends the book
+     *  starts - see toggleRecapPlayback), waiting for it if it is still being written. */
+    private fun holdForRecap() = setRecapOpen(true, autoPlay = true)
+
+    /** The reader would rather not have (or wait for) the recap: closes it, and play starts
+     *  the book from now on. */
+    fun declineRecap() {
+        recapLocal.update { it.copy(played = true) }
+        setRecapOpen(false)
+        dismissRecap()
     }
 
     /** Plays, pauses or resumes the recap's own clip (a plain one-clip player, like
@@ -1205,6 +1271,7 @@ class ReaderViewModel @Inject constructor(
             }
             setOnCompletionListener { mp ->
                 if (recapPlayer !== mp) return@setOnCompletionListener
+                recapLocal.update { it.copy(played = true) }
                 setRecapOpen(false)
                 if (!player.state.value.isPlaying) player.togglePlayPause()
             }

@@ -415,7 +415,9 @@ compiled-in default in place if nothing answers in time.
   topic (`LiveClient`). `QueueTaskDto.kind` is a plain `String`, not a closed enum -
   `backend/internal/jobs.Kind` has grown before and an unrecognized value
   would fail to deserialize the whole snapshot; `kindLabel()` falls back
-  to the raw string instead. Reachable from Settings, not a bottom-level
+  to the raw string instead. Long-pressing a row opens a menu of the more
+  urgent tiers to raise it to (`upgradeTiers`, `PUT /api/jobs/{id}/tier` -
+  the web page's tier-badge menu). Reachable from Settings, not a bottom-level
   nav destination - a diagnostics view.
 - `ui/speakers/` - `SpeakersScreen`/`SpeakerViewModel`, the per-book
   character roster - see "Multivoice playback and character management"
@@ -426,20 +428,28 @@ compiled-in default in place if nothing answers in time.
 - `ui/reader/Recap.kt` + `RecapInline.kt` - the "previously on" recap
   (backend `httpapi/recap.go`, `bookRecap` live topic), the twin of the
   web's `RecapPanel`/`utils/recap.ts`: `RecapOfferCard` over the top of the
-  reader when the reader comes back after a while (threshold in
-  `ReadingSettingsRepository.recapAfterMinutes`, default a day; what was
-  turned down per book in `dismissedRecap`) or starts a sequel, and
-  `RecapInline`, the recap itself, set into the reader's list above the
-  paragraph the reader was at (`ReaderListEntry.RecapItem`,
-  `withRecapItem`) from the offer or the reader menu's "Recap". Opening it
-  asks for one if none is current and plays it as soon as it has a clip
-  (not when opened by "Read it"). `ReaderViewModel.recapState` combines the
-  live recap, the player's position and those settings;
-  `toggleRecapPlayback` plays the clip on its own `MediaPlayer` with the
-  book paused and resumes the book when it ends, and the word being spoken
-  is highlighted from the clip's `segments` (`recapWordTimes`, polled
-  position). Not a media-session item: no lock-screen controls for the
-  minute it plays.
+  reader when the reader comes back after the library's offer threshold
+  (the `recapSettings` live topic, set from the recap itself; what was
+  turned down per book is on the device, `ReadingSettingsRepository.
+  dismissedRecap`) or starts a sequel, and `RecapInline`, the recap
+  itself, set into the reader's list above the paragraph the reader was at
+  (`ReaderListEntry.RecapItem`, `withRecapItem`) from the offer or the
+  reader menu's "Recap". Opening it asks for one if none is current and
+  plays it as soon as it has a clip (not when opened by "Read it").
+  `ReaderViewModel.recapState` combines the live recap, the player's
+  position and those settings. The clip plays on its own `MediaPlayer`
+  with the book paused, at the book's speed, and has no controls of its
+  own: while the recap is open with a clip (`RecapUiState.engaged`) the
+  playback bar's play/pause is routed to it (`togglePlayPause` ->
+  `toggleRecapPlayback`); when it ends the recap closes and the book
+  resumes. With the recap due (`RecapUiState.hold`, `shouldHoldForRecap`)
+  play waits for it: `togglePlayPause` - or the book starting any other
+  way while the reader is open - opens it with `autoPlay`, the view model
+  starts its clip the moment it has one, and a second press while still
+  waiting skips it (`declineRecap`). The library's long-press menu has
+  "Make a recap" (`LibraryViewModel.makeRecap`). The word being spoken is highlighted from the clip's `segments`
+  (`recapWordTimes`, polled position). Not a media-session item: no
+  lock-screen controls, and a headset play button starts the book instead.
 
 ## Known scaffold limitations (not yet implemented)
 

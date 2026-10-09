@@ -18,6 +18,7 @@ import com.lectable.app.data.remote.dto.ImportPreviewResponseDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.MarkReadRequestDto
 import com.lectable.app.data.remote.dto.PositionDto
+import com.lectable.app.data.remote.dto.RenameBookRequestDto
 import com.lectable.app.data.remote.dto.ReviewBookSourceRequestDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.data.remote.dto.SetParagraphEmotionRequestDto
@@ -167,6 +168,13 @@ class LibraryRepository @Inject constructor(
 
     suspend fun deleteBook(id: String) {
         api.deleteBook(id)
+    }
+
+    /** Renames a book as the library shows it (backend handleRenameBook): its title and author. */
+    suspend fun renameBook(id: String, title: String, author: String) {
+        withServerMessage("Could not rename the book") {
+            api.renameBook(id, RenameBookRequestDto(title = title, author = author))
+        }
     }
 
     /** [LectableApi.preprocessBook] - see its own doc comment. */

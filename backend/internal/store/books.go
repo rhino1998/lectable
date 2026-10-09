@@ -341,6 +341,14 @@ func (s *SQLiteStore) GetBook(id string) (*Book, error) {
 	return &b, nil
 }
 
+// RenameBook sets a book's title and author as the library shows them.
+// Nothing else hangs off either: a series is its own name, and files are
+// kept by id.
+func (s *SQLiteStore) RenameBook(id, title, author string) error {
+	_, err := s.db.Exec(`UPDATE books SET title = ?, author = ? WHERE id = ?`, title, author, id)
+	return err
+}
+
 func (s *SQLiteStore) DeleteBook(id string) error {
 	tx, err := s.db.Begin()
 	if err != nil {

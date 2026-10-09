@@ -15,6 +15,7 @@ const SOURCE_LABELS: Record<ImportChapterSource, string> = {
   site: '',
   archive: 'archive',
   epub: 'epub',
+  missing: 'missing',
   locked: 'locked',
 }
 
@@ -22,6 +23,8 @@ const SOURCE_TITLES: Record<ImportChapterSource, string> = {
   site: '',
   archive: 'No longer listed by the site - read from the Internet Archive’s copy',
   epub: 'Taken from the attached epub',
+  missing:
+    'Known only from the gap in the chapter numbers: the site doesn’t list it and the Internet Archive never saved it. An attached epub can supply it; otherwise the import stops here for you to skip it.',
   locked: 'Listed but not readable (early access) - an import stops at it',
 }
 
@@ -60,6 +63,7 @@ export function ImportPreviewPanel(props: {
     `${all.site} from ${preview.site}`,
     all.archive > 0 && `${all.archive} from the Internet Archive`,
     all.epub > 0 && `${all.epub} from the epub`,
+    all.missing > 0 && `${all.missing} missing from the web`,
     all.locked > 0 && `${all.locked} locked`,
   ].filter(Boolean)
 

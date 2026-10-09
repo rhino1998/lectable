@@ -390,7 +390,7 @@ func TestJobsSnapshotAndCancelAll(t *testing.T) {
 	}
 
 	// There's necessarily a queued/in-flight task immediately after
-	// enqueueing (maxInFlight=4 well exceeds this test's 3 paragraphs), so
+	// enqueueing (maxInFlight=8 well exceeds this test's 3 paragraphs), so
 	// don't race the worker goroutine actually draining the queue - just
 	// confirm the snapshot endpoint responds with the right shape and that
 	// cancel-all reports success, rather than depending on exact timing of

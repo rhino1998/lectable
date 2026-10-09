@@ -75,6 +75,31 @@ fun shouldRequestRecap(
     return startingSequel || awayLongEnough(lastReadAt, nowMs, afterMinutes)
 }
 
+/**
+ * Whether pressing play should wait for the recap instead of starting the book: the reader is
+ * back after long enough (or starting a sequel) and the recap is there to be offered - or is
+ * still being written for them ([awaited]: asked for this visit, or the backend is preparing
+ * one, and it hasn't failed here). False once it has been turned down or the threshold is
+ * "never".
+ */
+fun shouldHoldForRecap(
+    recap: BookRecapDto?,
+    pos: ParagraphPos,
+    lastReadAtOnOpen: Long?,
+    seriesIndex: Double,
+    nowMs: Long,
+    afterMinutes: Int,
+    dismissed: String?,
+    awaited: Boolean,
+): Boolean {
+    if (afterMinutes < 0) return false
+    if (shouldOfferRecap(recap, pos, lastReadAtOnOpen, nowMs, afterMinutes, dismissed)) return true
+    if (recapIsCurrent(recap, pos)) return false // there, and turned down
+    val failedHere = recap != null && recap.text.isEmpty() && recap.chapterIdx == pos.first
+    val startingSequel = lastReadAtOnOpen == null && seriesIndex > 1
+    return awaited && !failedHere && (startingSequel || awayLongEnough(lastReadAtOnOpen, nowMs, afterMinutes))
+}
+
 /** How long before [nowMs] a unix-seconds time was, roughly. */
 fun agoLabel(at: Long, nowMs: Long): String {
     val hours = maxOf(0.0, (nowMs / 1000 - at) / 3600.0)

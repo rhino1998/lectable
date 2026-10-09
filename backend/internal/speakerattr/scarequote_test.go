@@ -54,4 +54,9 @@ func TestParseScareQuoteVerdicts(t *testing.T) {
 	if _, err := parseScareQuoteVerdicts("14: not spoken\n15: spoken", []int{214}); err == nil {
 		t.Fatal("two unasked verdicts for one asked line should fail")
 	}
+	// Only "spoken" verdicts, for lines that weren't asked: nothing is
+	// flagged whichever lines were meant.
+	if got, err := parseScareQuoteVerdicts("132: spoken", []int{122, 152}); err != nil || len(got) != 0 {
+		t.Fatalf("unasked spoken verdict = %v, %v (want no flags)", got, err)
+	}
 }

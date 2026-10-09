@@ -126,7 +126,24 @@ const maxInFlight = 8
 // production logs before it was raised back to 4), not an arbitrary guess
 // - see llmworker.Config.MaxConcurrent's own doc comment for the fuller
 // VRAM-sizing story.
-const maxAttributionInFlight = 2
+//
+// Read from LECTABLE_SPEAKER_LLM_MAX_CONCURRENT, the same variable the worker
+// sizes its slots from (cmd/server hands its environment to the worker it
+// spawns), so the two can't drift; 2 when unset. run.sh sets 4 since
+// 2026-10-07: the reservation described above was long since cut to 12,288
+// tokens a slot (~0.9 GB), a day's calls peaked at 9,636 (a chapter
+// summary; nothing else passed 5,417), and 4 slots loaded without an
+// allocation failure. Each slot adds ~10% total throughput and slows every
+// call (see backend/CLAUDE.md), so more isn't better for work someone is
+// waiting on.
+var maxAttributionInFlight = llmSlotsFromEnv()
+
+func llmSlotsFromEnv() int {
+	if n, err := strconv.Atoi(os.Getenv("LECTABLE_SPEAKER_LLM_MAX_CONCURRENT")); err == nil && n >= 1 {
+		return n
+	}
+	return 2
+}
 
 // envIntOr reads key from the environment and parses it as an int,
 // falling back to def if unset or unparseable - internal/audioworker's own
@@ -349,6 +366,7 @@ var kindPool = map[Kind]poolKey{
 	KindSummary:                 poolLLM,
 	KindBookSetting:             poolLLM,
 	KindRecap:                   poolLLM,
+	KindRosterReview:            poolLLM,
 	KindRecapNarration:          poolGeneration,
 }
 

@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
+	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
 
 // pronunciationCandidate is one regex-detectable span whose pronunciation
@@ -647,20 +648,21 @@ func contextSnippet(textByIdx map[int]string, idx, start, end int) string {
 	return snippet
 }
 
-// pronunciationBatch asks the model about terms; paragraphs is every
-// paragraph of the run, for contextSnippet's neighbours.
-func (c *Client) pronunciationBatch(ctx context.Context, paragraphs []ParagraphInput, terms []pronunciationTerm) (map[int]int, error) {
-	textByIdx := make(map[int]string, len(paragraphs))
-	for _, p := range paragraphs {
-		textByIdx[p.Idx] = p.Text
-	}
+// pronunciationUserPrompt lists terms as numbered items, each a passage
+// and its lettered meanings - in reverse order when reversed, so the last
+// candidate is A.
+func (c *Client) pronunciationUserPrompt(textByIdx map[int]string, terms []pronunciationTerm, reversed bool) string {
 	var user strings.Builder
 	for _, t := range terms {
 		fmt.Fprintf(&user, "%d. %s\n", t.ID, contextSnippet(textByIdx, t.ParagraphIdx, t.Offset, t.Offset+t.Length))
-		for i, cand := range t.Candidates {
-			sense := cand
-			if i < len(t.Senses) {
-				sense = t.Senses[i]
+		for i := range t.Candidates {
+			ci := i
+			if reversed {
+				ci = len(t.Candidates) - 1 - i
+			}
+			sense := t.Candidates[ci]
+			if ci < len(t.Senses) {
+				sense = t.Senses[ci]
 			}
 			fmt.Fprintf(&user, "   %c: %s\n", 'A'+i, sense)
 		}
@@ -669,8 +671,59 @@ func (c *Client) pronunciationBatch(ctx context.Context, paragraphs []ParagraphI
 	if c.cfg.NoThink {
 		user.WriteString("/no_think")
 	}
+	return user.String()
+}
 
-	content, err := c.generate(ctx, pronunciationSystemPrompt, user.String(), 0, pronunciationMaxTokens)
+// pronunciationSteps is the reply the prompt asks for - {"0": "A", "1":
+// "B"} - as decide steps: everything but the letters is written for the
+// model, and each letter is its choice among that term's options.
+func pronunciationSteps(terms []pronunciationTerm) []ttsproto.LLMDecideStep {
+	steps := make([]ttsproto.LLMDecideStep, len(terms))
+	for i, t := range terms {
+		prefix := fmt.Sprintf(`", "%d": "`, t.ID)
+		if i == 0 {
+			prefix = fmt.Sprintf(`{"%d": "`, t.ID)
+		}
+		steps[i].Prefix = prefix
+		for k := range t.Candidates {
+			steps[i].Options = append(steps[i].Options, string(rune('A'+k)))
+		}
+	}
+	return steps
+}
+
+// pronunciationBatch asks the model about terms; paragraphs is every
+// paragraph of the run, for contextSnippet's neighbours.
+func (c *Client) pronunciationBatch(ctx context.Context, paragraphs []ParagraphInput, terms []pronunciationTerm) (map[int]int, error) {
+	textByIdx := make(map[int]string, len(paragraphs))
+	for _, p := range paragraphs {
+		textByIdx[p.Idx] = p.Text
+	}
+	user := c.pronunciationUserPrompt(textByIdx, terms, false)
+
+	if decider, ok := c.llm.(llmDecider); ok {
+		// The reply is nothing but letters, so they're read off the model's
+		// logits rather than generated and parsed - see pronunciationSteps.
+		decisions, err := decider.LLMDecide(ctx, pronunciationSystemPrompt, user, pronunciationSteps(terms))
+		if err != nil {
+			return nil, err
+		}
+		if len(decisions) != len(terms) {
+			return nil, fmt.Errorf("%d decisions for %d terms", len(decisions), len(terms))
+		}
+		out := make(map[int]int, len(terms))
+		for i, t := range terms {
+			out[t.ID] = min(max(decisions[i].Choice, 0), len(t.Candidates)-1)
+		}
+		return out, nil
+	}
+	return c.pronunciationGenerate(ctx, user, terms)
+}
+
+// pronunciationGenerate is pronunciationBatch for a backend with no decide
+// call: the JSON reply is generated and parsed.
+func (c *Client) pronunciationGenerate(ctx context.Context, user string, terms []pronunciationTerm) (map[int]int, error) {
+	content, err := c.generate(ctx, pronunciationSystemPrompt, user, 0, pronunciationMaxTokens)
 	if err != nil {
 		return nil, err
 	}

@@ -22,7 +22,7 @@ import androidx.compose.material.icons.outlined.SentimentVeryDissatisfied
 import androidx.compose.material.icons.outlined.SentimentVerySatisfied
 import androidx.compose.material.icons.outlined.VolunteerActivism
 import androidx.compose.material.icons.filled.Bedtime
-import androidx.compose.material.icons.filled.FormatStrikethrough
+import androidx.compose.material.icons.filled.FormatUnderlined
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material3.DropdownMenuItem
@@ -156,12 +156,12 @@ internal fun AnnotationCaretIcon(color: Color) {
     }
 }
 
-/** The pronunciation-mark counterpart to [AnnotationCaretIcon] - same footprint, a strikethrough
- *  glyph matching the inline mark's own strikeout shape (see drawPronunciationStrike). */
+/** The pronunciation-mark counterpart to [AnnotationCaretIcon] - same footprint, an underline
+ *  glyph matching the inline mark's own shape (see drawPronunciationUnderline). */
 @Composable
 internal fun PronunciationStrikeIcon(color: Color) {
     Box(modifier = Modifier.size(AnnotationMenuIconSize), contentAlignment = Alignment.Center) {
-        Icon(Icons.Filled.FormatStrikethrough, contentDescription = null, tint = color)
+        Icon(Icons.Filled.FormatUnderlined, contentDescription = null, tint = color)
     }
 }
 

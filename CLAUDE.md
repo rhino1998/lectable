@@ -155,6 +155,13 @@ is written once per book by one LLM call over excerpts from across it, the first
 lighting and characterization prompts so each stops guessing the world
 from its own short span. See the `.../setting` entry in `backend/docs/api.md`.
 
+A **roster review** looks over a series' characters for what many
+chapters of attribution left wrong - one person under two names, an alias
+that is someone else's name, a description never marked as a role - and
+proposes each fix for the reader to accept or skip on the Speakers tab;
+nothing is merged on its own. See the `roster-review` entry in
+`backend/docs/api.md`.
+
 A per-chapter **summary pass** writes each chapter's summary, scenes
 (where, when, who's there) and cast (with what the text calls them);
 attribution reads the cast and ambience/lighting the scenes. See
@@ -163,8 +170,9 @@ the `.../summarize` entry in `backend/docs/api.md`.
 A **"previously on" recap** is written and spoken in the narrator's voice
 for where a reader stopped (from the chapter summaries behind them and the
 part of the current chapter they heard - never anything ahead), prepared
-once a book has sat idle so it is ready when they come back; the clients
-offer it after a day away (per-device setting). A book started right
+once its reader has been away as long as the offer threshold so it is
+ready when they come back; the clients offer it after that long away (one
+library-wide setting, default a day). A book started right
 after the one before it in its series opens with a recap of that book
 instead. See the `.../recap` entry in `backend/docs/api.md`.
 
@@ -199,6 +207,15 @@ to be reached directly), frontend `5173`. The backend's `LECTABLE_ALLOW_ORIGIN` 
 var (default `http://localhost:5173`) must match wherever the frontend dev
 server actually runs. (`android` doesn't go through CORS - it's a native
 client, not a browser.)
+
+## Looking at a running backend (MCP)
+
+`.mcp.json` registers `backend/cmd/lectable-mcp` with Claude Code as the
+`lectable` server. Prefer its tools to `curl`/`sqlite3` when inspecting or
+driving the live library - `books`, `book`, `read`, `search`, `speakers`,
+`jobs`, `routes`, `api_get`/`api_call`, `sql` (read-only), `logs` - since
+the raw API answers are sized for the clients, not a context window. See
+the `cmd/lectable-mcp` entry in `backend/CLAUDE.md`.
 
 ## Conventions
 

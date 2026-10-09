@@ -305,6 +305,23 @@ func (m *Manager) EnqueueBookSetting(book *store.Book, fn BookSettingDeriver) {
 	})
 }
 
+// EnqueueRosterReview queues a review of book's roster (the Speakers
+// page's button) in the background and returns at once. fn is the work;
+// scope (store.SeriesScope) dedupes it, so asking from two books of one
+// series joins one run.
+func (m *Manager) EnqueueRosterReview(book *store.Book, scope string, fn func(ctx context.Context) error) {
+	m.pushTask(&task{
+		kind:        KindRosterReview,
+		tier:        TierBackground,
+		bookID:      book.ID,
+		llmKey:      scope,
+		label:       "Roster review",
+		runLLM:      func(ctx context.Context) (int, func(), error) { return 0, nil, fn(ctx) },
+		seriesName:  book.SeriesName,
+		seriesIndex: book.SeriesIndex,
+	})
+}
+
 // referenceClipDependency returns t's own "ensure reference clip" task -
 // this package's third dependency kind, creating one the first time some
 // paragraph discovers its own resolved preset has no cached reference

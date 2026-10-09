@@ -111,7 +111,15 @@ func RewriteEPUB(w io.Writer, prev *zip.Reader, chapters []*Chapter) error {
 	return writeEPUB(w, Meta{}, prev, chapters, true)
 }
 
-func writeEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter, replace bool) error {
+// ArrangeEPUB writes prev again with exactly the chapters order names, by
+// id, in that order: chapters of prev left out are dropped, and an id prev
+// doesn't have is written from chapters. For when a book's chapters have
+// been moved, removed or added to mid-book.
+func ArrangeEPUB(w io.Writer, prev *zip.Reader, order []string, chapters []*Chapter) error {
+	return writeEPUB(w, Meta{}, prev, chapters, true, order...)
+}
+
+func writeEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter, replace bool, order ...string) error {
 	idx := epubIndex{Kind: meta.Kind, WorkID: meta.WorkID, URL: meta.URL, Title: meta.Title, Author: meta.Author}
 	prevFiles := map[string]*zip.File{}
 	have := map[string]bool{}
@@ -130,6 +138,28 @@ func writeEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter, re
 		}
 		for _, c := range old.Chapters {
 			have[c.ID] = true
+		}
+		if order != nil {
+			byID := make(map[string]indexChapter, len(old.Chapters))
+			for _, c := range old.Chapters {
+				byID[c.ID] = c
+			}
+			added := map[string]bool{}
+			for _, ch := range chapters {
+				added[ch.ID] = true
+			}
+			idx.Chapters = make([]indexChapter, 0, len(order))
+			for _, id := range order {
+				c, kept := byID[id]
+				switch {
+				case added[id]:
+					// Written below, from chapters.
+					c = indexChapter{ID: id, File: FileKey(id)}
+				case !kept:
+					return fmt.Errorf("the epub has no chapter %q", id)
+				}
+				idx.Chapters = append(idx.Chapters, c)
+			}
 		}
 	}
 

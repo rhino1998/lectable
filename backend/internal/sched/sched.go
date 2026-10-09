@@ -114,6 +114,10 @@ type Info struct {
 	Priority int // effective
 	Attempt  int
 	Bumped   bool
+	// Members is the unfinished tasks this one has adopted (see
+	// Adopt/Join) - what a running group is still waiting for, in no
+	// particular order.
+	Members []Task
 }
 
 // Config tunes a Scheduler. The zero value works.
@@ -476,6 +480,12 @@ func (s *Scheduler) Snapshot() []Info {
 	for i, n := range nodes {
 		_, bumped := n.requests[BumpSource]
 		out[i] = Info{Task: n.task, State: n.state, Priority: s.priority(n), Attempt: n.attempt, Bumped: bumped}
+		if len(n.adopted) > 0 {
+			out[i].Members = make([]Task, 0, len(n.adopted))
+			for m := range n.adopted {
+				out[i].Members = append(out[i].Members, m.task)
+			}
+		}
 	}
 	return out
 }

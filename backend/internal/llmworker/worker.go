@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/llamacpp-go/llamacpp"
 )
 
@@ -689,6 +690,90 @@ func (w *Worker) LLMGenerate(ctx context.Context, systemPrompt, userPrompt strin
 	}
 	w.addTotals(stats)
 	out = stripThinking(out)
+	return out, nil
+}
+
+// LLMDecide renders systemPrompt/userPrompt like LLMGenerate, then answers
+// steps by reading the model's next-token logits over each step's options
+// instead of generating (llamacpp.Scheduler.Decide): the reply is built
+// from each step's Prefix and its winning option, one decode round a step,
+// and every answer carries its probability. Shares LLMGenerate's slots and
+// primed prefixes.
+func (w *Worker) LLMDecide(ctx context.Context, systemPrompt, userPrompt string, steps []ttsproto.LLMDecideStep) (out []ttsproto.LLMDecision, err error) {
+	w.inFlight.Add(1)
+	w.lastUsed.Store(time.Now().UnixNano())
+	defer func() {
+		w.lastUsed.Store(time.Now().UnixNano())
+		w.inFlight.Add(-1)
+	}()
+
+	reqID := w.reqCounter.Add(1)
+	start := time.Now()
+	var stats llamacpp.GenStats
+	log.Printf("llmworker: [req %d] starting decide (%d steps, system %d bytes, user %d bytes)", reqID, len(steps), len(systemPrompt), len(userPrompt))
+	defer func() {
+		if err != nil {
+			log.Printf("llmworker: [req %d] failed after %s: %v", reqID, time.Since(start).Round(time.Millisecond), err)
+			return
+		}
+		log.Printf("llmworker: [req %d] finished after %s (%d decisions; prompt %d tok + %d reused, prefill %s; decode %s; queued %s)",
+			reqID, time.Since(start).Round(time.Millisecond), len(out),
+			stats.PromptTokens, stats.ReusedTokens, stats.Prefill.Round(time.Millisecond),
+			stats.Decode.Round(time.Millisecond), stats.Queued.Round(time.Millisecond))
+	}()
+
+	if !w.Loaded() {
+		if err := w.load(); err != nil {
+			return nil, err
+		}
+	}
+
+	w.loadGate.RLock()
+	defer w.loadGate.RUnlock()
+	if w.model == nil {
+		return nil, fmt.Errorf("llmworker: model not loaded")
+	}
+	model, sched := w.model, w.sched
+	vocab := model.Vocab()
+
+	fullPrompt, err := vocab.ApplyChatTemplate(model.ChatTemplate(""), []llamacpp.ChatMessage{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}, true)
+	if err != nil {
+		return nil, fmt.Errorf("llmworker: apply chat template: %w", err)
+	}
+	fullPrompt = disableThinking(model.ChatTemplate(""), fullPrompt)
+
+	req := llamacpp.GenRequest{Prompt: fullPrompt, Stats: &stats, Steps: make([]llamacpp.DecideStep, len(steps))}
+	for i, st := range steps {
+		// Reply text, never markup: no special tokens added or parsed.
+		if req.Steps[i].Prefix, err = vocab.Tokenize(st.Prefix, false, false); err != nil {
+			return nil, fmt.Errorf("llmworker: tokenize step %d prefix: %w", i, err)
+		}
+		for _, o := range st.Options {
+			toks, err := vocab.Tokenize(o, false, false)
+			if err != nil {
+				return nil, fmt.Errorf("llmworker: tokenize step %d option %q: %w", i, o, err)
+			}
+			req.Steps[i].Options = append(req.Steps[i].Options, toks)
+		}
+	}
+	if startPos, primedSeq, state, ok := w.tryPrimed(model, systemPrompt, fullPrompt); ok {
+		req.StartPos = startPos
+		req.PrimedSeq = primedSeq
+		req.PrefixState = state
+	}
+
+	decisions, err := sched.Decide(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	w.addTotals(stats)
+	out = make([]ttsproto.LLMDecision, len(decisions))
+	for i, d := range decisions {
+		out[i] = ttsproto.LLMDecision{Choice: d.Choice, Probs: d.Probs, Mass: d.Mass}
+	}
 	return out, nil
 }
 

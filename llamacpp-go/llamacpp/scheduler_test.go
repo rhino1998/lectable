@@ -379,3 +379,93 @@ func TestSchedulerWithPrefixState(t *testing.T) {
 		}
 	}
 }
+
+// TestSchedulerDecideMatchesGreedy checks Scheduler.Decide against plain
+// decoding: at each step the option holding the model's own greedy next
+// token must win, and the winner must be what the next step is conditioned
+// on - so the second step's greedy token is only right if the first
+// option's token really was decoded after the prompt.
+func TestSchedulerDecideMatchesGreedy(t *testing.T) {
+	initBackend()
+	modelPath := testModelPath(t)
+
+	model, err := llamacpp.LoadModel(modelPath, llamacpp.ModelParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer model.Close()
+
+	const prompt = "The capital of France is"
+	argmax := func(logits []float32) llamacpp.Token {
+		best := 0
+		for i, l := range logits {
+			if l > logits[best] {
+				best = i
+			}
+		}
+		return llamacpp.Token(best)
+	}
+
+	// Reference: the two greedy tokens after the prompt, on a fresh Context.
+	ref, err := model.NewContext(llamacpp.ContextParams{NCtx: 512})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := ref.DecodePrompt(prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := argmax(ref.LogitsIth(-1))
+	batch := llamacpp.NewBatch(1)
+	if err := batch.Add(first, n, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := ref.Decode(batch); err != nil {
+		t.Fatal(err)
+	}
+	second := argmax(ref.LogitsIth(-1))
+	batch.Close()
+	ref.Close()
+
+	other := func(tok llamacpp.Token) llamacpp.Token {
+		if tok == 0 {
+			return 1
+		}
+		return tok - 1
+	}
+
+	sctx, err := model.NewContext(llamacpp.ContextParams{NCtx: 1024, NSeqMax: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sctx.Close()
+	sched := llamacpp.NewScheduler(sctx, 2)
+	defer sched.Close()
+
+	decisions, err := sched.Decide(t.Context(), llamacpp.GenRequest{
+		Prompt: prompt,
+		Steps: []llamacpp.DecideStep{
+			{Options: [][]llamacpp.Token{{other(first)}, {first}}},
+			{Options: [][]llamacpp.Token{{second}, {other(second)}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) != 2 || decisions[0].Choice != 1 || decisions[1].Choice != 0 {
+		t.Fatalf("decisions = %+v, want choices 1 then 0", decisions)
+	}
+	for i, d := range decisions {
+		if sum := d.Probs[0] + d.Probs[1]; sum < 0.999 || sum > 1.001 {
+			t.Errorf("step %d: probabilities sum to %v", i, sum)
+		}
+		if d.Mass <= 0 || d.Mass > 1.0001 {
+			t.Errorf("step %d: mass %v", i, d.Mass)
+		}
+	}
+
+	// Malformed steps are refused before anything is decoded.
+	if _, err := sched.Decide(t.Context(), llamacpp.GenRequest{Prompt: prompt, Steps: []llamacpp.DecideStep{{Options: [][]llamacpp.Token{{first}, {first}}}}}); err == nil {
+		t.Error("options sharing a first token were accepted")
+	}
+}

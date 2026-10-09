@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
+import com.lectable.app.data.remote.dto.JobTier
+import com.lectable.app.data.remote.dto.JobTiers
 import com.lectable.app.data.remote.dto.JobsSnapshotDto
 import com.lectable.app.data.remote.dto.QueueTaskDto
 import com.lectable.app.data.repository.JobsRepository
@@ -88,6 +90,16 @@ class JobsViewModel @Inject constructor(
         }
     }
 
+    /** A row's long-press menu: raise [task] to [tier] (one of [upgradeTiers]). A group's
+     *  promotion carries to the tasks it fanned out, backend-side. */
+    fun promote(task: QueueTaskDto, tier: JobTier) {
+        _uiState.update { it.copy(error = null) }
+        viewModelScope.launch {
+            runCatching { repository.setJobTier(task.id, tier) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Could not raise this job's priority") } }
+        }
+    }
+
     fun cancelAll() {
         viewModelScope.launch {
             runCatching { repository.cancelAllJobs() }
@@ -131,6 +143,10 @@ class JobsViewModel @Inject constructor(
 
 }
 
+/** The tiers strictly more urgent than [tier], most urgent first - the only ones the backend
+ *  accepts (upgrade only). Empty for "urgent", and for a tier this build doesn't know. */
+fun upgradeTiers(tier: JobTier): List<JobTier> = JobTiers.VALUES.take(JobTiers.VALUES.indexOf(tier).coerceAtLeast(0))
+
 /** Friendly display name for a target/voice column - mirrors JobsPage.tsx's targetLabel/
  *  voiceName. [targetLabel] is [QueueTaskDto.label] when present (a character name, or a
  *  preview sequence tag), otherwise the chapter title/number, since label-less kinds are always
@@ -163,6 +179,7 @@ fun kindLabel(kind: String): String = when (kind) {
     "scare_quote_tagging" -> "Scare Quote Tagging"
     "chapter_summary" -> "Summary"
     "book_setting" -> "Book Setting"
+    "roster_review" -> "Roster Review"
     "recap" -> "Recap Text"
     "recap_narration" -> "Recap Narration"
     "pipeline_summary" -> "Preprocess: Summary"

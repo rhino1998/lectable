@@ -35,9 +35,11 @@ import com.lectable.app.data.remote.dto.SourceReviewEntryDto
 internal data class ReviewDecision(val import: List<String>, val skip: List<String>)
 
 /** Whether an entry is set to import: the reader's own choice for it in [choices] (id ->
- *  import), else import unless its title reads like an author's notice. */
+ *  import), else import unless its title reads like an author's notice or it is a chapter that
+ *  couldn't be read (`unavailable` - the Internet Archive has no usable copy; importing only
+ *  tries again). */
 internal fun reviewImports(entry: SourceReviewEntryDto, choices: Map<String, Boolean>): Boolean =
-    choices[entry.id] ?: !entry.suspect
+    choices[entry.id] ?: (!entry.suspect && !entry.unavailable)
 
 /** Every entry as either import or skip, each list in reading order - none is left waiting. */
 internal fun reviewDecision(entries: List<SourceReviewEntryDto>, choices: Map<String, Boolean>): ReviewDecision {
@@ -116,6 +118,9 @@ internal fun SourceReviewDialog(
                             )
                             if (entry.suspect) {
                                 Text("notice?", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                            }
+                            if (entry.unavailable) {
+                                Text("not in the archive", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                             }
                             Text(
                                 if (import) "import" else "skip",

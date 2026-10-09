@@ -4,6 +4,7 @@ import {
   RECAP_NEVER,
   activeRecapWord,
   recapWords,
+  shouldHoldForRecap,
   agoLabel,
   recapIsCurrent,
   recapKey,
@@ -133,5 +134,34 @@ describe('activeRecapWord', () => {
     expect(activeRecapWord([1, 2, 3], 0.5)).toBe(-1)
     expect(activeRecapWord([1, 2, 3], 2)).toBe(1)
     expect(activeRecapWord([1, 2, 3], 9)).toBe(2)
+  })
+})
+
+describe('shouldHoldForRecap', () => {
+  const pos = { chapterIdx: 4, paragraphIdx: 12 }
+  const away = { lastReadAt: nowS - 30 * HOUR, seriesIndex: 0 }
+  it('holds for a recap that is ready or on its way', () => {
+    expect(shouldHoldForRecap(recap(), pos, away, now, DAY, null, false)).toBe(true)
+    expect(shouldHoldForRecap(null, pos, away, now, DAY, null, true)).toBe(true)
+    expect(shouldHoldForRecap(recap({ chapterIdx: 2 }), pos, away, now, DAY, null, true)).toBe(true)
+    expect(
+      shouldHoldForRecap(
+        null,
+        { chapterIdx: 0, paragraphIdx: 0 },
+        { seriesIndex: 2 },
+        now,
+        DAY,
+        null,
+        true,
+      ),
+    ).toBe(true)
+  })
+  it('does not hold with nothing on its way, soon after, turned down, failed, or never', () => {
+    expect(shouldHoldForRecap(null, pos, away, now, DAY, null, false)).toBe(false)
+    const recent = { lastReadAt: nowS - HOUR, seriesIndex: 0 }
+    expect(shouldHoldForRecap(null, pos, recent, now, DAY, null, true)).toBe(false)
+    expect(shouldHoldForRecap(recap(), pos, away, now, DAY, recapKey(recap()), true)).toBe(false)
+    expect(shouldHoldForRecap(recap({ text: '' }), pos, away, now, DAY, null, true)).toBe(false)
+    expect(shouldHoldForRecap(recap(), pos, away, now, RECAP_NEVER, null, true)).toBe(false)
   })
 })

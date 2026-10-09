@@ -62,6 +62,7 @@ func withDeps(base []string, extra ...string) []string {
 //	characters     {bookId}               GET /api/books/{id}/characters
 //	lexicon        {bookId}               GET /api/books/{id}/lexicon
 //	bookSetting    {bookId}               GET /api/books/{id}/setting
+//	rosterReview   {bookId}               GET /api/books/{id}/roster-review
 //	bookRecap      {bookId}               GET /api/books/{id}/recap
 //	chapterNotes   {bookId, chapterIdx}   GET /api/books/{id}/chapters/{idx}/notes
 //	lexiconSuggestions {bookId}           GET /api/books/{id}/lexicon/suggestions
@@ -98,6 +99,8 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	// Names only, for reassign pickers - cheap next to "speakers".
 	h.Register("characters", bookTopic("characters", dbDeps("characters", "books"), 0, s.buildCharacterNames))
 	h.Register("chapterNotes", chapterTopic("chapterNotes", dbDeps("chapter_summaries", "chapters"), 0, s.buildChapterNotes))
+	// Line counts aren't a dependency: they only order the list.
+	h.Register("rosterReview", bookTopic("rosterReview", dbDeps("roster_proposals", "characters", "books"), 2*time.Second, s.buildRosterReview))
 	h.Register("bookSetting", bookTopic("bookSetting", dbDeps("book_settings"), 0, s.buildBookSetting))
 	// books/voice_presets: a changed narrator voice leaves the clip stale.
 	// DepJobs: "preparing" is the recap job being queued or running.

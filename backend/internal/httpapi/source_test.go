@@ -426,3 +426,31 @@ func TestCheckSources(t *testing.T) {
 		t.Fatalf("after check all: %q", reviewLine(book))
 	}
 }
+
+func TestRenameBook(t *testing.T) {
+	_, s, _, ts := newTestServer(t)
+	bookID := createTestBook(t, s, "", 0, "Hello.")
+	author := "  Someone   Else "
+	resp := doJSON(t, http.MethodPut, ts.URL+"/api/books/"+bookID+"/title", renameBookRequest{Title: "  A  Better Title ", Author: &author}, nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("rename: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	var got sourceTestBook
+	getJSONInto(t, ts.URL+"/api/books/"+bookID, &got)
+	if got.Title != "A Better Title" || got.Author != "Someone Else" {
+		t.Errorf("after rename: %q by %q", got.Title, got.Author)
+	}
+	// Title alone leaves the author.
+	resp = doJSON(t, http.MethodPut, ts.URL+"/api/books/"+bookID+"/title", renameBookRequest{Title: "Third"}, nil)
+	resp.Body.Close()
+	getJSONInto(t, ts.URL+"/api/books/"+bookID, &got)
+	if got.Title != "Third" || got.Author != "Someone Else" {
+		t.Errorf("after a title-only rename: %q by %q", got.Title, got.Author)
+	}
+	resp = doJSON(t, http.MethodPut, ts.URL+"/api/books/"+bookID+"/title", renameBookRequest{Title: "   "}, nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("blank title: %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}

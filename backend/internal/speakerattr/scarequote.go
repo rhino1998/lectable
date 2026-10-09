@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
 
 // ScareQuoteChapter is a separate, single-purpose pass over a chapter's already-quote-split paragraphs
@@ -213,15 +216,19 @@ func scareQuoteCandidates(paragraphs []ParagraphInput) map[int]bool {
 // scareQuoteMaxWords bounds scareQuoteCandidates' short-quote rule.
 const scareQuoteMaxWords = 6
 
-func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle string, batch []ParagraphInput, candidate map[int]bool) (map[int]bool, error) {
+// scareQuoteUserPrompt is one batch's user turn and the lines it asks
+// about (the batch's "(?)" lines, in order).
+func (c *Client) scareQuoteUserPrompt(bookTitle, chapterTitle string, batch []ParagraphInput, candidate map[int]bool) (string, []int) {
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
 	user.WriteString("\nLines:\n")
+	var asked []int
 	for i, p := range batch {
 		if i > 0 && !p.Inline {
 			user.WriteString("\n")
 		}
 		if candidate[p.Idx] {
+			asked = append(asked, p.Idx)
 			fmt.Fprintf(&user, "%d (?): %s\n", p.Idx, oneLine(p.Text))
 		} else {
 			fmt.Fprintf(&user, "%d: %s\n", p.Idx, oneLine(p.Text))
@@ -230,16 +237,108 @@ func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle st
 	if c.cfg.NoThink {
 		user.WriteString("\n/no_think")
 	}
+	return user.String(), asked
+}
 
-	var asked []int
-	for _, p := range batch {
-		if candidate[p.Idx] {
-			asked = append(asked, p.Idx)
-		}
-	}
-	return generateAndParse(ctx, c, scareQuoteSystemPrompt, user.String(), 0, jsonPassMaxTokens, func(content string) (map[int]bool, error) {
+func (c *Client) scareQuoteBatch(ctx context.Context, bookTitle, chapterTitle string, batch []ParagraphInput, candidate map[int]bool) (map[int]bool, error) {
+	user, asked := c.scareQuoteUserPrompt(bookTitle, chapterTitle, batch, candidate)
+	return generateAndParse(ctx, c, scareQuoteSystemPrompt, user, 0, jsonPassMaxTokens, func(content string) (map[int]bool, error) {
 		return parseScareQuoteVerdicts(content, asked)
 	})
+}
+
+// ScareQuoteVerdict is one candidate's answer from ScareQuoteDecide.
+type ScareQuoteVerdict struct {
+	// NotSpoken is the model's probability that the quote is a scare quote
+	// ("not spoken"), against "spoken". Uncalibrated.
+	NotSpoken float64
+	// Mass is how much of the model's next-token distribution the two
+	// answers held (ttsproto.LLMDecision.Mass).
+	Mass float64
+}
+
+// ScareQuoteDecide is ScareQuoteChapter's experimental sibling: the same
+// batches, prompts and reply format, but each "N: spoken"/"N: not spoken"
+// reply line is decided from the model's logits rather than generated - no
+// reply to parse, and a probability for every candidate. Returns nothing
+// for a paragraph that isn't a candidate. Errors if the backend can't
+// decide.
+//
+// independent asks about each candidate in a call of its own, as the
+// reply's first line, so no verdict is conditioned on the ones before it -
+// at the cost of reading the batch once per candidate.
+func (c *Client) ScareQuoteDecide(ctx context.Context, bookTitle, chapterTitle string, paragraphs []ParagraphInput, independent bool) (map[int]ScareQuoteVerdict, error) {
+	decider, ok := c.llm.(llmDecider)
+	if !ok {
+		return nil, fmt.Errorf("speakerattr: this LLM backend has no decide call")
+	}
+	candidate := scareQuoteCandidates(paragraphs)
+	out := map[int]ScareQuoteVerdict{}
+	var (
+		mu       sync.Mutex
+		wg       sync.WaitGroup
+		firstErr error
+	)
+	sem := make(chan struct{}, scareQuoteParallelBatches)
+	for start := 0; start < len(paragraphs); start += scareQuoteBatchParagraphs {
+		batch := paragraphs[start:min(start+scareQuoteBatchParagraphs, len(paragraphs))]
+		user, all := c.scareQuoteUserPrompt(bookTitle, chapterTitle, batch, candidate)
+		calls := [][]int{all}
+		if independent {
+			calls = nil
+			for _, idx := range all {
+				calls = append(calls, []int{idx})
+			}
+		}
+		for _, asked := range calls {
+			if len(asked) == 0 {
+				continue
+			}
+			sem <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() { <-sem }()
+				verdicts, err := scareQuoteDecideCall(ctx, decider, user, asked)
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					if firstErr == nil {
+						firstErr = fmt.Errorf("paragraphs %d-%d: %w", batch[0].Idx, batch[len(batch)-1].Idx, err)
+					}
+					return
+				}
+				for i, v := range verdicts {
+					out[asked[i]] = v
+				}
+			}()
+		}
+	}
+	wg.Wait()
+	return out, firstErr
+}
+
+// scareQuoteDecideCall decides the asked lines of one batch, in order: the
+// reply scareQuoteBatch would have generated, "N:" written for the model
+// and the verdict after it read from its logits.
+func scareQuoteDecideCall(ctx context.Context, decider llmDecider, user string, asked []int) ([]ScareQuoteVerdict, error) {
+	steps := make([]ttsproto.LLMDecideStep, len(asked))
+	for i, idx := range asked {
+		prefix := fmt.Sprintf("%d:", idx)
+		if i > 0 {
+			prefix = "\n" + prefix
+		}
+		steps[i] = ttsproto.LLMDecideStep{Prefix: prefix, Options: []string{" spoken", " not spoken"}}
+	}
+	decisions, err := decider.LLMDecide(ctx, scareQuoteSystemPrompt, user, steps)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ScareQuoteVerdict, len(decisions))
+	for i, d := range decisions {
+		out[i] = ScareQuoteVerdict{NotSpoken: d.Probs[1], Mass: d.Mass}
+	}
+	return out, nil
 }
 
 // scareQuoteVerdictRe matches one reply line: "<idx>: spoken" / "<idx>:
@@ -255,7 +354,9 @@ var scareQuoteVerdictRe = regexp.MustCompile(`(?i)^\s*(\d+)\s*(?:\(\?\))?\s*[:\-
 // has exactly one verdict per asked line, in order: it's taken as the line
 // in its position. Qwen3.6 miscopies a number now and then - a batch whose
 // only "(?)" line was 214 answered "14: not spoken" on every retry, at
-// every retry temperature, so the chapter's pass could never finish.
+// every retry temperature, so the chapter's pass could never finish. A
+// reply of only "spoken" verdicts for lines that weren't asked flags
+// nothing; one saying "not spoken" for such a line is still an error.
 func parseScareQuoteVerdicts(content string, asked []int) (map[int]bool, error) {
 	isAsked := make(map[int]bool, len(asked))
 	for _, idx := range asked {
@@ -301,6 +402,15 @@ func parseScareQuoteVerdicts(content string, asked []int) (map[int]bool, error) 
 	if answered == 0 {
 		if items, err := parseScareQuoteItems(content); err == nil {
 			return items, nil
+		}
+		// Verdicts, but none for an asked line and not one apiece - the
+		// model miscopied a number and skipped a line. If every one says
+		// "spoken", nothing is flagged whichever lines it meant, so that
+		// is the answer rather than a failure: a batch asked about 122
+		// and 152 answered only "132: spoken" on every retry, and the
+		// chapter's pass failed for good.
+		if len(verdicts) > 0 && !slices.ContainsFunc(verdicts, func(v verdict) bool { return v.notSpoken }) {
+			return out, nil
 		}
 		return nil, fmt.Errorf("no verdict lines in response: %s", truncate(content, 200))
 	}

@@ -3,6 +3,8 @@ package jobs
 import (
 	"testing"
 	"time"
+
+	"github.com/rhino1998/lectable/backend/internal/sched"
 )
 
 func TestKindDurationsTypical(t *testing.T) {
@@ -41,5 +43,28 @@ func TestWorkLeft(t *testing.T) {
 	}
 	if got[1].Kind != KindAmbience || got[1].Tasks != 1 || got[1].Left != 0 {
 		t.Errorf("ambience = %+v, want 1 task with no estimate", got[1])
+	}
+}
+
+func TestGroupTimeLeft(t *testing.T) {
+	m := &Manager{}
+	m.durations.record(KindSummary, time.Minute)
+	line := &task{kind: KindVoiceClone}
+	line.paragraph.Text = "0123456789"
+	members := []sched.Task{&task{kind: KindSummary}, &task{kind: KindSummary}, line}
+
+	want := 2*time.Minute/time.Duration(poolCapacity[poolFor(KindSummary)]) + 5*time.Second
+	if got, partial := m.groupTimeLeft(members, 2); got != want || partial {
+		t.Errorf("groupTimeLeft = %v, partial %v; want %v, complete", got, partial, want)
+	}
+	// Narration with no measured rate, a kind that has never finished, and
+	// a group inside the group are each left out and reported.
+	for name, extra := range map[string]sched.Task{"ambience": &task{kind: KindAmbience}, "group": &pipelineTask{}} {
+		if got, partial := m.groupTimeLeft(append(members[:2:2], extra), 2); got != want-5*time.Second || !partial {
+			t.Errorf("with %s: groupTimeLeft = %v, partial %v; want %v, partial", name, got, partial, want-5*time.Second)
+		}
+	}
+	if got, partial := m.groupTimeLeft(members, 0); got != want-5*time.Second || !partial {
+		t.Errorf("unmeasured narration: groupTimeLeft = %v, partial %v; want %v, partial", got, partial, want-5*time.Second)
 	}
 }

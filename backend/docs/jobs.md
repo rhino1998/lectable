@@ -206,6 +206,13 @@ The kinds:
     `httpapi.handleCharacterizeSpeaker` (Speakers page's "Regenerate"
     button), so it shows up on the Jobs dashboard and a reader can
     explicitly retrigger it even if already characterized.
+    The preprocessing pipeline's characterization phase
+    (`httpapi.preprocessCharacterizationPhase`) only characterizes
+    characters credited with at least one dialogue line in the book
+    (`speakingCharacters`): the roster also holds people attribution only
+    met as a name, and series characters absent from this book, and a
+    characterization is only good for a voice. Anyone skipped is still
+    characterized lazily when a line of theirs needs one.
     `handleCharacterizeSpeaker` then invalidates (updates `Instruct`,
     deletes the cached reference clip, does *not* eagerly re-render)
     that book's resolved clone model's assigned voice preset for the

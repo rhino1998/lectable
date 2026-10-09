@@ -230,7 +230,21 @@ func parseMusicBoundaries(content string, shown []ParagraphInput, batchStart int
 		return nil, fmt.Errorf("parse JSON array: %w", err)
 	}
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("no regions returned for paragraphs %d-%d", shownStart, shownEnd)
+		// The model marked nothing - what it does with a stretch that has
+		// no scene to score: a book's title and copyright page, "About
+		// the Author", a list of the author's other books. Like a skipped
+		// heading above, that is corrected rather than rejected: the same
+		// text gets the same empty answer on every retry (confirmed live:
+		// Columbus Day's 12-line title page failed all its attempts this
+		// way, as did the back matter closing other books), and a chapter
+		// whose ambience pass fails for good is never marked done. Nothing
+		// marked means one tone throughout: after a seam, whatever was
+		// playing carries on; at a chapter's start, a single region covers
+		// the batch.
+		if hasSeam {
+			return nil, nil
+		}
+		return []musicBoundary{{StartIdx: batchStart, Transition: "cut"}}, nil
 	}
 
 	out := make([]musicBoundary, 0, len(raw))

@@ -90,7 +90,7 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
 - **`internal/llmworker`** is the *only* package importing `llamacpp-go`.
   It loads the speaker-attribution GGUF model lazily (on first
   `LLMGenerate` call, or the first call after an idle unload) and serves
-  up to `Config.MaxConcurrent` (default 2, `LECTABLE_SPEAKER_LLM_MAX_CONCURRENT` -
+  up to `Config.MaxConcurrent` (default 2, `LECTABLE_SPEAKER_LLM_MAX_CONCURRENT`, which `run.sh` sets to 4 and `internal/jobs` sizes its LLM pool from too; measured 2026-10-07 with batches of identical recap calls: total generation ~110 tok/s at 2 slots, ~120 at 3, ~133 at 4, each call slowing from ~74 to ~55 to ~47 tok/s, ~0.9 GB of VRAM a slot - 4 is ~22 GB with the model on the 24.5 GB card, so 5 is not an option -
   lowered from an original 4 after a real, observed "failed to allocate
   buffer for kv cache" VRAM exhaustion: the shared KV pool has to reserve
   room for every one of `MaxConcurrent` slots to independently reach
@@ -108,16 +108,21 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
   call. With `LECTABLE_SPEAKER_LLM_PRIME_STATE=true` they're snapshots
   restored into (and then kept in) a slot's own KV stream instead. Each
   finished call logs its prompt/reused/generated tokens and prefill/decode
-  time.
+  time. `LLMDecide` shares those slots and primed prefixes for a reply
+  made only of closed-set answers: each answer is read from the model's
+  logits over its options instead of generated (`llamacpp.Scheduler.
+  Decide`) and comes back with its probability - what the pronunciation
+  and emotion passes use.
 - **`cmd/ttsworker/main.go`** is a thin `main()` wiring `audioworker.
   Worker` and `llmworker.Worker` up to one loopback HTTP server (default
-  `:8091`), including `/llm/generate` alongside the TTS routes.
+  `:8091`), including `/llm/generate` and `/llm/decide` alongside the TTS
+  routes.
 - **`internal/ttsworker`** is the *client/supervisor* package `cmd/server`
   actually imports - zero dependency on `audiocpp-go`/`llamacpp-go`. Its
   `Manager` spawns the `ttsworker` binary, health-polls it, and runs a
   watchdog goroutine that kills and respawns it if its RSS crosses a
   threshold (default 11GiB, `RSSLimitBytes`) or if it dies on its own.
-  Every proxied call (`Generate`/`Design`/`Align`/`LLMGenerate`) takes a
+  Every proxied call (`Generate`/`Design`/`Align`/`LLMGenerate`/`LLMDecide`) takes a
   `sync.RWMutex` `RLock` for its full round trip; a restart takes the
   exclusive `Lock`, which naturally blocks until every in-flight call has
   returned and blocks new calls until the restart finishes - no separate
@@ -148,6 +153,21 @@ building/running `ttsworker` does, since both now link into that binary.
 - `cmd/server/main.go` — wiring/startup; also owns spawning/watchdogging
   the ttsworker process via `internal/ttsworker.Manager`.
 - `cmd/ttsworker/main.go` — the disposable worker binary (see above).
+- `cmd/lectable-mcp/` — an MCP server (stdio) for agents working on this
+  repo, registered with Claude Code by `../.mcp.json` as `lectable` and
+  started through `mcp.sh` (builds, then runs it against
+  `LECTABLE_URL`/`LECTABLE_DATA_DIR`/`LECTABLE_LOG_FILE`, the same
+  defaults `run.sh` uses). Its tools answer in what fits a context
+  window: `books`, `book`, `read` (a chapter as `idx [speaker, emotion]
+  text`), `search`, `speakers` and `jobs` summarize the matching GET
+  routes (`GET /api/jobs` alone lists every queued task); `routes`
+  searches the route table; `api_get`/`api_call` call any route, reads and
+  writes kept apart so reads can be allowed without a prompt; `sql` runs
+  one statement on a read-only connection to `library.sqlite`; `logs`
+  tails the server log. The route table (`routes_gen.go`) is written by
+  `cmd/apigen` with the clients, so a new route shows up after `make
+  generate`; a new *tool* is an entry in `tools.go`'s `tools` slice. Talks
+  to the backend over HTTP only - it imports nothing from `internal/`.
 - `internal/audioworker/` — the worker's TTS model-loading/generation
   logic (imports `audiocpp-go`).
 - `internal/llmworker/` — the worker's LLM model-loading/generation logic
@@ -426,6 +446,14 @@ building/running `ttsworker` does, since both now link into that binary.
   a time, stay on a tie, drain then switch for more urgent work, a dwell
   after each switch). No dependencies beyond the standard library. See
   `../docs/scheduler-design.md`.
+- `internal/cron/` — the server's periodic background tasks: a
+  `Scheduler` of named `Task`s, each a function run on a fixed interval
+  (never overlapping itself, errors and panics logged, nothing persisted -
+  a task works out what is due from stored state). `cmd/server` registers
+  them; so far `idle-recaps` (`httpapi.Server.PrepareIdleRecaps`). New
+  "check every so often" work goes here rather than in its own ticker
+  loop; `dbbackup.Run` and `audiomaint.Run` predate it and still run their
+  own.
 - `internal/dbbackup/` — rolling copies of `library.sqlite` in
   `LECTABLE_DATA_DIR/backups/library-<YYYYMMDDTHHMMSS>.sqlite`. `Run`
   (started from `cmd/server`) checks at startup and hourly, takes one when
@@ -656,7 +684,8 @@ building/running `ttsworker` does, since both now link into that binary.
   dependency. **This package is the API contract**: `cmd/apigen` reads it
   and generates both clients' copies - the frontend's
   `src/api/generated.ts` and Android's `dto/ApiTypes.kt`, `LectableApi.kt`
-  (the Retrofit interface), and `LiveTopics.kt`. It derives:
+  (the Retrofit interface), and `LiveTopics.kt` - plus the MCP server's
+  route table (`cmd/lectable-mcp/routes_gen.go`). It derives:
   - **types** from every json-tagged struct (doc comments included) - so
     every request and response body must be a named struct, never a
     `map[string]any` or function-local struct (small shared ones live in

@@ -33,6 +33,23 @@ func (w *Worker) HandleGenerate(rw http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(rw).Encode(ttsproto.LLMGenerateResponse{Text: text})
 }
 
+// HandleDecide serves POST /llm/decide.
+func (w *Worker) HandleDecide(rw http.ResponseWriter, r *http.Request) {
+	var req ttsproto.LLMDecideRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+
+	decisions, err := w.LLMDecide(r.Context(), req.SystemPrompt, req.UserPrompt, req.Steps)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	rw.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(rw).Encode(ttsproto.LLMDecideResponse{Decisions: decisions})
+}
+
 // HandleUnload serves POST /llm/unload: frees the loaded model right now
 // (see Worker.Unload's own doc comment) rather than waiting for Config.
 // IdleUnloadAfter - called by cmd/server (via internal/ttsworker.Manager.

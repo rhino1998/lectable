@@ -158,3 +158,30 @@ export function activeRecapWord(times: number[], t: number): number {
   for (let i = 0; i < times.length && times[i] <= t; i++) idx = i
   return idx
 }
+
+// shouldHoldForRecap: pressing play should wait for the recap instead of
+// starting the book - the reader is back after long enough (or starting a
+// sequel) and the recap is there to be offered, or is still being written
+// for them (awaited: asked for this visit, or the backend is preparing one,
+// and it hasn't failed here). False once it has been turned down or the
+// threshold is "never". Mirrors android's Recap.kt.
+export function shouldHoldForRecap(
+  recap: BookRecap | null | undefined,
+  pos: RecapPos,
+  book: { lastReadAt?: number; seriesIndex: number },
+  nowMs: number,
+  afterMinutes: number,
+  dismissed: string | null,
+  awaited: boolean,
+): boolean {
+  if (afterMinutes < 0) return false
+  if (shouldOfferRecap(recap, pos, book.lastReadAt, nowMs, afterMinutes, dismissed)) return true
+  if (recapIsCurrent(recap, pos)) return false // there, and turned down
+  const failedHere = !!recap && recap.text === '' && recap.chapterIdx === pos.chapterIdx
+  const startingSequel = !book.lastReadAt && book.seriesIndex > 1
+  return (
+    awaited &&
+    !failedHere &&
+    (startingSequel || awayLongEnough(book.lastReadAt, nowMs, afterMinutes))
+  )
+}

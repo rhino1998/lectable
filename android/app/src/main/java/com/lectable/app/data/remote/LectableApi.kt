@@ -159,11 +159,42 @@ interface LectableApi {
         @Query("scope") scope: BulkScope? = null,
     ): QueuedResponseDto
 
+    /**
+     * handleInsertChapters puts chapters of an uploaded epub into a book at a
+     * chosen place (multipart "file"; "epubChapter" the first one's index as
+     * handleListEpubChapters lists it, "count" how many consecutive ones,
+     * default 1; "at" the idx the first takes - the chapters from there on
+     * move down, and the chapter count appends; "title" renames a single
+     * one). For chapters a book skipped past and can now get - nothing
+     * already in the book changes but its numbering. Answers how many went
+     * in. 409 for a book that wasn't imported from a website, or while its
+     * source is being checked.
+     */
+    @Multipart
+    @POST("api/books/{id}/chapters/insert")
+    suspend fun insertChapters(
+        @Path("id") id: String,
+        @Part file: MultipartBody.Part? = null,
+    ): InsertChaptersResponseDto
+
     @GET("api/books/{id}/chapters/{idx}")
     suspend fun getChapter(
         @Path("id") id: String,
         @Path("idx") idx: Int,
     ): ChapterDetailDto
+
+    /**
+     * handleDeleteChapter removes one chapter from its book for good - a
+     * notice that was imported as a chapter, a duplicate - with its audio,
+     * and closes the gap. The chapter's jobs are cancelled first (409 if one
+     * won't stop), and its source ids join the book's skip list, so a later
+     * check doesn't fetch it again. 409 as handleInsertChapters.
+     */
+    @DELETE("api/books/{id}/chapters/{idx}")
+    suspend fun deleteChapter(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+    ): Unit
 
     /**
      * handleAttributeSpeakers enqueues speaker attribution for one chapter,
@@ -251,6 +282,39 @@ interface LectableApi {
         @Path("id") id: String,
         @Path("idx") idx: Int,
     ): QueuedResponseDto
+
+    /**
+     * handleMatchEpubChapter replaces one chapter's content with a chapter of
+     * an uploaded epub chosen by hand (multipart "file", "epubChapter" its
+     * index as handleListEpubChapters lists it) - for a chapter that was
+     * filled from the wrong one, or whose published text is wanted instead.
+     * The chapter keeps its place, its source id and - unless "title" gives
+     * another - its title, so nothing else in the book moves. Like a
+     * re-import, everything derived from the old text goes (audio, speakers,
+     * passes) and the chapter's jobs are cancelled first (409 if one won't
+     * stop). For a book imported from a website the kept epub and the
+     * chapter's stored pages are updated too, so a later re-import or reparse
+     * gives the same text; an uploaded book's kept epub is left alone.
+     */
+    @Multipart
+    @POST("api/books/{id}/chapters/{idx}/match-epub")
+    suspend fun matchEpubChapter(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+        @Part file: MultipartBody.Part? = null,
+    ): ReimportChapterResponseDto
+
+    /**
+     * handleMoveChapter moves one chapter to another place in its book
+     * (`{"to": idx}`); the chapters between shift by one. The chapter itself -
+     * text, speakers, audio - is untouched. 409 as handleInsertChapters.
+     */
+    @POST("api/books/{id}/chapters/{idx}/move")
+    suspend fun moveChapter(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+        @Body body: MoveChapterRequestDto,
+    ): Unit
 
     /**
      * handleGetChapterMusic serves GET .../chapters/{idx}/music - the reader's
@@ -580,6 +644,21 @@ interface LectableApi {
         @Path("id") id: String,
         @Path("idx") idx: Int,
     ): QueuedResponseDto
+
+    /**
+     * handleRenameChapter gives one chapter a new title (`{"title"}`). The
+     * title is also the chapter's opening line, so that line's audio is made
+     * again; the rest of the chapter is untouched. For a book imported from a
+     * website the kept epub and the chapter's stored pages take the title
+     * too, so a re-import gives it back (a chapter renamed this way is no
+     * longer re-read from its pages by a reparse - it is kept as it now is).
+     */
+    @PUT("api/books/{id}/chapters/{idx}/title")
+    suspend fun renameChapter(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+        @Body body: RenameChapterRequestDto,
+    ): Unit
 
     @GET("api/books/{id}/characters")
     suspend fun listCharacterNames(
@@ -1234,6 +1313,64 @@ interface LectableApi {
         @Query("fromChapter") fromChapter: String? = null,
     ): InvalidatedResponseDto
 
+    /**
+     * handleGetRosterReview serves GET /api/books/{id}/roster-review - see
+     * docs/api.md.
+     */
+    @GET("api/books/{id}/roster-review")
+    suspend fun getRosterReview(
+        @Path("id") id: String,
+        @Query("all") all: String? = null,
+    ): RosterReviewResponseDto
+
+    /**
+     * handleCreateRosterProposal serves POST
+     * /api/books/{id}/roster-review/proposals: files a proposal from outside
+     * the review pass, pending like any other. 400 for one that names no
+     * character of the roster or wouldn't change anything; 409 when the same
+     * fix was already proposed (whatever became of it).
+     */
+    @POST("api/books/{id}/roster-review/proposals")
+    suspend fun createRosterProposal(
+        @Path("id") id: String,
+        @Body body: CreateRosterProposalRequestDto,
+    ): IdResponseDto
+
+    /**
+     * handleAcceptRosterProposal serves POST
+     * /api/books/{id}/roster-review/proposals/{proposalId}/accept: makes the
+     * proposed change. A merge moves the character's lines across the whole
+     * series, keeps its name as the other's alias and deletes its voice - it
+     * can't be undone. 409 when the proposal was already decided, or no longer
+     * applies to the roster.
+     */
+    @POST("api/books/{id}/roster-review/proposals/{proposalId}/accept")
+    suspend fun acceptRosterProposal(
+        @Path("id") id: String,
+        @Path("proposalId") proposalId: String,
+    ): Unit
+
+    /**
+     * handleSkipRosterProposal serves POST
+     * /api/books/{id}/roster-review/proposals/{proposalId}/skip: declines the
+     * proposal, which is then never made again.
+     */
+    @POST("api/books/{id}/roster-review/proposals/{proposalId}/skip")
+    suspend fun skipRosterProposal(
+        @Path("id") id: String,
+        @Path("proposalId") proposalId: String,
+    ): Unit
+
+    /**
+     * handleRunRosterReview serves POST /api/books/{id}/roster-review/run:
+     * queues a review of the book's roster. The rosterReview live topic carries
+     * what it proposes.
+     */
+    @POST("api/books/{id}/roster-review/run")
+    suspend fun runRosterReview(
+        @Path("id") id: String,
+    ): QueuedResponseDto
+
     @GET("api/books/{id}/search")
     suspend fun searchBook(
         @Path("id") id: String,
@@ -1411,6 +1548,18 @@ interface LectableApi {
         @Body body: RegenerateVariantRequestDto,
     ): QueuedResponseDto
 
+    /**
+     * handleRenameBook sets a book's title and, optionally, its author - what
+     * the library shows it as. An import names a book as its source does
+     * ("He Who Fights with Monsters 2: A LitRPG Adventure"), which isn't
+     * always what its reader calls it.
+     */
+    @PUT("api/books/{id}/title")
+    suspend fun renameBook(
+        @Path("id") id: String,
+        @Body body: RenameBookRequestDto,
+    ): Unit
+
     @GET("api/books/{id}/voice")
     suspend fun getVoice(
         @Path("id") id: String,
@@ -1433,6 +1582,19 @@ interface LectableApi {
         @Path("key") key: String,
         @Query("v") v: String? = null,
     ): ResponseBody
+
+    /**
+     * handleListEpubChapters reads an uploaded epub (multipart "file") and
+     * lists its chapters - title, how each opens - for choosing one by hand
+     * (handleMatchEpubChapter, or handleBackfillBookSource's "first"). With a
+     * "bookId" field, each also names the chapter of that book that opens
+     * with the same text, if one does. Nothing is stored.
+     */
+    @Multipart
+    @POST("api/epub/chapters")
+    suspend fun listEpubChapters(
+        @Part file: MultipartBody.Part? = null,
+    ): EpubChaptersResponseDto
 
     @Streaming
     @GET("api/images/{id}")
@@ -1628,6 +1790,15 @@ interface LectableApi {
     suspend fun getParagraphSFXAudio(
         @Path("id") id: String,
     ): ResponseBody
+
+    /**
+     * handleCheckRecaps runs PrepareIdleRecaps' pass now, looking again at
+     * positions it has already looked at since the server started - the
+     * library's "prepare recaps" button. 202 with how many recaps it queued,
+     * 503 without the LLM.
+     */
+    @POST("api/recaps/check")
+    suspend fun checkRecaps(): QueuedResponseDto
 
     /**
      * handleGetRecapSettings serves GET /api/settings/recap.
