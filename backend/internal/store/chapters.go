@@ -127,6 +127,13 @@ func SumNarration(chapters []ChapterNarration) ([]ChapterSummary, NarrationStats
 // Stats are voice-scoped because narration pace is voice-specific: another
 // voice's generated seconds would miscalibrate the estimate for this one.
 // A non-empty chapterIDs limits the result to those chapters.
+//
+// Neither form visits a paragraph that has no ready audio: a chapter's
+// text totals come from its chapter_text row (kept by triggers), and what's
+// ready is counted from paragraph_audio - with overrides, looking up each
+// ready row's speaker in idx_paragraphs_stats. Joining every paragraph to
+// its audio instead took ~5s over a 2.5M-paragraph library that had 200k
+// ready clips.
 func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error) {
 	only := ""
 	onlyArgs := make([]any, len(chapterIDs))
@@ -141,41 +148,44 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 	var err error
 	if len(overrides) == 0 {
 		// One voice for the whole book: ready audio is summed straight off
-		// paragraph_audio's own chapter_id/chars (idx_paragraph_audio_chapter)
-		// without visiting each paragraph.
+		// paragraph_audio's own chapter_id/chars (idx_paragraph_audio_chapter).
 		args := append([]any{voiceID, bookID}, onlyArgs...)
 		rows, err = s.db.Query(`
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
-				(SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id),
-				(SELECT COALESCE(SUM(LENGTH(p.content)), 0) FROM paragraphs p WHERE p.chapter_id = c.id),
-				(SELECT COALESCE(SUM(CASE WHEN p.content = '' THEN 0 ELSE LENGTH(p.content) - LENGTH(REPLACE(p.content, ' ', '')) + 1 END), 0) FROM paragraphs p WHERE p.chapter_id = c.id),
+				COALESCE(t.paragraphs, 0), COALESCE(t.chars, 0), COALESCE(t.words, 0),
 				COUNT(pa.paragraph_id),
 				COALESCE(SUM(pa.chars), 0),
 				COALESCE(SUM(pa.duration_seconds), 0)
 			FROM chapters c
+			LEFT JOIN chapter_text t ON t.chapter_id = c.id
 			LEFT JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready'
 			WHERE c.book_id = ?`+only+`
 			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
 			ORDER BY c.idx ASC`, args...)
 	} else {
 		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
-		args := append(append(append([]any{}, valuesArgs...), voiceID, bookID), onlyArgs...)
+		args := append(append([]any{}, valuesArgs...), bookID)
+		args = append(append(args, onlyArgs...), voiceID, bookID)
+		args = append(args, onlyArgs...)
 		rows, err = s.db.Query(`
-			WITH speaker_voice(speaker, speaker_index, voice_id) AS (VALUES `+valuesFragment+`)
+			WITH speaker_voice(speaker, speaker_index, voice_id) AS (VALUES `+valuesFragment+`),
+			ready(chapter_id, n, chars, seconds) AS (
+				SELECT c.id, COUNT(*), SUM(LENGTH(p.content)), SUM(pa.duration_seconds)
+				FROM chapters c
+				JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.status = 'ready'
+				JOIN paragraphs p INDEXED BY idx_paragraphs_stats ON p.chapter_id = c.id AND p.id = pa.paragraph_id
+				LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0
+				LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
+				WHERE c.book_id = ?`+only+` AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
+				GROUP BY c.id
+			)
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
-				COUNT(p.id),
-				COALESCE(SUM(LENGTH(p.content)), 0),
-				COALESCE(SUM(CASE WHEN p.content = '' THEN 0 ELSE LENGTH(p.content) - LENGTH(REPLACE(p.content, ' ', '')) + 1 END), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN LENGTH(p.content) ELSE 0 END), 0),
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN pa.duration_seconds ELSE 0 END), 0)
+				COALESCE(t.paragraphs, 0), COALESCE(t.chars, 0), COALESCE(t.words, 0),
+				COALESCE(r.n, 0), COALESCE(r.chars, 0), COALESCE(r.seconds, 0)
 			FROM chapters c
-			LEFT JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0
-			LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
+			LEFT JOIN chapter_text t ON t.chapter_id = c.id
+			LEFT JOIN ready r ON r.chapter_id = c.id
 			WHERE c.book_id = ?`+only+`
-			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
 			ORDER BY c.idx ASC`, args...)
 	}
 	if err != nil {
@@ -195,14 +205,38 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 	return out, rows.Err()
 }
 
-// ChapterAudioFingerprints summarizes the paragraph_audio rows of each of
-// bookID's chapters (count, duration, length and rowid sums per voice and
-// status) as an opaque string that changes whenever a chapter's audio rows
-// do - one pass over idx_paragraph_audio_chapter, far cheaper than
-// ChapterNarration's per-paragraph joins. A chapter with no audio rows is
-// absent. Cached.ChapterNarration compares these to find the chapters to
-// re-read.
-func (s *SQLiteStore) ChapterAudioFingerprints(bookID string) (map[string]string, error) {
+// ChapterFingerprints gives, for every chapter of bookID, an opaque string
+// that changes whenever anything ChapterNarration reports for it could:
+// the chapter's own row, its paragraphs' text or speakers (chapter_text's
+// rev), or its paragraph_audio rows (count, duration, length and rowid
+// sums per voice and status - one pass over idx_paragraph_audio_chapter).
+// Cached.ChapterNarration compares these to find the chapters to re-read.
+func (s *SQLiteStore) ChapterFingerprints(bookID string) (map[string]string, error) {
+	prints := map[string][]byte{}
+	chapters, err := s.db.Query(`
+		SELECT c.id, c.idx, c.title, CAST(c.passes AS TEXT), COALESCE(t.rev, 0)
+		FROM chapters c
+		LEFT JOIN chapter_text t ON t.chapter_id = c.id
+		WHERE c.book_id = ?`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer chapters.Close()
+	for chapters.Next() {
+		var id, title, passes string
+		var idx, rev int64
+		if err := chapters.Scan(&id, &idx, &title, &passes, &rev); err != nil {
+			return nil, err
+		}
+		b := strconv.AppendInt(nil, idx, 10)
+		b = append(append(append(b, 0), title...), 0)
+		b = append(append(b, passes...), 0)
+		prints[id] = append(strconv.AppendInt(b, rev, 10), '\n')
+	}
+	if err := chapters.Err(); err != nil {
+		return nil, err
+	}
+
 	rows, err := s.db.Query(`
 		SELECT pa.chapter_id, pa.voice_id, pa.status, COUNT(*), SUM(pa.duration_seconds), SUM(pa.chars), SUM(pa.rowid)
 		FROM paragraph_audio pa
@@ -213,7 +247,6 @@ func (s *SQLiteStore) ChapterAudioFingerprints(bookID string) (map[string]string
 	}
 	defer rows.Close()
 
-	prints := map[string][]byte{}
 	for rows.Next() {
 		var chapterID, voiceID, status string
 		var n, chars, rowids int64

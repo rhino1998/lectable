@@ -28,7 +28,7 @@ type Store interface {
 	DeleteClipOrphans(keys []string) error
 	SetParagraphReadyClip(id, voiceID, key string, durationSeconds float64, wordTimingsJSON string, parts []ClipPart) error
 	SetParagraphClipKey(id, voiceID, key string) error
-	ChapterAudioFingerprints(bookID string) (map[string]string, error)
+	ChapterFingerprints(bookID string) (map[string]string, error)
 	ChapterExtents(bookID string) ([]ChapterExtent, error)
 	ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error)
 	CharacterVoiceForModel(characterID, cloneModel string) (string, error)

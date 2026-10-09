@@ -191,3 +191,81 @@ func TestCachedChapterNarrationFollowsWrites(t *testing.T) {
 	}
 	check("reset", "book-voice", overrides)
 }
+
+// A write to one book's text leaves every other book's cached narration
+// in place, and the written book still follows it: its chapter_text totals
+// match its paragraphs through a reimport, an appended chapter and a
+// deleted one.
+func TestCachedChapterNarrationIsPerBook(t *testing.T) {
+	inner := openTestStore(t)
+	c := NewCached(inner)
+	quietBook, _ := oneChapterBook(t, inner, "", 0, "Quiet one.", "Quiet two.")
+	bookID, chapterID := oneChapterBook(t, inner, "", 0, "One.", `"Two," said Alice.`, "Three.")
+
+	check := func(step string) {
+		t.Helper()
+		got, err := c.ChapterNarration(bookID, "book-voice", nil, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		want, err := inner.ChapterNarration(bookID, "book-voice", nil, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: cached %+v, want %+v", step, got, want)
+		}
+		for _, ch := range got {
+			var n int
+			var chars, words int64
+			if err := inner.db.QueryRow(`
+				SELECT COUNT(*), COALESCE(SUM(LENGTH(content)), 0),
+					COALESCE(SUM(CASE WHEN content = '' THEN 0 ELSE LENGTH(content) - LENGTH(REPLACE(content, ' ', '')) + 1 END), 0)
+				FROM paragraphs WHERE chapter_id = ?`, ch.ID).Scan(&n, &chars, &words); err != nil {
+				t.Fatalf("%s: %v", step, err)
+			}
+			if ch.ParagraphCount != n || ch.TotalChars != chars || ch.TotalWords != words {
+				t.Fatalf("%s: chapter %d reports %d paragraphs, %d chars, %d words; its paragraphs are %d, %d, %d",
+					step, ch.Idx, ch.ParagraphCount, ch.TotalChars, ch.TotalWords, n, chars, words)
+			}
+		}
+	}
+	quiet := func(step string) {
+		t.Helper()
+		hits, _ := c.Stats()
+		if _, err := c.ChapterNarration(quietBook, "book-voice", nil, nil); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		if after, _ := c.Stats(); after != hits+1 {
+			t.Fatalf("%s: a write to another book dropped this one's narration", step)
+		}
+	}
+
+	if _, err := c.ChapterNarration(quietBook, "book-voice", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	check("created")
+
+	if _, _, err := inner.ReplaceChapterContent(chapterID, "Chapter One", []BlockInput{
+		{Kind: BlockText, Text: "A longer first paragraph now."},
+		{Kind: BlockText, Text: ""},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check("reimported")
+	quiet("reimported")
+
+	if _, err := inner.AppendChapters(bookID, []ChapterInput{
+		{Title: "Chapter Two", Blocks: []BlockInput{{Kind: BlockText, Text: "Four five six."}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	check("appended")
+	quiet("appended")
+
+	if _, _, err := inner.DeleteChapter(bookID, 0); err != nil {
+		t.Fatal(err)
+	}
+	check("deleted")
+	quiet("deleted")
+}

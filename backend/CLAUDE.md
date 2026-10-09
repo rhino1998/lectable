@@ -380,14 +380,20 @@ building/running `ttsworker` does, since both now link into that binary.
   Logs its hit rate every minute. `ChapterNarration` (per-chapter
   paragraph/ready counts plus narration stats - what every book summary
   and the `books` live topic are built from) is cached differently, per
-  book: a write to `chapters`/`paragraphs` drops it, but `paragraph_audio`
-  writes - one per generated paragraph - are found per chapter by
-  comparing `ChapterAudioFingerprints` (count and duration/chars/rowid
-  sums per voice and status, one covering-index pass), and only those
-  chapters are re-read. Measured on the live library (11 books, 165k
-  paragraphs, ~5k character-voice overrides): a `books` rebuild went from
-  ~460 ms (two whole-library joins) to ~45 ms while narration generates;
-  the first build after a `chapters`/`paragraphs` write is ~265 ms.
+  book and never dropped by a write: each call compares
+  `ChapterFingerprints` (per chapter: its own row, `chapter_text.rev`, and
+  count and duration/chars/rowid sums of its `paragraph_audio` rows per
+  voice and status) and re-reads only the chapters that changed.
+  `chapter_text` (migration 00020) is one row per chapter - paragraph
+  count, chars, words, and a `rev` that is a new random value whenever a
+  paragraph's text or speaker changes - kept by triggers on `paragraphs`,
+  so the query itself never reads a paragraph that has no ready audio: the
+  multi-voice form starts from the ready `paragraph_audio` rows and looks
+  each one's speaker up in `idx_paragraphs_stats`. Before that (2026-10-08,
+  74 books, 2.5M paragraphs, all multi-voice) it joined every paragraph to
+  its audio and any `chapters`/`paragraphs` write dropped every book's
+  result: a `books` rebuild was ~5 s after each such write, and is now
+  ~0.6 s the first time after a restart, ~0.1-0.2 s after.
   **No FK `ON DELETE CASCADE`** —
   `DeleteBook` deletes paragraphs → chapters → book explicitly in a
   transaction. Column

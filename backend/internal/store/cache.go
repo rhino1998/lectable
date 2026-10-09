@@ -1,6 +1,7 @@
 package store
 
 import (
+	"cmp"
 	"fmt"
 	"log"
 	"slices"
@@ -76,9 +77,6 @@ func (c *Cached) invalidate(tables []string) {
 	}
 	for _, t := range tables {
 		c.gens[t]++
-		if slices.Contains(narrationTables, t) {
-			c.narration = nil
-		}
 		for key := range c.byTable[t] {
 			delete(c.entries, key)
 		}
@@ -335,24 +333,21 @@ func (c *Cached) GetDefaultVoice() (DefaultVoice, error) {
 var _ Store = (*Cached)(nil)
 
 // bookNarration is one book's cached ChapterNarration result: the chapters
-// as read for one voice assignment (key), and the audio fingerprint each
-// was read at or after.
+// as read for one voice assignment (key), and the fingerprint each was
+// read at or after.
 type bookNarration struct {
 	key      string
 	chapters []ChapterNarration
 	prints   map[string]string
 }
 
-// narrationTables are what ChapterNarration reads besides paragraph_audio.
-// A write to one drops every book's cached narration; paragraph_audio's
-// own (far more frequent) writes are found per chapter by fingerprint.
-var narrationTables = []string{"chapters", "paragraphs"}
-
 // ChapterNarration answers a whole-book call (no chapterIDs) from the last
 // result for the same book and voices, re-reading only the chapters whose
-// paragraph_audio rows changed since (ChapterAudioFingerprints). Why: the
+// fingerprint changed since (ChapterFingerprints: the chapter's row, its
+// paragraphs' text and speakers, its paragraph_audio rows). Why: the
 // library listing is rebuilt on every paragraph that finishes generating,
-// and the full query joins every paragraph in the book to its audio.
+// and a write to one book - an imported chapter, a pass finishing - must
+// not cost a re-read of every other book.
 func (c *Cached) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error) {
 	if len(chapterIDs) > 0 {
 		return c.Store.ChapterNarration(bookID, voiceID, overrides, chapterIDs)
@@ -364,35 +359,44 @@ func (c *Cached) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoi
 	}
 
 	c.mu.Lock()
-	gen := c.genLocked(narrationTables)
+	gen := c.allGen
 	prev := c.narration[bookID]
 	c.mu.Unlock()
 
 	// Fingerprints are read before the chapters, so a write landing in
 	// between leaves a chapter newer than its fingerprint - re-read next
 	// time, never served stale.
-	prints, err := c.Store.ChapterAudioFingerprints(bookID)
+	prints, err := c.Store.ChapterFingerprints(bookID)
 	if err != nil {
 		return nil, err
 	}
 	var chapters []ChapterNarration
-	if prev == nil || prev.key != key.String() {
+	// A chapter added or removed re-reads the book: prev has no row to
+	// keep for it.
+	sameChapters := prev != nil && prev.key == key.String() && len(prints) == len(prev.chapters)
+	var changed []string
+	if sameChapters {
+		for _, ch := range prev.chapters {
+			fp, ok := prints[ch.ID]
+			if !ok {
+				sameChapters = false
+				break
+			}
+			if fp != prev.prints[ch.ID] {
+				changed = append(changed, ch.ID)
+			}
+		}
+	}
+	switch {
+	case !sameChapters:
 		c.misses.Add(1)
 		if chapters, err = c.Store.ChapterNarration(bookID, voiceID, overrides, nil); err != nil {
 			return nil, err
 		}
-	} else {
-		chapters = slices.Clone(prev.chapters)
-		var changed []string
-		for _, ch := range chapters {
-			if prints[ch.ID] != prev.prints[ch.ID] {
-				changed = append(changed, ch.ID)
-			}
-		}
-		if len(changed) == 0 {
-			c.hits.Add(1)
-			return chapters, nil
-		}
+	case len(changed) == 0:
+		c.hits.Add(1)
+		return slices.Clone(prev.chapters), nil
+	default:
 		c.misses.Add(1)
 		fresh, err := c.Store.ChapterNarration(bookID, voiceID, overrides, changed)
 		if err != nil {
@@ -402,15 +406,18 @@ func (c *Cached) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoi
 		for _, ch := range fresh {
 			byID[ch.ID] = ch
 		}
+		chapters = slices.Clone(prev.chapters)
 		for i, ch := range chapters {
 			if f, ok := byID[ch.ID]; ok {
 				chapters[i] = f
 			}
 		}
+		// A re-read chapter may have moved.
+		slices.SortStableFunc(chapters, func(a, b ChapterNarration) int { return cmp.Compare(a.Idx, b.Idx) })
 	}
 
 	c.mu.Lock()
-	if c.genLocked(narrationTables) == gen {
+	if c.allGen == gen {
 		if c.narration == nil {
 			c.narration = map[string]*bookNarration{}
 		}
