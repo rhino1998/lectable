@@ -12,7 +12,8 @@ import (
 // json_patch shape (see SetChapterAttributed's own doc comment for
 // why a single statement like this, not a Go-side read-modify-write).
 func (s *SQLiteStore) SetChapterAmbienceScored(chapterID string) error {
-	_, err := s.db.Exec(
+	book := s.chapterBook(chapterID)
+	_, err := s.db.execScoped(book,
 		`UPDATE chapters SET passes = json_patch(passes, '{"ambience": true}') WHERE id = ?`,
 		chapterID,
 	)
@@ -22,7 +23,8 @@ func (s *SQLiteStore) SetChapterAmbienceScored(chapterID string) error {
 // SetChapterLit marks chapterID's own passes.lighting true - set by
 // httpapi.lightChapter once every music region has a Lighting cue.
 func (s *SQLiteStore) SetChapterLit(chapterID string) error {
-	_, err := s.db.Exec(
+	book := s.chapterBook(chapterID)
+	_, err := s.db.execScoped(book,
 		`UPDATE chapters SET passes = json_patch(passes, '{"lighting": true}') WHERE id = ?`,
 		chapterID,
 	)
@@ -44,7 +46,8 @@ func (s *SQLiteStore) SetChapterLit(chapterID string) error {
 // strings below (no external/request-supplied text ever reaches this
 // query), so it's inlined directly rather than bound as a parameter.
 func (s *SQLiteStore) SetChapterAttributed(chapterID string) error {
-	_, err := s.db.Exec(
+	book := s.chapterBook(chapterID)
+	_, err := s.db.execScoped(book,
 		`UPDATE chapters SET passes = json_patch(passes, '{"attribution": true}') WHERE id = ?`,
 		chapterID,
 	)
@@ -55,7 +58,8 @@ func (s *SQLiteStore) SetChapterAttributed(chapterID string) error {
 // by httpapi.scareQuoteChapterForJob once a scare-quote tagging run
 // completes over the whole chapter. SetChapterAttributed's shape.
 func (s *SQLiteStore) SetChapterScareQuoted(chapterID string) error {
-	_, err := s.db.Exec(
+	book := s.chapterBook(chapterID)
+	_, err := s.db.execScoped(book,
 		`UPDATE chapters SET passes = json_patch(passes, '{"scareQuote": true}') WHERE id = ?`,
 		chapterID,
 	)
@@ -69,7 +73,8 @@ func (s *SQLiteStore) SetChapterScareQuoted(chapterID string) error {
 // doc comment for why this is a single json_patch statement rather
 // than a Go-side read-modify-write.
 func (s *SQLiteStore) SetChapterDirected(chapterID string) error {
-	_, err := s.db.Exec(
+	book := s.chapterBook(chapterID)
+	_, err := s.db.execScoped(book,
 		`UPDATE chapters SET passes = json_patch(passes, '{"direction": true}') WHERE id = ?`,
 		chapterID,
 	)
@@ -80,7 +85,8 @@ func (s *SQLiteStore) SetChapterDirected(chapterID string) error {
 // set by httpapi.pronounceChapter once a pronunciation resolution run
 // finishes covering the whole chapter. SetChapterDirected's shape.
 func (s *SQLiteStore) SetChapterPronounced(chapterID string) error {
-	_, err := s.db.Exec(
+	book := s.chapterBook(chapterID)
+	_, err := s.db.execScoped(book,
 		`UPDATE chapters SET passes = json_patch(passes, '{"pronunciation": true}') WHERE id = ?`,
 		chapterID,
 	)

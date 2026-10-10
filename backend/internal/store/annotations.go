@@ -332,6 +332,7 @@ func (s *SQLiteStore) SetParagraphSpeakersIndexed(chapterID string, bySpeakerIdx
 		return err
 	}
 	defer tx.Rollback()
+	tx.scope = s.chapterBook(chapterID)
 	for idx, speaker := range bySpeakerIdx {
 		if _, err := tx.Exec(`UPDATE paragraphs SET speaker = ?, speaker_index = ? WHERE chapter_id = ? AND idx = ?`, speaker, indexes[idx], chapterID, idx); err != nil {
 			return fmt.Errorf("set speaker for paragraph idx %d: %w", idx, err)
@@ -366,6 +367,7 @@ func (s *SQLiteStore) SetParagraphScareQuotes(chapterID string, byIdx map[int]bo
 		return err
 	}
 	defer tx.Rollback()
+	tx.scope = s.chapterBook(chapterID)
 	for idx, scareQuote := range byIdx {
 		if _, err := tx.Exec(`UPDATE paragraphs SET scare_quote = ?,
 			speaker = CASE WHEN ? THEN 'Narrator' WHEN speaker = 'Narrator' THEN '' ELSE speaker END
@@ -383,11 +385,12 @@ func (s *SQLiteStore) SetParagraphScareQuotes(chapterID string, byIdx map[int]bo
 // no speaker; both drop the scare-quote flag and emotion,
 // which only fit the other kind. Reports whether anything changed.
 func (s *SQLiteStore) SetParagraphQuote(chapterID string, idx int, quote bool) (bool, error) {
+	book := s.chapterBook(chapterID)
 	speaker := ""
 	if quote {
 		speaker = "Unknown"
 	}
-	res, err := s.db.Exec(`UPDATE paragraphs SET is_quote = ?, speaker = ?, source_speaker = '', speaker_index = 0, scare_quote = false,
+	res, err := s.db.execScoped(book, `UPDATE paragraphs SET is_quote = ?, speaker = ?, source_speaker = '', speaker_index = 0, scare_quote = false,
 		emotion = ''
 		WHERE chapter_id = ? AND idx = ? AND is_quote <> ?`, quote, speaker, chapterID, idx, quote)
 	if err != nil {
@@ -404,6 +407,7 @@ func (s *SQLiteStore) SetParagraphQuote(chapterID string, idx int, quote bool) (
 // (httpapi.directChapter) invalidates it. Clearing makes that a one-time
 // migration per chapter rather than something every re-run repeats.
 func (s *SQLiteStore) ClearLegacyTags(chapterID string) ([]int, error) {
+	book := s.chapterBook(chapterID)
 	rows, err := s.db.Query(`SELECT idx FROM paragraphs WHERE chapter_id = ? AND tts_tags NOT IN ('{}', 'null', '')`, chapterID)
 	if err != nil {
 		return nil, err
@@ -425,7 +429,7 @@ func (s *SQLiteStore) ClearLegacyTags(chapterID string) ([]int, error) {
 	if len(idxs) == 0 {
 		return nil, nil
 	}
-	if _, err := s.db.Exec(`UPDATE paragraphs SET tts_tags = '{}' WHERE chapter_id = ? AND tts_tags NOT IN ('{}', 'null', '')`, chapterID); err != nil {
+	if _, err := s.db.execScoped(book, `UPDATE paragraphs SET tts_tags = '{}' WHERE chapter_id = ? AND tts_tags NOT IN ('{}', 'null', '')`, chapterID); err != nil {
 		return nil, err
 	}
 	return idxs, nil
@@ -445,6 +449,7 @@ func (s *SQLiteStore) SetParagraphEmotions(chapterID string, byIdx map[int]strin
 		return err
 	}
 	defer tx.Rollback()
+	tx.scope = s.chapterBook(chapterID)
 	for idx, emotion := range byIdx {
 		if _, err := tx.Exec(`UPDATE paragraphs SET emotion = ? WHERE chapter_id = ? AND idx = ?`, emotion, chapterID, idx); err != nil {
 			return fmt.Errorf("set emotion for paragraph idx %d: %w", idx, err)
@@ -474,6 +479,7 @@ func (s *SQLiteStore) SetParagraphPronunciation(chapterID string, byIdx map[int]
 		return err
 	}
 	defer tx.Rollback()
+	tx.scope = s.chapterBook(chapterID)
 	for idx, subs := range byIdx {
 		if subs == nil {
 			subs = []pronounce.Substitution{}
@@ -498,7 +504,8 @@ func (s *SQLiteStore) SetParagraphPronunciation(chapterID string, byIdx map[int]
 // that happens to share the same (wrong) speaker. The line's speaker
 // number (Paragraph.SpeakerIndex) is cleared: it belonged to the old value.
 func (s *SQLiteStore) SetParagraphSpeaker(paragraphID, speaker string) error {
-	_, err := s.db.Exec(`UPDATE paragraphs SET speaker = ?, speaker_index = 0 WHERE id = ?`, speaker, paragraphID)
+	book := s.paragraphBook(paragraphID)
+	_, err := s.db.execScoped(book, `UPDATE paragraphs SET speaker = ?, speaker_index = 0 WHERE id = ?`, speaker, paragraphID)
 	return err
 }
 

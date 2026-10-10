@@ -75,7 +75,8 @@ func (s *SQLiteStore) SetChapterNotes(chapterID string, notes ChapterNotes) erro
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback() //nolint:errcheck // no-op after Commit
+	defer tx.Rollback()
+	tx.scope = s.chapterBook(chapterID) //nolint:errcheck // no-op after Commit
 	if _, err := tx.Exec(`INSERT INTO chapter_summaries (chapter_id, summary, updated_at) VALUES (?, ?, ?)
 		ON CONFLICT (chapter_id) DO UPDATE SET summary = excluded.summary, updated_at = excluded.updated_at`, chapterID, string(raw), time.Now().Unix()); err != nil {
 		return err

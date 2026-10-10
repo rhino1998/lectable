@@ -401,7 +401,18 @@ building/running `ttsworker` does, since both now link into that binary.
   fingerprints themselves were most of that (108 books: 170 of 200 ms), so
   they are only read after a write to one of the tables they cover
   (`narrationTables`); a rebuild after anything else - a saved position, a
-  job - is ~20 ms (2026-10-10).
+  job - is ~20 ms (2026-10-10). The per-clip narration writes
+  (`SetParagraphGenerating`/`Ready`/`ReadyClip`/`ReadyPointer`/`Error`,
+  `SetParagraphWordTimings`, `SetParagraphClipKey`) also report which book
+  they touched (`store.BookScope`, a pseudo-table beside the real one in
+  `OnChange`), so a clip finishing re-reads that one book's fingerprints.
+  So do the per-chapter pass writes (`SetChapter*` flags, `SetChapterNotes`,
+  `SetParagraphSpeakers*`/`ScareQuotes`/`Emotions`/`Pronunciation`/`Quote`/
+  `Speaker`, `DeleteParagraphAudioForIdxs`, `DeleteChapterAudio`,
+  `ResetParagraphAudio`; a transaction sets `notifyTx.scope`). Any other
+  write to those tables - an import, a reset, a restructure - still
+  re-reads every book's; scope a new one only if every row it changes
+  that a fingerprint covers is in the one book.
   **No FK `ON DELETE CASCADE`** —
   `DeleteBook` deletes paragraphs → chapters → book explicitly in a
   transaction. Column

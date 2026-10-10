@@ -26,6 +26,22 @@ const AllTables = "*"
 // speaker table) skip rebuilding on every save.
 const PositionTable = "books.position"
 
+// bookScopePrefix marks a BookScope entry among a write's reported tables.
+const bookScopePrefix = "book:"
+
+// BookScope is a pseudo-table name a write reports beside its real table
+// to say that every row it changed which a chapter's fingerprint covers
+// (ChapterFingerprints) belongs to bookID. The narration writes report it
+// and the per-chapter pass writes report it - a clip becoming ready is the
+// most frequent write there is - so
+// Cached.ChapterNarration re-reads one book's fingerprints for it rather
+// than the library's. A write without one may have changed any book.
+func BookScope(bookID string) string { return bookScopePrefix + bookID }
+
+// IsBookScope reports whether table is a BookScope entry rather than a
+// table - for a subscriber that maps tables to something of its own.
+func IsBookScope(table string) bool { return strings.HasPrefix(table, bookScopePrefix) }
+
 // ChangeFunc receives the (deduplicated) set of tables a successful write
 // touched - one Exec outside a transaction, or every Exec inside one,
 // reported once on Commit.
@@ -154,6 +170,22 @@ func (d *notifyDB) execAs(table, query string, args ...any) (sql.Result, error) 
 	return res, err
 }
 
+// execScoped is Exec also reporting BookScope(bookID); a plain Exec when
+// bookID is "".
+func (d *notifyDB) execScoped(bookID, query string, args ...any) (sql.Result, error) {
+	if bookID == "" {
+		return d.Exec(query, args...)
+	}
+	defer logCallTiming("exec", time.Now())
+	res, err := d.DB.Exec(query, args...)
+	if err == nil {
+		if t := writtenTable(query); t != "" {
+			d.notify([]string{t, BookScope(bookID)})
+		}
+	}
+	return res, err
+}
+
 func (d *notifyDB) Begin() (*notifyTx, error) {
 	start := time.Now()
 	tx, err := d.DB.Begin()
@@ -170,7 +202,10 @@ type notifyTx struct {
 	*sql.Tx
 	db     *notifyDB
 	tables []string
-	begun  time.Time
+	// scope, if set, is the one book every row this transaction changes
+	// which a fingerprint covers belongs to - reported as its BookScope.
+	scope string
+	begun time.Time
 }
 
 func (t *notifyTx) Exec(query string, args ...any) (sql.Result, error) {
@@ -195,6 +230,9 @@ func (t *notifyTx) Commit() error {
 	defer logCallTiming("transaction held (commit)", t.begun)
 	err := t.Tx.Commit()
 	if err == nil {
+		if t.scope != "" && len(t.tables) > 0 {
+			t.tables = append(t.tables, BookScope(t.scope))
+		}
 		t.db.notify(t.tables)
 	}
 	return err

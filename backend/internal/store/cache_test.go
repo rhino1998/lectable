@@ -330,3 +330,84 @@ func TestCachedChapterNarrationSkipsFingerprintsWhenNothingWritten(t *testing.T)
 		t.Errorf("an unchanged book read the fingerprints again")
 	}
 }
+
+// A clip becoming ready is the most frequent write while a book narrates;
+// it must cost a fingerprint read for its own book only.
+func TestCachedChapterNarrationReadsOnlyTheWrittenBooksFingerprints(t *testing.T) {
+	inner := openTestStore(t)
+	counter := &fingerprintCounter{Store: inner}
+	c := NewCached(counter)
+	bookA, chapterA := oneChapterBook(t, inner, "", 0, "One.", "Two.")
+	bookB, _ := oneChapterBook(t, inner, "", 0, "Three.")
+	read := func(bookID string) []ChapterNarration {
+		t.Helper()
+		got, err := c.ChapterNarration(bookID, "book-voice", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	read(bookA)
+	read(bookB)
+	base := counter.calls
+
+	paras, err := inner.ListParagraphsRaw(chapterA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetParagraphGenerating(paras[0].ID, "book-voice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetParagraphReadyClip(paras[0].ID, "book-voice", "key", 2, "[]", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetParagraphWordTimings(paras[0].ID, "book-voice", "[]"); err != nil {
+		t.Fatal(err)
+	}
+	read(bookB)
+	if counter.calls != base {
+		t.Errorf("a clip in another book read this book's fingerprints")
+	}
+	got := read(bookA)
+	if counter.calls != base+1 {
+		t.Errorf("fingerprint reads after a clip became ready = %d, want 1", counter.calls-base)
+	}
+	want, err := inner.ChapterNarration(bookA, "book-voice", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("after a clip became ready: cached %+v, want %+v", got, want)
+	}
+
+	// A pass finishing a chapter is one book's write too.
+	if err := c.SetParagraphSpeakers(chapterA, map[int]string{0: "Ann"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.SetChapterAttributed(chapterA); err != nil {
+		t.Fatal(err)
+	}
+	read(bookB)
+	if counter.calls != base+1 {
+		t.Errorf("a pass over another book's chapter read this book's fingerprints")
+	}
+	got = read(bookA)
+	if counter.calls != base+2 {
+		t.Errorf("fingerprint reads after a pass = %d, want 1", counter.calls-base-1)
+	}
+	if want, err = inner.ChapterNarration(bookA, "book-voice", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("after a pass: cached %+v, want %+v", got, want)
+	}
+
+	// A write naming no book may have reached any of them.
+	if err := c.DeleteBookAudio(bookA); err != nil {
+		t.Fatal(err)
+	}
+	read(bookB)
+	if counter.calls != base+3 {
+		t.Errorf("an unscoped write didn't re-read another book's fingerprints")
+	}
+}

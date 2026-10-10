@@ -184,9 +184,11 @@ func main() {
 	// safety net for anything that changes without either signal.
 	liveHub := live.New(live.Config{Resync: 30 * time.Second})
 	st.OnChange(func(tables []string) {
-		deps := make([]string, len(tables))
-		for i, t := range tables {
-			deps[i] = httpapi.DBDep(t)
+		deps := make([]string, 0, len(tables))
+		for _, t := range tables {
+			if !store.IsBookScope(t) {
+				deps = append(deps, httpapi.DBDep(t))
+			}
 		}
 		liveHub.Invalidate(deps...)
 	})

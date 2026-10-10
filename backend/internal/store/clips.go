@@ -84,11 +84,12 @@ func (s *SQLiteStore) ClipUsers(key string) ([]ClipUser, error) {
 // clip that belong to the members after it (nil otherwise). One statement,
 // so the row is never seen ready without its clip.
 func (s *SQLiteStore) SetParagraphReadyClip(id, voiceID, key string, durationSeconds float64, wordTimingsJSON string, parts []ClipPart) error {
+	book := s.paragraphBook(id)
 	if wordTimingsJSON == "" {
 		wordTimingsJSON = "[]"
 	}
 	clipParts := encodeClipParts(parts)
-	res, err := s.db.Exec(
+	res, err := s.db.execScoped(book,
 		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = ?, word_timings = ?, pointer_offset = 0, pointer_seconds = 0, clip_key = ?, clip_parts = ? WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioReady, durationSeconds, wordTimingsJSON, key, clipParts, id, voiceID,
 	)
@@ -100,7 +101,7 @@ func (s *SQLiteStore) SetParagraphReadyClip(id, voiceID, key string, durationSec
 	} else if n > 0 {
 		return nil
 	}
-	_, err = s.db.Exec(
+	_, err = s.db.execScoped(book,
 		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, duration_seconds, word_timings, clip_key, clip_parts, chapter_id, chars) VALUES (?, ?, ?, ?, ?, ?, ?, coalesce((SELECT chapter_id FROM paragraphs WHERE id = ?), ''), coalesce((SELECT length(content) FROM paragraphs WHERE id = ?), 0))`,
 		id, voiceID, AudioReady, durationSeconds, wordTimingsJSON, key, clipParts, id, id,
 	)
@@ -191,7 +192,8 @@ func (s *SQLiteStore) BackfillClipParts() (int, error) {
 // SetParagraphClipKey records that id's existing ready audio under voiceID
 // is the shared clip key, changing nothing else about it.
 func (s *SQLiteStore) SetParagraphClipKey(id, voiceID, key string) error {
-	_, err := s.db.Exec(`UPDATE paragraph_audio SET clip_key = ? WHERE paragraph_id = ? AND voice_id = ?`, key, id, voiceID)
+	book := s.paragraphBook(id)
+	_, err := s.db.execScoped(book, `UPDATE paragraph_audio SET clip_key = ? WHERE paragraph_id = ? AND voice_id = ?`, key, id, voiceID)
 	return err
 }
 

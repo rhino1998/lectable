@@ -41,6 +41,10 @@ type Cached struct {
 	byTable map[string]map[string]struct{} // table -> keys depending on it
 	// narration is ChapterNarration's own cache, per book - see there.
 	narration map[string]*bookNarration
+	// narrationAll counts writes to narrationTables that named no book
+	// (BookScope), narrationBook those that did, per book.
+	narrationAll  uint64
+	narrationBook map[string]uint64
 
 	hits, misses atomic.Uint64
 }
@@ -75,12 +79,28 @@ func (c *Cached) invalidate(tables []string) {
 			return
 		}
 	}
+	scope, narration := "", false
 	for _, t := range tables {
+		if IsBookScope(t) {
+			scope = t
+			continue
+		}
+		narration = narration || slices.Contains(narrationTables, t)
 		c.gens[t]++
 		for key := range c.byTable[t] {
 			delete(c.entries, key)
 		}
 		delete(c.byTable, t)
+	}
+	switch {
+	case !narration:
+	case scope == "":
+		c.narrationAll++
+	default:
+		if c.narrationBook == nil {
+			c.narrationBook = map[string]uint64{}
+		}
+		c.narrationBook[scope]++
 	}
 }
 
@@ -339,7 +359,8 @@ type bookNarration struct {
 	key      string
 	chapters []ChapterNarration
 	prints   map[string]string
-	// gen is narrationTables' generation from before prints was read: while
+	// gen counts the writes that could have changed this book's
+	// fingerprints (narrationGenLocked), from before prints was read: while
 	// it still stands, nothing a fingerprint covers has been written.
 	gen uint64
 }
@@ -349,15 +370,22 @@ type bookNarration struct {
 // is kept by their triggers) and its paragraph_audio rows.
 var narrationTables = []string{"chapters", "paragraphs", "chapter_text", "paragraph_audio"}
 
+// narrationGenLocked counts the writes to narrationTables that could have
+// reached bookID: every one that named no book, and those naming this one.
+func (c *Cached) narrationGenLocked(bookID string) uint64 {
+	return c.allGen + c.narrationAll + c.narrationBook[BookScope(bookID)]
+}
+
 // ChapterNarration answers a whole-book call (no chapterIDs) from the last
 // result for the same book and voices, re-reading only the chapters whose
 // fingerprint changed since (ChapterFingerprints: the chapter's row, its
 // paragraphs' text and speakers, its paragraph_audio rows). Why: the
 // library listing is rebuilt on every paragraph that finishes generating,
 // and a write to one book - an imported chapter, a pass finishing - must
-// not cost a re-read of every other book. With no write to any table the
-// fingerprints read since the last call (narrationTables), they aren't
-// read at all: on a library of 108 books they were 170ms of a 200ms
+// not cost a re-read of every other book. With no write since the last
+// call that could have changed this book's fingerprints (narrationTables,
+// less the writes naming another book - BookScope), they aren't read at
+// all: on a library of 108 books they were 170ms of a 200ms
 // listing, most of whose rebuilds follow a saved position or a job.
 func (c *Cached) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error) {
 	if len(chapterIDs) > 0 {
@@ -371,7 +399,7 @@ func (c *Cached) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoi
 
 	c.mu.Lock()
 	gen := c.allGen
-	tablesGen := c.genLocked(narrationTables)
+	tablesGen := c.narrationGenLocked(bookID)
 	prev := c.narration[bookID]
 	c.mu.Unlock()
 	if prev != nil && prev.key == key.String() && prev.gen == tablesGen {

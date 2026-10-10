@@ -132,6 +132,25 @@ func (s *SQLiteStore) GetParagraphAudioStatus(paragraphID, voiceID string) (stri
 	return status, err
 }
 
+// paragraphBook is the book paragraphID belongs to, for a write's
+// BookScope; "" (an unscoped write) if it can't be found.
+func (s *SQLiteStore) paragraphBook(paragraphID string) string {
+	var bookID string
+	if err := s.db.QueryRow(`SELECT c.book_id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE p.id = ?`, paragraphID).Scan(&bookID); err != nil {
+		return ""
+	}
+	return bookID
+}
+
+// chapterBook is paragraphBook for a chapter.
+func (s *SQLiteStore) chapterBook(chapterID string) string {
+	var bookID string
+	if err := s.db.QueryRow(`SELECT book_id FROM chapters WHERE id = ?`, chapterID).Scan(&bookID); err != nil {
+		return ""
+	}
+	return bookID
+}
+
 // upsertParagraphAudio sets one (paragraph, voice) pair's audio state.
 // Update first, and only insert if nothing existed to update (written
 // for a database whose ON CONFLICT support wasn't trusted; SQLite's is
@@ -145,7 +164,8 @@ func (s *SQLiteStore) GetParagraphAudioStatus(paragraphID, voiceID string) (stri
 // own fallback) must never leave a stale pointer behind once it has real
 // audio of its own again.
 func (s *SQLiteStore) upsertParagraphAudio(paragraphID, voiceID, status, errMsg string, durationSeconds float64) error {
-	res, err := s.db.Exec(
+	book := s.paragraphBook(paragraphID)
+	res, err := s.db.execScoped(book,
 		`UPDATE paragraph_audio SET status = ?, error = ?, duration_seconds = ?, pointer_offset = 0, pointer_seconds = 0, clip_key = '', clip_parts = '' WHERE paragraph_id = ? AND voice_id = ?`,
 		status, errMsg, durationSeconds, paragraphID, voiceID,
 	)
@@ -157,7 +177,7 @@ func (s *SQLiteStore) upsertParagraphAudio(paragraphID, voiceID, status, errMsg 
 	} else if n > 0 {
 		return nil
 	}
-	_, err = s.db.Exec(
+	_, err = s.db.execScoped(book,
 		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, error, duration_seconds, chapter_id, chars) VALUES (?, ?, ?, ?, ?, coalesce((SELECT chapter_id FROM paragraphs WHERE id = ?), ''), coalesce((SELECT length(content) FROM paragraphs WHERE id = ?), 0))`,
 		paragraphID, voiceID, status, errMsg, durationSeconds, paragraphID, paragraphID,
 	)
@@ -190,7 +210,8 @@ func (s *SQLiteStore) SetParagraphReady(id, voiceID string, durationSeconds floa
 // shared clip and only uses these values to track which paragraph is
 // "current" for highlighting/position-reporting).
 func (s *SQLiteStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset int, pointerSeconds, durationSeconds float64) error {
-	res, err := s.db.Exec(
+	book := s.paragraphBook(id)
+	res, err := s.db.execScoped(book,
 		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = ?, pointer_offset = ?, pointer_seconds = ?, clip_key = '', clip_parts = '' WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioReady, durationSeconds, pointerOffset, pointerSeconds, id, voiceID,
 	)
@@ -202,7 +223,7 @@ func (s *SQLiteStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset
 	} else if n > 0 {
 		return nil
 	}
-	_, err = s.db.Exec(
+	_, err = s.db.execScoped(book,
 		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, duration_seconds, pointer_offset, pointer_seconds, chapter_id, chars) VALUES (?, ?, ?, ?, ?, ?, coalesce((SELECT chapter_id FROM paragraphs WHERE id = ?), ''), coalesce((SELECT length(content) FROM paragraphs WHERE id = ?), 0))`,
 		id, voiceID, AudioReady, durationSeconds, pointerOffset, pointerSeconds, id, id,
 	)
@@ -217,9 +238,11 @@ func (s *SQLiteStore) SetParagraphReadyPointer(id, voiceID string, pointerOffset
 // happen in practice (SetParagraphReady always runs first) but isn't worth
 // erroring over if it somehow did. Timings describe the clip, so every
 // other row sharing this one's clip (paragraph_audio.clip_key) gets them
-// too.
+// too - in other books as well, which the write's BookScope may ignore:
+// no fingerprint covers word timings.
 func (s *SQLiteStore) SetParagraphWordTimings(id, voiceID, wordTimingsJSON string) error {
-	if _, err := s.db.Exec(
+	book := s.paragraphBook(id)
+	if _, err := s.db.execScoped(book,
 		`UPDATE paragraph_audio SET word_timings = ? WHERE paragraph_id = ? AND voice_id = ?`,
 		wordTimingsJSON, id, voiceID,
 	); err != nil {
@@ -234,7 +257,7 @@ func (s *SQLiteStore) SetParagraphWordTimings(id, voiceID, wordTimingsJSON strin
 		return err
 	}
 	// "clip_key <> ''" is what lets the partial index serve this.
-	_, err = s.db.Exec(
+	_, err = s.db.execScoped(book,
 		`UPDATE paragraph_audio SET word_timings = ?
 		 WHERE clip_key = ? AND clip_key <> '' AND status = ? AND NOT (paragraph_id = ? AND voice_id = ?)`,
 		wordTimingsJSON, key, AudioReady, id, voiceID,
@@ -257,7 +280,8 @@ func (s *SQLiteStore) SetParagraphError(id, voiceID, message string) error {
 // it - see AudioState.PointerOffset's own doc comment - so a stale pointer
 // value must never survive past this reset).
 func (s *SQLiteStore) ResetParagraphAudio(id, voiceID string) error {
-	res, err := s.db.Exec(
+	book := s.paragraphBook(id)
+	res, err := s.db.execScoped(book,
 		`UPDATE paragraph_audio SET status = ?, error = '', duration_seconds = 0, word_timings = '[]', pointer_offset = 0, pointer_seconds = 0, clip_key = '', clip_parts = '' WHERE paragraph_id = ? AND voice_id = ?`,
 		AudioPending, id, voiceID,
 	)
@@ -269,7 +293,7 @@ func (s *SQLiteStore) ResetParagraphAudio(id, voiceID string) error {
 	} else if n > 0 {
 		return nil
 	}
-	_, err = s.db.Exec(
+	_, err = s.db.execScoped(book,
 		`INSERT INTO paragraph_audio (paragraph_id, voice_id, status, chapter_id, chars) VALUES (?, ?, ?, coalesce((SELECT chapter_id FROM paragraphs WHERE id = ?), ''), coalesce((SELECT length(content) FROM paragraphs WHERE id = ?), 0))`,
 		id, voiceID, AudioPending, id, id,
 	)
@@ -304,7 +328,8 @@ func (s *SQLiteStore) DeleteBookAudio(bookID string) error {
 // pairs this with removing that chapter's own audio directory on disk,
 // same split as the book-level version.
 func (s *SQLiteStore) DeleteChapterAudio(chapterID string) error {
-	_, err := s.db.Exec(
+	book := s.chapterBook(chapterID)
+	_, err := s.db.execScoped(book,
 		`DELETE FROM paragraph_audio WHERE paragraph_id IN (
 			SELECT id FROM paragraphs WHERE chapter_id = ?
 		)`,
@@ -554,6 +579,7 @@ func (s *SQLiteStore) DeleteParagraphAudioForIdxs(bookID, chapterID string, idxs
 		return nil, err
 	}
 	defer tx.Rollback()
+	tx.scope = bookID
 	var out []SpeakerAudioRef
 	for _, r := range all {
 		if !stale[groupKey{r.voiceID, r.idx - r.pointerOffset}] {
