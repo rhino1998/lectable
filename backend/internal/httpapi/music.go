@@ -54,7 +54,11 @@ type chapterMusicDTO struct {
 	Regions []musicRegionDTO `json:"regions"`
 }
 
-func musicRegionDTOFrom(r store.MusicRegion) musicRegionDTO {
+// musicRegionDTOFrom is r on the wire. clipPath is where its rendered clip
+// lives: a ready region's AudioURL names that render ("?v=", see
+// withClipVersion), so a regenerated region gets a new URL and each one can
+// be cached for good (handleGetMusicRegionAudio).
+func musicRegionDTOFrom(r store.MusicRegion, clipPath string) musicRegionDTO {
 	d := musicRegionDTO{
 		ID:              r.ID,
 		StartIdx:        r.StartIdx,
@@ -72,7 +76,7 @@ func musicRegionDTOFrom(r store.MusicRegion) musicRegionDTO {
 		d.Lighting = &l
 	}
 	if r.Status == store.AudioReady {
-		d.AudioURL = "/api/music-regions/" + r.ID + "/audio"
+		d.AudioURL = withClipVersion("/api/music-regions/"+r.ID+"/audio", audiopath.Resolve(clipPath))
 	}
 	return d
 }
@@ -120,7 +124,7 @@ func (s *Server) buildChapterMusic(bookID string, chapterIdx int) (chapterMusicD
 		if s.Jobs.MusicRegionGenerating(region.ID) {
 			region.Status = store.AudioGenerating
 		}
-		dto.Regions[i] = musicRegionDTOFrom(region)
+		dto.Regions[i] = musicRegionDTOFrom(region, audiopath.MusicRegionFile(s.DataDir, bookID, ch.ID, region.ID))
 	}
 	return dto, nil
 }
@@ -217,8 +221,7 @@ func (s *Server) handleGenerateChapterMusic(w http.ResponseWriter, r *http.Reque
 }
 
 // musicTransitionFromString maps a speakerattr.MusicRegionResult's own
-// Transition string (already normalized to "cut"/"continuation" by
-// speakerattr's own parseMusicBoundaries) onto store.MusicTransition - anything else
+// Transition string (always "cut" or "continuation") onto store.MusicTransition - anything else
 // (shouldn't happen, given that normalization) defaults to the safer
 // MusicTransitionCut.
 func musicTransitionFromString(s string) store.MusicTransition {
@@ -415,9 +418,7 @@ func speakerattrLighting(l store.Lighting) speakerattr.Lighting {
 // it every one of those would wipe and redo whatever that run had already
 // finished instead of building on it.
 //
-// The resumed run's own first region is forced to "cut" (see
-// musicSystemPrompt's own "always use cut for the very first region"
-// rule) - speakerattr.Client.ScoreMusic has no visibility into the
+// The resumed run's own first region is forced to "cut" - speakerattr.Client.ScoreMusic has no visibility into the
 // previous run's own last region at all in a resumed call, so it can't
 // genuinely judge whether this one continues from it.
 //
@@ -549,7 +550,7 @@ func (s *Server) scoreChapterMusic(ctx context.Context, book *store.Book, ch *st
 // handleGetMusicRegionAudio serves GET /api/music-regions/{id}/audio - the
 // frontend's own background-music mixer fetches each region's clip by this
 // URL (musicRegionDTO.AudioURL) as narration crosses into its paragraph
-// range. Range-request-capable via http.ServeFile, same as
+// range. Cached like a narration clip (cacheVersionedClip). Range-request-capable via http.ServeFile, same as
 // handleGetAudio/handleGetParagraphSFXAudio.
 func (s *Server) handleGetMusicRegionAudio(w http.ResponseWriter, r *http.Request) {
 	regionID := r.PathValue("id")
@@ -571,6 +572,7 @@ func (s *Server) handleGetMusicRegionAudio(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusNotFound, "chapter not found")
 		return
 	}
+	cacheVersionedClip(w, r)
 	serveClip(w, r, audiopath.MusicRegionFile(s.DataDir, ch.BookID, ch.ID, region.ID))
 }
 

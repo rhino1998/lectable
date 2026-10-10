@@ -134,8 +134,8 @@ Philips Hue lights themselves over the bridge's local v1 API (HTTPS)
 per device. See the `run-ambience` entry in `backend/docs/api.md`.
 
 A book can also be **imported from a website** by link instead of an
-epub - a Royal Road fiction, or The Wandering Inn (one volume per book,
-as a series): the backend fetches it chapter by chapter (the book is
+epub - a Royal Road fiction, The Wandering Inn (one volume per book,
+as a series), or a creator's Patreon: the backend fetches it chapter by chapter (the book is
 readable from its first chapter while the rest arrive), remembers where
 it came from, and "Check for new chapters" later appends whatever has
 been published since without touching what's there. A chapter the site
@@ -146,7 +146,13 @@ imports a work as archived, and an archive.org item link imports the
 item's epub. Books from websites are checked for new entries daily (a
 library-wide setting); what a check finds waits for the reader to say
 import or skip - authors post notices in the chapter list - and marks the
-book in the library meanwhile. An import can be previewed first to choose chapters, and -
+book in the library meanwhile. A book can track **several sources** -
+its advance chapters on Patreon beside Royal Road - each checked in turn,
+a chapter posted in more than one taken once; Patreon posts for patrons
+only are listed (locked) even when the library isn't signed in to
+Patreon, and readable once it is (Settings, a browser's session cookie) -
+which also unlocks The Wandering Inn's own patrons-only chapters. See the `.../sources` and `settings/patreon` entries in
+`backend/docs/api.md`. An import can be previewed first to choose chapters, and -
 for a serial whose early chapters the site has taken down - widened with
 the Internet Archive's copies of the delisted ones or an epub of them. See the `import-url` entry in `backend/docs/api.md`.
 

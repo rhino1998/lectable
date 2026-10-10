@@ -23,15 +23,44 @@ func TestBookSourceAndAppendChapters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if src, err := s.GetBookSource(bookID); err != nil || src != nil {
-		t.Fatalf("new book's source = %+v, %v; want none", src, err)
+	if srcs, err := s.BookSources(bookID); err != nil || len(srcs) != 0 {
+		t.Fatalf("new book's sources = %+v, %v; want none", srcs, err)
 	}
-	want := BookSource{Kind: "royalroad", SourceID: "7", URL: "https://example.test/fiction/7", CheckedAt: 123, RemoteChapters: 3, Error: "boom", Blocked: "Four"}
-	if err := s.SetBookSource(bookID, want); err != nil {
+	want := BookSource{BookID: bookID, Kind: "royalroad", SourceID: "7", URL: "https://example.test/fiction/7", CheckedAt: 123, RemoteChapters: 3, Error: "boom", Blocked: "Four"}
+	if err := s.SaveBookSource(&want); err != nil || want.ID == "" {
+		t.Fatalf("SaveBookSource: id %q, %v", want.ID, err)
+	}
+	second := BookSource{BookID: bookID, Kind: "patreon", SourceID: "55", Prefix: "patreon:"}
+	if err := s.SaveBookSource(&second); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.GetBookSource(bookID); err != nil || got == nil || *got != want {
+	want.Blocked, want.CheckedAt = "", 456
+	if err := s.SaveBookSource(&want); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.BookSources(bookID); err != nil || len(got) != 2 || got[0] != want || got[1] != second {
+		t.Fatalf("BookSources = %+v, %v", got, err)
+	}
+	if got, err := s.GetBookSource(second.ID); err != nil || got == nil || *got != second {
 		t.Fatalf("GetBookSource = %+v, %v", got, err)
+	}
+	if err := s.SetBookSourcePlan(second.ID, SourcePlan{Matched: []string{"patreon:1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if plan, err := s.GetBookSourcePlan(second.ID); err != nil || len(plan.Matched) != 1 {
+		t.Fatalf("plan = %+v, %v", plan, err)
+	}
+	if plan, _ := s.GetBookSourcePlan(want.ID); len(plan.Matched) != 0 {
+		t.Fatalf("the other source's plan = %+v", plan)
+	}
+	if books, err := s.SourcedBooks(); err != nil || len(books) != 1 || books[0].CheckedAt != 0 {
+		t.Fatalf("SourcedBooks = %+v, %v", books, err)
+	}
+	if err := s.DeleteBookSource(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if id, _ := s.FindBookBySource("patreon", "55"); id != "" {
+		t.Fatal("a removed source still finds its book")
 	}
 	if id, err := s.FindBookBySource("royalroad", "7"); err != nil || id != bookID {
 		t.Fatalf("FindBookBySource = %q, %v", id, err)

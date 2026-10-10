@@ -13,8 +13,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Mood
 import androidx.compose.material.icons.filled.Bookmarks
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -31,6 +32,8 @@ import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Spellcheck
 import androidx.compose.material.icons.filled.TaskAlt
+import androidx.compose.material.icons.outlined.Mood
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -40,6 +43,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,19 +58,21 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import com.lectable.app.data.download.DownloadStatus
 import com.lectable.app.data.remote.dto.BookmarkDto
-import com.lectable.app.data.remote.dto.CharacterNameDto
 import com.lectable.app.data.remote.dto.ChapterSummaryDto
+import com.lectable.app.data.remote.dto.CharacterNameDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.data.remote.dto.VoicePresetDto
@@ -264,9 +270,9 @@ private fun VoiceRow(name: String, subtitle: String, onClick: () -> Unit) {
  *  ReaderViewModel.setParagraphSpeaker). "Narrator" always leads the list (clears attribution,
  *  same as an empty speaker server-side) followed by every other known character - mirrors the
  *  web page's own reassignTargets (Narrator + every character name), fetched fresh each time the
- *  sheet opens rather than cached, since the roster can grow between visits (a name typed here
- *  that isn't attributed to anything yet still isn't offered - unlike the web page, there's no
- *  free-text "type a new name" entry here, only reassignment to an already-known character). */
+ *  the live series roster. "New speaker…" asks for a name and makes it a character of its own
+ *  ([onCreate]) - for a line attribution gave to someone it took two people for; the web
+ *  reader's context menu has the same entry. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SpeakerPickerSheet(
@@ -278,7 +284,9 @@ internal fun SpeakerPickerSheet(
     // chapterCharacterNames. Listed first, under "This chapter", ahead of the whole roster.
     chapterNames: Set<String>,
     onSelect: (name: String) -> Unit,
+    onCreate: (name: String) -> Unit,
 ) {
+    var naming by remember { mutableStateOf(false) }
     val loaded = characters != null
     val (local, all) = remember(characters, chapterNames) { pickerSections(characters.orEmpty(), chapterNames, exclude = null) }
 
@@ -298,6 +306,17 @@ internal fun SpeakerPickerSheet(
                 // Attribution's own "can't tell who says this" value - not a roster character,
                 // so it's a fixed entry like Narrator.
                 item { SpeakerRow("Unknown", currentSpeaker, onSelect) }
+                item {
+                    Text(
+                        "New speaker…",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = { naming = true })
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                    )
+                }
                 if (local.isNotEmpty()) {
                     item { VoiceSectionHeader("This chapter") }
                     items(local, key = { "local-$it" }) { name -> SpeakerRow(name, currentSpeaker, onSelect) }
@@ -307,6 +326,33 @@ internal fun SpeakerPickerSheet(
             }
         }
     }
+    if (naming) {
+        NewSpeakerDialog(onDismiss = { naming = false }, onConfirm = onCreate)
+    }
+}
+
+/** The name prompt behind the speaker picker's "New speaker…". */
+@Composable
+private fun NewSpeakerDialog(onDismiss: () -> Unit, onConfirm: (name: String) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New speaker") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Name") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words, imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { if (name.isNotBlank()) onConfirm(name.trim()) }),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name.trim()) }, enabled = name.isNotBlank()) { Text("Add") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 @Composable

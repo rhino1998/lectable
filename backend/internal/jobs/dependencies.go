@@ -306,13 +306,15 @@ func (m *Manager) EnqueueBookSetting(book *store.Book, fn BookSettingDeriver) {
 }
 
 // EnqueueRosterReview queues a review of book's roster (the Speakers
-// page's button) in the background and returns at once. fn is the work;
-// scope (store.SeriesScope) dedupes it, so asking from two books of one
-// series joins one run.
+// page's button) and returns at once - at TierUrgent, since the reader
+// asked for it and is waiting on its proposals; in the background it sat
+// behind whole books of preprocessing. fn is the work; scope
+// (store.SeriesScope) dedupes it, so asking from two books of one series
+// joins one run.
 func (m *Manager) EnqueueRosterReview(book *store.Book, scope string, fn func(ctx context.Context) error) {
 	m.pushTask(&task{
 		kind:        KindRosterReview,
-		tier:        TierBackground,
+		tier:        TierUrgent,
 		bookID:      book.ID,
 		llmKey:      scope,
 		label:       "Roster review",

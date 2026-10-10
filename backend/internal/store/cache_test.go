@@ -269,3 +269,64 @@ func TestCachedChapterNarrationIsPerBook(t *testing.T) {
 	check("deleted")
 	quiet("deleted")
 }
+
+// fingerprintCounter counts ChapterFingerprints calls reaching the store.
+type fingerprintCounter struct {
+	Store
+	calls int
+}
+
+func (f *fingerprintCounter) ChapterFingerprints(bookID string) (map[string]string, error) {
+	f.calls++
+	return f.Store.ChapterFingerprints(bookID)
+}
+
+// The library listing is rebuilt on every saved position; that mustn't
+// read every book's fingerprints again when nothing they cover was written.
+func TestCachedChapterNarrationSkipsFingerprintsWhenNothingWritten(t *testing.T) {
+	inner := openTestStore(t)
+	counter := &fingerprintCounter{Store: inner}
+	c := NewCached(counter)
+	bookID, chapterID := oneChapterBook(t, inner, "", 0, "One.", "Two.")
+	read := func() []ChapterNarration {
+		t.Helper()
+		got, err := c.ChapterNarration(bookID, "book-voice", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	read()
+	first := counter.calls
+	if err := inner.UpdatePosition(bookID, 0, 1, 2.5); err != nil {
+		t.Fatal(err)
+	}
+	read()
+	if counter.calls != first {
+		t.Errorf("a saved position read the fingerprints again (%d calls, was %d)", counter.calls, first)
+	}
+
+	paragraphs, err := inner.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := inner.SetParagraphReadyClip(paragraphs[0].ID, "book-voice", "0123456789abcdef0123456789abcdef", 1, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	got := read()
+	if counter.calls != first+1 {
+		t.Errorf("a clip becoming ready read the fingerprints %d times, want once", counter.calls-first)
+	}
+	want, err := inner.ChapterNarration(bookID, "book-voice", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("after a clip became ready: cached %+v, want %+v", got, want)
+	}
+	read()
+	if counter.calls != first+1 {
+		t.Errorf("an unchanged book read the fingerprints again")
+	}
+}

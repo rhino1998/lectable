@@ -98,13 +98,11 @@ fun LibraryScreen(
     var pendingRename by remember { mutableStateOf<BookSummaryDto?>(null) }
     var pendingDeleteLocal by remember { mutableStateOf<BookSummaryDto?>(null) }
     val libraryEntries = remember(uiState.books) { groupBySeries(uiState.books) }
-    // The "Continue reading" entry: the unfinished book read most recently (it keeps its usual
-    // place below too). Not shown for a one-book library, or offline - downloaded copies don't
-    // record when they were read.
-    val continueItem = remember(uiState.books) {
-        uiState.books.takeIf { it.size > 1 }
-            ?.filter { !it.summary.finished && (it.summary.lastReadAt ?: 0) > 0 }
-            ?.maxByOrNull { it.summary.lastReadAt ?: 0 }
+    // The "Continue reading" entries (ContinueReading.kt): the unfinished books read most
+    // recently and the next books of series. Each keeps its usual place below too.
+    val continueItems = remember(uiState.books) {
+        val byId = uiState.books.associateBy { it.summary.id }
+        continueReading(uiState.books.map { it.summary }).mapNotNull { byId[it.id] }
     }
 
     // The book whose "Fill locked chapters from an epub" is waiting on the file picker.
@@ -116,6 +114,8 @@ fun LibraryScreen(
     }
     // The book whose new entries are being reviewed (SourceReview.kt).
     var reviewBookId by remember { mutableStateOf<String?>(null) }
+    // The book another source is being added to (AddSourceDialog).
+    var addSourceBook by remember { mutableStateOf<BookSummaryDto?>(null) }
     var showAddMenu by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
 
@@ -241,18 +241,15 @@ fun LibraryScreen(
                                     pickBackfillLauncher.launch("application/epub+zip")
                                 },
                                 onReviewSource = { reviewBookId = item.summary.id },
+                                onAddSource = { addSourceBook = item.summary },
                                 onDeleteLocal = { pendingDeleteLocal = item.summary },
                                 onRename = { pendingRename = item.summary },
                                 onDelete = { pendingDelete = item.summary },
                             )
                         }
-                        continueItem?.let { item ->
-                            item(key = "continue") {
-                                Column {
-                                    SectionHeader("Continue reading")
-                                    bookRow(item, true)
-                                }
-                            }
+                        if (continueItems.isNotEmpty()) {
+                            item(key = "continue") { SectionHeader("Continue reading") }
+                            items(continueItems, key = { "continue:${it.summary.id}" }) { item -> bookRow(item, true) }
                         }
                         items(
                             libraryEntries,
@@ -284,9 +281,20 @@ fun LibraryScreen(
 
     ImportPreviewHost(uiState, viewModel)
 
+    addSourceBook?.let { book ->
+        AddSourceDialog(
+            book = book,
+            onDismiss = { addSourceBook = null },
+            onAdd = { link ->
+                addSourceBook = null
+                viewModel.addBookSource(book.id, link)
+            },
+        )
+    }
+
     // Read from the live list, so the dialog closes by itself once nothing is left to review.
     uiState.books.find { it.summary.id == reviewBookId }?.summary?.let { book ->
-        val entries = book.source?.review.orEmpty()
+        val entries = openEntries(book.source?.review)
         if (entries.isNotEmpty()) {
             SourceReviewDialog(
                 bookTitle = book.title,
@@ -392,6 +400,7 @@ private fun BookRow(
     onSyncSource: () -> Unit,
     onBackfill: () -> Unit,
     onReviewSource: () -> Unit,
+    onAddSource: () -> Unit,
     onDeleteLocal: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
@@ -439,7 +448,7 @@ private fun BookRow(
                     }
                 }
                 // New entries waiting for review (long-press -> "Review…"): a bell and how many.
-                val reviewCount = book.source?.review?.size ?: 0
+                val reviewCount = openEntries(book.source?.review).size
                 if (reviewCount > 0) {
                     Row(
                         modifier = Modifier
@@ -599,9 +608,10 @@ private fun BookRow(
                     onClick = { onSyncSource(); showMenu = false },
                 )
                 // Entries the last check found wait for the reader's say before the book takes them.
-                if (source.review.isNotEmpty()) {
+                val toReview = openEntries(source.review).size
+                if (toReview > 0) {
                     DropdownMenuItem(
-                        text = { Text("Review ${newEntries(source.review.size)}") },
+                        text = { Text("Review ${newEntries(toReview)}") },
                         leadingIcon = { Icon(Icons.Filled.Checklist, contentDescription = null) },
                         enabled = !source.syncing,
                         onClick = { onReviewSource(); showMenu = false },
@@ -618,6 +628,14 @@ private fun BookRow(
                     )
                 }
             }
+            // Another place the book is posted, checked alongside (or, for a book from a file,
+            // its first).
+            DropdownMenuItem(
+                text = { Text(if (book.source == null) "Track a website for new chapters" else "Add another source") },
+                leadingIcon = { Icon(Icons.Filled.Link, contentDescription = null) },
+                enabled = book.source?.syncing != true,
+                onClick = { onAddSource(); showMenu = false },
+            )
             if (isDownloaded) {
                 DropdownMenuItem(
                     text = { Text("Remove downloaded copy") },
@@ -668,16 +686,52 @@ private fun sourceStatus(book: BookSummaryDto): String? {
         source.syncing && outstanding > 0 -> "Fetching chapters: ${book.chapterCount} of ${source.remoteChapters}"
         source.syncing -> "Checking for new chapters…"
         // Nothing more arrives until these are decided (long-press -> "Review…").
-        source.review.isNotEmpty() -> "${newEntries(source.review.size)} to review"
+        openEntries(source.review).isNotEmpty() -> "${newEntries(openEntries(source.review).size)} to review"
         outstanding > 0 -> {
             val n = "$outstanding chapter${if (outstanding == 1) "" else "s"}"
             if (failed) "$n not fetched - check again" else "$n left to fetch - check again"
         }
         failed -> "Last check for new chapters failed"
         // The source lists the next chapter but won't serve it yet; the book never skips past one.
-        !source.blocked.isNullOrEmpty() -> "Next chapter “${source.blocked}” is locked at ${source.name}"
-        else -> null
+        !source.blocked.isNullOrEmpty() ->
+            "Next chapter “${source.blocked}” is locked at ${source.tracked.firstOrNull { !it.blocked.isNullOrEmpty() }?.name ?: source.name}"
+        // Listed somewhere the library can't read: there, but not importable.
+        else -> lockedEntriesLine(source.review)
     }
+}
+
+/** Long-press "Add another source": a link to the same book somewhere else it is posted - its
+ *  advance chapters on Patreon, say. Nothing is imported by adding it: the chapters the book
+ *  already has are recognized, and the rest wait for review like any new entry. */
+@Composable
+private fun AddSourceDialog(book: BookSummaryDto, onDismiss: () -> Unit, onAdd: (String) -> Unit) {
+    var link by remember(book.id) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add a source") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                book.source?.tracked.orEmpty().forEach { tracked ->
+                    Text("Tracking ${tracked.name}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                OutlinedTextField(
+                    value = link,
+                    onValueChange = { link = it },
+                    label = { Text("Link") },
+                    placeholder = { Text("royalroad.com, patreon.com, wanderinginn.com…") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Where else “${book.title}” is posted. It is checked for new chapters with the book's other sources; a chapter posted in more than one is taken once. Patreon posts for patrons only are listed as locked until the library is signed in to Patreon (the web app's Settings).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onAdd(link) }, enabled = link.isNotBlank()) { Text("Add") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /** "Add book" -> "Import from a link": asks for the link - a Royal Road fiction, or a chapter

@@ -133,7 +133,9 @@ func writeEPUB(w io.Writer, meta Meta, prev *zip.Reader, chapters []*Chapter, re
 		}
 		idx.Chapters = old.Chapters
 		idx.CoverFile = old.CoverFile
-		if replace {
+		// An epub being added to with no book named keeps what it says of
+		// its own: chapters from another of the book's sources.
+		if replace || meta.Title == "" {
 			idx.Kind, idx.WorkID, idx.URL, idx.Title, idx.Author = old.Kind, old.WorkID, old.URL, old.Title, old.Author
 		}
 		for _, c := range old.Chapters {

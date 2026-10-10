@@ -555,7 +555,9 @@ compiled-in default in place if nothing answers in time.
   highlight their lines." Not purely read-only, though: a block's
   long-press menu (available with or without annotations mode on) lists
   each distinct `Speaker` name as its own tappable
-  row - "Speaker: X" opens `SpeakerPickerSheet`.
+  row - "Speaker: X" opens `SpeakerPickerSheet`, whose "New speaker…"
+  asks for a name and makes it a character of its own (the speaker PUT's
+  `new` - for a line attribution gave to someone it took two people for).
 
   A fourth kind of mark, background-music region boundaries, is a labeled
   divider row (`MusicRegionBoundaryRow`) rather than an inline mark like

@@ -14,6 +14,7 @@ import {
   type Position,
   type ResetPass,
   type Routes,
+  type SourceTitleRule,
   type TestLLMRequest,
   type VoiceSettingsUpdate,
 } from './types'
@@ -112,8 +113,12 @@ export const api = {
   // (see httpapi.handleImportBookURL).
   // With previewId (see previewImport), the import takes that preview's
   // chapter list and only the chapters named - all of them when none are.
-  importBookUrl: (url: string, previewId?: string, chapters?: string[]) =>
-    call('POST /api/books/import-url', { body: { url, previewId, chapters } }),
+  importBookUrl: (
+    url: string,
+    previewId?: string,
+    chapters?: string[],
+    titleRule?: SourceTitleRule,
+  ) => call('POST /api/books/import-url', { body: { url, previewId, chapters, titleRule } }),
 
   // Looks a link over before importing it (httpapi.handlePreviewImportURL):
   // the work's chapter list, each chapter with where its text would come
@@ -172,6 +177,25 @@ export const api = {
       path: { id },
       body: { import: importIds, skip: skipIds },
     }),
+
+  // Has a book track another place its chapters are posted (a link to the
+  // same work at a supported site) - httpapi.handleAddBookSource. Nothing
+  // is imported by it: what the book doesn't have waits for review.
+  addBookSource: (id: string, url: string) =>
+    call('POST /api/books/{id}/sources', { path: { id }, body: { url } }),
+
+  // Sets one source's title rule (which of its entries are chapters, and
+  // what each is called); an empty pattern clears it. The book is checked
+  // again by it (httpapi.handleSetSourceTitleRule).
+  setSourceTitleRule: (id: string, sourceId: string, rule: SourceTitleRule) =>
+    call('PUT /api/books/{id}/sources/{sourceId}/title-rule', {
+      path: { id, sourceId },
+      body: rule,
+    }),
+
+  // Stops tracking one of a book's sources; its chapters stay.
+  removeBookSource: (id: string, sourceId: string) =>
+    call('DELETE /api/books/{id}/sources/{sourceId}', { path: { id, sourceId } }),
 
   // "Check for new chapters" on a book imported from a website - appends
   // whatever its source has published since (httpapi.handleSyncBookSource).
@@ -248,10 +272,13 @@ export const api = {
     chapterIdx: number,
     paragraphIdx: number,
     speaker: string,
+    // The name is a person of their own, whatever the roster knows it as -
+    // see handleSetParagraphSpeaker's "new".
+    isNew = false,
   ) =>
     call('PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker', {
       path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx },
-      body: { speaker },
+      body: isNew ? { speaker, new: true } : { speaker },
     }),
 
   // Marks (or unmarks) one quoted paragraph as a scare quote live - a
@@ -478,6 +505,10 @@ export const api = {
   // order - see httpapi.handlePreprocessSeries.
   preprocessSeries: (bookId: string) =>
     call('POST /api/books/{id}/preprocess-series', { path: { id: bookId } }),
+
+  // Preprocesses every book in the library, a few series at once and each
+  // series in order - see httpapi.handlePreprocessLibrary.
+  preprocessLibrary: () => call('POST /api/library/preprocess'),
 
   // Enqueues background TTS generation for every chapter in the book at
   // once - the library page's hover "Generate audio" button. Fire-and-
@@ -725,6 +756,12 @@ export const api = {
   // handleSetSourceSettings.
   setSourceSettings: (checkEveryHours: number) =>
     call('PUT /api/settings/sources', { body: { checkEveryHours } }),
+
+  // Signs the library in to Patreon with a browser's session_id cookie
+  // ('' signs out), so posts that account can read can be imported -
+  // backend handleSetPatreonSession.
+  setPatreonSession: (sessionId: string) =>
+    call('PUT /api/settings/patreon', { body: { sessionId } }),
 
   // Queues a check for new entries on every book that has a source, now
   // (backend handleCheckSources).

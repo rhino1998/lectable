@@ -35,6 +35,7 @@ import type {
   BookRecapResponse,
   RecapSettings,
   SourceSettings,
+  SourceTitleRule,
   BookSettingResponse,
   RosterReviewResponse,
   ChapterNotes,
@@ -65,8 +66,12 @@ export function useUploadBook() {
 
 export function useImportBookUrl() {
   return useMutation({
-    mutationFn: (args: { url: string; previewId?: string; chapters?: string[] }) =>
-      api.importBookUrl(args.url, args.previewId, args.chapters),
+    mutationFn: (args: {
+      url: string
+      previewId?: string
+      chapters?: string[]
+      titleRule?: SourceTitleRule
+    }) => api.importBookUrl(args.url, args.previewId, args.chapters, args.titleRule),
   })
 }
 
@@ -99,6 +104,23 @@ export function useReviewBookSource() {
   return useMutation({
     mutationFn: (args: { bookId: string; importIds: string[]; skipIds: string[] }) =>
       api.reviewBookSource(args.bookId, args.importIds, args.skipIds),
+  })
+}
+
+export function useAddBookSource(bookId: string) {
+  return useMutation({ mutationFn: (url: string) => api.addBookSource(bookId, url) })
+}
+
+export function useSetSourceTitleRule(bookId: string) {
+  return useMutation({
+    mutationFn: (args: { sourceId: string; rule: SourceTitleRule }) =>
+      api.setSourceTitleRule(bookId, args.sourceId, args.rule),
+  })
+}
+
+export function useRemoveBookSource(bookId: string) {
+  return useMutation({
+    mutationFn: (sourceId: string) => api.removeBookSource(bookId, sourceId),
   })
 }
 
@@ -277,11 +299,13 @@ export function useSetParagraphSpeaker(bookId: string) {
       chapterIdx,
       paragraphIdx,
       speaker,
+      isNew,
     }: {
       chapterIdx: number
       paragraphIdx: number
       speaker: string
-    }) => api.setParagraphSpeaker(bookId, chapterIdx, paragraphIdx, speaker),
+      isNew?: boolean
+    }) => api.setParagraphSpeaker(bookId, chapterIdx, paragraphIdx, speaker, isNew),
   })
 }
 
@@ -467,6 +491,12 @@ export function usePreprocessBook() {
 // bookId's series, one at a time in order.
 export function usePreprocessSeries() {
   return useMutation({ mutationFn: (bookId: string) => api.preprocessSeries(bookId) })
+}
+
+// The library header's "Preprocess library" button: every book, a few
+// series at a time (api.preprocessLibrary). One row on the Jobs page.
+export function usePreprocessLibrary() {
+  return useMutation({ mutationFn: () => api.preprocessLibrary() })
 }
 
 // The library page's "Generate audio" hover button (see api.generateBook).
@@ -846,6 +876,10 @@ export function useSetSourceSettings() {
   return useMutation({
     mutationFn: (checkEveryHours: number) => api.setSourceSettings(checkEveryHours),
   })
+}
+
+export function useSetPatreonSession() {
+  return useMutation({ mutationFn: (sessionId: string) => api.setPatreonSession(sessionId) })
 }
 
 export function useCheckSources() {

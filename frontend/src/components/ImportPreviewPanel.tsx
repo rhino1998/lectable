@@ -1,6 +1,14 @@
 import { useRef, useState } from 'react'
-import type { ImportChapterSource, ImportPreviewChapter, ImportPreviewResponse } from '../api/types'
+import type {
+  ImportChapterSource,
+  ImportPreviewChapter,
+  ImportPreviewResponse,
+  SourceTitleRule,
+} from '../api/types'
 import { countBySource, selectRange } from '../utils/importSelection'
+import { applyTitleRule, compileTitleRule } from '../utils/titleRule'
+import { TitleFilterRow } from './TitleFilterRow'
+import { TitleRuleFields } from './TitleRuleFields'
 
 // The chapter picker for an import by link: the work's chapter list as the
 // backend previewed it (httpapi.handlePreviewImportURL), each chapter with
@@ -44,6 +52,10 @@ export function ImportPreviewPanel(props: {
   preview: ImportPreviewResponse
   selected: Set<string>
   onSelect: (selected: Set<string>) => void
+  // The title rule the import will give the book's source: which entries
+  // are chapters and what each is called, now and on every later check.
+  titleRule: SourceTitleRule
+  onTitleRule: (rule: SourceTitleRule) => void
   busy: ImportPreviewBusy
   onSearchArchive: () => void
   onAttachEpub: (file: File) => void
@@ -58,7 +70,11 @@ export function ImportPreviewPanel(props: {
 
   const all = countBySource(chapters)
   const chosen = countBySource(chapters, selected)
-  const chosenTotal = selected.size
+  // Each chapter as the title rule has it: its name, or left out.
+  const ruleRe = compileTitleRule(props.titleRule)
+  const ruled = chapters.map((c) => applyTitleRule(props.titleRule, ruleRe, c.title))
+  const leftOut = ruled.filter((r) => r.leftOut).length
+  const chosenTotal = chapters.filter((c, i) => selected.has(c.id) && !ruled[i].leftOut).length
   const parts = [
     `${all.site} from ${preview.site}`,
     all.archive > 0 && `${all.archive} from the Internet Archive`,
@@ -178,7 +194,28 @@ export function ImportPreviewPanel(props: {
         >
           Select range
         </button>
+        <button
+          type="button"
+          className="option-chip"
+          title="Tick exactly the chapters from the “From” position to the end of the list"
+          onClick={() => onSelect(selectRange(chapters, Number(from) || 1, chapters.length))}
+        >
+          Rest from {Math.min(Math.max(Number(from) || 1, 1), Math.max(chapters.length, 1))}
+        </button>
       </div>
+
+      <TitleFilterRow items={chapters} selected={selected} onSelect={onSelect} />
+      <TitleRuleFields
+        value={props.titleRule}
+        onChange={props.onTitleRule}
+        disabled={busy !== null}
+      />
+      {ruleRe && ruleRe !== 'invalid' && (
+        <span className="muted">
+          Kept with the book’s source: later checks name what they find the same way
+          {props.titleRule.only ? `, and leave out what doesn’t match (${leftOut} here)` : ''}.
+        </span>
+      )}
 
       <ol className="import-preview-list">
         {chapters.map((c, i) => (
@@ -186,7 +223,20 @@ export function ImportPreviewPanel(props: {
             <label title={chapterNote(c) || undefined}>
               <input type="checkbox" checked={selected.has(c.id)} onChange={() => toggle(c.id)} />
               <span className="import-preview-number muted">{i + 1}</span>
-              <span className="import-preview-title">{c.title}</span>
+              <span
+                className={`import-preview-title${ruled[i].leftOut ? ' import-preview-left-out' : ''}`}
+                title={ruled[i].title !== c.title ? `Listed as “${c.title}”` : undefined}
+              >
+                {ruled[i].title}
+              </span>
+              {ruled[i].leftOut && (
+                <span
+                  className="import-preview-source"
+                  title="Its title doesn’t match the chapter-title rule, so it is left out"
+                >
+                  left out
+                </span>
+              )}
               {c.replacedBy && <span className="import-preview-source">replaced on the site</span>}
               {c.suspect && (
                 <span
@@ -211,7 +261,9 @@ export function ImportPreviewPanel(props: {
           type="button"
           className="primary-button"
           onClick={props.onImport}
-          disabled={chosenTotal === 0 || busy !== null || !!preview.existingBookId}
+          disabled={
+            chosenTotal === 0 || busy !== null || !!preview.existingBookId || ruleRe === 'invalid'
+          }
         >
           {busy === 'import'
             ? 'Importing…'

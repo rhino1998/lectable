@@ -178,6 +178,20 @@ func generateRegionLatents(ctx context.Context, backend LatentsBackend, in Regio
 		seedWAV, seedFrames = alignedSeedWAV(in.Seed)
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // stops the ambience render when the music fails
+	ambience := startAmbience(ctx, in.AmbiencePrompt, func(ctx context.Context) ([]byte, *ttsproto.Latents, error) {
+		wavBytes, lat, err := backend.StableAudioMediumLatents(ctx, ttsproto.StableAudioRequest{
+			Prompt:          in.AmbiencePrompt,
+			DurationSeconds: AmbienceLoopSeconds + loopCrossfadeSeconds,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		loop, err := LoopFromDecoded(wavBytes)
+		return loop, lat, err
+	})
+
 	var chunks []latentChunk
 	var out *wav.Clip
 	for i := 0; i < numChunks; i++ {
@@ -211,24 +225,14 @@ func generateRegionLatents(ctx context.Context, backend LatentsBackend, in Regio
 	}
 
 	var res Result
-	if in.AmbiencePrompt != "" {
-		wavBytes, lat, err := backend.StableAudioMediumLatents(ctx, ttsproto.StableAudioRequest{
-			Prompt:          in.AmbiencePrompt,
-			DurationSeconds: AmbienceLoopSeconds + loopCrossfadeSeconds,
-		})
-		if err != nil {
-			return Result{}, fmt.Errorf("generate ambience loop: %w", err)
-		}
-		if res.AmbienceLoop, err = LoopFromDecoded(wavBytes); err != nil {
-			return Result{}, err
-		}
-		res.AmbienceLoopLatents = lat
-	}
 	music, err := encodeLoop(out, served)
 	if err != nil {
 		return Result{}, err
 	}
 	res.Music = music
+	if res.AmbienceLoop, res.AmbienceLoopLatents, err = ambience.wait(); err != nil {
+		return Result{}, err
+	}
 
 	// The next region's seed: the served clip's last seconds (its tail is
 	// untouched render - see trimToLoopableClip), to the nearest frame. Up

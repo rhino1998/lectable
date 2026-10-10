@@ -56,7 +56,9 @@
 // Ambience is not rendered per region: a setting's soundscape is steady
 // texture, so GenerateRegion renders one AmbienceLoopSeconds loop per
 // ambience prompt (Region.AmbiencePrompt, left empty once the caller has
-// that setting's loop cached) and TileLoop lays it under each region.
+// that setting's loop cached) and TileLoop lays it under each region. The
+// loop renders beside the region's music chain, not after it (see
+// startAmbience).
 // (Batching the loop with a region's first music chunk into one Stable
 // Audio call was measured and dropped: the GPU is already saturated at
 // batch 1, and a batch renders every item at its longest duration, so it
@@ -180,6 +182,17 @@ func GenerateRegion(ctx context.Context, backend Backend, in Region) (Result, er
 	}
 	chunkSeconds := renderTarget / float64(numChunks)
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // stops the ambience render when the music fails
+	ambience := startAmbience(ctx, in.AmbiencePrompt, func(ctx context.Context) ([]byte, *ttsproto.Latents, error) {
+		amb, err := generateChunk(ctx, backend, in.AmbiencePrompt, "", AmbienceLoopSeconds+loopCrossfadeSeconds)
+		if err != nil {
+			return nil, nil, err
+		}
+		loop, err := encodeLoop(amb, AmbienceLoopSeconds)
+		return loop, nil, err
+	})
+
 	var res Result
 	var out *wav.Clip
 	var seedAudio []byte
@@ -216,22 +229,55 @@ func GenerateRegion(ctx context.Context, backend Backend, in Region) (Result, er
 		}
 	}
 
-	if in.AmbiencePrompt != "" {
-		amb, err := generateChunk(ctx, backend, in.AmbiencePrompt, "", AmbienceLoopSeconds+loopCrossfadeSeconds)
-		if err != nil {
-			return Result{}, fmt.Errorf("generate ambience loop: %w", err)
-		}
-		if res.AmbienceLoop, err = encodeLoop(amb, AmbienceLoopSeconds); err != nil {
-			return Result{}, err
-		}
-	}
-
 	music, err := encodeLoop(out, served)
 	if err != nil {
 		return Result{}, err
 	}
 	res.Music = music
+	if res.AmbienceLoop, res.AmbienceLoopLatents, err = ambience.wait(); err != nil {
+		return Result{}, err
+	}
 	return res, nil
+}
+
+// ambienceRender is a region's ambience loop on its way: rendered beside
+// the music chain rather than after it. The worker runs one Stable Audio
+// call at a time, so this doesn't put two renders on the GPU - it lets the
+// loop's render fill the time this side spends decoding, stitching and
+// encoding the music's chunks between calls (measured 2026-10-09: about a
+// fifth of a region's wall time).
+type ambienceRender chan ambienceResult
+
+type ambienceResult struct {
+	loop []byte
+	lat  *ttsproto.Latents
+	err  error
+}
+
+// startAmbience runs render for prompt's loop on its own goroutine; with no
+// prompt it returns nil, which waits as "no loop".
+func startAmbience(ctx context.Context, prompt string, render func(context.Context) ([]byte, *ttsproto.Latents, error)) ambienceRender {
+	if prompt == "" {
+		return nil
+	}
+	a := make(ambienceRender, 1)
+	go func() {
+		loop, lat, err := render(ctx)
+		a <- ambienceResult{loop: loop, lat: lat, err: err}
+	}()
+	return a
+}
+
+// wait returns the loop (nil without a prompt) once its render is done.
+func (a ambienceRender) wait() ([]byte, *ttsproto.Latents, error) {
+	if a == nil {
+		return nil, nil, nil
+	}
+	r := <-a
+	if r.err != nil {
+		return nil, nil, fmt.Errorf("generate ambience loop: %w", r.err)
+	}
+	return r.loop, r.lat, nil
 }
 
 func encodeLoop(clip *wav.Clip, servedSeconds float64) ([]byte, error) {

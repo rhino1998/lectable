@@ -137,18 +137,17 @@ func (s *Server) handleReparseBookSource(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
-	src, err := s.Store.GetBookSource(bookID)
+	sources, err := s.Store.BookSources(bookID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if src == nil {
+	if len(sources) == 0 {
 		writeError(w, http.StatusConflict, "this book wasn't imported from a website, so it has no stored pages to read again")
 		return
 	}
-	reader, _, ok := s.readerForBook(src)
-	if !ok {
-		writeError(w, http.StatusConflict, "this server can't read the site this book came from ("+src.Kind+")")
+	if !s.anyReadable(sources) {
+		writeError(w, http.StatusConflict, "this server can't read the site this book came from ("+sources[0].Kind+")")
 		return
 	}
 	// Holds off checks for new chapters, which add to the same epub.
@@ -160,7 +159,8 @@ func (s *Server) handleReparseBookSource(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusConflict, "chapters are being fetched for this book right now - try again when that finishes")
 		return
 	}
-	defer s.sourceSyncs.Delete(bookID)
+	s.sourceSyncChanged()
+	defer func() { s.sourceSyncs.Delete(bookID); s.sourceSyncChanged() }()
 
 	chapters, err := s.Store.SourcedChapters(bookID)
 	if err != nil {
@@ -177,7 +177,11 @@ func (s *Server) handleReparseBookSource(w http.ResponseWriter, r *http.Request)
 		}
 		var ch *websource.Chapter
 		if err == nil {
-			ch, err = rereadChapter(r.Context(), reader.site, raw)
+			if reader, ok := s.readerForChapter(sources, sc.SourceID); ok {
+				ch, err = rereadChapter(r.Context(), reader.site, raw)
+			} else {
+				err = errors.New("no reader for the site it came from")
+			}
 		}
 		if err != nil {
 			log.Printf("source: reading %q again from its stored pages: %v", sc.Title, err)

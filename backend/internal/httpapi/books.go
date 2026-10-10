@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
@@ -179,6 +181,13 @@ func toBookSummary(b store.Book, chapters []store.ChapterSummary, stats store.Na
 // per-voice - a different voice for the same book has its own, separately
 // cached generation progress.
 func (s *Server) buildBookSummary(b store.Book) (bookSummaryDTO, []store.ChapterSummary, error) {
+	return s.buildBookSummaryWith(b, s.isPreprocessing(b.ID))
+}
+
+// buildBookSummaryWith is buildBookSummary for a caller that already knows
+// whether the book is preprocessing (buildBooks, which asks once for the
+// whole library).
+func (s *Server) buildBookSummaryWith(b store.Book, preprocessing bool) (bookSummaryDTO, []store.ChapterSummary, error) {
 	bookVoice, err := s.Narration.BookVoice(&b)
 	if err != nil {
 		return bookSummaryDTO{}, nil, err
@@ -196,7 +205,7 @@ func (s *Server) buildBookSummary(b store.Book) (bookSummaryDTO, []store.Chapter
 	}
 	chapters, stats := store.SumNarration(narration)
 	dto := toBookSummary(b, chapters, stats)
-	dto.Preprocessing = s.isPreprocessing(b.ID)
+	dto.Preprocessing = preprocessing
 	if dto.Source, err = s.bookSource(b.ID); err != nil {
 		return bookSummaryDTO{}, nil, err
 	}
@@ -211,10 +220,66 @@ func (s *Server) buildBookSummary(b store.Book) (bookSummaryDTO, []store.Chapter
 // already apply per paragraph. nil for a book with book.MultiVoice() off -
 // every paragraph narrates in bookVoice regardless of speaker, so there's
 // nothing to override and callers should skip the extra JOIN entirely.
+//
+// Remembered per book until a write to one of voiceTables: resolving every
+// character of every book was 50ms of each library listing.
 func (s *Server) characterVoiceOverrides(book *store.Book, bookVoice narration.ResolvedVoice) ([]store.SpeakerVoice, error) {
 	if !book.MultiVoice() {
 		return nil, nil
 	}
+	m := &s.voiceOverrides
+	m.subscribe.Do(func() {
+		s.Store.OnChange(func(tables []string) {
+			for _, t := range tables {
+				if t == store.AllTables || slices.Contains(voiceTables, t) {
+					m.mu.Lock()
+					m.gen++
+					clear(m.byBook)
+					m.mu.Unlock()
+					return
+				}
+			}
+		})
+	})
+	key := book.ID + "\x00" + bookVoice.VoiceID()
+	m.mu.Lock()
+	gen := m.gen
+	cached, ok := m.byBook[key]
+	m.mu.Unlock()
+	if ok {
+		return slices.Clone(cached), nil
+	}
+	overrides, err := s.resolveCharacterVoiceOverrides(book, bookVoice)
+	if err != nil {
+		return nil, err
+	}
+	m.mu.Lock()
+	// A write that landed while this was resolving may not be in it.
+	if m.gen == gen {
+		if m.byBook == nil {
+			m.byBook = map[string][]store.SpeakerVoice{}
+		}
+		m.byBook[key] = slices.Clone(overrides)
+	}
+	m.mu.Unlock()
+	return overrides, nil
+}
+
+// voiceTables are the tables a character's resolved voice is read from
+// (internal/narration.Resolver: the book's own voice settings, the roster,
+// its assignments and the presets they name).
+var voiceTables = []string{"books", "characters", "character_voices", "voice_presets", "default_voice"}
+
+// voiceOverridesMemo is characterVoiceOverrides' result per book and book
+// voice, dropped whole on a write to any of voiceTables.
+type voiceOverridesMemo struct {
+	subscribe sync.Once
+	mu        sync.Mutex
+	gen       uint64
+	byBook    map[string][]store.SpeakerVoice
+}
+
+func (s *Server) resolveCharacterVoiceOverrides(book *store.Book, bookVoice narration.ResolvedVoice) ([]store.SpeakerVoice, error) {
 	characters, err := s.Store.ListCharacters(store.SeriesScope(book))
 	if err != nil {
 		return nil, err
@@ -629,7 +694,7 @@ func (s *Server) handleReimportChapter(w http.ResponseWriter, r *http.Request) {
 	// A book fetched from a website was never read as a play (see
 	// sourceChapterInput); keep it that way unless asked.
 	if playMode == epub.PlayAuto {
-		if src, err := s.Store.GetBookSource(bookID); err == nil && src != nil {
+		if sources, err := s.Store.BookSources(bookID); err == nil && len(sources) > 0 {
 			playMode = epub.PlayOff
 		}
 	}
@@ -735,9 +800,10 @@ func (s *Server) buildBooks() ([]bookSummaryDTO, error) {
 	if err != nil {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
+	preprocessing := s.Jobs.PipelinesRunning()
 	out := make([]bookSummaryDTO, 0, len(books))
 	for _, b := range books {
-		dto, _, err := s.buildBookSummary(b)
+		dto, _, err := s.buildBookSummaryWith(b, preprocessing[b.ID])
 		if err != nil {
 			return nil, httpError(http.StatusInternalServerError, err.Error())
 		}

@@ -30,6 +30,37 @@ RTF is render time / audio duration; lower is faster.
   Planning (`cot=full`, the score-writing stage) is what roughly doubles
   YuE2's time.
 
+## Parallelism
+
+Measured 2026-10-09 (Stable Audio 3 Medium, RX 7900 XTX, job queue
+paused, a separate worker). One render already keeps the GPU busy, so
+VRAM headroom (a render uses ~4 GB) doesn't buy throughput:
+
+| Setup | Result |
+|---|---|
+| One session, renders one after another | 5.0 s per 114 s clip; GPU compute engine 75-98% busy |
+| Two sessions at once (`..._MEDIUM_POOL_SIZE=2`) | 9% more audio per second, GPU 82-100%; one request starved for 28 s |
+| Four sessions at once | the worker segfaulted on the first batch |
+
+So the worker stays at one session. What does help is on the server's
+side: about a fifth of a region's time is spent between worker calls
+(decoding, stitching, mixing, Opus encoding), and another region's call
+can run then. Eight independent 200 s regions through the whole pipeline
+(two chunks each, half with an ambience loop):
+
+| Regions at once | Per region |
+|---|---|
+| 1 | 14.3 s |
+| 2 | 11.6 s |
+| 3 | 11.5 s |
+
+Hence `jobs.musicChainConcurrency` = 2: a whole-chapter batch is split
+where the music cuts, and two of those chains render side by side. A
+region's ambience loop renders beside its music for the same reason. The
+live path stays one region at a time - it already runs ~20x faster than
+playback, and a second render would only delay the one the reader is
+waiting for.
+
 ## The models
 
 - **ACE-Step, YuE2**: run through the worker's existing aux engines. Both

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/rhino1998/lectable/backend/internal/sched"
@@ -294,6 +296,43 @@ func (m *Manager) IsPipelineRunning(bookID string) bool {
 	return m.isPipelineRunningLocked(bookID)
 }
 
+// PipelinesRunning is IsPipelineRunning for every book at once: the ids of
+// the books with a preprocessing phase task queued or in flight, from one
+// pass over the scheduler (IsPipelineRunning walks every task per call -
+// the library list asked once per book, a million visits a build with a
+// deep queue). A display snapshot, so it doesn't wait on pipelineMu, which
+// EnqueuePipeline holds for its whole enqueue.
+func (m *Manager) PipelinesRunning() map[string]bool {
+	running := map[string]bool{}
+	m.sched.Each(func(c sched.Task, _ sched.State) {
+		if t, ok := c.(*pipelineTask); ok && t.group == nil {
+			running[t.bookID] = true
+		}
+	})
+	return running
+}
+
+// PipelineSignature changes whenever a book's preprocessing run or one of
+// its bulk groups starts or ends: the sorted ids of every such task, queued
+// or in flight (a preprocessing run's phases counted as one). What the
+// library listing reads of the queue is all in it (PipelinesRunning,
+// BulkState), so a listener can skip the changes that leave it alone -
+// nearly all of them.
+func (m *Manager) PipelineSignature() string {
+	seen := map[string]bool{}
+	m.sched.Each(func(c sched.Task, _ sched.State) {
+		t, ok := c.(*pipelineTask)
+		switch {
+		case !ok:
+		case t.group == nil:
+			seen[t.bookID] = true
+		default:
+			seen[t.Key()] = true
+		}
+	})
+	return strings.Join(slices.Sorted(maps.Keys(seen)), "\n")
+}
+
 func (m *Manager) isPipelineRunningLocked(bookID string) bool {
 	// Deliberately scoped to preprocessing phases only: a bulk group
 	// sharing this same queue must never trip bookSummaryDTO.Preprocessing
@@ -467,7 +506,8 @@ func (m *Manager) RenderChapters(ctx context.Context, bookID string, chapterIdxs
 // EnqueueChapter enqueues background TTS generation for every not-yet-
 // generated paragraph in one chapter, as a bulk group (Kind
 // "pipeline_generate_chapter") that stays in flight until that audio
-// finishes (see waitForChapterAudio) - the reader/mobile client's own
+// finishes, and with it the chapter's background music when the book has
+// music on (see waitForChapterGeneration) - the reader/mobile client's own
 // "Generate chapter audio" action. Idempotent per chapter: a second call
 // while the first is still queued/in flight is dropped.
 func (m *Manager) EnqueueChapter(bookID, chapterID string, chapterIdx int) {
@@ -482,7 +522,7 @@ func (m *Manager) EnqueueChapter(bookID, chapterID string, chapterIdx int) {
 		Children: &ChildFilter{ChapterID: chapterID},
 	}, func(ctx context.Context, _ func() int) error {
 		m.enqueueChapter(ctx, bookID, chapterID, chapterIdx, 0)
-		m.waitForChapterAudio(ctx, map[string]bool{chapterID: true})
+		m.waitForChapterGeneration(ctx, bookID, map[string]bool{chapterID: true})
 		return nil
 	})
 }
@@ -510,7 +550,7 @@ func (m *Manager) enqueueBookGenerate(ctx context.Context, bookID string) {
 		return
 	}
 	pushed := make(map[string]bool, len(chapters))
-	defer func() { m.waitForChapterAudio(ctx, pushed) }()
+	defer func() { m.waitForChapterGeneration(ctx, bookID, pushed) }()
 	for _, cs := range chapters {
 		select {
 		case <-ctx.Done():
@@ -553,7 +593,7 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 	fromChapterIdx := book.PosChapterIdx
 	chapterIdx := fromChapterIdx
 	pushed := map[string]bool{}
-	defer func() { m.waitForChapterAudio(ctx, pushed) }()
+	defer func() { m.waitForChapterGeneration(ctx, bookID, pushed) }()
 	for {
 		select {
 		case <-ctx.Done():
@@ -570,6 +610,7 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 			return // ran off the end of the book
 		}
 
+		m.maybeRunChapterAmbience(ctx, bookID, ch.ID, chapterIdx, book)
 		if err := m.ensureAttributed(ctx, book, ch, TierBackground); err != nil {
 			log.Printf("jobs: remaining: chapter %s: attribution before narration (strict order): %v", ch.ID, err)
 			return
@@ -633,6 +674,74 @@ func (m *Manager) waitForChapterTasks(ctx context.Context, chapterIDs map[string
 		case <-ctx.Done():
 			// Queued ones only: a paragraph already rendering finishes.
 			for _, key := range m.taskKeys(func(t *task, st sched.State) bool { return st != sched.Running && isChapterAudio(t) }) {
+				m.sched.Cancel(key)
+			}
+			return
+		case <-changes:
+		case <-time.After(5 * time.Second):
+		}
+	}
+}
+
+// waitForChapterGeneration is what a "generate audio" meta-task
+// (EnqueueChapter/EnqueueBookGenerate/EnqueueRemaining) waits on before it
+// is done: the chapters' narration (waitForChapterAudio), then - for a book
+// with music on - their background music (waitForChapterMusic).
+func (m *Manager) waitForChapterGeneration(ctx context.Context, bookID string, chapterIDs map[string]bool) {
+	m.waitForChapterAudio(ctx, chapterIDs)
+	m.waitForChapterMusic(ctx, bookID, chapterIDs)
+}
+
+// waitForChapterMusic blocks a "generate audio" meta-task until chapterIDs'
+// background music is generated, for a book with store.Book.MusicEnabled (a
+// no-op otherwise): until none of their ambience scoring (KindAmbience,
+// queued with the narration - maybeRunChapterAmbience) or whole-chapter
+// music runs (KindMusicGeneration, queued once a chapter is both scored and
+// fully narrated) is queued or in flight. Those tasks used to outlive the
+// row that asked for them: "generate chapter" was done when the narration
+// was, with the chapter's music still hours down the queue and nothing
+// showing it was coming.
+//
+// Each such task joins the meta-task as it appears, so promoting the row
+// promotes it. Whenever none is left, MaybeAdvanceChapterMusic gets one more
+// look at every chapter before this returns - which also starts the music of
+// a chapter that was narrated and scored before music was turned on, where
+// no narration or scoring event is left to do it. A chapter whose scoring
+// or music failed for good has nothing queued and isn't waited on.
+//
+// Canceling ctx removes the still-queued ones, like waitForChapterAudio.
+func (m *Manager) waitForChapterMusic(ctx context.Context, bookID string, chapterIDs map[string]bool) {
+	if len(chapterIDs) == 0 || ctx.Err() != nil {
+		return
+	}
+	book, err := m.store.GetBook(bookID)
+	if err != nil || book == nil || !book.MusicEnabled {
+		return
+	}
+	isChapterMusic := func(t *task) bool {
+		return (t.kind == KindAmbience || t.kind == KindMusicGeneration) && chapterIDs[t.chapterID]
+	}
+	pending := func() []string {
+		return m.taskKeys(func(t *task, _ sched.State) bool { return isChapterMusic(t) })
+	}
+	changes := m.SubscribeChanges()
+	defer m.UnsubscribeChanges(changes)
+	for {
+		keys := pending()
+		if len(keys) == 0 {
+			for id := range chapterIDs {
+				m.MaybeAdvanceChapterMusic(bookID, id)
+			}
+			if keys = pending(); len(keys) == 0 {
+				return
+			}
+		}
+		for _, key := range keys {
+			m.joinGroup(ctx, key)
+		}
+		select {
+		case <-ctx.Done():
+			for _, key := range m.taskKeys(func(t *task, st sched.State) bool { return st != sched.Running && isChapterMusic(t) }) {
 				m.sched.Cancel(key)
 			}
 			return

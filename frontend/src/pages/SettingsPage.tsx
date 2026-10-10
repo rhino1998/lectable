@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
+import { ApiError } from '../api/client'
 import {
   useCustomVoicePresets,
   useDefaultVoice,
@@ -6,6 +8,7 @@ import {
   useVoicePresets,
   useRecapSettings,
   useSetRecapSettings,
+  useSetPatreonSession,
   useSetSourceSettings,
   useSourceSettings,
 } from '../api/queries'
@@ -47,6 +50,17 @@ export function SettingsPage() {
 
   const sourceSettings = useSourceSettings()
   const setSourceSettings = useSetSourceSettings()
+  const setPatreonSession = useSetPatreonSession()
+  const [patreonSession, setPatreonSessionText] = useState('')
+  const [patreonError, setPatreonError] = useState<string | null>(null)
+  const signInToPatreon = (sessionId: string) => {
+    setPatreonError(null)
+    setPatreonSession.mutate(sessionId, {
+      onSuccess: () => setPatreonSessionText(''),
+      onError: (err) =>
+        setPatreonError(err instanceof ApiError ? err.message : 'Could not reach the server'),
+    })
+  }
   const recapSettings = useRecapSettings()
   const setRecapSettings = useSetRecapSettings()
   return (
@@ -137,6 +151,52 @@ export function SettingsPage() {
         How often each book imported from a website is checked for new entries at its source. A
         check doesn’t import anything by itself: what it finds waits for you to review, and the book
         is marked in the library. “Check all now” is in the library’s Add book menu.
+      </p>
+
+      <h2>Patreon</h2>
+      {sourceSettings.data?.patreonAccount ? (
+        <p>
+          Signed in as <strong>{sourceSettings.data.patreonAccount}</strong>.{' '}
+          <button
+            className="option-chip"
+            onClick={() => signInToPatreon('')}
+            disabled={setPatreonSession.isPending}
+          >
+            Sign out
+          </button>
+        </p>
+      ) : (
+        <form
+          className="settings-patreon"
+          onSubmit={(e) => {
+            e.preventDefault()
+            signInToPatreon(patreonSession)
+          }}
+        >
+          <input
+            type="password"
+            autoComplete="off"
+            placeholder="session_id cookie from patreon.com"
+            value={patreonSession}
+            onChange={(e) => setPatreonSessionText(e.target.value)}
+          />
+          <button
+            className="primary-button"
+            disabled={!patreonSession.trim() || setPatreonSession.isPending}
+          >
+            {setPatreonSession.isPending ? 'Checking…' : 'Sign in'}
+          </button>
+        </form>
+      )}
+      {patreonError && <p className="error-text">{patreonError}</p>}
+      <p className="muted">
+        A book can track a creator’s Patreon for chapters posted there. Anyone can see what a
+        creator has posted, so new chapters are listed either way; reading the patrons-only ones
+        takes your membership. Patreon has no sign-in for apps like this one, so the library borrows
+        your browser’s: sign in to patreon.com, open the browser’s developer tools (Application or
+        Storage, then Cookies), and paste the value of the <code>session_id</code> cookie here. It
+        is kept on this server only and sent only to patreon.com. If Patreon signs that browser out,
+        chapters show as locked again and a new cookie is needed.
       </p>
     </div>
   )

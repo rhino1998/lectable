@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.net.Uri
 import android.provider.OpenableColumns
 import com.lectable.app.data.remote.LectableApi
+import com.lectable.app.data.remote.dto.AddBookSourceRequestDto
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.BulkActions
 import com.lectable.app.data.remote.dto.BookSummaryDto
@@ -145,6 +146,13 @@ class LibraryRepository @Inject constructor(
      *  the new chapters show up on the live books topic as they're fetched. */
     suspend fun syncBookSource(id: String) {
         withServerMessage("Could not check for new chapters") { api.syncBookSource(id) }
+    }
+
+    /** Has a book track another place it is posted (backend handleAddBookSource): a link to the
+     *  same work at a supported site. Imports nothing by itself - the check it starts leaves
+     *  what the book doesn't have waiting for review. */
+    suspend fun addBookSource(id: String, link: String) {
+        withServerMessage("Could not add that source") { api.addBookSource(id, AddBookSourceRequestDto(url = link)) }
     }
 
     /** The reader's say on entries a check found and held back (BookSourceDto.review; backend
@@ -298,9 +306,10 @@ class LibraryRepository @Inject constructor(
     /** [LectableApi.setParagraphSpeaker] - reassigns one paragraph's speaker attribution. Leaves
      *  its already-generated audio untouched; a caller wanting the new voice actually narrated
      *  still needs a follow-up regenerate (see LibraryRepository.regenerateParagraph), same two-step
-     *  flow as the web Speakers page's separate "Reassign"/"Regenerate" buttons. */
-    suspend fun setParagraphSpeaker(bookId: String, chapterIdx: Int, paragraphIdx: Int, speaker: String) {
-        api.setParagraphSpeaker(bookId, chapterIdx, paragraphIdx, SetParagraphSpeakerRequestDto(speaker))
+     *  flow as the web Speakers page's separate "Reassign"/"Regenerate" buttons. [isNew]: the name
+     *  is a person of their own, whatever the roster knows it as (the picker's "New speaker…"). */
+    suspend fun setParagraphSpeaker(bookId: String, chapterIdx: Int, paragraphIdx: Int, speaker: String, isNew: Boolean = false) {
+        api.setParagraphSpeaker(bookId, chapterIdx, paragraphIdx, SetParagraphSpeakerRequestDto(speaker, new = isNew))
     }
 
     /** [LectableApi.setParagraphScareQuote] - marks/unmarks one quoted paragraph as a scare

@@ -3,6 +3,7 @@ package musicgen
 import (
 	"context"
 	"math"
+	"sync"
 	"testing"
 
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
@@ -105,7 +106,11 @@ func TestTileLoop(t *testing.T) {
 
 // fakeBackend records calls and returns silence of the requested length.
 type fakeBackend struct {
+	mu    sync.Mutex
 	calls []ttsproto.StableAudioRequest
+	// ambienceStarted, when set, is closed by the first call for prompt
+	// "a", and every other call waits for it.
+	ambienceStarted chan struct{}
 }
 
 func silence(seconds float64) []byte {
@@ -114,8 +119,30 @@ func silence(seconds float64) []byte {
 }
 
 func (f *fakeBackend) StableAudioMedium(_ context.Context, req ttsproto.StableAudioRequest) ([]byte, error) {
+	if f.ambienceStarted != nil {
+		if req.Prompt == "a" {
+			close(f.ambienceStarted)
+		} else {
+			<-f.ambienceStarted
+		}
+	}
+	f.mu.Lock()
 	f.calls = append(f.calls, req)
+	f.mu.Unlock()
 	return silence(req.DurationSeconds), nil
+}
+
+// split returns f's calls for the music prompt, in order, and for the
+// ambience prompt "a".
+func (f *fakeBackend) split() (music, ambience []ttsproto.StableAudioRequest) {
+	for _, c := range f.calls {
+		if c.Prompt == "a" {
+			ambience = append(ambience, c)
+		} else {
+			music = append(music, c)
+		}
+	}
+	return music, ambience
 }
 
 func clipLen(t *testing.T, data []byte) float64 {
@@ -127,6 +154,19 @@ func clipLen(t *testing.T, data []byte) float64 {
 	return clipSeconds(c)
 }
 
+// The ambience loop renders beside the music, not after it: here no music
+// call returns until the ambience call has started.
+func TestGenerateRegionRendersAmbienceBesideMusic(t *testing.T) {
+	f := &fakeBackend{ambienceStarted: make(chan struct{})}
+	res, err := GenerateRegion(context.Background(), f, Region{Prompt: "m", AmbiencePrompt: "a", TargetDurationSeconds: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Music == nil || res.AmbienceLoop == nil {
+		t.Fatalf("music %v, loop %v; want both", res.Music != nil, res.AmbienceLoop != nil)
+	}
+}
+
 func TestGenerateRegionChunksAndAmbienceLoop(t *testing.T) {
 	f := &fakeBackend{}
 	res, err := GenerateRegion(context.Background(), f, Region{Prompt: "m", AmbiencePrompt: "a", TargetDurationSeconds: 150})
@@ -134,15 +174,16 @@ func TestGenerateRegionChunksAndAmbienceLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 164s render = 2 chunks (unseeded, then a continuation seeded from a
-	// continuationSeedSeconds tail), then the ambience loop.
-	if len(f.calls) != 3 {
-		t.Fatalf("%d calls, want 3", len(f.calls))
+	// continuationSeedSeconds tail), plus the ambience loop beside them.
+	music, ambience := f.split()
+	if len(music) != 2 || len(ambience) != 1 {
+		t.Fatalf("%d music calls and %d ambience, want 2 and 1", len(music), len(ambience))
 	}
-	if f.calls[0].InitAudioBase64 != "" || f.calls[1].InpaintMaskStartSeconds != continuationSeedSeconds {
-		t.Errorf("music calls = %+v, want unseeded then %gs-seeded", f.calls[:2], continuationSeedSeconds)
+	if music[0].InitAudioBase64 != "" || music[1].InpaintMaskStartSeconds != continuationSeedSeconds {
+		t.Errorf("music calls = %+v, want unseeded then %gs-seeded", music, continuationSeedSeconds)
 	}
-	if f.calls[2].Prompt != "a" || f.calls[2].DurationSeconds != AmbienceLoopSeconds+loopCrossfadeSeconds {
-		t.Errorf("ambience call = %+v", f.calls[2])
+	if ambience[0].DurationSeconds != AmbienceLoopSeconds+loopCrossfadeSeconds {
+		t.Errorf("ambience call = %+v", ambience[0])
 	}
 	if got := clipLen(t, res.Music); math.Abs(got-160) > 0.02 {
 		t.Errorf("music = %gs, want 160", got)

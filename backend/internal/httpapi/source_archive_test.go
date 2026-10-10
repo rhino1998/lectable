@@ -604,7 +604,8 @@ func TestImportChosenChaptersOfStubbedFiction(t *testing.T) {
 	if title, _ := chapterTexts(t, s, book.ID, 1); title != "4. Four" {
 		t.Errorf("chapter 1 = %q", title)
 	}
-	if plan, err := s.GetBookSourcePlan(book.ID); err != nil || strings.Join(plan.Skip, ",") != one+","+three || len(plan.Extra) != 1 || plan.Extra[0].ID != two {
+	srcs, _ := s.BookSources(book.ID)
+	if plan, err := s.GetBookSourcePlan(srcs[0].ID); err != nil || strings.Join(plan.Skip, ",") != one+","+three || len(plan.Extra) != 1 || plan.Extra[0].ID != two {
 		t.Errorf("plan = %+v, %v", plan, err)
 	}
 	// The preview is spent.

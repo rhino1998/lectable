@@ -15,7 +15,7 @@ import (
 // cache) and default_voice (instance-wide, not the book's) are left out.
 var ExportTables = []string{
 	"voice_presets", "characters", "character_voices",
-	"books", "book_settings", "chapters", "chapter_summaries", "paragraphs", "paragraph_audio",
+	"books", "book_settings", "book_sources", "chapters", "chapter_summaries", "paragraphs", "paragraph_audio",
 	"images", "breaks", "bookmarks", "sfx", "music_regions", "paragraph_edits",
 }
 
@@ -36,6 +36,7 @@ var exportRowQueries = map[string]struct {
 }{
 	"books":             {`id = ?`, bookArg},
 	"book_settings":     {`book_id = ?`, bookArg},
+	"book_sources":      {`book_id = ?`, bookArg},
 	"chapter_summaries": {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},
 	"chapters":          {`book_id = ?`, bookArg},
 	"paragraphs":        {`chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, bookArg},

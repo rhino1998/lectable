@@ -515,6 +515,14 @@ interface LectableApi {
      * (narration *about* a character isn't them speaking), still worth
      * guarding here even though every paragraph reachable through an
      * "appearances" list already passed it once at attribution time.
+     *
+     * With "new" the name is a person of their own - for a line attribution
+     * gave to someone else because it took two people for one. The name isn't
+     * resolved through aliases, and since a conflated character usually holds
+     * it as one ("Bert", also called "Albert"), it is removed from every
+     * character's aliases, so later attribution stops folding it back; a
+     * character of that name marked invalid is made valid again. 400 without
+     * a name ("", Narrator, Unknown).
      */
     @PUT("api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker")
     suspend fun setParagraphSpeaker(
@@ -1460,6 +1468,44 @@ interface LectableApi {
     ): QueuedResponseDto
 
     /**
+     * handleAddBookSource has a book track another source: a link to the same
+     * work somewhere else it is posted. Nothing is imported by this: the check
+     * it starts recognizes the entries the book already has (by title) and
+     * leaves the rest waiting for review, like anything a later check finds.
+     * 201 with the source; 409 while the book is being checked, or when the
+     * library already tracks that work.
+     */
+    @POST("api/books/{id}/sources")
+    suspend fun addBookSource(
+        @Path("id") id: String,
+        @Body body: AddBookSourceRequestDto,
+    ): TrackedSourceDto
+
+    /**
+     * handleRemoveBookSource has a book stop tracking one of its sources. The
+     * chapters it took from there stay. 409 while the book is being checked.
+     */
+    @DELETE("api/books/{id}/sources/{sourceId}")
+    suspend fun removeBookSource(
+        @Path("id") id: String,
+        @Path("sourceId") sourceId: String,
+    ): Unit
+
+    /**
+     * handleSetSourceTitleRule sets (or, with an empty pattern, clears) the
+     * title rule of one of a book's sources, and checks the book again so
+     * what waits for review is listed by it. Chapters the book already has
+     * keep their names. 400 for a pattern that isn't a regular expression,
+     * 409 while the book is being checked.
+     */
+    @PUT("api/books/{id}/sources/{sourceId}/title-rule")
+    suspend fun setSourceTitleRule(
+        @Path("id") id: String,
+        @Path("sourceId") sourceId: String,
+        @Body body: SourceTitleRuleDto,
+    ): Unit
+
+    /**
      * handleListSpeakers reports every speaker recognized in bookID so far -
      * the Narrator plus every attributed character - and how much of each
      * one's audio has actually been generated, so the reader can see which
@@ -1701,6 +1747,21 @@ interface LectableApi {
     ): Unit
 
     /**
+     * handlePreprocessLibrary preprocesses every book in the library, up to
+     * libraryPreprocessSeries series at once: each series' books one at a
+     * time in series order (they share a roster, as in
+     * handlePreprocessSeries), series started by name, then the books in no
+     * series, oldest first, each taking a series' place. One job-queue row (a
+     * jobs.BulkGroup, Kind "pipeline_library_preprocess", on the first book),
+     * promoted and cancelled like a series run's; asking again while one is
+     * queued or running joins it. A book whose passes are all done costs one
+     * look at its chapters. 202 with the number of books, 0 for an empty
+     * library.
+     */
+    @POST("api/library/preprocess")
+    suspend fun preprocessLibrary(): QueuedResponseDto
+
+    /**
      * handleTestLLM is a standalone raw-prompt test surface for this app's
      * own embedded speaker-attribution GGUF model (internal/llmworker,
      * proxied through ttsworker.Manager.LLMGenerate) - stateless, not tied to
@@ -1728,13 +1789,14 @@ interface LectableApi {
      * handleGetMusicRegionAudio serves GET /api/music-regions/{id}/audio - the
      * frontend's own background-music mixer fetches each region's clip by this
      * URL (musicRegionDTO.AudioURL) as narration crosses into its paragraph
-     * range. Range-request-capable via http.ServeFile, same as
+     * range. Cached like a narration clip (cacheVersionedClip). Range-request-capable via http.ServeFile, same as
      * handleGetAudio/handleGetParagraphSFXAudio.
      */
     @Streaming
     @GET("api/music-regions/{id}/audio")
     suspend fun getMusicRegionAudio(
         @Path("id") id: String,
+        @Query("v") v: String? = null,
     ): ResponseBody
 
     /**
@@ -1799,6 +1861,19 @@ interface LectableApi {
      */
     @POST("api/recaps/check")
     suspend fun checkRecaps(): QueuedResponseDto
+
+    /**
+     * handleSetPatreonSession signs the library in to Patreon with a browser's
+     * session_id cookie, so posts that account can read can be imported - or,
+     * with none, signs it out. The cookie is checked with Patreon first: 400
+     * if it isn't a session Patreon knows. Books that track Patreon - or The
+     * Wandering Inn, which is unlocked with the same account - are then
+     * checked again, since what they can read has changed.
+     */
+    @PUT("api/settings/patreon")
+    suspend fun setPatreonSession(
+        @Body body: PatreonSessionRequestDto,
+    ): Unit
 
     /**
      * handleGetRecapSettings serves GET /api/settings/recap.

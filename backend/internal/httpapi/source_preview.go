@@ -306,8 +306,14 @@ func (p *importPreview) chosenChapters(ids []string) ([]websource.ChapterRef, st
 
 // plannedChapters is the chapter list a check of a book's source works
 // through: what the site lists now, less what the book's plan leaves out,
-// with the plan's delisted chapters put back in their places.
+// with the plan's delisted chapters put back in their places, each named
+// (or left out) as the plan's title rule says.
 func plannedChapters(site websource.Source, listed []websource.ChapterRef, plan store.SourcePlan) []websource.ChapterRef {
+	return applyTitleRule(plan.Title, plannedListed(site, listed, plan))
+}
+
+// plannedListed is plannedChapters before the plan's title rule.
+func plannedListed(site websource.Source, listed []websource.ChapterRef, plan store.SourcePlan) []websource.ChapterRef {
 	skip := make(map[string]bool, len(plan.Skip))
 	for _, id := range plan.Skip {
 		skip[id] = true

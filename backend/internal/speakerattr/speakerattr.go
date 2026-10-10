@@ -107,7 +107,6 @@ func MaxOutputTokens() int {
 		characterizeMaxTokens,
 		emotionMaxTokens,
 		pronunciationMaxTokens,
-		musicMaxTokens,
 		musicDescribeMaxTokens,
 		lightingMaxTokens,
 	} {
@@ -2159,11 +2158,10 @@ func truncate(s string, n int) string {
 // Client will ever call generate with - the fixed, package-level constants
 // backing AttributeChapter (systemPrompt), CharacterizeVoice (characterizeSystemPrompt),
 // EmotionChapter (emotionDenseSystemPrompt - the one its decide call uses),
-// ResolvePronunciation (pronunciationSystemPrompt), and ScoreMusic's own
-// two passes (musicSystemPrompt, musicDescribeSystemPrompt) - the latter
-// especially worth priming since ScoreMusic now issues one
-// describeMusicRegion call per region, all sharing that one prompt, each
-// byte-identical
+// ResolvePronunciation (pronunciationSystemPrompt), and ScoreMusic's
+// describe call (musicDescribeSystemPrompt) - especially worth priming
+// since ScoreMusic issues one describeMusicRegion call per region, all
+// sharing that one prompt, each byte-identical
 // across every call for the life of the process. cmd/ttsworker/main.go
 // passes this to llmworker.Config.SystemPrompts so each one gets primed
 // (decoded once, into its own permanently-resident sequence) at model-load
@@ -2178,7 +2176,6 @@ func SystemPrompts() []string {
 		emotionDenseSystemPrompt,
 		pronunciationSystemPrompt,
 		scareQuoteSystemPrompt,
-		musicSystemPrompt,
 		musicDescribeSystemPrompt,
 		lightingSystemPrompt,
 	}

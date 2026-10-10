@@ -50,10 +50,30 @@ type Client struct {
 	// Parallel is how many requests may be in flight at once; 0 means
 	// one. They still start MinInterval apart.
 	Parallel int
+	// Prepare, if set, is given each request before it is sent - for a
+	// site that wants a header of its own (a session cookie).
+	Prepare func(*http.Request)
 
 	mu    sync.Mutex
 	slots chan struct{} // one token per request in flight
 	last  time.Time     // when the latest request started, or will
+}
+
+// UserAgent is what a Client calls itself.
+const UserAgent = userAgent
+
+// NoRedirect is the HTTP client c makes its requests with, set not to
+// follow redirects - for the few exchanges that aren't "get a page", like
+// a sign-in handshake whose every hop sets cookies. Requests made with it
+// aren't paced or retried.
+func (c *Client) NoRedirect() *http.Client {
+	base := c.HTTP
+	if base == nil {
+		base = publicOnly
+	}
+	plain := *base
+	plain.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &plain
 }
 
 // RenderChapter turns a chapter's cleaned content element into a Chapter:
@@ -177,7 +197,7 @@ func (c *Client) Get(ctx context.Context, rawURL string, limit int64) (body []by
 			return nil, "", "", err
 		}
 		var retryAfter time.Duration
-		body, finalURL, mediaType, retryAfter, err = fetch(ctx, client, rawURL, limit)
+		body, finalURL, mediaType, retryAfter, err = fetch(ctx, client, rawURL, limit, c.Prepare)
 		if err == nil || retryAfter < 0 || attempt == maxAttempts {
 			return body, finalURL, mediaType, err
 		}
@@ -193,13 +213,16 @@ func (c *Client) Get(ctx context.Context, rawURL string, limit int64) (body []by
 // fetch makes one request. retryAfter is negative when the failure isn't
 // worth retrying, otherwise how long the server asked to wait (0 if it
 // didn't say).
-func fetch(ctx context.Context, client *http.Client, rawURL string, limit int64) (body []byte, finalURL, mediaType string, retryAfter time.Duration, err error) {
+func fetch(ctx context.Context, client *http.Client, rawURL string, limit int64, prepare func(*http.Request)) (body []byte, finalURL, mediaType string, retryAfter time.Duration, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, "", "", -1, err
 	}
 	req.Header.Set("User-Agent", userAgent)
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,image/*;q=0.9,*/*;q=0.5")
+	if prepare != nil {
+		prepare(req)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

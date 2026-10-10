@@ -57,6 +57,9 @@ export const ParagraphContextMenu = forwardRef<
     x: number
     y: number
   } | null>(null)
+  // The "New speaker…" entry's name while it is being typed; null while
+  // the entry is still a button.
+  const [newSpeaker, setNewSpeaker] = useState<string | null>(null)
   const contextMenuRef = useRef<HTMLDivElement>(null)
   useClickOutside([contextMenuRef], () => setContextMenu(null), contextMenu !== null)
 
@@ -70,6 +73,7 @@ export const ParagraphContextMenu = forwardRef<
         // Cleared here rather than on close: the menu isn't rendered while
         // closed, and this keeps a reopen from flashing the old position.
         setMenuPos(null)
+        setNewSpeaker(null)
         setContextMenu({
           chapterIdx,
           paragraphIdx: p.idx,
@@ -115,12 +119,19 @@ export const ParagraphContextMenu = forwardRef<
     [speakers],
   )
 
+  // isNew: the typed name of "New speaker…" - a person of their own even
+  // if the roster knows the name as someone's alias.
   const reassignSpeaker = useCallback(
-    (speaker: string) => {
+    (speaker: string, isNew = false) => {
       if (!contextMenu) return
       onError(null)
       setParagraphSpeaker.mutate(
-        { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, speaker },
+        {
+          chapterIdx: contextMenu.chapterIdx,
+          paragraphIdx: contextMenu.paragraphIdx,
+          speaker,
+          isNew,
+        },
         {
           onError: (err) =>
             onError(err instanceof ApiError ? err.message : 'Could not reassign this paragraph'),
@@ -240,6 +251,37 @@ export const ParagraphContextMenu = forwardRef<
           >
             Unknown
           </button>
+          {/* For a line attribution gave to the wrong person because it
+              took two people for one: a name typed here becomes a
+              character of its own. */}
+          {newSpeaker === null ? (
+            <button className="speaker-context-menu-item" onClick={() => setNewSpeaker('')}>
+              New speaker…
+            </button>
+          ) : (
+            <form
+              className="speaker-context-menu-new"
+              onSubmit={(e) => {
+                e.preventDefault()
+                const name = newSpeaker.trim()
+                if (name) reassignSpeaker(name, true)
+              }}
+            >
+              <input
+                autoFocus
+                value={newSpeaker}
+                placeholder="New speaker's name"
+                aria-label="New speaker's name"
+                onChange={(e) => setNewSpeaker(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setNewSpeaker(null)
+                }}
+              />
+              <button type="submit" disabled={newSpeaker.trim() === ''}>
+                Add
+              </button>
+            </form>
+          )}
           <div className="speaker-context-menu-section">Scare quote</div>
           <button className="speaker-context-menu-item" onClick={toggleScareQuote}>
             {contextMenu.scareQuote ? 'Unmark as scare quote' : 'Mark as scare quote'}
@@ -271,7 +313,7 @@ export const ParagraphContextMenu = forwardRef<
             sections={speakerTargets}
             keyPrefix="speaker"
             isCurrent={(name) => name === contextMenu.currentSpeaker}
-            onPick={reassignSpeaker}
+            onPick={(name) => reassignSpeaker(name)}
           />
         </>
       ) : (

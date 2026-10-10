@@ -156,7 +156,7 @@ export function EpubMatchPanel(props: {
                 {epub.map((c) => (
                   <option key={c.index} value={c.index}>
                     {label(c)}
-                    {c.bookChapter !== undefined
+                    {c.bookChapter != null
                       ? ` - same text as book chapter ${c.bookChapter + 1}`
                       : ''}
                   </option>

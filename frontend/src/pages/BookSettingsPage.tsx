@@ -42,6 +42,7 @@ import { SpeakerRow } from '../components/speakers/SpeakerRow'
 import { ChapterPassTable } from '../components/speakers/ChapterPassTable'
 import { SpeakerSettings } from '../components/speakers/SpeakerSettings'
 import { BookDetailsForm } from '../components/BookDetailsForm'
+import { BookSourcesPanel } from '../components/BookSourcesPanel'
 import { EpubMatchPanel } from '../components/EpubMatchPanel'
 import { LexiconPanel } from '../components/speakers/LexiconPanel'
 import { SettingPanel } from '../components/speakers/SettingPanel'
@@ -504,6 +505,8 @@ export function BookSettingsPage() {
 
       {tab === 'chapters' && (
         <>
+          <BookSourcesPanel book={book} />
+          <EpubMatchPanel bookId={bookId} chapters={book.chapters} source={book.source} />
           <ChapterPassTable
             bookId={bookId}
             book={book}
@@ -511,7 +514,6 @@ export function BookSettingsPage() {
             runBulk={runBulk}
             onBulkError={setBulkError}
           />
-          <EpubMatchPanel bookId={bookId} chapters={book.chapters} source={book.source} />
         </>
       )}
 

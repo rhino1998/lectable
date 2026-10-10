@@ -383,6 +383,9 @@ func (s *SQLiteStore) DeleteBook(id string) error {
 	if _, err := tx.Exec(`DELETE FROM book_settings WHERE book_id = ?`, id); err != nil {
 		return fmt.Errorf("delete book setting: %w", err)
 	}
+	if _, err := tx.Exec(`DELETE FROM book_sources WHERE book_id = ?`, id); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM book_recaps WHERE book_id = ?`, id); err != nil {
 		return fmt.Errorf("delete book recap: %w", err)
 	}

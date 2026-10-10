@@ -150,6 +150,41 @@ func TestSelectWholeChapterMusicStopsAtRegionBeingGenerated(t *testing.T) {
 	}
 }
 
+// A cut needs nothing from the region before it, so it is batched while
+// that one is still being generated - and starts a chain of its own.
+func TestSelectWholeChapterMusicBatchesCutPastRegionBeingGenerated(t *testing.T) {
+	p := store.AudioPending
+	regions := fourRegions(store.AudioReady, p, p, p)
+	regions[2].Transition = store.MusicTransitionCut
+	generating := func(id string) bool { return id == "b" }
+	batch, seed := selectWholeChapterMusic(regions, voicedThrough(39), generating)
+	if got := batchIDs(batch); !eq(got, []string{"c", "d"}) || seed != "" {
+		t.Fatalf("batch = %v seed %q; want [c d] unseeded", got, seed)
+	}
+}
+
+func TestMusicChainsSplitAtCuts(t *testing.T) {
+	p := store.AudioPending
+	regions := fourRegions(p, p, p, p)
+	regions[2].Transition = store.MusicTransitionCut
+	batch, _ := selectWholeChapterMusic(regions, voicedThrough(39), noneGenerating)
+	var got [][]string
+	for _, chain := range musicChains(batch) {
+		got = append(got, batchIDs(chain))
+	}
+	if len(got) != 2 || !eq(got[0], []string{"a", "b"}) || !eq(got[1], []string{"c", "d"}) {
+		t.Fatalf("chains = %v; want [a b] [c d]", got)
+	}
+	// A batch that opens on a continuation (seeded from an earlier batch's
+	// region) still starts a chain there.
+	if chains := musicChains(batch[1:2]); len(chains) != 1 || !eq(batchIDs(chains[0]), []string{"b"}) {
+		t.Fatalf("chains = %v; want [b]", chains)
+	}
+	if chains := musicChains(nil); len(chains) != 0 {
+		t.Fatalf("chains of nothing = %v", chains)
+	}
+}
+
 func TestSelectTreatsLegacyGeneratingStatusAsPending(t *testing.T) {
 	regions := fourRegions(store.AudioReady, store.AudioGenerating, store.AudioPending, store.AudioPending)
 	batch, _ := selectWholeChapterMusic(regions, voicedThrough(39), noneGenerating)

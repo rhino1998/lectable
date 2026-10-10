@@ -389,9 +389,10 @@ func TestCheckSources(t *testing.T) {
 		t.Fatalf("a book checked a moment ago was checked again: %q", reviewLine(book))
 	}
 	// Two days on, it is.
-	src, _ := s.GetBookSource(created.ID)
+	srcs, _ := s.BookSources(created.ID)
+	src := &srcs[0]
 	src.CheckedAt -= 48 * 3600
-	if err := s.SetBookSource(created.ID, *src); err != nil {
+	if err := s.SaveBookSource(src); err != nil {
 		t.Fatal(err)
 	}
 	if err := srv.CheckSources(t.Context()); err != nil {
@@ -408,9 +409,10 @@ func TestCheckSources(t *testing.T) {
 	}
 	resp.Body.Close()
 	site.AddChapter("Chapter 3: Three", `<p>Third.</p>`)
-	src, _ = s.GetBookSource(created.ID)
+	srcs, _ = s.BookSources(created.ID)
+	src = &srcs[0]
 	src.CheckedAt -= 48 * 3600
-	_ = s.SetBookSource(created.ID, *src)
+	_ = s.SaveBookSource(src)
 	if err := srv.CheckSources(t.Context()); err != nil {
 		t.Fatal(err)
 	}

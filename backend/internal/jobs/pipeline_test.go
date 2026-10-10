@@ -129,6 +129,9 @@ func TestEnqueuePipelineRejectsConcurrentRunForSameBook(t *testing.T) {
 		t.Fatalf("first EnqueuePipeline: %v", err)
 	}
 	waitFor(t, time.Second, func() bool { return mgr.IsPipelineRunning("book-1") })
+	if running := mgr.PipelinesRunning(); len(running) != 1 || !running["book-1"] {
+		t.Errorf("PipelinesRunning = %v, want only book-1", running)
+	}
 
 	if err := mgr.EnqueuePipeline("book-1", [pipelinePhaseCount]PipelinePhaseFunc{noop, noop, noop, noop, noop}); err != ErrPipelineAlreadyRunning {
 		t.Fatalf("expected ErrPipelineAlreadyRunning, got %v", err)
@@ -419,6 +422,9 @@ func TestAutoSplitWrapsAsOneCancelablePipelineRow(t *testing.T) {
 	if found.ID != "pipeline:book-1:auto_split:char-1" || found.Label != "Bogus" || found.BookID != "book-1" {
 		t.Fatalf("unexpected auto split row: %+v", found)
 	}
+	if running := mgr.PipelinesRunning(); running["book-1"] {
+		t.Errorf("PipelinesRunning = %v, but a bulk group isn't a preprocessing run", running)
+	}
 	if mgr.IsPipelineRunning("book-1") {
 		t.Fatalf("expected an Auto Split run not to count as a preprocessing run")
 	}
@@ -560,5 +566,34 @@ func TestEnqueueBulkAgainRaisesRunningGroup(t *testing.T) {
 	case <-started:
 		t.Fatal("the group ran a second time")
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+// PipelineSignature moves when a preprocessing run starts or ends, and not
+// for anything else the queue does.
+func TestPipelineSignature(t *testing.T) {
+	mgr := newTestManager()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	mgr.Start(ctx)
+	idle := mgr.PipelineSignature()
+
+	block := make(chan struct{})
+	first := func(context.Context, func() int) error {
+		<-block
+		return nil
+	}
+	noop := func(context.Context, func() int) error { return nil }
+	if err := mgr.EnqueuePipeline("book-1", [pipelinePhaseCount]PipelinePhaseFunc{first, noop, noop, noop, noop}); err != nil {
+		t.Fatalf("EnqueuePipeline: %v", err)
+	}
+	running := mgr.PipelineSignature()
+	if running == idle {
+		t.Fatalf("signature %q unchanged by a preprocessing run starting", running)
+	}
+	close(block)
+	waitFor(t, time.Second, func() bool { return !mgr.IsPipelineRunning("book-1") })
+	if got := mgr.PipelineSignature(); got != idle {
+		t.Errorf("signature %q after the run ended, want %q", got, idle)
 	}
 }

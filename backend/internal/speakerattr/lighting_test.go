@@ -9,6 +9,7 @@ func TestParseLighting(t *testing.T) {
 	cases := []struct {
 		name        string
 		in          string
+		prev        *Lighting
 		flameInText bool
 		alarmInText bool
 		want        Lighting
@@ -81,11 +82,30 @@ func TestParseLighting(t *testing.T) {
 			in:   `{"light": "tense red glow in the vault", "color": "#ff2020", "brightness": 40, "effect": "flash"}`,
 			want: Lighting{Description: "tense red glow in the vault", Color: "#ff2020", Brightness: 40, Effect: "steady"},
 		},
+		{
+			name: "brightness as a string",
+			in:   `{"light": "office tubes", "color": "#ffe2c4", "brightness": "45%", "effect": "steady"}`,
+			want: Lighting{Description: "office tubes", Color: "#ffe2c4", Brightness: 45, Effect: "steady"},
+		},
+		{name: "brightness in words", in: `{"light": "office tubes", "color": "#ffe2c4", "brightness": "low", "effect": "steady"}`, wantErr: true},
+		{
+			name: "same keeps the previous cue",
+			in:   `{"light": "Same."}`,
+			prev: &Lighting{Description: "candlelit cellar", Color: "#ff8a1f", Brightness: 25, Effect: "flicker"},
+			want: Lighting{Description: "candlelit cellar", Color: "#ff8a1f", Brightness: 25, Effect: "flicker"},
+		},
+		{
+			name: "same wins over a color written after it",
+			in:   `{"light": "same", "color": "#ffe2c4", "brightness": 42, "effect": "steady"}`,
+			prev: &Lighting{Description: "overcast daylight", Color: "#dfe8ff", Brightness: 42, Effect: "steady"},
+			want: Lighting{Description: "overcast daylight", Color: "#dfe8ff", Brightness: 42, Effect: "steady"},
+		},
+		{name: "same with nothing to keep", in: `{"light": "same"}`, wantErr: true},
 		{name: "bad color", in: `{"color": "orange", "brightness": 20, "effect": "steady"}`, wantErr: true},
 		{name: "no json", in: `sorry`, wantErr: true},
 	}
 	for _, tc := range cases {
-		got, err := parseLighting(tc.in, tc.flameInText, tc.alarmInText)
+		got, err := parseLighting(tc.in, tc.prev, tc.flameInText, tc.alarmInText)
 		if (err != nil) != tc.wantErr {
 			t.Fatalf("%s: err = %v, wantErr %v", tc.name, err, tc.wantErr)
 		}

@@ -34,6 +34,7 @@ import {
   usePreviewImport,
   useJobsSummary,
   usePreprocessBook,
+  usePreprocessLibrary,
   usePreprocessSeries,
   useSyncBookSource,
   useUploadBook,
@@ -42,7 +43,9 @@ import { useClickOutside } from '../hooks/useClickOutside'
 import { ImportPreviewPanel } from '../components/ImportPreviewPanel'
 import { SourceReviewPanel } from '../components/SourceReviewPanel'
 import type { ImportPreviewBusy } from '../components/ImportPreviewPanel'
-import { defaultSelection, mergeSelection } from '../utils/importSelection'
+import { defaultSelection, mergeSelection, splitReview } from '../utils/importSelection'
+import { continueReading } from '../utils/continueReading'
+import { NO_TITLE_RULE, titleRuleBody } from '../utils/titleRule'
 import { ApiError } from '../api/client'
 import { formatDurationLong } from '../utils/time'
 import { formatEta, narrationRate as measuredNarrationRate } from '../utils/narrationEta'
@@ -192,7 +195,7 @@ function BookCard({
   }
   const sourceNote = book.source && sourceStatus(book)
   // Entries a check found, waiting for a say: the cover's badge.
-  const newEntries = book.source?.review?.length ?? 0
+  const newEntries = splitReview(book.source?.review).open.length
   // A book stopped at a chapter its source won't serve can take that
   // stretch from an epub of it.
   const backfill = useBackfillBookSource()
@@ -412,7 +415,8 @@ function sourceStatus(book: BookSummary): string | null {
   }
   // Entries the last check found wait for a say (the panel at the top of
   // the page); the book takes nothing past the first until then.
-  const waiting = source.review?.length ?? 0
+  const { open, locked } = splitReview(source.review)
+  const waiting = open.length
   if (waiting > 0) return `${waiting} new ${waiting === 1 ? 'entry' : 'entries'} to review`
   if (outstanding > 0) {
     const n = `${outstanding} chapter${outstanding === 1 ? '' : 's'}`
@@ -421,7 +425,17 @@ function sourceStatus(book: BookSummary): string | null {
   if (source.error) return 'Last check for new chapters failed'
   // The source lists the next chapter but won't serve it yet; the book
   // never skips past one.
-  return source.blocked ? `Next chapter “${source.blocked}” is locked at ${source.name}` : null
+  if (source.blocked) {
+    const at = source.tracked.find((t) => t.blocked)?.name ?? source.name
+    return `Next chapter “${source.blocked}” is locked at ${at}`
+  }
+  // Listed somewhere the library can't read (a Patreon it isn't a member
+  // of): there, but not importable.
+  if (locked.length > 0) {
+    const at = [...new Set(locked.map((e) => e.source))].join(' and ')
+    return `${locked.length} more at ${at}, locked`
+  }
+  return null
 }
 
 // A series' one row of books, which scrolls sideways. It opens with the
@@ -466,6 +480,8 @@ export function LibraryPage() {
   const importUrl = useImportBookUrl()
   const [importOpen, setImportOpen] = useState(false)
   const [importLink, setImportLink] = useState('')
+  // The title rule typed in the chapter picker, for the book's source.
+  const [titleRule, setTitleRule] = useState(NO_TITLE_RULE)
   // "Add book" lists the ways in: an epub from disk, or a link to a work
   // on a supported site (which opens the link field under the header).
   const [addMenuOpen, setAddMenuOpen] = useState(false)
@@ -514,6 +530,7 @@ export function LibraryPage() {
     setImportLink('')
     setImportOpen(false)
     setPreview(null)
+    setTitleRule(NO_TITLE_RULE)
   }
   const importError = (fallback: string) => (err: unknown) =>
     setUploadError(err instanceof ApiError ? err.message : fallback)
@@ -563,7 +580,12 @@ export function LibraryPage() {
         : undefined
     if (preview) setPreviewBusy('import')
     importUrl.mutate(
-      { url: link, previewId: preview?.id, chapters },
+      {
+        url: link,
+        previewId: preview?.id,
+        chapters,
+        titleRule: preview ? titleRuleBody(titleRule) : undefined,
+      },
       {
         onSuccess: closeImport,
         onError: importError('Import failed'),
@@ -605,6 +627,21 @@ export function LibraryPage() {
     })
   }
 
+  const preprocessLibrary = usePreprocessLibrary()
+  const runPreprocessLibrary = () => {
+    const count = booksQuery.data?.length ?? 0
+    if (
+      !confirm(
+        `Preprocess all ${count} books, up to 4 series at a time? Each series runs in order. This can take a long time; it shows as one row on the Jobs page, where it can be cancelled.`,
+      )
+    )
+      return
+    preprocessLibrary.mutate(undefined, {
+      onError: (err) =>
+        alert(err instanceof ApiError ? err.message : 'Could not start preprocessing the library'),
+    })
+  }
+
   const confirmDelete = (book: BookSummary) => {
     if (confirm(`Delete "${book.title}"? This cannot be undone.`)) {
       deleteBook.mutate(book.id)
@@ -626,17 +663,10 @@ export function LibraryPage() {
       }),
     )
   }, [booksQuery.data, searchWords])
-  // The "Continue reading" row: the ten unfinished books read most
-  // recently, latest first. Each also keeps its usual place below. Not
-  // shown for a one-book library.
-  const continueBooks = useMemo(() => {
-    const books = booksQuery.data ?? []
-    if (books.length < 2) return []
-    return books
-      .filter((b) => !b.finished && b.lastReadAt)
-      .sort((a, b) => (b.lastReadAt ?? 0) - (a.lastReadAt ?? 0))
-      .slice(0, 10)
-  }, [booksQuery.data])
+  // The "Continue reading" row (utils/continueReading.ts): the ten most
+  // recent of the unfinished books being read and the next books of
+  // series. Each also keeps its usual place below.
+  const continueBooks = useMemo(() => continueReading(booksQuery.data ?? [], 10), [booksQuery.data])
 
   // Approximated, not tracked directly: no event logs actual listening
   // time, so "hours listened" is each book's self-calibrating estimated
@@ -695,6 +725,15 @@ export function LibraryPage() {
             disabled={checkRecaps.isPending}
           >
             <RiHistoryLine className={checkRecaps.isPending ? 'spin' : undefined} />
+          </button>
+          <button
+            className="icon-action-button"
+            title="Preprocess the whole library - up to 4 series at a time, each series in order. Passes a book already has are skipped."
+            aria-label="Preprocess library"
+            onClick={runPreprocessLibrary}
+            disabled={preprocessLibrary.isPending || !booksQuery.data?.length}
+          >
+            <RiMagicLine className={preprocessLibrary.isPending ? 'spin' : undefined} />
           </button>
         </div>
         <div className="library-add-menu" ref={addMenuRef}>
@@ -808,6 +847,8 @@ export function LibraryPage() {
               preview={preview}
               selected={selected}
               onSelect={setSelected}
+              titleRule={titleRule}
+              onTitleRule={setTitleRule}
               busy={previewBusy}
               onSearchArchive={() => widenPreview('archive')}
               onAttachEpub={(file) => widenPreview('epub', file)}
@@ -822,7 +863,7 @@ export function LibraryPage() {
       {rescanNote && <p className="muted">{rescanNote}</p>}
 
       {(booksQuery.data ?? [])
-        .filter((b) => (b.source?.review?.length ?? 0) > 0)
+        .filter((b) => splitReview(b.source?.review).open.length > 0)
         .map((b) => (
           <SourceReviewPanel key={b.id} book={b} />
         ))}

@@ -58,8 +58,19 @@ type Recorder struct {
 func (r *Recorder) Get(ctx context.Context, rawURL string, limit int64) ([]byte, string, string, error) {
 	body, finalURL, mediaType, err := r.Inner.Get(ctx, rawURL, limit)
 	if err == nil {
+		got := Fetched{URL: rawURL, FinalURL: finalURL, MediaType: mediaType, Body: body}
 		r.mu.Lock()
-		r.fetches = append(r.fetches, Fetched{URL: rawURL, FinalURL: finalURL, MediaType: mediaType, Body: body})
+		// An address fetched again is kept as it came the last time: a
+		// page read once locked and then, signed in, for real.
+		again := false
+		for i := range r.fetches {
+			if r.fetches[i].URL == rawURL {
+				r.fetches[i], again = got, true
+			}
+		}
+		if !again {
+			r.fetches = append(r.fetches, got)
+		}
 		r.mu.Unlock()
 	}
 	return body, finalURL, mediaType, err

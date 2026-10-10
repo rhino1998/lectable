@@ -1091,7 +1091,10 @@ func yue2SessionOptions() map[string]string {
 // 2 (which let two concurrent Stable Audio calls run without one queuing
 // behind the other) back to every other family's own default of 1 to
 // unblock; raise it again only once the concurrency bug itself is found
-// and fixed upstream in the local audio.cpp checkout.
+// and fixed upstream in the local audio.cpp checkout. Still there on
+// 2026-10-09 (four concurrent Medium sessions segfaulted at once), and
+// there is little to gain anyway: one render keeps the GPU busy, two at
+// once measured 9% faster - see docs/music-models.md's "Parallelism".
 var stableAudioMusicModelPath = envOr(
 	"LECTABLE_AUDIOCPP_STABLE_AUDIO_MUSIC_MODEL_PATH",
 	modelPath("Stable-Audio-3-Small-Music-GGUF/stable-audio-3-small-music-q8_0.gguf"),

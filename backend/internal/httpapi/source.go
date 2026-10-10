@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/epub"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
+	"github.com/rhino1998/lectable/backend/internal/patreon"
 	"github.com/rhino1998/lectable/backend/internal/royalroad"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/wanderinginn"
@@ -27,7 +29,7 @@ import (
 
 // A book can be imported from a website instead of an uploaded epub: any
 // site with a websource.Source (Server.sources - Royal Road, The Wandering
-// Inn), picked by the link itself. The book is created from the work's
+// Inn, Patreon), picked by the link itself. The book is created from the work's
 // first chapter, so it is in the library and readable at once, and the
 // rest are fetched in the background and appended in order
 // (syncBookSource). It remembers its source (store.BookSource), so the
@@ -51,22 +53,29 @@ type bookSourceKind string
 const (
 	sourceRoyalRoad    bookSourceKind = royalroad.Kind
 	sourceWanderingInn bookSourceKind = wanderinginn.Kind
+	sourcePatreon      bookSourceKind = patreon.Kind
 	// sourceWayback is a work imported from a Wayback Machine link: a
 	// supported site as archived at one time. Its stored id is
 	// "<site kind>:<time>:<work id>".
 	sourceWayback bookSourceKind = "wayback"
 )
 
-// bookSourceDTO is where a book imported from a website came from, and
-// the state of fetching its chapters.
+// bookSourceDTO is where a book's chapters come from - the website it was
+// imported from, and any other sources it tracks - and the state of
+// fetching them. Everything but Tracked is the book's sources taken
+// together.
 type bookSourceDTO struct {
+	// Kind and URL are the first source's.
 	Kind bookSourceKind `json:"kind"`
-	// Name is the site's name, for display ("Royal Road").
+	// Name is the sites' names, for display ("Royal Road", "Royal Road +
+	// Patreon").
 	Name string `json:"name"`
 	// URL is the work's page at the source.
 	URL string `json:"url"`
-	// CheckedAt is when the source was last checked for chapters (unix
-	// seconds), absent if never.
+	// Tracked lists each source the book tracks, in the order added.
+	Tracked []trackedSourceDTO `json:"tracked"`
+	// CheckedAt is when the sources were last all checked for chapters
+	// (unix seconds), absent if one never was.
 	CheckedAt int64 `json:"checkedAt,omitempty"`
 	// RemoteChapters is the book's chapter count plus the chapters the
 	// last check found at the source and hadn't fetched yet: more than
@@ -98,6 +107,10 @@ type importBookURLRequest struct {
 	// Chapters are the ids of the preview's chapters to import; none
 	// means all of them. Only with PreviewID.
 	Chapters []string `json:"chapters,omitempty"`
+	// TitleRule, if given, says which of the source's entries are
+	// chapters and what each is called - for this import, and for every
+	// later check of the source.
+	TitleRule *sourceTitleRuleDTO `json:"titleRule,omitempty"`
 }
 
 // A delisted chapter the archive won't give is asked for archiveAttempts
@@ -120,13 +133,33 @@ const (
 // defaultSources is every site books can be imported from, used when
 // Server.Sources is unset; one set for the process, so every import from
 // a site shares its request pacing.
-var defaultSources = []websource.Source{&royalroad.Source{}, &wanderinginn.Source{}}
+var defaultSources = []websource.Source{&royalroad.Source{}, &wanderinginn.Source{}, &patreon.Source{}}
 
 func (s *Server) sources() []websource.Source {
-	if s.Sources != nil {
-		return s.Sources
+	list := s.Sources
+	if list == nil {
+		list = defaultSources
 	}
-	return defaultSources
+	// Patreon is read as the account the library is signed in to - and
+	// so is The Wandering Inn, whose patrons-only chapters are unlocked by
+	// logging in to it with that account (wanderinginn/unlock.go).
+	s.patreonOnce.Do(func() {
+		var signedIn *patreon.Source
+		for _, src := range list {
+			if p, ok := src.(*patreon.Source); ok && s.Store != nil {
+				if session, _, err := s.Store.PatreonSession(); err == nil {
+					p.SetSession(session)
+				}
+				signedIn = p
+			}
+		}
+		for _, src := range list {
+			if inn, ok := src.(*wanderinginn.Source); ok && signedIn != nil && inn.Authorize == nil {
+				inn.Authorize = signedIn.Authorize
+			}
+		}
+	})
+	return list
 }
 
 // sourceOfKind returns the source books of that kind came from, nil if
@@ -251,37 +284,64 @@ func (s *Server) readerForBook(src *store.BookSource) (r sourceReader, workID st
 	if r.archived() {
 		r.fetch = r.wayback.At(r.timestamp)
 	}
+	r.site = withPrefix(r.site, src.Prefix)
 	return r, workID, true
 }
 
-// bookSource builds bookID's source DTO, nil for a book from an epub.
+// bookSource builds bookID's source DTO, nil for a book that tracks none.
 func (s *Server) bookSource(bookID string) (*bookSourceDTO, error) {
-	src, err := s.Store.GetBookSource(bookID)
-	if err != nil || src == nil {
+	sources, err := s.Store.BookSources(bookID)
+	if err != nil || len(sources) == 0 {
 		return nil, err
 	}
-	syncing := s.sourceBusy(bookID)
-	name := src.Kind
-	if r, _, ok := s.readerForBook(src); ok {
-		name = r.name()
+	dto := &bookSourceDTO{
+		Kind:      bookSourceKind(sources[0].Kind),
+		URL:       sources[0].URL,
+		CheckedAt: sources[0].CheckedAt,
+		Syncing:   s.sourceBusy(bookID),
 	}
-	var review []sourceReviewEntryDTO
-	if plan, err := s.Store.GetBookSourcePlan(bookID); err == nil {
-		for _, p := range plan.Pending {
-			review = append(review, sourceReviewEntryDTO{ID: p.ID, Title: p.Title, Suspect: p.Suspect, Unavailable: p.Unreadable})
+	var names []string
+	listed := map[string]bool{}
+	for i := range sources {
+		src := &sources[i]
+		name := src.Kind
+		if r, _, ok := s.readerForBook(src); ok {
+			name = r.name()
+		}
+		if !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+		tracked := trackedSourceDTO{ID: src.ID, Kind: bookSourceKind(src.Kind), Name: name, URL: src.URL, CheckedAt: src.CheckedAt, Error: src.Error, Blocked: src.Blocked}
+		if plan, err := s.Store.GetBookSourcePlan(src.ID); err == nil {
+			tracked.TitleRule = titleRuleDTO(plan.Title)
+			for _, p := range plan.Pending {
+				if p.Locked {
+					tracked.Locked++
+				} else {
+					tracked.Waiting++
+				}
+				// Two sources reading the same site list the same entry.
+				if !listed[p.ID] {
+					listed[p.ID] = true
+					dto.Review = append(dto.Review, sourceReviewEntryDTO{ID: p.ID, Title: p.Title, Source: name, Suspect: p.Suspect, Unavailable: p.Unreadable, Locked: p.Locked})
+				}
+			}
+		}
+		dto.Tracked = append(dto.Tracked, tracked)
+		dto.CheckedAt = min(dto.CheckedAt, src.CheckedAt)
+		dto.RemoteChapters = max(dto.RemoteChapters, src.RemoteChapters)
+		if dto.Blocked == "" {
+			dto.Blocked = src.Blocked
+		}
+		if dto.Error == "" && src.Error != "" {
+			dto.Error = src.Error
+			if len(sources) > 1 {
+				dto.Error = name + ": " + src.Error
+			}
 		}
 	}
-	return &bookSourceDTO{
-		Review:         review,
-		Kind:           bookSourceKind(src.Kind),
-		Name:           name,
-		URL:            src.URL,
-		CheckedAt:      src.CheckedAt,
-		RemoteChapters: src.RemoteChapters,
-		Error:          src.Error,
-		Blocked:        src.Blocked,
-		Syncing:        syncing,
-	}, nil
+	dto.Name = strings.Join(names, " + ")
+	return dto, nil
 }
 
 // handleImportBookURL imports a work from a website as a new book - a
@@ -308,6 +368,11 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, summary)
 		return
 	}
+	rule, err := titleRule(req.TitleRule)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// One import at a time, so the same link sent twice can't make two books.
 	s.sourceImportMu.Lock()
 	defer s.sourceImportMu.Unlock()
@@ -329,6 +394,7 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		reader, work, fill = p.reader, p.work, p.fill
 		chapters, plan = p.chosenChapters(req.Chapters)
 		p.mu.Unlock()
+		chapters = applyTitleRule(rule, chapters)
 	} else {
 		var link *url.URL
 		var err error
@@ -344,7 +410,8 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		// Without choosing, an import takes what reads as chapters; an
 		// entry that reads like a notice waits for review, and the book
 		// with it.
-		for _, ref := range work.Chapters {
+		listed := applyTitleRule(rule, work.Chapters)
+		for _, ref := range listed {
 			if suspectTitle(ref.Title) {
 				break
 			}
@@ -352,10 +419,11 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 			plan.Approved = append(plan.Approved, ref.ID)
 		}
 		if len(chapters) == 0 {
-			chapters = work.Chapters[:min(1, len(work.Chapters))]
+			chapters = listed[:min(1, len(listed))]
 		}
 	}
 	plan.Reviewed = true
+	plan.Title = rule
 	if req.PreviewID != "" {
 		for _, ref := range chapters {
 			plan.Approved = append(plan.Approved, ref.ID)
@@ -427,13 +495,14 @@ func (s *Server) handleImportBookURL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
 	}
-	if err := s.Store.SetBookSource(bookID, store.BookSource{
-		Kind: reader.kind(), SourceID: reader.storedID(work.ID), URL: reader.workURL(work), CheckedAt: time.Now().Unix(), RemoteChapters: len(chapters) + len(got) - 1,
-	}); err != nil {
+	src := store.BookSource{
+		BookID: bookID, Kind: reader.kind(), SourceID: reader.storedID(work.ID), URL: reader.workURL(work), CheckedAt: time.Now().Unix(), RemoteChapters: len(chapters) + len(got) - 1,
+	}
+	if err := s.Store.SaveBookSource(&src); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
 	}
-	if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
+	if err := s.Store.SetBookSourcePlan(src.ID, plan); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save book: "+err.Error())
 		return
 	}
@@ -582,17 +651,17 @@ func (s *Server) handleSyncBookSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
-	src, err := s.Store.GetBookSource(bookID)
+	sources, err := s.Store.BookSources(bookID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if src == nil {
+	if len(sources) == 0 {
 		writeError(w, http.StatusConflict, "this book wasn't imported from a website, so there is nowhere to check for new chapters")
 		return
 	}
-	if _, _, ok := s.readerForBook(src); !ok {
-		writeError(w, http.StatusConflict, "this server can't read the site this book came from ("+src.Kind+")")
+	if !s.anyReadable(sources) {
+		writeError(w, http.StatusConflict, "this server can't read the site this book came from ("+sources[0].Kind+")")
 		return
 	}
 	s.startSourceSync(bookID, nil)
@@ -620,6 +689,15 @@ const sourceSyncJobKey = "source_sync"
 // sourceBusy reports whether bookID's check for new chapters is queued or
 // running, or its stored pages are being re-read (which holds sourceSyncs
 // too).
+// sourceSyncChanged tells the library listing that sourceSyncs changed
+// outside the queue (a re-read of stored pages is no job), so
+// bookSourceDTO.Syncing follows it.
+func (s *Server) sourceSyncChanged() {
+	if s.Live != nil {
+		s.Live.Invalidate(DepPipelines)
+	}
+}
+
 func (s *Server) sourceBusy(bookID string) bool {
 	if _, held := s.sourceSyncs.Load(bookID); held {
 		return true
@@ -628,20 +706,36 @@ func (s *Server) sourceBusy(bookID string) bool {
 	return queued || running
 }
 
-// startSourceSync queues syncBookSource for bookID as a job-queue task (a
-// Jobs-page row, Kind "pipeline_source_sync"), unless one is already
-// queued or running (false). Cancelling the row stops the check, keeping
-// the chapters it has added. fill, if not nil, is an uploaded epub to take
-// chapters from where the site won't serve them.
+// anyReadable reports whether this build can read at least one of sources.
+func (s *Server) anyReadable(sources []store.BookSource) bool {
+	for i := range sources {
+		if _, _, ok := s.readerForBook(&sources[i]); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// startSourceSync queues a check of each of bookID's sources, in the order
+// they were added (syncBookSource), as one job-queue task (a Jobs-page
+// row, Kind "pipeline_source_sync"), unless one is already queued or
+// running (false). Cancelling the row stops the check, keeping the
+// chapters it has added. fill, if not nil, is an uploaded epub to take
+// chapters from where one of the sources (fill.sourceID) won't serve them.
 func (s *Server) startSourceSync(bookID string, fill *epubFill) bool {
 	if s.sourceBusy(bookID) {
 		return false
 	}
 	label := "New chapters"
-	if src, err := s.Store.GetBookSource(bookID); err == nil && src != nil {
-		if r, _, ok := s.readerForBook(src); ok {
-			label = "New chapters from " + r.name()
+	sources, _ := s.Store.BookSources(bookID)
+	var names []string
+	for i := range sources {
+		if r, _, ok := s.readerForBook(&sources[i]); ok && !slices.Contains(names, r.name()) {
+			names = append(names, r.name())
 		}
+	}
+	if len(names) > 0 {
+		label = "New chapters from " + strings.Join(names, " + ")
 	}
 	if fill != nil {
 		label += " (with an epub)"
@@ -656,43 +750,64 @@ func (s *Server) startSourceSync(bookID string, fill *epubFill) bool {
 		if _, held := s.sourceSyncs.LoadOrStore(bookID, struct{}{}); held {
 			return errors.New("this book's stored pages are being re-read")
 		}
-		ctx, cancel := context.WithTimeout(ctx, sourceSyncTimeout)
-		defer cancel()
-		added, err := s.syncBookSource(ctx, bookID, fill)
-		// A cancelled check isn't a failed one.
-		if errors.Is(err, context.Canceled) {
-			err = nil
-		}
+		defer s.sourceSyncs.Delete(bookID)
+		// As they stand now: one may have been added while this waited.
+		sources, err := s.Store.BookSources(bookID)
 		if err != nil {
-			log.Printf("source: checking %s stopped after %d new chapters: %v", bookID, added, err)
-		} else if added > 0 {
-			log.Printf("source: added %d chapters to %s", added, bookID)
+			return nil
 		}
-		s.sourceSyncs.Delete(bookID)
-		if src, gerr := s.Store.GetBookSource(bookID); gerr == nil && src != nil {
-			src.CheckedAt = time.Now().Unix()
-			src.Error = ""
-			if err != nil {
-				src.Error = err.Error()
+		for i := range sources {
+			src := &sources[i]
+			if _, _, ok := s.readerForBook(src); !ok {
+				continue
 			}
-			_ = s.Store.SetBookSource(bookID, *src)
+			var with *epubFill
+			if fill != nil && (fill.sourceID == src.ID || (fill.sourceID == "" && i == 0)) {
+				with = fill
+			}
+			sctx, cancel := context.WithTimeout(ctx, sourceSyncTimeout)
+			added, err := s.syncBookSource(sctx, src, with)
+			cancel()
+			// A cancelled check isn't a failed one.
+			cancelled := errors.Is(err, context.Canceled)
+			if cancelled {
+				err = nil
+			}
+			if err != nil {
+				log.Printf("source: checking %s (%s) stopped after %d new chapters: %v", bookID, src.Kind, added, err)
+			} else if added > 0 {
+				log.Printf("source: added %d chapters to %s from %s", added, bookID, src.Kind)
+			}
+			if now, gerr := s.Store.GetBookSource(src.ID); gerr == nil && now != nil {
+				now.CheckedAt = time.Now().Unix()
+				now.Error = ""
+				if err != nil {
+					now.Error = err.Error()
+				}
+				_ = s.Store.SaveBookSource(now)
+			}
+			if cancelled || ctx.Err() != nil {
+				break
+			}
 		}
 		return nil
 	})
 	// A write, so the book's live topics show it syncing (and drop the
-	// last check's error) right away.
-	if src, err := s.Store.GetBookSource(bookID); err == nil && src != nil {
-		src.Error = ""
-		_ = s.Store.SetBookSource(bookID, *src)
+	// last check's errors) right away.
+	for i := range sources {
+		sources[i].Error = ""
+		_ = s.Store.SaveBookSource(&sources[i])
 	}
 	return true
 }
 
-// syncBookSource fetches every chapter bookID's source offers that the
-// book doesn't have, in the source's order, and appends them. Chapters are
-// matched by the source's own ids, so a retitled or reordered one isn't
-// fetched again; one published in between chapters the book already has is
-// still added at the end.
+// syncBookSource fetches every chapter one of a book's sources offers
+// that the book doesn't have, in the source's order, and appends them.
+// Chapters are matched by the source's own ids, so a retitled or reordered
+// one isn't fetched again; one published in between chapters the book
+// already has is still added at the end. An entry that is a chapter the
+// book has from another of its sources is recognized and passed over (see
+// source_multi.go).
 //
 // A chapter the source lists but doesn't serve to the public is taken, in
 // this order, from fill (an uploaded epub, if this check was given one)
@@ -701,14 +816,8 @@ func (s *Server) startSourceSync(bookID string, fill *epubFill) bool {
 // book never skips ahead of a chapter - it carries on from it once it
 // opens. A chapter the source no longer has at all is passed over; any
 // other failure stops the check, keeping what was added.
-func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFill) (added int, err error) {
-	src, err := s.Store.GetBookSource(bookID)
-	if err != nil {
-		return 0, err
-	}
-	if src == nil {
-		return 0, errors.New("book has no source")
-	}
+func (s *Server) syncBookSource(ctx context.Context, src *store.BookSource, fill *epubFill) (added int, err error) {
+	bookID := src.BookID
 	reader, workID, ok := s.readerForBook(src)
 	if !ok {
 		return 0, fmt.Errorf("no reader for source %q", src.Kind)
@@ -725,9 +834,12 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 	for _, id := range haveIDs {
 		have[id] = true
 	}
-	plan, err := s.Store.GetBookSourcePlan(bookID)
+	plan, err := s.Store.GetBookSourcePlan(src.ID)
 	if err != nil {
 		return 0, err
+	}
+	for _, id := range plan.Matched {
+		have[id] = true
 	}
 	src.Blocked = ""
 	// Only entries the reader has agreed to are fetched; the rest wait
@@ -740,9 +852,25 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 			return 0, err
 		}
 	}
+	// Entries that are chapters the book took from somewhere else.
+	others, err := s.otherChapters(src)
+	if err != nil {
+		return 0, err
+	}
+	// Locked entries named like a chapter the book has are left out for
+	// as long as they stay locked; with them out of the way, an open
+	// second posting of the same chapter is the only one of its name.
+	for _, id := range lockedCopies(others, planned, have) {
+		have[id] = true
+	}
+	for _, id := range matchOtherSources(others, planned, have) {
+		plan.Matched = append(plan.Matched, id)
+		have[id] = true
+	}
+	var openings []map[string]bool // of others, read when first needed
 	missing, pending := reviewPlan(&plan, planned, have)
 	plan.Pending = pending
-	if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
+	if err := s.Store.SetBookSourcePlan(src.ID, plan); err != nil {
 		return 0, err
 	}
 	count, err := s.Store.CountChapters(bookID)
@@ -752,11 +880,15 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 	src.RemoteChapters = count + len(missing)
 	src.URL = reader.workURL(work)
 	src.Error = ""
-	if err := s.Store.SetBookSource(bookID, *src); err != nil {
+	if err := s.Store.SaveBookSource(src); err != nil {
 		return 0, err
 	}
 
 	meta := reader.meta(work)
+	// The kept epub is the book's, named for the source it came from.
+	if first, err := s.Store.BookSources(bookID); err == nil && len(first) > 0 && first[0].ID != src.ID {
+		meta.Title = ""
+	}
 	for len(missing) > 0 {
 		batch := missing[:min(sourceBatch, len(missing))]
 		missing = missing[len(batch):]
@@ -803,6 +935,7 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 
 		var fetched []sourced
 		var fetchErr error
+		matchedLate := false
 		dropped := 0 // chapters that won't be appended after all
 		for i, ref := range batch {
 			// covered: the epub chapter standing in for this one was
@@ -856,6 +989,20 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 				}
 				continue
 			}
+			// The same chapter as one the book has from another source,
+			// under a title that didn't say so.
+			if len(chapters) == 1 && len(others) > 0 {
+				if openings == nil {
+					openings = s.otherOpenings(bookID, others)
+				}
+				if sameOpening(chapters[0].ch, openings) {
+					log.Printf("source: %q at %s is a chapter the book already has", ref.Title, reader.name())
+					plan.Matched = append(plan.Matched, ref.ID)
+					matchedLate = true
+					dropped++
+					continue
+				}
+			}
 			fetched = append(fetched, chapters...)
 			// One web chapter that is several ebook chapters.
 			src.RemoteChapters += len(chapters) - 1
@@ -867,12 +1014,12 @@ func (s *Server) syncBookSource(ctx context.Context, bookID string, fill *epubFi
 			added += len(fetched)
 		}
 		src.RemoteChapters -= dropped
-		if err := s.Store.SetBookSource(bookID, *src); err != nil {
+		if err := s.Store.SaveBookSource(src); err != nil {
 			return added, err
 		}
-		if len(unreadable) > 0 {
+		if len(unreadable) > 0 || matchedLate {
 			holdUnreadable(&plan, unreadable)
-			if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
+			if err := s.Store.SetBookSourcePlan(src.ID, plan); err != nil {
 				return added, err
 			}
 		}
@@ -958,6 +1105,9 @@ func (s *Server) appendSourceChapters(bookID string, meta websource.Meta, fetche
 func sourceChapterInput(meta websource.Meta, ch *websource.Chapter) (store.ChapterInput, [][]byte, error) {
 	var buf bytes.Buffer
 	meta.Cover, meta.CoverExt = nil, ""
+	if meta.Title == "" {
+		meta.Title = ch.Title
+	}
 	if err := websource.WriteEPUB(&buf, meta, nil, []*websource.Chapter{ch}); err != nil {
 		return store.ChapterInput{}, nil, fmt.Errorf("chapter %q: %w", ch.Title, err)
 	}

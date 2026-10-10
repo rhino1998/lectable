@@ -56,4 +56,20 @@ class SourceReviewTest {
         assertEquals("Checking 1 book for new chapters", checkingSourcesMessage(1))
         assertEquals("Checking 12 books for new chapters", checkingSourcesMessage(12))
     }
+
+    @Test
+    fun lockedEntriesAreShownNotDecided() {
+        val entries = listOf(
+            entry("1"),
+            SourceReviewEntryDto(id = "2", title = "Chapter 51", source = "Patreon", locked = true),
+            SourceReviewEntryDto(id = "3", title = "Chapter 52", source = "Patreon", locked = true),
+        )
+        assertEquals(listOf("1"), openEntries(entries).map { it.id })
+        // Applying a review of what is shown leaves the locked ones waiting, not skipped.
+        val decision = reviewDecision(openEntries(entries), mapOf("1" to false))
+        assertEquals(listOf("1"), decision.skip)
+        assertEquals("2 more at Patreon, locked", lockedEntriesLine(entries))
+        assertEquals(null, lockedEntriesLine(listOf(entry("1"))))
+        assertEquals(null, lockedEntriesLine(null))
+    }
 }

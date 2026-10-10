@@ -1,6 +1,9 @@
 package speakerattr
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func regionAt(startIdx int, transition string) musicBoundary {
 	return musicBoundary{StartIdx: startIdx, Transition: transition}
@@ -248,67 +251,37 @@ func TestSplitLongRegionsMarksSplits(t *testing.T) {
 	}
 }
 
-func TestParseMusicBoundariesSeamCarriesOver(t *testing.T) {
-	// Seam context 16-19, batch 20-29: a lone first region means the tone
-	// already playing carries on - no boundary at the seam at all.
-	shown := plainParagraphs(30)[16:]
-	got, err := parseMusicBoundaries(`[{"startIdx": 16, "transition": "cut"}]`, shown, 20)
-	if err != nil || len(got) != 0 {
-		t.Fatalf("parseMusicBoundaries() = %+v, %v; want no boundaries", got, err)
+func TestSceneBoundariesFollowSummaryScenes(t *testing.T) {
+	ps := plainParagraphs(60)
+	ps[21].Inline = true
+	notes := &ChapterSummary{Scenes: []Scene{
+		{StartIdx: 0}, {StartIdx: 21}, {StartIdx: 40}, {StartIdx: 43}, {StartIdx: 99},
+	}}
+	var got []musicBoundary
+	for _, b := range sceneBoundaries(notes, ps) {
+		if !b.split {
+			got = append(got, b)
+		}
 	}
-}
+	// 21 is an inline continuation of 20; the scene at 40 is too short to
+	// stand alone, so it joins the one before; 99 isn't in the chapter.
+	want := []musicBoundary{{StartIdx: 0, Transition: "cut"}, {StartIdx: 20, Transition: "continuation"}, {StartIdx: 43, Transition: "continuation"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sceneBoundaries() = %+v, want %+v", got, want)
+	}
 
-func TestParseMusicBoundariesSeamKeepsModelTransition(t *testing.T) {
-	shown := plainParagraphs(30)[16:]
-	got, err := parseMusicBoundaries(`[{"startIdx": 16, "transition": "cut"}, {"startIdx": 20, "transition": "continuation"}, {"startIdx": 25, "transition": "cut"}]`, shown, 20)
-	if err != nil {
-		t.Fatal(err)
+	// A resumed run starts mid-chapter: scenes behind it are dropped and its
+	// first line opens the first region.
+	got = slices.DeleteFunc(sceneBoundaries(notes, ps[30:]), func(b musicBoundary) bool { return b.split })
+	want = []musicBoundary{{StartIdx: 30, Transition: "cut"}, {StartIdx: 43, Transition: "continuation"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sceneBoundaries() resumed = %+v, want %+v", got, want)
 	}
-	want := []musicBoundary{regionAt(20, "continuation"), regionAt(25, "cut")}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("parseMusicBoundaries() = %+v, want %+v", got, want)
-	}
-}
 
-func TestParseMusicBoundariesChangeInsideSeamLandsOnBatchStart(t *testing.T) {
-	// A change the model placed inside the context is what's playing when
-	// the batch starts.
-	shown := plainParagraphs(30)[16:]
-	got, err := parseMusicBoundaries(`[{"startIdx": 16, "transition": "cut"}, {"startIdx": 18, "transition": "cut"}, {"startIdx": 24, "transition": "continuation"}]`, shown, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []musicBoundary{regionAt(20, "cut"), regionAt(24, "continuation")}
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("parseMusicBoundaries() = %+v, want %+v", got, want)
-	}
-}
-
-func TestMusicSeamContextCountsNumberedLines(t *testing.T) {
-	ps := plainParagraphs(10)
-	ps[8].Inline = true
-	got := musicSeamContext(ps)
-	// Lines 5, 6, 7(+8 inline), 9 - four numbered lines.
-	if len(got) != 5 || got[0].Idx != 5 {
-		t.Fatalf("musicSeamContext() starts at %d with %d paragraphs, want 5 with 5", got[0].Idx, len(got))
-	}
-	if short := musicSeamContext(ps[:2]); len(short) != 2 {
-		t.Fatalf("musicSeamContext() of 2 paragraphs = %d, want all of them", len(short))
-	}
-}
-
-// A stretch with nothing to score - a title and copyright page, "About the
-// Author" - gets an empty answer however often it is asked. That is one
-// region for the batch (or the seam's tone carrying on), not a failure.
-func TestParseMusicBoundariesNothingMarked(t *testing.T) {
-	batch := []ParagraphInput{{Idx: 0, Text: "Converted Ebook"}, {Idx: 1, Text: "Text copyright © 2016"}}
-	got, err := parseMusicBoundaries(`[]`, batch, 0)
-	if err != nil || len(got) != 1 || got[0].StartIdx != 0 || got[0].Transition != "cut" {
-		t.Fatalf("parseMusicBoundaries([]) at a chapter's start = %+v, %v; want one region at 0", got, err)
-	}
-	shown := []ParagraphInput{{Idx: 16, Text: "seam"}, {Idx: 20, Text: "About the Author"}}
-	got, err = parseMusicBoundaries(`[]`, shown, 20)
-	if err != nil || len(got) != 0 {
-		t.Fatalf("parseMusicBoundaries([]) after a seam = %+v, %v; want no boundaries", got, err)
+	// No summary: one region, split for length.
+	for i, b := range sceneBoundaries(nil, plainParagraphs(60)) {
+		if b.StartIdx != i*maxRegionParagraphs || b.split != (i > 0) {
+			t.Fatalf("sceneBoundaries(nil) = %+v at %d", b, i)
+		}
 	}
 }

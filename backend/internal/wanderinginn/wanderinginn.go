@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -39,6 +40,20 @@ type Source struct {
 	Client websource.Client
 	// BaseURL replaces https://wanderinginn.com (tests).
 	BaseURL string
+	// Authorize, if set, answers Patreon's consent page for the site's
+	// "Unlock with Patreon" as the account the library is signed in to
+	// Patreon as (patreon.Source.Authorize), which is what lets chapters
+	// for patrons only be read - see unlock.go.
+	Authorize func(ctx context.Context, authorizeURL, redirectHost string) (callbackURL string, err error)
+
+	once     sync.Once
+	unlockMu sync.Mutex // one unlock at a time
+	// cookies are the site's own login, from the last unlock, and
+	// unlockAt when that was tried; under loginMu (mu is held across
+	// fetches of the table of contents).
+	loginMu  sync.Mutex
+	cookies  map[string]string
+	unlockAt time.Time
 
 	mu       sync.Mutex
 	toc      []volume
@@ -46,9 +61,27 @@ type Source struct {
 	tocClock func() time.Time // tests; nil means time.Now
 }
 
-func (s *Source) Fetch() websource.Fetcher { return &s.Client }
-func (s *Source) Kind() string             { return Kind }
-func (s *Source) Name() string             { return seriesName }
+// Fetch is the client for the live site. It sends the site's login
+// cookies, once an unlock has got them, to the site itself and nowhere
+// else.
+func (s *Source) Fetch() websource.Fetcher {
+	s.once.Do(func() {
+		s.Client.Prepare = func(req *http.Request) {
+			if base, err := url.Parse(s.base()); err != nil || req.URL.Host != base.Host {
+				return
+			}
+			s.loginMu.Lock()
+			defer s.loginMu.Unlock()
+			for name, value := range s.cookies {
+				req.AddCookie(&http.Cookie{Name: name, Value: value})
+			}
+		}
+	})
+	return &s.Client
+}
+
+func (s *Source) Kind() string { return Kind }
+func (s *Source) Name() string { return seriesName }
 
 func (s *Source) Match(u *url.URL) bool {
 	return strings.TrimPrefix(strings.ToLower(u.Hostname()), "www.") == "wanderinginn.com"
@@ -162,7 +195,8 @@ func (s *Source) Work(ctx context.Context, f websource.Fetcher, volumeID string)
 
 // Chapter fetches and cleans up one chapter. The table of contents doesn't
 // say which chapters are for patrons only, so that is found out here
-// (websource.ErrLocked).
+// (websource.ErrLocked) - after trying the site's "Unlock with Patreon"
+// once, when the library is signed in to Patreon (unlock.go).
 func (s *Source) Chapter(ctx context.Context, f websource.Fetcher, ref websource.ChapterRef) (*websource.Chapter, error) {
 	page, finalURL, _, err := f.Get(ctx, ref.URL, websource.MaxPageSize)
 	if err != nil {
@@ -173,6 +207,16 @@ func (s *Source) Chapter(ctx context.Context, f websource.Fetcher, ref websource
 		return nil, err
 	}
 	content, imgs, err := cleanChapter(page)
+	if errors.Is(err, websource.ErrLocked) && s.unlock(ctx, page, base) {
+		// Again, as a member.
+		if page, finalURL, _, err = f.Get(ctx, ref.URL, websource.MaxPageSize); err != nil {
+			return nil, fmt.Errorf("fetch chapter %q: %w", ref.Title, err)
+		}
+		if base, err = url.Parse(finalURL); err != nil {
+			return nil, err
+		}
+		content, imgs, err = cleanChapter(page)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("chapter %q: %w", ref.Title, err)
 	}

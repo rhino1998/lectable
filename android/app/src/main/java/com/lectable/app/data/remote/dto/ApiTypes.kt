@@ -59,8 +59,9 @@ typealias BookSourceKind = String
 object BookSourceKinds {
     const val ROYALROAD: BookSourceKind = "royalroad"
     const val WANDERINGINN: BookSourceKind = "wanderinginn"
+    const val PATREON: BookSourceKind = "patreon"
     const val WAYBACK: BookSourceKind = "wayback"
-    val VALUES: List<BookSourceKind> = listOf(ROYALROAD, WANDERINGINN, WAYBACK)
+    val VALUES: List<BookSourceKind> = listOf(ROYALROAD, WANDERINGINN, PATREON, WAYBACK)
 }
 
 /**
@@ -471,6 +472,18 @@ object ApiCatalog {
 }
 
 @Serializable
+data class AddBookSourceRequestDto(
+    /**
+     * URL is a link to the work at a supported site, or one of its chapters.
+     */
+    val url: String = "",
+    /**
+     * TitleRule, if given, is the source's title rule from the start.
+     */
+    val titleRule: SourceTitleRuleDto? = null,
+)
+
+@Serializable
 data class AliasesResponseDto(
     val aliases: List<String> = emptyList(),
 )
@@ -785,14 +798,20 @@ data class BookSettingResponseDto(
 )
 
 /**
- * bookSourceDTO is where a book imported from a website came from, and
- * the state of fetching its chapters.
+ * bookSourceDTO is where a book's chapters come from - the website it was
+ * imported from, and any other sources it tracks - and the state of
+ * fetching them. Everything but Tracked is the book's sources taken
+ * together.
  */
 @Serializable
 data class BookSourceDto(
+    /**
+     * Kind and URL are the first source's.
+     */
     val kind: BookSourceKind = "",
     /**
-     * Name is the site's name, for display ("Royal Road").
+     * Name is the sites' names, for display ("Royal Road", "Royal Road +
+     * Patreon").
      */
     val name: String = "",
     /**
@@ -800,8 +819,12 @@ data class BookSourceDto(
      */
     val url: String = "",
     /**
-     * CheckedAt is when the source was last checked for chapters (unix
-     * seconds), absent if never.
+     * Tracked lists each source the book tracks, in the order added.
+     */
+    val tracked: List<TrackedSourceDto> = emptyList(),
+    /**
+     * CheckedAt is when the sources were last all checked for chapters
+     * (unix seconds), absent if one never was.
      */
     val checkedAt: Long? = null,
     /**
@@ -1449,6 +1472,12 @@ data class ImportBookURLRequestDto(
      * means all of them. Only with PreviewID.
      */
     val chapters: List<String> = emptyList(),
+    /**
+     * TitleRule, if given, says which of the source's entries are
+     * chapters and what each is called - for this import, and for every
+     * later check of the source.
+     */
+    val titleRule: SourceTitleRuleDto? = null,
 )
 
 @Serializable
@@ -2111,6 +2140,15 @@ data class PatchMessageDto(
 )
 
 @Serializable
+data class PatreonSessionRequestDto(
+    /**
+     * SessionID is the session_id cookie of a browser signed in to
+     * patreon.com; "" signs the library out.
+     */
+    val sessionId: String = "",
+)
+
+@Serializable
 data class PositionDto(
     val chapterIdx: Int = 0,
     val paragraphIdx: Int = 0,
@@ -2520,6 +2558,12 @@ data class SetParagraphScareQuoteRequestDto(
 @Serializable
 data class SetParagraphSpeakerRequestDto(
     val speaker: String = "",
+    /**
+     * New says Speaker is a person of their own, however the roster knows
+     * the name: it is not resolved through anyone's aliases, and is taken
+     * off whoever holds it as one.
+     */
+    val new: Boolean = false,
 )
 
 /**
@@ -2540,9 +2584,19 @@ data class SourceReviewEntryDto(
     val id: String = "",
     val title: String = "",
     /**
+     * Source is the name of the site that lists it ("Patreon").
+     */
+    val source: String = "",
+    /**
      * Suspect is true when the title reads like an author's notice.
      */
     val suspect: Boolean = false,
+    /**
+     * Locked is true for an entry the site lists but won't serve this
+     * reader (patrons only, early access): it shows what is there, and
+     * can't be imported until it opens. "Skip" still drops it.
+     */
+    val locked: Boolean = false,
     /**
      * Unavailable is true for a chapter that was agreed to but couldn't
      * be read - a delisted one the Internet Archive has no usable copy
@@ -2562,6 +2616,38 @@ data class SourceSettingsDto(
      * checked for new entries by itself: 0 never.
      */
     val checkEveryHours: Int = 0,
+    /**
+     * PatreonAccount is the name of the Patreon account the library reads
+     * patrons-only posts as (PUT /api/settings/patreon), "" when it isn't
+     * signed in to one. Read-only here.
+     */
+    val patreonAccount: String? = null,
+)
+
+/**
+ * sourceTitleRuleDTO is one source's title rule (store.TitleRule): a
+ * regular expression over the titles the source lists its entries under,
+ * saying which are chapters and what each is called. Kept with the source
+ * and applied by every check of it.
+ */
+@Serializable
+data class SourceTitleRuleDto(
+    /**
+     * Pattern is the expression (Go/RE2 syntax, case-sensitive unless it
+     * starts "(?i)"), matched anywhere in a title. "" is no rule.
+     */
+    val pattern: String = "",
+    /**
+     * Output, if not empty, is what an entry whose title matches is
+     * called: a template over the match's capture groups - "Chapter $1",
+     * "${name}"; "$$" is a dollar sign. Empty keeps the title.
+     */
+    val output: String = "",
+    /**
+     * Only leaves out every entry whose title doesn't match: it is
+     * neither imported nor offered for review.
+     */
+    val only: Boolean = false,
 )
 
 /**
@@ -2895,6 +2981,51 @@ data class TopicParamsDto(
     val bookId: String = "",
     val chapterIdx: Int? = null,
     val characterId: String = "",
+)
+
+/**
+ * trackedSourceDTO is one of the sources a book tracks.
+ */
+@Serializable
+data class TrackedSourceDto(
+    /**
+     * ID names the source for DELETE /api/books/{id}/sources/{sourceId}.
+     */
+    val id: String = "",
+    val kind: BookSourceKind = "",
+    /**
+     * Name is the site's name, for display ("Royal Road").
+     */
+    val name: String = "",
+    /**
+     * URL is the work's page there.
+     */
+    val url: String = "",
+    /**
+     * CheckedAt is when it was last checked (unix seconds), absent if never.
+     */
+    val checkedAt: Long? = null,
+    /**
+     * Error is why its last check stopped early, absent if it finished.
+     */
+    val error: String? = null,
+    /**
+     * Blocked is the title of the chapter its last check stopped at
+     * because the source lists it but doesn't serve it yet; absent if none.
+     */
+    val blocked: String? = null,
+    /**
+     * Waiting is how many of its entries wait for the reader's say, and
+     * Locked how many more it lists that it won't serve this reader
+     * (patrons only, early access) - there, but not importable yet.
+     */
+    val waiting: Int = 0,
+    val locked: Int = 0,
+    /**
+     * TitleRule is the source's title rule, absent when it has none (PUT
+     * /api/books/{id}/sources/{sourceId}/title-rule).
+     */
+    val titleRule: SourceTitleRuleDto? = null,
 )
 
 /**

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/live"
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
@@ -19,6 +21,42 @@ import (
 // bookSummaryDTO.Preprocessing, both read straight off it) - cmd/server
 // forwards jobs.Manager.SubscribeChanges to it.
 const DepJobs = "jobs"
+
+// DepPipelines is the live invalidation name for a book's preprocessing run
+// or bulk group starting or ending (jobs.Manager.PipelineSignature) - all
+// the library listing reads of the queue (bookSummaryDTO.Preprocessing,
+// bookSourceDTO.Syncing), which DepJobs would rebuild on every task.
+// cmd/server forwards it through WatchPipelines.
+const DepPipelines = "jobs:pipelines"
+
+// pipelineCheckEvery is the least time between two looks at the queue for
+// DepPipelines: each one walks every task.
+const pipelineCheckEvery = 250 * time.Millisecond
+
+// WatchPipelines calls invalidate each time jobs' PipelineSignature has
+// changed, looking after a change arrives on changes (jobs.Manager.
+// SubscribeChanges, a subscription of its own) and at most every
+// pipelineCheckEvery, until ctx ends.
+func WatchPipelines(ctx context.Context, m *jobs.Manager, changes <-chan struct{}, invalidate func()) {
+	last := m.PipelineSignature()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-changes:
+		}
+		if sig := m.PipelineSignature(); sig != last {
+			last = sig
+			invalidate()
+		}
+		// A change during the wait is still buffered in changes after it.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(pipelineCheckEvery):
+		}
+	}
+}
 
 // DBDep is the live invalidation name for writes to one store table - see
 // store.Store.OnChange, which cmd/server forwards through this.
@@ -83,8 +121,9 @@ func withDeps(base []string, extra ...string) []string {
 func (s *Server) registerLiveTopics(h *live.Hub) {
 	// Only books/book show the saved reading position (see
 	// store.PositionTable).
-	h.Register("books", noParams("books", withDeps(narrationDeps, DBDep(store.PositionTable), DepJobs), time.Second, s.buildBooks))
-	h.Register("book", bookTopic("book", withDeps(narrationDeps, DBDep(store.PositionTable), DBDep("music_regions"), DepJobs), 500*time.Millisecond, s.buildBook))
+	// DepPipelines, not DepJobs: see there.
+	h.Register("books", noParams("books", withDeps(narrationDeps, DBDep(store.PositionTable), DBDep("book_sources"), DepPipelines), time.Second, s.buildBooks))
+	h.Register("book", bookTopic("book", withDeps(narrationDeps, DBDep(store.PositionTable), DBDep("music_regions"), DBDep("book_sources"), DepJobs), 500*time.Millisecond, s.buildBook))
 	// pronunciation_lexicon: a rule's matches show as pronunciation marks.
 	h.Register("chapter", chapterTopic("chapter", withDeps(narrationDeps, DBDep("images"), DBDep("breaks"), DBDep("sfx"), DBDep("pronunciation_lexicon"), DepJobs), 0, s.buildChapter))
 	h.Register("chapterMusic", chapterTopic("chapterMusic", withDeps(dbDeps("books", "chapters", "music_regions"), DepJobs), 0, s.buildChapterMusic))

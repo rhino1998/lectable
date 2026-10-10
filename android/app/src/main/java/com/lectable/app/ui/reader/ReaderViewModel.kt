@@ -868,11 +868,11 @@ class ReaderViewModel @Inject constructor(
      *  isQuote segments (see ReaderScreen.kt's ParagraphRow) - the backend 400s on a non-quote
      *  paragraph, since narration/description can't be "spoken" by a character. The long-press
      *  menu's "Speaker: …" row updates via the chapter's live topic. */
-    fun setParagraphSpeaker(chapterIdx: Int, paragraphIndices: List<Int>, speaker: String) {
+    fun setParagraphSpeaker(chapterIdx: Int, paragraphIndices: List<Int>, speaker: String, isNew: Boolean = false) {
         if (paragraphIndices.isEmpty()) return
         viewModelScope.launch {
             runCatching {
-                paragraphIndices.forEach { idx -> libraryRepository.setParagraphSpeaker(bookId, chapterIdx, idx, speaker) }
+                paragraphIndices.forEach { idx -> libraryRepository.setParagraphSpeaker(bookId, chapterIdx, idx, speaker, isNew) }
             }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }

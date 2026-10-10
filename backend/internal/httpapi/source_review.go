@@ -40,8 +40,14 @@ func suspectTitle(title string) bool {
 type sourceReviewEntryDTO struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
+	// Source is the name of the site that lists it ("Patreon").
+	Source string `json:"source"`
 	// Suspect is true when the title reads like an author's notice.
 	Suspect bool `json:"suspect"`
+	// Locked is true for an entry the site lists but won't serve this
+	// reader (patrons only, early access): it shows what is there, and
+	// can't be imported until it opens. "Skip" still drops it.
+	Locked bool `json:"locked"`
 	// Unavailable is true for a chapter that was agreed to but couldn't
 	// be read - a delisted one the Internet Archive has no usable copy
 	// of. "Import" tries it again; "skip" lets the book go on without it.
@@ -75,44 +81,55 @@ func (s *Server) handleReviewBookSource(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
-	src, err := s.Store.GetBookSource(bookID)
+	sources, err := s.Store.BookSources(bookID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if src == nil {
+	if len(sources) == 0 {
 		writeError(w, http.StatusConflict, "this book wasn't imported from a website, so it has nothing to review")
 		return
 	}
-	plan, err := s.Store.GetBookSourcePlan(bookID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	// Only what is actually waiting can be decided.
-	waiting := map[string]bool{}
-	for _, p := range plan.Pending {
-		waiting[p.ID] = true
-	}
-	taken := 0
-	for _, id := range req.Import {
-		if waiting[id] {
-			plan.Approved = append(plan.Approved, id)
-			delete(waiting, id)
-			taken++
+	// An entry is decided in the plan of each source it waits in (two
+	// sources reading one site list the same entries).
+	imported := map[string]bool{}
+	for _, src := range sources {
+		plan, err := s.Store.GetBookSourcePlan(src.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// Only what is actually waiting can be decided.
+		waiting := map[string]bool{}
+		for _, p := range plan.Pending {
+			waiting[p.ID] = true
+		}
+		decided := false
+		for _, id := range req.Import {
+			if waiting[id] {
+				plan.Approved = append(plan.Approved, id)
+				delete(waiting, id)
+				imported[id] = true
+				decided = true
+			}
+		}
+		for _, id := range req.Skip {
+			if waiting[id] {
+				plan.Skip = append(plan.Skip, id)
+				delete(waiting, id)
+				decided = true
+			}
+		}
+		if !decided {
+			continue
+		}
+		plan.Pending = slices.DeleteFunc(plan.Pending, func(p store.PlannedChapter) bool { return !waiting[p.ID] })
+		if err := s.Store.SetBookSourcePlan(src.ID, plan); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
 	}
-	for _, id := range req.Skip {
-		if waiting[id] {
-			plan.Skip = append(plan.Skip, id)
-			delete(waiting, id)
-		}
-	}
-	plan.Pending = slices.DeleteFunc(plan.Pending, func(p store.PlannedChapter) bool { return !waiting[p.ID] })
-	if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
+	taken := len(imported)
 	s.startSourceSync(bookID, nil)
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: taken})
 }
@@ -121,7 +138,7 @@ func (s *Server) handleReviewBookSource(w http.ResponseWriter, r *http.Request) 
 // to fetch now and the ones waiting for review, by what plan has approved.
 // have are the source ids the book already holds. Fetching stops at the
 // first entry waiting: what follows it waits too, approved or not, so the
-// book stays in order. A plan from before reviewing existed approves
+// book stays in order - except behind an entry that is locked. A plan from before reviewing existed approves
 // everything listed now.
 func reviewPlan(plan *store.SourcePlan, planned []websource.ChapterRef, have map[string]bool) (fetch []websource.ChapterRef, pending []store.PlannedChapter) {
 	if !plan.Reviewed {
@@ -141,12 +158,18 @@ func reviewPlan(plan *store.SourcePlan, planned []websource.ChapterRef, have map
 			unreadable[p.ID] = true
 		}
 	}
+	// An entry the source won't serve this reader waits without holding
+	// back what follows it: there is no saying when it will open, and
+	// what follows is usually a public post.
+	held := false
 	for _, ref := range planned {
+		locked := !ref.Unlocked && !ref.Delisted
 		switch {
 		case have[ref.ID]:
 		case !approved[ref.ID]:
-			pending = append(pending, store.PlannedChapter{ID: ref.ID, Title: ref.Title, URL: ref.URL, Suspect: suspectTitle(ref.Title), Unreadable: unreadable[ref.ID]})
-		case len(pending) == 0:
+			pending = append(pending, store.PlannedChapter{ID: ref.ID, Title: ref.Title, URL: ref.URL, Suspect: suspectTitle(ref.Title), Unreadable: unreadable[ref.ID], Locked: locked})
+			held = held || !locked
+		case !held:
 			fetch = append(fetch, ref)
 		}
 	}

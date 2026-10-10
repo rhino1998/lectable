@@ -201,6 +201,7 @@ func main() {
 			}
 		}
 	}()
+	go httpapi.WatchPipelines(ctx, jobManager, jobManager.SubscribeChanges(), func() { liveHub.Invalidate(httpapi.DepPipelines) })
 	go liveHub.Run(ctx)
 
 	// speakerClient is nil (and speaker attribution's endpoint reports 503)

@@ -423,7 +423,7 @@ label {
   display: flex;
   flex-direction: column;
   gap: 0.6rem;
-  margin-top: 2rem;
+  margin-bottom: 2rem;
 }
 .epub-match-pair {
   display: flex;
@@ -461,6 +461,97 @@ label {
 }
 .source-review .import-preview-list input {
   flex: none;
+}
+.source-review .import-preview-range input {
+  width: 5.5rem;
+  font: inherit;
+  padding: 0.3rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.source-review .import-preview-filter input {
+  width: 16rem;
+}
+/* A source's title rule (TitleRuleFields.tsx, SourceTitleRuleEditor.tsx). */
+.title-rule .import-preview-range input[type='checkbox'] {
+  flex: none;
+  width: auto;
+}
+.title-rule-editor {
+  flex-basis: 100%;
+  font-size: 0.9rem;
+}
+.title-rule-editor summary {
+  cursor: pointer;
+  margin-bottom: 0.4rem;
+}
+.title-rule-editor .import-preview-range input[type='text'] {
+  width: 16rem;
+  font: inherit;
+  padding: 0.3rem 0.4rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+.title-rule-editor .import-preview-tools {
+  margin-bottom: 0.4rem;
+}
+.import-preview-left-out {
+  text-decoration: line-through;
+  opacity: 0.55;
+}
+.book-sources-list li {
+  flex-wrap: wrap;
+}
+.source-review-locked summary {
+  cursor: pointer;
+}
+.source-review-locked[open] summary {
+  margin-bottom: 0.4rem;
+}
+/* The places a book's chapters come from (BookSourcesPanel.tsx). */
+.book-sources {
+  margin-bottom: 2rem;
+}
+.book-sources-list {
+  list-style: none;
+  margin: 0 0 0.8rem;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.book-sources-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.book-sources-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.8rem;
+  align-items: baseline;
+}
+.book-sources-add,
+.settings-patreon {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+.book-sources-add input,
+.settings-patreon input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
 }
 /* Suggested fixes to a book's speakers (RosterReviewPanel.tsx). */
 .roster-review-list {
@@ -523,6 +614,9 @@ label {
   flex: none;
   width: 5.5rem;
   padding: 0.3rem 0.4rem;
+}
+.library-import .import-preview-filter input {
+  width: 16rem;
 }
 .import-preview-list {
   list-style: none;
@@ -2753,6 +2847,35 @@ label {
   font-weight: 600;
   cursor: default;
 }
+/* "New speaker…" once clicked: a name field and its Add button in the
+   item's place. */
+.speaker-context-menu-new {
+  display: flex;
+  gap: 0.3rem;
+  padding: 0.25rem 0.4rem;
+}
+.speaker-context-menu-new input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.speaker-context-menu-new button {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--text);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.speaker-context-menu-new button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 /* Emotion picker in the dialogue context menu (ReaderPage's setEmotion) -
    a wrapping row of small chips rather than one full-width item per
    emotion, which would push the reassign list far down the menu. */
@@ -3044,6 +3167,34 @@ label {
 }
 .export-parts {
   width: 4rem;
+}
+
+/* PlayerBar's "Music" popover (MusicPanel). */
+.music-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.music-volume {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.music-volume input {
+  flex: 1;
+  min-width: 0;
+}
+.music-volume-value {
+  min-width: 3ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.music-panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8em;
 }
 
 /* PlayerBar's "Lights" popover (LightingPanel). */

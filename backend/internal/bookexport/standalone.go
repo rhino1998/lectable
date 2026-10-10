@@ -33,6 +33,9 @@ func (c *collector) standalone(out *Book, idxs []int) {
 	byChapter := func(r map[string]json.RawMessage) bool { return chosen[jsonString(r["chapter_id"])] }
 	rows["chapters"] = filterRows(rows["chapters"], func(r map[string]json.RawMessage) bool { return chosen[jsonString(r["id"])] })
 	rows["paragraphs"] = filterRows(rows["paragraphs"], byChapter)
+	// A subset isn't the website's book any more: checking its sources
+	// would add every chapter left out of it.
+	delete(rows, "book_sources")
 	paragraphs := map[string]bool{}
 	for _, raw := range rows["paragraphs"] {
 		var r map[string]json.RawMessage
@@ -83,11 +86,6 @@ func (c *collector) standalone(out *Book, idxs []int) {
 					if _, ok := r[k]; ok {
 						r[k] = json.RawMessage(`0`)
 					}
-				}
-				// A subset isn't the website's book any more: checking its
-				// source would add every chapter left out of it.
-				if _, ok := r["source_kind"]; ok {
-					r["source_kind"] = json.RawMessage(`""`)
 				}
 			case "chapters":
 				var idx int

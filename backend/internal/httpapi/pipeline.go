@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -208,48 +210,167 @@ func (s *Server) handlePreprocessSeries(w http.ResponseWriter, r *http.Request) 
 		ids[i] = b.ID
 	}
 	seriesName := book.SeriesName
-	s.Jobs.EnqueueBulk(ids[0], jobs.BulkGroup{
+	s.preprocessInOrder(jobs.BulkGroup{
 		Kind:  "pipeline_series_preprocess",
 		Key:   seriesPreprocessJobKey,
 		Label: fmt.Sprintf("%s (%d books)", seriesName, len(ids)),
 		Tier:  jobs.TierBackground,
+	}, ids, func(b *store.Book) bool { return b.SeriesName == seriesName })
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(ids)})
+}
+
+// libraryPreprocessJobKey is the jobs.BulkGroup.Key of a whole-library
+// preprocessing run (handlePreprocessLibrary).
+const libraryPreprocessJobKey = "library_preprocess"
+
+// libraryPreprocessSeries is how many series a whole-library run works on
+// at once. One book at a time left the LLM mostly idle whenever that book
+// was down to a pass that runs its chapters in order (attribution).
+const libraryPreprocessSeries = 4
+
+// handlePreprocessLibrary preprocesses every book in the library, up to
+// libraryPreprocessSeries series at once: each series' books one at a
+// time in series order (they share a roster, as in
+// handlePreprocessSeries), series started by name, then the books in no
+// series, oldest first, each taking a series' place. One job-queue row (a
+// jobs.BulkGroup, Kind "pipeline_library_preprocess", on the first book),
+// promoted and cancelled like a series run's; asking again while one is
+// queued or running joins it. A book whose passes are all done costs one
+// look at its chapters. 202 with the number of books, 0 for an empty
+// library.
+func (s *Server) handlePreprocessLibrary(w http.ResponseWriter, r *http.Request) {
+	if s.Speaker == nil {
+		writeError(w, http.StatusServiceUnavailable, "speaker attribution is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
+		return
+	}
+	books, err := s.Store.ListBooks()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(books) == 0 {
+		writeJSON(w, http.StatusAccepted, queuedResponse{})
+		return
+	}
+	lanes := libraryPreprocessOrder(books)
+	label := fmt.Sprintf("Library (%d books)", len(books))
+	s.Jobs.EnqueueBulk(lanes[0][0], jobs.BulkGroup{
+		Kind:  "pipeline_library_preprocess",
+		Key:   libraryPreprocessJobKey,
+		Label: label,
+		Tier:  jobs.TierBackground,
 	}, func(ctx context.Context, tier func() int) error {
-		for _, id := range ids {
-			if ctx.Err() != nil {
+		// Lanes are handed out in order, so the first
+		// libraryPreprocessSeries start first and each next one starts
+		// as one of those finishes.
+		next := make(chan []string)
+		errs := make([]error, min(libraryPreprocessSeries, len(lanes)))
+		var wg sync.WaitGroup
+		for i := range errs {
+			wg.Go(func() {
+				for ids := range next {
+					if errs[i] != nil {
+						continue
+					}
+					errs[i] = s.preprocessBooksInOrder(ctx, tier, label, ids, func(*store.Book) bool { return true })
+				}
+			})
+		}
+		for _, ids := range lanes {
+			next <- ids
+		}
+		close(next)
+		wg.Wait()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errors.Join(errs...)
+	})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(books)})
+}
+
+// libraryPreprocessOrder is the lanes a whole-library run takes books in,
+// in the order it starts them: each series its own lane in series order,
+// series by name, then each book in no series as a lane of its own,
+// oldest first.
+func libraryPreprocessOrder(books []store.Book) [][]string {
+	books = slices.Clone(books)
+	slices.SortStableFunc(books, func(a, b store.Book) int {
+		return cmp.Or(
+			cmp.Compare(btoi(a.SeriesName == ""), btoi(b.SeriesName == "")),
+			cmp.Compare(a.SeriesName, b.SeriesName),
+			cmp.Compare(a.SeriesIndex, b.SeriesIndex),
+			cmp.Compare(a.AddedAt, b.AddedAt),
+		)
+	})
+	var lanes [][]string
+	for i, b := range books {
+		if i > 0 && b.SeriesName != "" && b.SeriesName == books[i-1].SeriesName {
+			lanes[len(lanes)-1] = append(lanes[len(lanes)-1], b.ID)
+			continue
+		}
+		lanes = append(lanes, []string{b.ID})
+	}
+	return lanes
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// preprocessInOrder queues one bulk group (on ids' first book) that
+// preprocesses the books ids one at a time, in that order - see
+// preprocessBooksInOrder.
+func (s *Server) preprocessInOrder(group jobs.BulkGroup, ids []string, still func(*store.Book) bool) {
+	s.Jobs.EnqueueBulk(ids[0], group, func(ctx context.Context, tier func() int) error {
+		return s.preprocessBooksInOrder(ctx, tier, group.Label, ids, still)
+	})
+}
+
+// preprocessBooksInOrder is the body of a bulk group's run (tier is its
+// row's live tier, label names it in the log) that preprocesses the books
+// ids one at a time, in that order: a book's pipeline is queued only once
+// the one before it has finished. still says whether a book, read when
+// its turn comes, is still part of the run - it may have been moved out
+// of the series since; a deleted one is skipped.
+func (s *Server) preprocessBooksInOrder(ctx context.Context, tier func() int, label string, ids []string, still func(*store.Book) bool) error {
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// Read now, not when the run was queued: the book may have
+		// been deleted, moved out of the series or gained chapters.
+		b, err := s.Store.GetBook(id)
+		if err != nil {
+			return err
+		}
+		if b == nil || !still(b) {
+			continue
+		}
+		if err := s.enqueuePreprocess(b); err != nil && !errors.Is(err, jobs.ErrPipelineAlreadyRunning) {
+			log.Printf("preprocess %s: %s: %v", label, b.Title, err)
+			continue
+		}
+		// A book's phases are queued at the background tier; raising
+		// the run's row's priority, now or while this book runs,
+		// raises theirs.
+		applied := jobs.TierBackground
+		for s.Jobs.IsPipelineRunning(id) {
+			if t := tier(); t < applied {
+				s.Jobs.PromotePipeline(id, t)
+				applied = t
+			}
+			select {
+			case <-ctx.Done():
 				return ctx.Err()
-			}
-			// Read now, not when the run was queued: the book may have
-			// been deleted, moved out of the series or gained chapters.
-			b, err := s.Store.GetBook(id)
-			if err != nil {
-				return err
-			}
-			if b == nil || b.SeriesName != seriesName {
-				continue
-			}
-			if err := s.enqueuePreprocess(b); err != nil && !errors.Is(err, jobs.ErrPipelineAlreadyRunning) {
-				log.Printf("preprocess series %q: %s: %v", seriesName, b.Title, err)
-				continue
-			}
-			// A book's phases are queued at the background tier; raising
-			// the series row's priority, now or while this book runs,
-			// raises theirs.
-			applied := jobs.TierBackground
-			for s.Jobs.IsPipelineRunning(id) {
-				if t := tier(); t < applied {
-					s.Jobs.PromotePipeline(id, t)
-					applied = t
-				}
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(seriesPreprocessPoll):
-				}
+			case <-time.After(seriesPreprocessPoll):
 			}
 		}
-		return nil
-	})
-	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(ids)})
+	}
+	return nil
 }
 
 // preprocessScareQuotePhase is the scare-quote tagging phase - the root of

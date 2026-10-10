@@ -569,7 +569,7 @@ func (m *Manager) enqueueChapter(ctx context.Context, bookID, chapterID string, 
 		log.Printf("jobs: book %s not found: %v", bookID, err)
 		return
 	}
-	m.maybeRunChapterAmbience(bookID, chapterID, chapterIdx, book)
+	m.maybeRunChapterAmbience(ctx, bookID, chapterID, chapterIdx, book)
 	if ch := m.lookupChapter(chapterID); ch != nil {
 		if err := m.ensureAttributed(ctx, book, ch, TierBackground); err != nil {
 			log.Printf("jobs: chapter %s: attribution before narration (strict order): %v", chapterID, err)
@@ -617,8 +617,9 @@ func (m *Manager) joinGroup(ctx context.Context, key string) {
 // chapter means calling this on every enqueueChapter (including "Generate
 // remaining"'s whole-book walk, and a reader simply re-opening a chapter
 // they're already generating) is harmless even for a chapter whose
-// scoring is already queued or in flight.
-func (m *Manager) maybeRunChapterAmbience(bookID, chapterID string, chapterIdx int, book *store.Book) {
+// scoring is already queued or in flight. The scoring task joins the group
+// ctx runs under, if any (joinGroup).
+func (m *Manager) maybeRunChapterAmbience(ctx context.Context, bookID, chapterID string, chapterIdx int, book *store.Book) {
 	if !book.MusicEnabled || m.runAmbience == nil {
 		return
 	}
@@ -630,6 +631,7 @@ func (m *Manager) maybeRunChapterAmbience(bookID, chapterID string, chapterIdx i
 	m.EnqueueAmbience(bookID, chapterID, chapterIdx, func(ctx context.Context) (int, func(), error) {
 		return m.runAmbience(ctx, book, &chVal)
 	})
+	m.joinGroup(ctx, (&task{kind: KindAmbience, chapterID: chapterID, llmKey: chapterID}).Key())
 }
 
 // EnqueueParagraphRegenerate re-renders one already-generated paragraph

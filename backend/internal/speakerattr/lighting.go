@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -45,7 +46,10 @@ const lightingMaxTokens = 768
 // Effects are a fixed set the clients animate (store.LightEffect); anything
 // else parses as steady, the safe default. The previous region's cue is
 // passed back in (LightingInput.Prev) so a scene that hasn't moved keeps its
-// light instead of re-rolling it every region.
+// light instead of re-rolling it every region - by answering
+// {"light": "same"} (lightingSameMarker) rather than writing the cue out
+// again: 29% of lighting calls after a chapter's first returned the
+// previous cue unchanged (2026-10-10), ~50 generated tokens each.
 const lightingSystemPrompt = `You are the lighting designer for an immersive audiobook. The listener's room has color smart lights, and while one stretch of a novel chapter is narrated you set them so the room feels like being inside that scene. You will be given the full text of the stretch, its emotional mood, the opening lines of the chapter, possibly notes on the book's setting, and possibly the lighting (and mood) of the stretch that plays just before it.
 
 How to choose:
@@ -56,7 +60,7 @@ How to choose:
 - Then tint it gently by the mood: warmer and softer for comfort or romance, colder and dimmer for dread or grief, deeper and redder for danger or rage. The place still comes first - a tense scene by a campfire is still firelight, just lower and redder.
 - Flames - candles, oil lamps, lanterns, torches, a hearth or camp fire - are a saturated amber-orange, never pale yellow or white. Moonlight is a cool pale blue; overcast daylight a soft grey-white; electric lamps a warm amber-white. Only use orange when a flame is actually the light source - other interiors, screens, offices and streets get their own colors.
 - If the text gives no clue about light at all, use a soft neutral warm white at moderate brightness tinted slightly by the mood.
-- If a previous stretch is given and this one is in the same place at the same time, keep its light source and effect. Keep its exact color only if the mood is similar too; when the mood has changed, shift the tint to the new mood - a scene that calms down should lose an angry red. Change the light fully when the scene moves somewhere or somewhen else.
+- If a previous stretch is given and this one is in the same place at the same time with a similar mood, its lighting carries on unchanged: reply with just {"light": "same"} and nothing more. When the place and time are the same but the mood has changed, keep its light source and effect and shift the tint to the new mood - a scene that calms down should lose an angry red. Change the light fully when the scene moves somewhere or somewhen else.
 - "color" is the hue of the light at full strength - never grey, black or a dark muddy shade. Put how dark the scene is in "brightness" instead: a dim stone corridor is a warm or cool hue at low brightness, not #333333.
 
 Brightness is 1-100 and must stay comfortable to sit in: bright daylight 60-85, ordinary interiors 35-60, dusk or lamplight 20-40, night or darkness 5-20. Never 100.
@@ -72,7 +76,11 @@ Never mention plot events or character names.
 
 Reply with a compact JSON object on a single line only, no other text, no markdown code fence:
 
-{"light": "<at most 12 words describing the light in the scene, e.g. dim flickering candlelight in a stone cellar>", "color": "#rrggbb", "accent": "#rrggbb or empty", "brightness": <integer 1-100>, "effect": "steady" | "flicker" | "pulse" | "flash" | "lightning" | "shimmer"}`
+{"light": "<at most 12 words describing the light in the scene, e.g. dim flickering candlelight in a stone cellar>", "color": "#rrggbb", "accent": "#rrggbb or empty", "brightness": <integer 1-100>, "effect": "steady" | "flicker" | "pulse" | "flash" | "lightning" | "shimmer"}
+
+or, only when the previous stretch's lighting carries on unchanged:
+
+{"light": "same"}`
 
 // Lighting is one region's lighting cue - store.Lighting's own shape, kept
 // as a plain value here rather than importing store (see ParagraphInput).
@@ -163,11 +171,11 @@ func NeedsLighting(paragraphs []ParagraphInput) bool {
 var NeutralLighting = Lighting{Description: "soft neutral warm white", Color: "#ffe2c4", Brightness: 40, Effect: "steady"}
 
 type lightingRaw struct {
-	Light      string  `json:"light"`
-	Color      string  `json:"color"`
-	Accent     string  `json:"accent"`
-	Brightness float64 `json:"brightness"`
-	Effect     string  `json:"effect"`
+	Light      string      `json:"light"`
+	Color      string      `json:"color"`
+	Accent     string      `json:"accent"`
+	Brightness looseNumber `json:"brightness"`
+	Effect     string      `json:"effect"`
 }
 
 // DescribeLighting picks one region's lighting cue - see
@@ -219,7 +227,7 @@ func (c *Client) DescribeLighting(ctx context.Context, bookTitle, chapterTitle s
 	flameInText := flameSourceWords.MatchString(text.String())
 	alarmInText := alarmSourceWords.MatchString(text.String())
 	return generateAndParse(ctx, c, lightingSystemPrompt, user.String(), 0, lightingMaxTokens, func(content string) (Lighting, error) {
-		return parseLighting(content, flameInText, alarmInText)
+		return parseLighting(content, in.Prev, flameInText, alarmInText)
 	})
 }
 
@@ -229,8 +237,9 @@ func (c *Client) DescribeLighting(ctx context.Context, bookTitle, chapterTitle s
 // reports that the region's own text names a flame light source (see
 // flameSourceWords), which lets a flicker stand even when the model's
 // description forgot to mention the lantern; alarmInText does the same for
-// a flash (see alarmSourceWords).
-func parseLighting(content string, flameInText, alarmInText bool) (Lighting, error) {
+// a flash (see alarmSourceWords). A {"light": "same"} reply is prev's cue as
+// it stands; with no prev to keep it is a retry.
+func parseLighting(content string, prev *Lighting, flameInText, alarmInText bool) (Lighting, error) {
 	value, found := firstJSONValue(content, '{')
 	if !found {
 		return Lighting{}, fmt.Errorf("no JSON object found in response: %s", truncate(content, 200))
@@ -238,6 +247,15 @@ func parseLighting(content string, flameInText, alarmInText bool) (Lighting, err
 	var raw lightingRaw
 	if err := json.Unmarshal([]byte(value), &raw); err != nil {
 		return Lighting{}, fmt.Errorf("parse JSON object: %w", err)
+	}
+	// Checked before the color: the model sometimes writes a color after
+	// "same" anyway (seen live: {"light": "same", "color": "#ffe2c4", ...}),
+	// which would otherwise store a cue described as "same".
+	if isLightingSameMarker(raw.Light) {
+		if prev == nil {
+			return Lighting{}, fmt.Errorf("lighting %q with no previous stretch to keep", raw.Light)
+		}
+		return *prev, nil
 	}
 	color, ok := normalizeHexColor(raw.Color)
 	if !ok {
@@ -302,6 +320,31 @@ func parseLighting(content string, flameInText, alarmInText bool) (Lighting, err
 		}
 	}
 	return l, nil
+}
+
+// lightingSameMarker is the "light" a lighting call answers, alone, when the
+// previous stretch's cue carries on unchanged - see lightingSystemPrompt.
+const lightingSameMarker = "same"
+
+func isLightingSameMarker(s string) bool {
+	return strings.Trim(strings.ToLower(s), ".()[]\"' ") == lightingSameMarker
+}
+
+// looseNumber is a JSON number the model may also write as a string
+// ("40", "40%") - a real reply shape for "brightness", which used to fail
+// the parse and cost a retry (11 in one night's log, one task failing all
+// three). Anything that isn't a number is still a parse failure.
+type looseNumber float64
+
+func (n *looseNumber) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(strings.Trim(strings.TrimSpace(string(b)), `"`))
+	s = strings.TrimSpace(strings.TrimSuffix(s, "%"))
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return fmt.Errorf("not a number: %s", truncate(string(b), 40))
+	}
+	*n = looseNumber(f)
+	return nil
 }
 
 // flameSourceWords spots a flame light source in a region's own text -

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -205,5 +206,85 @@ func TestAttributeAroundEdits(t *testing.T) {
 	// ¶9 is outside the context band; ¶21 is context, shown but not asked.
 	if strings.Contains(prompt, "\n9: ") || strings.Contains(prompt, "21 (who?)") {
 		t.Errorf("prompt has a line outside the context band or a context line asked:\n%s", prompt)
+	}
+}
+
+// "new" on the speaker PUT makes the name a character of its own even
+// when the roster knows it as someone's alias - the fix for a line
+// attribution gave to a character it took two people for.
+func TestSetParagraphSpeakerNew(t *testing.T) {
+	_, s, _, ts := newTestServer(t)
+	bookID, _, err := s.CreateBook("Test Book", "A", "en", "", "", 0, []store.ChapterInput{{
+		Title: "One",
+		Blocks: []store.BlockInput{
+			{Kind: store.BlockText, Text: "“Hi,”", IsQuote: true},
+			{Kind: store.BlockText, Text: "“Bye.”", IsQuote: true},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, _ := s.GetBook(bookID)
+	scope := store.SeriesScope(book)
+	ch, _ := s.GetChapterByIdx(bookID, 0)
+	bert, _, err := s.UpsertCharacter(scope, "Bert", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCharacterAliases(bert.ID, []string{"Albert", "Bertie"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetParagraphSpeakers(ch.ID, map[int]string{0: "Bert", 1: "Bert"}); err != nil {
+		t.Fatal(err)
+	}
+	put := func(pidx int, body setParagraphSpeakerRequest) int {
+		t.Helper()
+		resp := doJSON(t, http.MethodPut, fmt.Sprintf("%s/api/books/%s/chapters/0/paragraphs/%d/speaker", ts.URL, bookID, pidx), body, nil)
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	speaker := func(pidx int) string {
+		t.Helper()
+		paras, err := s.ListParagraphsRaw(ch.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return paras[pidx].Speaker
+	}
+
+	// Without it, the alias still means Bert.
+	if code := put(0, setParagraphSpeakerRequest{Speaker: "Albert"}); code != http.StatusNoContent {
+		t.Fatalf("PUT alias: %d", code)
+	}
+	if got := speaker(0); got != "Bert" {
+		t.Fatalf("an alias resolved to %q, want Bert", got)
+	}
+
+	if code := put(1, setParagraphSpeakerRequest{Speaker: "albert", New: true}); code != http.StatusNoContent {
+		t.Fatalf("PUT new: %d", code)
+	}
+	if got := speaker(1); got != "albert" {
+		t.Fatalf("new speaker stored as %q, want albert", got)
+	}
+	albert, err := s.GetCharacterByName(scope, "albert")
+	if err != nil || albert == nil {
+		t.Fatalf("no character for the new speaker (%v)", err)
+	}
+	after, _ := s.GetCharacterByName(scope, "Bert")
+	if !slices.Equal([]string(after.Aliases), []string{"Bertie"}) {
+		t.Fatalf("Bert's aliases = %v, want only Bertie", after.Aliases)
+	}
+	// The name is its own person from here on, with or without the flag.
+	if code := put(0, setParagraphSpeakerRequest{Speaker: "Albert"}); code != http.StatusNoContent {
+		t.Fatalf("PUT after: %d", code)
+	}
+	if got := speaker(0); got != "albert" {
+		t.Fatalf("the name resolved to %q after becoming a character, want albert", got)
+	}
+
+	for _, name := range []string{"", "Narrator", "Unknown"} {
+		if code := put(1, setParagraphSpeakerRequest{Speaker: name, New: true}); code != http.StatusBadRequest {
+			t.Fatalf("new speaker %q: %d, want 400", name, code)
+		}
 	}
 }

@@ -294,6 +294,15 @@ class LibraryViewModel @Inject constructor(
         }
     }
 
+    /** "Add another source" (LibraryScreen's AddSourceDialog): the book also tracks [link]. What
+     *  it lists that the book doesn't have turns up as entries to review, via the live topic. */
+    fun addBookSource(bookId: String, link: String) {
+        viewModelScope.launch {
+            runCatching { repository.addBookSource(bookId, link.trim()) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
     /** The review dialog's "Apply" (SourceReview.kt): which of the entries a check held back to
      *  import and which to skip. The chapters, and the row's line, follow via the live topic. */
     fun reviewBookSource(bookId: String, importIds: List<String>, skipIds: List<String>) {

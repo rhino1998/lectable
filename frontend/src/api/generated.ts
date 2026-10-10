@@ -20,7 +20,7 @@ export type BookSettingSource = (typeof BOOK_SETTING_SOURCES)[number]
 /**
  * bookSourceKind names the website a book was imported from.
  */
-export const BOOK_SOURCE_KINDS = ['royalroad', 'wanderinginn', 'wayback'] as const
+export const BOOK_SOURCE_KINDS = ['royalroad', 'wanderinginn', 'patreon', 'wayback'] as const
 export type BookSourceKind = (typeof BOOK_SOURCE_KINDS)[number]
 
 /**
@@ -219,6 +219,17 @@ export const DEFAULT_DESIGN_MODEL: DesignModel = 'breeze_tts'
 export const DEFAULT_CHARACTER_VOICE_MODE: CharacterVoiceMode = 'narrator'
 
 // ---- Types ----
+
+export interface AddBookSourceRequest {
+  /**
+   * URL is a link to the work at a supported site, or one of its chapters.
+   */
+  url: string
+  /**
+   * TitleRule, if given, is the source's title rule from the start.
+   */
+  titleRule?: SourceTitleRule | null
+}
 
 export interface AliasesResponse {
   aliases: string[]
@@ -462,13 +473,19 @@ export interface BookSettingResponse {
 }
 
 /**
- * bookSourceDTO is where a book imported from a website came from, and
- * the state of fetching its chapters.
+ * bookSourceDTO is where a book's chapters come from - the website it was
+ * imported from, and any other sources it tracks - and the state of
+ * fetching them. Everything but Tracked is the book's sources taken
+ * together.
  */
 export interface BookSource {
+  /**
+   * Kind and URL are the first source's.
+   */
   kind: BookSourceKind
   /**
-   * Name is the site's name, for display ("Royal Road").
+   * Name is the sites' names, for display ("Royal Road", "Royal Road +
+   * Patreon").
    */
   name: string
   /**
@@ -476,8 +493,12 @@ export interface BookSource {
    */
   url: string
   /**
-   * CheckedAt is when the source was last checked for chapters (unix
-   * seconds), absent if never.
+   * Tracked lists each source the book tracks, in the order added.
+   */
+  tracked: TrackedSource[]
+  /**
+   * CheckedAt is when the sources were last all checked for chapters
+   * (unix seconds), absent if one never was.
    */
   checkedAt?: number
   /**
@@ -1060,6 +1081,12 @@ export interface ImportBookURLRequest {
    * means all of them. Only with PreviewID.
    */
   chapters?: string[]
+  /**
+   * TitleRule, if given, says which of the source's entries are
+   * chapters and what each is called - for this import, and for every
+   * later check of the source.
+   */
+  titleRule?: SourceTitleRule | null
 }
 
 export interface ImportPreviewChapter {
@@ -1696,6 +1723,14 @@ export interface PatchMessage {
   ops: LiveOp[]
 }
 
+export interface PatreonSessionRequest {
+  /**
+   * SessionID is the session_id cookie of a browser signed in to
+   * patreon.com; "" signs the library out.
+   */
+  sessionId: string
+}
+
 export interface Position {
   chapterIdx: number
   paragraphIdx: number
@@ -2076,6 +2111,12 @@ export interface SetParagraphScareQuoteRequest {
 
 export interface SetParagraphSpeakerRequest {
   speaker: string
+  /**
+   * New says Speaker is a person of their own, however the roster knows
+   * the name: it is not resolved through anyone's aliases, and is taken
+   * off whoever holds it as one.
+   */
+  new?: boolean
 }
 
 /**
@@ -2094,9 +2135,19 @@ export interface SourceReviewEntry {
   id: string
   title: string
   /**
+   * Source is the name of the site that lists it ("Patreon").
+   */
+  source: string
+  /**
    * Suspect is true when the title reads like an author's notice.
    */
   suspect: boolean
+  /**
+   * Locked is true for an entry the site lists but won't serve this
+   * reader (patrons only, early access): it shows what is there, and
+   * can't be imported until it opens. "Skip" still drops it.
+   */
+  locked: boolean
   /**
    * Unavailable is true for a chapter that was agreed to but couldn't
    * be read - a delisted one the Internet Archive has no usable copy
@@ -2115,6 +2166,37 @@ export interface SourceSettings {
    * checked for new entries by itself: 0 never.
    */
   checkEveryHours: number
+  /**
+   * PatreonAccount is the name of the Patreon account the library reads
+   * patrons-only posts as (PUT /api/settings/patreon), "" when it isn't
+   * signed in to one. Read-only here.
+   */
+  patreonAccount?: string
+}
+
+/**
+ * sourceTitleRuleDTO is one source's title rule (store.TitleRule): a
+ * regular expression over the titles the source lists its entries under,
+ * saying which are chapters and what each is called. Kept with the source
+ * and applied by every check of it.
+ */
+export interface SourceTitleRule {
+  /**
+   * Pattern is the expression (Go/RE2 syntax, case-sensitive unless it
+   * starts "(?i)"), matched anywhere in a title. "" is no rule.
+   */
+  pattern: string
+  /**
+   * Output, if not empty, is what an entry whose title matches is
+   * called: a template over the match's capture groups - "Chapter $1",
+   * "${name}"; "$$" is a dollar sign. Empty keeps the title.
+   */
+  output: string
+  /**
+   * Only leaves out every entry whose title doesn't match: it is
+   * neither imported nor offered for review.
+   */
+  only: boolean
 }
 
 /**
@@ -2435,6 +2517,50 @@ export interface TopicParams {
   bookId: string
   chapterIdx?: number | null
   characterId: string
+}
+
+/**
+ * trackedSourceDTO is one of the sources a book tracks.
+ */
+export interface TrackedSource {
+  /**
+   * ID names the source for DELETE /api/books/{id}/sources/{sourceId}.
+   */
+  id: string
+  kind: BookSourceKind
+  /**
+   * Name is the site's name, for display ("Royal Road").
+   */
+  name: string
+  /**
+   * URL is the work's page there.
+   */
+  url: string
+  /**
+   * CheckedAt is when it was last checked (unix seconds), absent if never.
+   */
+  checkedAt?: number
+  /**
+   * Error is why its last check stopped early, absent if it finished.
+   */
+  error?: string
+  /**
+   * Blocked is the title of the chapter its last check stopped at
+   * because the source lists it but doesn't serve it yet; absent if none.
+   */
+  blocked?: string
+  /**
+   * Waiting is how many of its entries wait for the reader's say, and
+   * Locked how many more it lists that it won't serve this reader
+   * (patrons only, early access) - there, but not importable yet.
+   */
+  waiting: number
+  locked: number
+  /**
+   * TitleRule is the source's title rule, absent when it has none (PUT
+   * /api/books/{id}/sources/{sourceId}/title-rule).
+   */
+  titleRule?: SourceTitleRule | null
 }
 
 /**
@@ -3162,6 +3288,14 @@ export interface Routes {
    * (narration *about* a character isn't them speaking), still worth
    * guarding here even though every paragraph reachable through an
    * "appearances" list already passed it once at attribution time.
+   *
+   * With "new" the name is a person of their own - for a line attribution
+   * gave to someone else because it took two people for one. The name isn't
+   * resolved through aliases, and since a conflated character usually holds
+   * it as one ("Bert", also called "Albert"), it is removed from every
+   * character's aliases, so later attribution stops folding it back; a
+   * character of that name marked invalid is made valid again. 400 without
+   * a name ("", Narrator, Unknown).
    */
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker': {
     path: { id: string; idx: number; pidx: number }
@@ -4168,6 +4302,46 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleAddBookSource has a book track another source: a link to the same
+   * work somewhere else it is posted. Nothing is imported by this: the check
+   * it starts recognizes the entries the book already has (by title) and
+   * leaves the rest waiting for review, like anything a later check finds.
+   * 201 with the source; 409 while the book is being checked, or when the
+   * library already tracks that work.
+   */
+  'POST /api/books/{id}/sources': {
+    path: { id: string }
+    query: Record<never, never>
+    body: AddBookSourceRequest
+    response: TrackedSource
+    errorCode: 'book_exists'
+  }
+  /**
+   * handleRemoveBookSource has a book stop tracking one of its sources. The
+   * chapters it took from there stay. 409 while the book is being checked.
+   */
+  'DELETE /api/books/{id}/sources/{sourceId}': {
+    path: { id: string; sourceId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleSetSourceTitleRule sets (or, with an empty pattern, clears) the
+   * title rule of one of a book's sources, and checks the book again so
+   * what waits for review is listed by it. Chapters the book already has
+   * keep their names. 400 for a pattern that isn't a regular expression,
+   * 409 while the book is being checked.
+   */
+  'PUT /api/books/{id}/sources/{sourceId}/title-rule': {
+    path: { id: string; sourceId: string }
+    query: Record<never, never>
+    body: SourceTitleRule
+    response: void
+    errorCode: never
+  }
+  /**
    * handleListSpeakers reports every speaker recognized in bookID so far -
    * the Narrator plus every attributed character - and how much of each
    * one's audio has actually been generated, so the reader can see which
@@ -4443,6 +4617,25 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handlePreprocessLibrary preprocesses every book in the library, up to
+   * libraryPreprocessSeries series at once: each series' books one at a
+   * time in series order (they share a roster, as in
+   * handlePreprocessSeries), series started by name, then the books in no
+   * series, oldest first, each taking a series' place. One job-queue row (a
+   * jobs.BulkGroup, Kind "pipeline_library_preprocess", on the first book),
+   * promoted and cancelled like a series run's; asking again while one is
+   * queued or running joins it. A book whose passes are all done costs one
+   * look at its chapters. 202 with the number of books, 0 for an empty
+   * library.
+   */
+  'POST /api/library/preprocess': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
    * handleTestLLM is a standalone raw-prompt test surface for this app's
    * own embedded speaker-attribution GGUF model (internal/llmworker,
    * proxied through ttsworker.Manager.LLMGenerate) - stateless, not tied to
@@ -4472,12 +4665,12 @@ export interface Routes {
    * handleGetMusicRegionAudio serves GET /api/music-regions/{id}/audio - the
    * frontend's own background-music mixer fetches each region's clip by this
    * URL (musicRegionDTO.AudioURL) as narration crosses into its paragraph
-   * range. Range-request-capable via http.ServeFile, same as
+   * range. Cached like a narration clip (cacheVersionedClip). Range-request-capable via http.ServeFile, same as
    * handleGetAudio/handleGetParagraphSFXAudio.
    */
   'GET /api/music-regions/{id}/audio': {
     path: { id: string }
-    query: Record<never, never>
+    query: { v?: string | number | boolean }
     body: never
     response: Blob
     errorCode: never
@@ -4551,6 +4744,21 @@ export interface Routes {
     query: Record<never, never>
     body: never
     response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleSetPatreonSession signs the library in to Patreon with a browser's
+   * session_id cookie, so posts that account can read can be imported - or,
+   * with none, signs it out. The cookie is checked with Patreon first: 400
+   * if it isn't a session Patreon knows. Books that track Patreon - or The
+   * Wandering Inn, which is unlocked with the same account - are then
+   * checked again, since what they can read has changed.
+   */
+  'PUT /api/settings/patreon': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: PatreonSessionRequest
+    response: void
     errorCode: never
   }
   /**
@@ -4972,6 +5180,9 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/source/reparse': 'json',
   'POST /api/books/{id}/source/review': 'json',
   'POST /api/books/{id}/source/sync': 'json',
+  'POST /api/books/{id}/sources': 'json',
+  'DELETE /api/books/{id}/sources/{sourceId}': 'none',
+  'PUT /api/books/{id}/sources/{sourceId}/title-rule': 'none',
   'GET /api/books/{id}/speakers': 'json',
   'DELETE /api/books/{id}/speakers': 'none',
   'POST /api/books/{id}/speakers/reattribute': 'json',
@@ -4990,12 +5201,14 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/jobs/resume': 'none',
   'DELETE /api/jobs/{id}': 'none',
   'PUT /api/jobs/{id}/tier': 'none',
+  'POST /api/library/preprocess': 'json',
   'POST /api/llm/test': 'json',
   'GET /api/music-regions/{id}/audio': 'binary',
   'POST /api/music-regions/{id}/regenerate': 'json',
   'GET /api/paragraphs/{id}/audio': 'binary',
   'GET /api/paragraphs/{id}/sfx-audio': 'binary',
   'POST /api/recaps/check': 'json',
+  'PUT /api/settings/patreon': 'none',
   'GET /api/settings/recap': 'json',
   'PUT /api/settings/recap': 'none',
   'GET /api/settings/sources': 'json',

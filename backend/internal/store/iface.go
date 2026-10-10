@@ -50,14 +50,19 @@ type Store interface {
 	DeleteChapter(bookID string, idx int) (chapterID string, images []CreatedImage, err error)
 	ChapterSourceIDs(bookID string) ([]string, error)
 	FindBookBySource(kind, sourceID string) (string, error)
-	GetBookSource(bookID string) (*BookSource, error)
-	SetBookSource(bookID string, src BookSource) error
-	SetBookSourcePlan(bookID string, plan SourcePlan) error
-	GetBookSourcePlan(bookID string) (SourcePlan, error)
+	BookSources(bookID string) ([]BookSource, error)
+	GetBookSource(id string) (*BookSource, error)
+	SaveBookSource(src *BookSource) error
+	DeleteBookSource(id string) error
+	SetBookSourcePlan(sourceID string, plan SourcePlan) error
+	GetBookSourcePlan(sourceID string) (SourcePlan, error)
 	SourcedChapters(bookID string) ([]SourcedChapter, error)
+	ChapterSources(bookID string) ([]SourcedChapter, error)
 	ChapterOpenings(bookID string, limit int) ([]ChapterOpening, error)
 	SourcedBooks() ([]SourcedBook, error)
 	SourceCheckHours() (int, error)
+	PatreonSession() (session, account string, err error)
+	SetPatreonSession(session, account string) error
 	SetSourceCheckHours(hours int) error
 	CreateBook(title, author, language string, coverExt string, seriesName string, seriesIndex float64, chapters []ChapterInput) (bookID string, images []CreatedImage, err error)
 	CreateVoicePreset(name, instruct, refText string, seed int, speedMultiplier float64, designModel string) (VoicePreset, error)

@@ -7,20 +7,29 @@ import (
 	"strings"
 )
 
-// BookSource is where a book imported from a website came from, and how
-// the last check for new chapters there went. A book from an uploaded
-// epub has none.
+// BookSource is one place a book's chapters come from: a website it was
+// imported from or that was added to it since, and how the last check for
+// new chapters there went. A book can track several (BookSources); one
+// from an uploaded epub has none until a source is added.
 type BookSource struct {
+	// ID names this row; assigned by SaveBookSource.
+	ID     string
+	BookID string
 	// Kind names the site ("royalroad"), SourceID the work's id there
 	// (a fiction's number, "vol-3").
 	Kind     string
 	SourceID string
 	URL      string
+	// Prefix goes before this source's chapter ids wherever the book
+	// stores them (chapters.source_id, the plan): "" for the source a
+	// book was imported from, "<site>:" for one added later.
+	Prefix string
 	// CheckedAt is when the source was last checked (unix seconds), 0 if
 	// never.
 	CheckedAt int64
-	// RemoteChapters is how many chapters the source offered at the last
-	// check: the book's own plus any still to be fetched.
+	// RemoteChapters is how many chapters the book would have with what
+	// the source offered at the last check: the book's own plus any still
+	// to be fetched.
 	RemoteChapters int
 	// Error is why the last check stopped early, "" if it finished.
 	Error string
@@ -29,22 +38,58 @@ type BookSource struct {
 	Blocked string
 }
 
-// SetBookSource records bookID's source, replacing any it had.
-func (s *SQLiteStore) SetBookSource(bookID string, src BookSource) error {
+const bookSourceColumns = `id, book_id, kind, source_id, url, prefix, checked_at, remote_chapters, error, blocked`
+
+func scanBookSource(row interface{ Scan(...any) error }) (BookSource, error) {
+	var src BookSource
+	err := row.Scan(&src.ID, &src.BookID, &src.Kind, &src.SourceID, &src.URL, &src.Prefix, &src.CheckedAt, &src.RemoteChapters, &src.Error, &src.Blocked)
+	return src, err
+}
+
+// SaveBookSource stores src: a new row for its BookID when it has no ID
+// (one is assigned), otherwise that row's new state. Its plan is kept
+// apart (SetBookSourcePlan).
+func (s *SQLiteStore) SaveBookSource(src *BookSource) error {
+	if src.ID == "" {
+		id := NewID()
+		if _, err := s.db.Exec(
+			`INSERT INTO book_sources (id, book_id, kind, source_id, url, prefix, checked_at, remote_chapters, error, blocked, added_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(added_at), 0) + 1 FROM book_sources WHERE book_id = ?))`,
+			id, src.BookID, src.Kind, src.SourceID, src.URL, src.Prefix, src.CheckedAt, src.RemoteChapters, src.Error, src.Blocked, src.BookID); err != nil {
+			return err
+		}
+		src.ID = id
+		return nil
+	}
 	_, err := s.db.Exec(
-		`UPDATE books SET source_kind = ?, source_id = ?, source_url = ?, source_checked_at = ?, source_remote_chapters = ?, source_error = ?, source_blocked = ? WHERE id = ?`,
-		src.Kind, src.SourceID, src.URL, src.CheckedAt, src.RemoteChapters, src.Error, src.Blocked, bookID)
+		`UPDATE book_sources SET kind = ?, source_id = ?, url = ?, checked_at = ?, remote_chapters = ?, error = ?, blocked = ? WHERE id = ?`,
+		src.Kind, src.SourceID, src.URL, src.CheckedAt, src.RemoteChapters, src.Error, src.Blocked, src.ID)
 	return err
 }
 
-// GetBookSource returns bookID's source, nil for a book without one (or no
-// such book).
-func (s *SQLiteStore) GetBookSource(bookID string) (*BookSource, error) {
-	var src BookSource
-	err := s.db.QueryRow(
-		`SELECT source_kind, source_id, source_url, source_checked_at, source_remote_chapters, source_error, source_blocked FROM books WHERE id = ?`, bookID).
-		Scan(&src.Kind, &src.SourceID, &src.URL, &src.CheckedAt, &src.RemoteChapters, &src.Error, &src.Blocked)
-	if err == sql.ErrNoRows || (err == nil && src.Kind == "") {
+// BookSources returns the sources bookID tracks, in the order they were
+// added; none for a book from an epub (or no such book).
+func (s *SQLiteStore) BookSources(bookID string) ([]BookSource, error) {
+	rows, err := s.db.Query(`SELECT `+bookSourceColumns+` FROM book_sources WHERE book_id = ? ORDER BY added_at, rowid`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []BookSource
+	for rows.Next() {
+		src, err := scanBookSource(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, src)
+	}
+	return out, rows.Err()
+}
+
+// GetBookSource returns one source by its id, nil if there is none.
+func (s *SQLiteStore) GetBookSource(id string) (*BookSource, error) {
+	src, err := scanBookSource(s.db.QueryRow(`SELECT `+bookSourceColumns+` FROM book_sources WHERE id = ?`, id))
+	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
@@ -53,8 +98,15 @@ func (s *SQLiteStore) GetBookSource(bookID string) (*BookSource, error) {
 	return &src, nil
 }
 
-// SourcePlan is which chapters of its source a book takes, when that isn't
-// simply "all the source lists" - see the books.source_plan migration.
+// DeleteBookSource stops tracking a source. The chapters the book took
+// from it stay, with their ids.
+func (s *SQLiteStore) DeleteBookSource(id string) error {
+	_, err := s.db.Exec(`DELETE FROM book_sources WHERE id = ?`, id)
+	return err
+}
+
+// SourcePlan is which chapters of one source a book takes, when that isn't
+// simply "all the source lists" - see the book_sources migration.
 type SourcePlan struct {
 	// Skip are the source ids of chapters the reader left out.
 	Skip []string `json:"skip,omitempty"`
@@ -71,6 +123,27 @@ type SourcePlan struct {
 	// Pending are entries the last check found that the reader hasn't
 	// decided on, in reading order. The book stops before the first.
 	Pending []PlannedChapter `json:"pending,omitempty"`
+	// Title, if set, says which of the source's entries are chapters and
+	// what each is called (TitleRule).
+	Title *TitleRule `json:"title,omitempty"`
+	// Matched are the source ids of entries the book already has from
+	// another of its sources (the same chapter posted in two places), so
+	// no check fetches them again.
+	Matched []string `json:"matched,omitempty"`
+}
+
+// TitleRule is a regular expression over the titles a source lists its
+// entries under, for a source that posts more than chapters or names them
+// its own way.
+type TitleRule struct {
+	// Pattern is the expression (Go syntax), matched anywhere in a title.
+	Pattern string `json:"pattern"`
+	// Output, if not empty, is what an entry whose title matches is
+	// called instead: a template over the match's capture groups ("Chapter
+	// $1", "${name}").
+	Output string `json:"output,omitempty"`
+	// Only leaves out every entry whose title doesn't match.
+	Only bool `json:"only,omitempty"`
 }
 
 // PlannedChapter is one chapter of a SourcePlan's Extra or Pending.
@@ -87,22 +160,28 @@ type PlannedChapter struct {
 	// read: a delisted chapter the archive has no usable copy of. The
 	// reader says skip it (the book goes on without) or try again.
 	Unreadable bool `json:"unreadable,omitempty"`
+	// Locked marks a pending entry the source lists but won't serve to
+	// this reader (patrons only, early access): it can't be imported
+	// until it opens.
+	Locked bool `json:"locked,omitempty"`
 }
 
-// SetBookSourcePlan stores bookID's plan, replacing any it had.
-func (s *SQLiteStore) SetBookSourcePlan(bookID string, plan SourcePlan) error {
+// SetBookSourcePlan stores the plan of the source with that id, replacing
+// any it had.
+func (s *SQLiteStore) SetBookSourcePlan(sourceID string, plan SourcePlan) error {
 	raw, err := json.Marshal(plan)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`UPDATE books SET source_plan = ? WHERE id = ?`, string(raw), bookID)
+	_, err = s.db.Exec(`UPDATE book_sources SET plan = ? WHERE id = ?`, string(raw), sourceID)
 	return err
 }
 
-// GetBookSourcePlan returns bookID's plan, empty for a book without one.
-func (s *SQLiteStore) GetBookSourcePlan(bookID string) (SourcePlan, error) {
+// GetBookSourcePlan returns the plan of the source with that id, empty
+// when it has none.
+func (s *SQLiteStore) GetBookSourcePlan(sourceID string) (SourcePlan, error) {
 	var raw string
-	err := s.db.QueryRow(`SELECT source_plan FROM books WHERE id = ?`, bookID).Scan(&raw)
+	err := s.db.QueryRow(`SELECT plan FROM book_sources WHERE id = ?`, sourceID).Scan(&raw)
 	if err == sql.ErrNoRows {
 		return SourcePlan{}, nil
 	}
@@ -118,11 +197,11 @@ func (s *SQLiteStore) GetBookSourcePlan(bookID string) (SourcePlan, error) {
 	return plan, nil
 }
 
-// FindBookBySource returns the id of the book imported from that source,
-// "" if the library has none.
+// FindBookBySource returns the id of a book tracking that source, "" if
+// the library has none.
 func (s *SQLiteStore) FindBookBySource(kind, sourceID string) (string, error) {
 	var id string
-	err := s.db.QueryRow(`SELECT id FROM books WHERE source_kind = ? AND source_id = ? ORDER BY added_at LIMIT 1`, kind, sourceID).Scan(&id)
+	err := s.db.QueryRow(`SELECT book_id FROM book_sources WHERE kind = ? AND source_id = ? ORDER BY added_at, rowid LIMIT 1`, kind, sourceID).Scan(&id)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -161,6 +240,25 @@ type SourcedChapter struct {
 // chapter order.
 func (s *SQLiteStore) SourcedChapters(bookID string) ([]SourcedChapter, error) {
 	rows, err := s.db.Query(`SELECT idx, title, source_id FROM chapters WHERE book_id = ? AND source_id <> '' ORDER BY idx`, bookID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SourcedChapter
+	for rows.Next() {
+		var c SourcedChapter
+		if err := rows.Scan(&c.Idx, &c.Title, &c.SourceID); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ChapterSources lists every chapter of bookID with the source ids it
+// holds ("" for one that came from an epub), in chapter order.
+func (s *SQLiteStore) ChapterSources(bookID string) ([]SourcedChapter, error) {
+	rows, err := s.db.Query(`SELECT idx, title, source_id FROM chapters WHERE book_id = ? ORDER BY idx`, bookID)
 	if err != nil {
 		return nil, err
 	}
@@ -238,8 +336,22 @@ func (s *SQLiteStore) SetSourceCheckHours(hours int) error {
 	return err
 }
 
-// SourcedBook is a book imported from a website and when it was last
-// checked.
+// PatreonSession is the Patreon session books are read with - a signed-in
+// browser's session_id cookie - and the name of the account it belongs
+// to; both "" when not signed in. Library-wide.
+func (s *SQLiteStore) PatreonSession() (session, account string, err error) {
+	err = s.db.QueryRow(`SELECT patreon_session, patreon_account FROM default_voice WHERE id = 0`).Scan(&session, &account)
+	return session, account, err
+}
+
+// SetPatreonSession sets PatreonSession.
+func (s *SQLiteStore) SetPatreonSession(session, account string) error {
+	_, err := s.db.Exec(`UPDATE default_voice SET patreon_session = ?, patreon_account = ? WHERE id = 0`, session, account)
+	return err
+}
+
+// SourcedBook is a book that tracks at least one source, and when the
+// least recently checked of them was checked.
 type SourcedBook struct {
 	BookID    string
 	CheckedAt int64
@@ -248,7 +360,7 @@ type SourcedBook struct {
 // SourcedBooks lists every book that has a source, least recently checked
 // first.
 func (s *SQLiteStore) SourcedBooks() ([]SourcedBook, error) {
-	rows, err := s.db.Query(`SELECT id, source_checked_at FROM books WHERE source_kind <> '' ORDER BY source_checked_at, added_at`)
+	rows, err := s.db.Query(`SELECT book_id, MIN(checked_at) FROM book_sources GROUP BY book_id ORDER BY 2, MIN(rowid)`)
 	if err != nil {
 		return nil, err
 	}

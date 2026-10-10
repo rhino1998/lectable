@@ -200,6 +200,7 @@ fun kindLabel(kind: String): String = when (kind) {
     "pipeline_recap" -> "Recap"
     "pipeline_source_sync" -> "Check for New Chapters"
     "pipeline_series_preprocess" -> "Preprocess Series"
+    "pipeline_library_preprocess" -> "Preprocess Library"
     "pipeline_bulk_voices" -> "Bulk: Voices"
     "pipeline_bulk_used_voices" -> "Bulk: Used Voices"
     else -> kind

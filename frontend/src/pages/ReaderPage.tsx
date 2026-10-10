@@ -17,6 +17,7 @@ import {
 } from '../api/queries'
 import { usePlayback } from '../hooks/usePlayback'
 import { useBackgroundMusic } from '../hooks/useBackgroundMusic'
+import { useMusicVolume } from '../hooks/useMusicVolume'
 import { useLighting } from '../hooks/useLighting'
 import { useLightingState } from '../lighting/controller'
 import { useInView } from '../hooks/useInView'
@@ -314,6 +315,7 @@ export function ReaderPage() {
   // plus the currently-playing chapter's own regions (and, for a
   // cross-chapter pre-roll near a chapter's end, the next one's - see the
   // hook's own doc comment on chapterParagraphCount/totalChapters).
+  const [musicVolume, setMusicVolume] = useMusicVolume()
   useBackgroundMusic({
     bookId,
     chapterIdx: playback.chapterIdx,
@@ -325,6 +327,7 @@ export function ReaderPage() {
     musicEnabled: !!bookQuery.data?.musicEnabled,
     isPlaying: playback.isPlaying,
     playbackRate: playback.playbackRate,
+    volume: musicVolume,
   })
 
   // Room lighting from the same regions' lighting cues - see useLighting.
@@ -852,6 +855,9 @@ export function ReaderPage() {
         readerFontFamily={typography.fontFamily}
         onReaderFontSizeChange={typography.setFontSize}
         onReaderFontFamilyChange={typography.setFontFamily}
+        musicEnabled={!!bookQuery.data?.musicEnabled}
+        musicVolume={musicVolume}
+        onMusicVolumeChange={setMusicVolume}
       />
 
       <ParagraphContextMenu

@@ -41,6 +41,19 @@ internal data class ReviewDecision(val import: List<String>, val skip: List<Stri
 internal fun reviewImports(entry: SourceReviewEntryDto, choices: Map<String, Boolean>): Boolean =
     choices[entry.id] ?: (!entry.suspect && !entry.unavailable)
 
+/** The entries there is a decision to make on: all but the ones a source lists and won't serve
+ *  this reader (`locked` - a Patreon the library isn't a member of, early access). Those only
+ *  say what is there; they aren't shown in the dialog, so its "skip" can't drop them for good. */
+internal fun openEntries(entries: List<SourceReviewEntryDto>?): List<SourceReviewEntryDto> =
+    entries.orEmpty().filter { !it.locked }
+
+/** "3 more at Patreon, locked": what the book's sources list but won't serve, null for none. */
+internal fun lockedEntriesLine(entries: List<SourceReviewEntryDto>?): String? {
+    val locked = entries.orEmpty().filter { it.locked }
+    if (locked.isEmpty()) return null
+    return "${locked.size} more at ${locked.map { it.source }.distinct().joinToString(" and ")}, locked"
+}
+
 /** Every entry as either import or skip, each list in reading order - none is left waiting. */
 internal fun reviewDecision(entries: List<SourceReviewEntryDto>, choices: Map<String, Boolean>): ReviewDecision {
     val (import, skip) = entries.partition { reviewImports(it, choices) }

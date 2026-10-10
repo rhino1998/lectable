@@ -86,6 +86,8 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   // A series preprocessed one book at a time, in order (the library's
   // series title bar).
   pipeline_series_preprocess: 'Preprocess Series',
+  // Every book in the library, a few series at a time (the library header's button).
+  pipeline_library_preprocess: 'Preprocess Library',
   sfx_generation: 'SFX',
   sfx_preview: 'SFX/Music Preview',
   llm_preview: 'LLM Preview',

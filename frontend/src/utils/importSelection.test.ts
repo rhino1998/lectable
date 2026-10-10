@@ -5,7 +5,9 @@ import {
   defaultReview,
   defaultSelection,
   mergeSelection,
+  selectMatching,
   selectRange,
+  titlePattern,
 } from './importSelection'
 
 const ch = (
@@ -49,6 +51,19 @@ describe('import selection', () => {
     expect([...mergeSelection(live, new Set(['1']), withNotice)]).toEqual(['1'])
     expect([...defaultReview([ch('1', 'site'), ch('2', 'site', true)])]).toEqual(['1'])
     expect([...defaultReview([{ id: '3', suspect: false, unavailable: true }])]).toEqual([])
+  })
+
+  it('ticks and unticks by a pattern over titles', () => {
+    const chapters = [
+      { ...ch('1', 'site'), title: 'Chapter 1: Out' },
+      { ...ch('2', 'site'), title: 'Poll: what next?' },
+      { ...ch('3', 'site'), title: 'chapter 2: Inn' },
+    ]
+    const chapter = titlePattern('^chapter \\d')!
+    expect([...selectMatching(chapters, new Set(['2']), chapter, true)]).toEqual(['2', '1', '3'])
+    expect([...selectMatching(chapters, new Set(['1', '2', '3']), chapter, false)]).toEqual(['2'])
+    expect(titlePattern('  ')).toBeNull()
+    expect(titlePattern('chapter (')).toBeNull()
   })
 
   it('selects exactly a range, clamped and in either order', () => {

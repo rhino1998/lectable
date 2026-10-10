@@ -274,11 +274,13 @@ func musicRegionPending(status string) bool {
 
 // advanceWholeChapterMusic dispatches every currently-eligible region of a
 // fully-voiced chapter as one KindMusicGeneration batch. The scan walks
-// regions in order and stops the moment it hits one it can't safely batch
-// because the region before it neither has settled nor is itself part of
-// this batch - regions further along the chapter can never be eligible
-// before that point either. Everything gathered before that point (zero,
-// one, or several regions) becomes one batch.
+// regions in order and stops the moment it hits a continuation it can't
+// safely batch because the region before it neither has settled nor is
+// itself part of this batch - a continuation further along can't be
+// eligible before that point either. A cut needs nothing from the region
+// before it, so it is batched whatever that one's state. Everything
+// gathered before that point (zero, one, or several regions) becomes one
+// batch.
 func (m *Manager) advanceWholeChapterMusic(bookID, chapterID string, chapterIdx int, regions []store.MusicRegion, regionDuration func(store.MusicRegion) (float64, bool), tier int) int {
 	batch, initialSeedRegionID := selectWholeChapterMusic(regions, regionDuration, m.musicRegionGenerating)
 	if len(batch) == 0 {
@@ -309,7 +311,7 @@ func selectWholeChapterMusic(regions []store.MusicRegion, regionDuration func(st
 		if !musicRegionPending(region.Status) || generating(region.ID) {
 			continue
 		}
-		if i > 0 {
+		if i > 0 && region.Transition == store.MusicTransitionContinuation {
 			prev := regions[i-1]
 			settled := !musicRegionPending(prev.Status)
 			inThisBatch := lastBatchedIdx == i-1
@@ -593,8 +595,10 @@ func (m *Manager) MusicRegionGenerating(id string) bool {
 }
 
 // generateChapterMusicBatch is MaybeAdvanceChapterMusic's own dispatched
-// work: generate and persist every region in batch, strictly in order,
-// within one task. A "continuation" region's seed is read from whichever
+// work: generate and persist every region in batch within one task. The
+// batch is split where the music cuts (musicChains): each chain runs
+// strictly in order, and up to musicChainConcurrency chains run side by
+// side. A "continuation" region's seed is read from whichever
 // region immediately precedes it on disk (audiopath.MusicRegionSeedFile) right
 // before generating it, not precomputed up front - by the time this loop
 // reaches that region, the previous one has either already settled before
@@ -633,17 +637,74 @@ func (m *Manager) MusicRegionGenerating(id string) bool {
 // on every attempt, so the DB always ends up correct regardless of how
 // this loop as a whole concludes.
 func (m *Manager) generateChapterMusicBatch(ctx context.Context, bookID, chapterID string, batch []pendingMusicRegion, initialSeedRegionID string) error {
-	prevRegionID := initialSeedRegionID
-	for _, item := range batch {
+	sem := make(chan struct{}, musicChainConcurrency)
+	var wg sync.WaitGroup
+	for i, chain := range musicChains(batch) {
+		seedRegionID := ""
+		if i == 0 {
+			seedRegionID = initialSeedRegionID
+		}
+		sem <- struct{}{}
 		if ctx.Err() != nil {
-			return nil
+			<-sem
+			break
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("jobs: music chain from region %s (chapter %s) panicked: %v", chain[0].region.ID, chapterID, r)
+				}
+			}()
+			m.generateMusicChain(ctx, bookID, chapterID, chain, seedRegionID)
+		}()
+	}
+	wg.Wait()
+	return nil
+}
+
+// musicChainConcurrency is how many of a batch's chains (musicChains)
+// render at once. The worker runs one Stable Audio call at a time, and one
+// already keeps the GPU busy, so this only lets one chain's call run while
+// another is between calls - decoding, mixing and encoding on this side,
+// about a fifth of a region's time. Measured 2026-10-09 on eight 200s
+// regions: 14.3s a region one at a time, 11.6s at two, 11.5s at three -
+// see docs/music-models.md.
+const musicChainConcurrency = 2
+
+// musicChains splits a batch into the runs of regions that depend on each
+// other: a chain starts at the batch's first region and at every cut, and
+// each continuation joins the chain of the region before it, whose clip it
+// is seeded from. Chains share nothing, so they can render side by side.
+func musicChains(batch []pendingMusicRegion) [][]pendingMusicRegion {
+	var chains [][]pendingMusicRegion
+	for i, item := range batch {
+		if i == 0 || item.region.Transition != store.MusicTransitionContinuation {
+			chains = append(chains, nil)
+		}
+		chains[len(chains)-1] = append(chains[len(chains)-1], item)
+	}
+	return chains
+}
+
+// generateMusicChain generates and persists one chain's regions, strictly
+// in order - see generateChapterMusicBatch. initialSeedRegionID seeds the
+// first one, if it is a continuation.
+func (m *Manager) generateMusicChain(ctx context.Context, bookID, chapterID string, chain []pendingMusicRegion, initialSeedRegionID string) {
+	prevRegionID := initialSeedRegionID
+	for _, item := range chain {
+		if ctx.Err() != nil {
+			return
 		}
 		// The other music kind may have this region right now - stop
-		// here rather than generate what comes after it without its clip
-		// to seed from; that task's own completion re-runs
-		// MaybeAdvanceChapterMusic, which picks up where this left off.
+		// here rather than generate what comes after it in this chain
+		// without its clip to seed from; that task's own completion
+		// re-runs MaybeAdvanceChapterMusic, which picks up where this
+		// left off.
 		if !m.claimMusicRegion(item.region.ID) {
-			return nil
+			return
 		}
 		// Re-read now that it's claimed: it may have been generated since
 		// this batch was built.
@@ -660,7 +721,7 @@ func (m *Manager) generateChapterMusicBatch(ctx context.Context, bookID, chapter
 		m.releaseMusicRegion(item.region.ID)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
-				return nil
+				return
 			}
 			// Already logged (and persisted as AudioError) inside
 			// generateMusicRegionWithRetry - move on rather than let this
@@ -669,7 +730,6 @@ func (m *Manager) generateChapterMusicBatch(ctx context.Context, bookID, chapter
 		}
 		prevRegionID = item.region.ID
 	}
-	return nil
 }
 
 // musicRegionRetryDelay is the pause generateMusicRegionWithRetry takes
@@ -847,7 +907,9 @@ func (m *Manager) saveMusicSeed(bookID, chapterID, regionID string, music []byte
 }
 
 // lockAmbience serializes work on one book's ambience loop for prompt, so
-// two regions set in the same place never both render it.
+// two regions set in the same place never both render it. Held only while
+// the loop is fetched or rendered - regions sharing a place whose loop
+// exists render side by side.
 func (m *Manager) lockAmbience(bookID, prompt string) func() {
 	v, _ := m.ambienceLocks.LoadOrStore(audiopath.AmbienceLoopFile("", bookID, prompt), &sync.Mutex{})
 	mu := v.(*sync.Mutex)
@@ -895,10 +957,15 @@ func (m *Manager) generateMusicRegion(ctx context.Context, bookID, chapterID str
 	var loop []byte
 	loopPath := audiopath.AmbienceLoopFile(m.dataDir, bookID, region.Ambience)
 	if region.Ambience != "" {
-		defer m.lockAmbience(bookID, region.Ambience)()
+		unlock := m.lockAmbience(bookID, region.Ambience)
 		if data, err := m.ambienceLoop(ctx, loopPath); err == nil {
 			loop = data
+			unlock()
 		} else {
+			// This region renders the loop: hold the lock until it is
+			// saved, so another region in the same place waits for it
+			// rather than rendering its own.
+			defer unlock()
 			in.AmbiencePrompt = region.Ambience
 		}
 	}

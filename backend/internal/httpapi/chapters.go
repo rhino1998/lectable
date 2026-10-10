@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -316,12 +317,19 @@ func (s *Server) handleGetClip(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "clip not found")
 		return
 	}
+	cacheVersionedClip(w, r)
+	s.serveMaterializedClip(w, r, audiopath.SharedClipFile(s.DataDir, key))
+}
+
+// cacheVersionedClip sets a clip response's Cache-Control: a request naming
+// a version ("?v=") is for one render, which never changes, so it is cached
+// for good; one without is revalidated every time.
+func cacheVersionedClip(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("v") != "" {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
 		w.Header().Set("Cache-Control", "no-cache")
 	}
-	s.serveMaterializedClip(w, r, audiopath.SharedClipFile(s.DataDir, key))
 }
 
 // clipKeyRe matches a clipkey.Recipe.Key.
@@ -870,6 +878,10 @@ func (s *Server) handleGetParagraphSFXAudio(w http.ResponseWriter, r *http.Reque
 
 type setParagraphSpeakerRequest struct {
 	Speaker string `json:"speaker"`
+	// New says Speaker is a person of their own, however the roster knows
+	// the name: it is not resolved through anyone's aliases, and is taken
+	// off whoever holds it as one.
+	New bool `json:"new,omitempty"`
 }
 
 // handleSetParagraphSpeaker corrects one paragraph's speaker attribution
@@ -891,6 +903,14 @@ type setParagraphSpeakerRequest struct {
 // (narration *about* a character isn't them speaking), still worth
 // guarding here even though every paragraph reachable through an
 // "appearances" list already passed it once at attribution time.
+//
+// With "new" the name is a person of their own - for a line attribution
+// gave to someone else because it took two people for one. The name isn't
+// resolved through aliases, and since a conflated character usually holds
+// it as one ("Bert", also called "Albert"), it is removed from every
+// character's aliases, so later attribution stops folding it back; a
+// character of that name marked invalid is made valid again. 400 without
+// a name ("", Narrator, Unknown).
 func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Request) {
 	bookID := r.PathValue("id")
 	chapterIdx, err := strconv.Atoi(r.PathValue("idx"))
@@ -958,21 +978,44 @@ func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "a speaker must be one person, not a group - pick whoever the narration credits, or Unknown")
 		return
 	}
+	if req.New && (speaker == "" || speaker == "Unknown") {
+		writeError(w, http.StatusBadRequest, "a new speaker needs a name")
+		return
+	}
 	if speaker != "" && speaker != "Unknown" {
-		// Typing one of a character's aliases ("Albert") means that
-		// character ("Bert"), not a new one.
 		roster, err := s.Store.ListCharacters(store.SeriesScope(book))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		speaker = rosterResolver(roster).Canonical(speaker)
+		if req.New {
+			for _, c := range roster {
+				kept := slices.DeleteFunc(slices.Clone([]string(c.Aliases)), func(a string) bool { return strings.EqualFold(a, speaker) })
+				if len(kept) == len(c.Aliases) {
+					continue
+				}
+				if err := s.Store.SetCharacterAliases(c.ID, kept); err != nil {
+					writeError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+		} else {
+			// Typing one of a character's aliases ("Albert") means that
+			// character ("Bert"), not a new one.
+			speaker = rosterResolver(roster).Canonical(speaker)
+		}
 	}
 	if speaker != "" {
 		char, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), speaker, false)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if req.New && char.Invalid {
+			if err := s.Store.SetCharacterInvalid(char.ID, false); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 		speaker = char.Name // the row's own spelling (the lookup ignores case)
 	}

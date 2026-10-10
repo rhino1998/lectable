@@ -9,6 +9,7 @@ import {
   RiFontSize,
   RiHistoryLine,
   RiLightbulbLine,
+  RiMusic2Line,
   RiGitMergeLine,
   RiIndentIncrease,
   RiPaletteLine,
@@ -27,6 +28,7 @@ import { DIRECTION_TAG_CATEGORY_LABELS, type DirectionTagCategory } from '../uti
 import { VoicePanel } from './VoicePanel'
 import { ReaderTypographyPanel } from './ReaderTypographyPanel'
 import { LightingPanel } from './LightingPanel'
+import { MusicPanel } from './MusicPanel'
 import { useLightingState } from '../lighting/controller'
 import { BookSearch } from './BookSearch'
 import { BookmarksPanel } from './BookmarksPanel'
@@ -41,7 +43,7 @@ import {
 } from '../api/queries'
 import { ApiError } from '../api/client'
 
-const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 6, 8, 10]
+const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 8, 10]
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -82,6 +84,9 @@ export function PlayerBar({
   readerFontFamily,
   onReaderFontSizeChange,
   onReaderFontFamilyChange,
+  musicEnabled,
+  musicVolume,
+  onMusicVolumeChange,
 }: {
   bookId: string
   chapter: ChapterDetail | undefined
@@ -113,6 +118,11 @@ export function PlayerBar({
   readerFontFamily: ReaderFontFamily
   onReaderFontSizeChange: (size: number) => void
   onReaderFontFamilyChange: (family: ReaderFontFamily) => void
+  // The book's background-music toggle, and this device's music volume
+  // (useMusicVolume) - see MusicPanel.
+  musicEnabled: boolean
+  musicVolume: number
+  onMusicVolumeChange: (volume: number) => void
 }) {
   const [voiceOpen, setVoiceOpen] = useState(false)
   const voiceButtonRef = useRef<HTMLButtonElement>(null)
@@ -127,6 +137,11 @@ export function PlayerBar({
     () => setTypographyOpen(false),
     typographyOpen,
   )
+
+  const [musicOpen, setMusicOpen] = useState(false)
+  const musicButtonRef = useRef<HTMLButtonElement>(null)
+  const musicPopoverRef = useRef<HTMLDivElement>(null)
+  useClickOutside([musicButtonRef, musicPopoverRef], () => setMusicOpen(false), musicOpen)
 
   const [lightsOpen, setLightsOpen] = useState(false)
   const lightsButtonRef = useRef<HTMLButtonElement>(null)
@@ -364,6 +379,12 @@ export function PlayerBar({
             onFontSizeChange={onReaderFontSizeChange}
             onFontFamilyChange={onReaderFontFamilyChange}
           />
+        </div>
+      )}
+
+      {musicOpen && (
+        <div className="bottom-popover" ref={musicPopoverRef}>
+          <MusicPanel bookId={bookId} volume={musicVolume} onVolumeChange={onMusicVolumeChange} />
         </div>
       )}
 
@@ -670,6 +691,17 @@ export function PlayerBar({
           title="Reader text size and font"
         >
           <RiFontSize /> Text size
+        </button>
+
+        <button
+          ref={musicButtonRef}
+          className={
+            'text-button-icon' + (musicOpen || musicEnabled ? ' text-button-icon-active' : '')
+          }
+          onClick={() => setMusicOpen((v) => !v)}
+          title="Background music: on or off for this book, and its volume"
+        >
+          <RiMusic2Line /> Music
         </button>
 
         <button

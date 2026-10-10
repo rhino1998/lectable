@@ -320,11 +320,15 @@ building/running `ttsworker` does, since both now link into that binary.
   find them in the archive's index. No store or job
   access: the orchestration (create the book, append chapters, check for
   new ones) is `httpapi/source.go` - see the `import-url` entry in
-  `docs/api.md`. The sites: `internal/royalroad/` (a work is a fiction)
-  and `internal/wanderinginn/` (a work is one volume of the serial, in the
-  series "The Wandering Inn"); each keeps everything that depends on its
-  site's markup in `parse.go`, and has a `...test` package that is a local
-  stand-in for the site. Adding a site is a new package implementing
+  `docs/api.md`. The sites: `internal/royalroad/` (a work is a fiction),
+  `internal/wanderinginn/` (a work is one volume of the serial, in the
+  series "The Wandering Inn") and `internal/patreon/` (a work is a
+  creator's campaign or one collection of it, read through the site's own
+  undocumented JSON API - see the `settings/patreon` entry in
+  `docs/api.md`); each keeps everything that depends on its
+  site's markup in `parse.go` (Patreon: `patreon.go`/`tiptap.go`), and has a `...test` package that is a local
+  stand-in for the site. A book can track several sources at once
+  (`httpapi/source_multi.go`, the `.../sources` entry in `docs/api.md`). Adding a site is a new package implementing
   `Source`, listed in `httpapi.defaultSources`, plus its `bookSourceKind`
   constant. `WEBSOURCE_LIVE=<link> go test ./internal/websource -run
   TestLive -v` checks a real site, for when its markup changes.
@@ -393,7 +397,11 @@ building/running `ttsworker` does, since both now link into that binary.
   74 books, 2.5M paragraphs, all multi-voice) it joined every paragraph to
   its audio and any `chapters`/`paragraphs` write dropped every book's
   result: a `books` rebuild was ~5 s after each such write, and is now
-  ~0.6 s the first time after a restart, ~0.1-0.2 s after.
+  ~0.6 s the first time after a restart, ~0.1-0.2 s after. The
+  fingerprints themselves were most of that (108 books: 170 of 200 ms), so
+  they are only read after a write to one of the tables they cover
+  (`narrationTables`); a rebuild after anything else - a saved position, a
+  job - is ~20 ms (2026-10-10).
   **No FK `ON DELETE CASCADE`** —
   `DeleteBook` deletes paragraphs → chapters → book explicitly in a
   transaction. Column
@@ -747,7 +755,11 @@ building/running `ttsworker` does, since both now link into that binary.
   invalidated, compares marshaled bytes with the last value, and fans out a
   patch only on a real change - computed once per topic regardless of
   subscriber count. Whole-book topics (`books`, `speakers`, appearances)
-  carry a `MinInterval` so steady generation doesn't keep rebuilding them. A subscriber whose outbound buffer fills is dropped
+  carry a `MinInterval` so steady generation doesn't keep rebuilding them.
+  `books` depends on `DepPipelines` rather than `jobs`: it reads only
+  whether a book's preprocessing run or source check is going, so
+  `httpapi.WatchPipelines` invalidates it when that set changes
+  (`jobs.Manager.PipelineSignature`), not on every task. A subscriber whose outbound buffer fills is dropped
   (it reconnects and resnapshots) rather than risk a lost patch. **A new
   topic, or a builder reading a new table, must list that table in its
   deps** or it'll only update on the 30s resync. Every client (web, Android, `cmd/jobswatch` - which applies

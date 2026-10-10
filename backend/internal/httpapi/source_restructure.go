@@ -44,12 +44,12 @@ func (s *Server) restructuring(w http.ResponseWriter, bookID string) (b *store.B
 		writeError(w, http.StatusNotFound, "book not found")
 		return nil, nil, false
 	}
-	src, err := s.Store.GetBookSource(bookID)
+	sources, err := s.Store.BookSources(bookID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return nil, nil, false
 	}
-	if src == nil {
+	if len(sources) == 0 {
 		writeError(w, http.StatusConflict, "only a book imported from a website can have its chapters rearranged")
 		return nil, nil, false
 	}
@@ -62,7 +62,8 @@ func (s *Server) restructuring(w http.ResponseWriter, bookID string) (b *store.B
 		writeError(w, http.StatusConflict, busy)
 		return nil, nil, false
 	}
-	return b, func() { s.sourceSyncs.Delete(bookID) }, true
+	s.sourceSyncChanged()
+	return b, func() { s.sourceSyncs.Delete(bookID); s.sourceSyncChanged() }, true
 }
 
 // arrangeSourceEpub rewrites bookID's kept epub to hold the book's
@@ -303,20 +304,34 @@ func (s *Server) handleDeleteChapter(w http.ResponseWriter, r *http.Request) {
 	// Before the chapter goes: once it has, only the skip list stops the
 	// next check from fetching it again.
 	if ids := strings.Fields(sourceID); len(ids) > 0 {
-		plan, err := s.Store.GetBookSourcePlan(bookID)
+		sources, err := s.Store.BookSources(bookID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		for _, id := range ids {
-			if !strings.HasPrefix(id, epubOnlyPrefix) && !slices.Contains(plan.Skip, id) {
-				plan.Skip = append(plan.Skip, id)
+		// In the plan of every source the ids could be listed by.
+		for i := range sources {
+			src := &sources[i]
+			plan, err := s.Store.GetBookSourcePlan(src.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
 			}
-		}
-		plan.Extra = slices.DeleteFunc(plan.Extra, func(p store.PlannedChapter) bool { return slices.Contains(ids, p.ID) })
-		if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
+			changed := false
+			for _, id := range ids {
+				if ownsID(src, id) && !slices.Contains(plan.Skip, id) {
+					plan.Skip = append(plan.Skip, id)
+					changed = true
+				}
+			}
+			if !changed {
+				continue
+			}
+			plan.Extra = slices.DeleteFunc(plan.Extra, func(p store.PlannedChapter) bool { return slices.Contains(ids, p.ID) })
+			if err := s.Store.SetBookSourcePlan(src.ID, plan); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 	}
 	chapterID, images, err := s.Store.DeleteChapter(bookID, idx)
@@ -390,12 +405,8 @@ func (s *Server) handleRenameChapter(w http.ResponseWriter, r *http.Request) {
 // renameInSource carries a chapter's new title into what a book imported
 // from a website keeps of it: its stored pages and its epub. Best-effort.
 func (s *Server) renameInSource(ctx context.Context, bookID string, idx int, title string) {
-	src, err := s.Store.GetBookSource(bookID)
-	if err != nil || src == nil {
-		return
-	}
-	reader, _, ok := s.readerForBook(src)
-	if !ok {
+	sources, err := s.Store.BookSources(bookID)
+	if err != nil || len(sources) == 0 {
 		return
 	}
 	chapters, err := s.Store.SourcedChapters(bookID)
@@ -405,6 +416,10 @@ func (s *Server) renameInSource(ctx context.Context, bookID string, idx int, tit
 	for _, sc := range chapters {
 		if sc.Idx != idx {
 			continue
+		}
+		reader, ok := s.readerForChapter(sources, sc.SourceID)
+		if !ok {
+			return
 		}
 		path := audiopath.SourceRawFile(s.DataDir, bookID, websource.FileKey(sc.SourceID))
 		raw, err := websource.ReadRaw(path)

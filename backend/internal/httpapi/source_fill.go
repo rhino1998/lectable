@@ -37,6 +37,9 @@ import (
 // epubFill is an uploaded epub's chapters, offered for a book's missing
 // ones. Not safe for concurrent use: one check owns it.
 type epubFill struct {
+	// sourceID is the store.BookSource the epub fills in for, "" for the
+	// book's first.
+	sourceID string
 	chapters []epub.Chapter
 	// byKey lists the chapters with a given title key, in book order.
 	byKey map[string][]int
@@ -168,6 +171,7 @@ var volumeChapter = regexp.MustCompile(`(?i)^\s*(?:book|volume|vol\.?|part)\s*(\
 
 // volumeOf is the book a title says its chapter is in, "" when it doesn't.
 func volumeOf(title string) string {
+	title = foldTitle(title)
 	if m := volumeChapter.FindStringSubmatch(title); m != nil {
 		return m[1]
 	}
@@ -178,6 +182,7 @@ func volumeOf(title string) string {
 // with ("Chapter 184: ..."), or, for a title that is nothing but its
 // number, that ("Chapter Seventy Six - 076", "76").
 func chapterNumber(title string) (int, bool) {
+	title = foldTitle(title)
 	if m := leadingNumber.FindStringSubmatch(title); m != nil {
 		n, err := strconv.Atoi(m[2])
 		return n, err == nil
@@ -209,6 +214,12 @@ func chapterNumber(title string) (int, bool) {
 // chapter. A title that is only a number ("1.02", "Chapter 12", "Chapter
 // Seventy Six - 076") has nothing else, and is its number.
 func titleKey(title string) string {
+	// As foldTitle has it: two copies of a title differ in spacing and
+	// in look-alike characters more often than in their words - a
+	// no-break space after "Chapter" (which the numbering patterns'
+	// \s doesn't match), an accent as its own character, a full-width
+	// digit.
+	title = foldTitle(title)
 	key := func(s string) string {
 		var b strings.Builder
 		for _, r := range strings.ToLower(s) {
@@ -663,14 +674,27 @@ func (s *Server) handleBackfillBookSource(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
-	src, err := s.Store.GetBookSource(bookID)
+	sources, err := s.Store.BookSources(bookID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if src == nil {
+	if len(sources) == 0 {
 		writeError(w, http.StatusConflict, "this book wasn't imported from a website, so it has no missing chapters to fill")
 		return
+	}
+	// The epub fills in for the source that is stuck: the first stopped at
+	// a chapter it won't serve, or holding one it couldn't read.
+	src := &sources[0]
+	for i := range sources {
+		stuck := sources[i].Blocked != ""
+		if plan, err := s.Store.GetBookSourcePlan(sources[i].ID); err == nil {
+			stuck = stuck || slices.ContainsFunc(plan.Pending, func(p store.PlannedChapter) bool { return p.Unreadable })
+		}
+		if stuck {
+			src = &sources[i]
+			break
+		}
 	}
 	reader, workID, ok := s.readerForBook(src)
 	if !ok {
@@ -710,6 +734,7 @@ func (s *Server) handleBackfillBookSource(w http.ResponseWriter, r *http.Request
 		return
 	}
 	fill := newEpubFill(parsed)
+	fill.sourceID = src.ID
 
 	work, err := reader.site.Work(r.Context(), reader.fetch, workID)
 	if err != nil {
@@ -725,10 +750,13 @@ func (s *Server) handleBackfillBookSource(w http.ResponseWriter, r *http.Request
 	for _, id := range haveIDs {
 		have[id] = true
 	}
-	plan, err := s.Store.GetBookSourcePlan(bookID)
+	plan, err := s.Store.GetBookSourcePlan(src.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	for _, id := range plan.Matched {
+		have[id] = true
 	}
 	planned := plannedChapters(reader.site, work.Chapters, plan)
 	fill.setNeighbours(planned)
@@ -777,7 +805,7 @@ func (s *Server) handleBackfillBookSource(w http.ResponseWriter, r *http.Request
 	}
 	if released > 0 {
 		plan.Pending = slices.DeleteFunc(plan.Pending, func(p store.PlannedChapter) bool { return p.Unreadable && !held[p.ID] })
-		if err := s.Store.SetBookSourcePlan(bookID, plan); err != nil {
+		if err := s.Store.SetBookSourcePlan(src.ID, plan); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

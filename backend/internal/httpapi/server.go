@@ -69,11 +69,15 @@ type Server struct {
 	// links and for chapters a site no longer serves; nil uses a shared
 	// default.
 	Wayback *websource.Wayback
+	// voiceOverrides remembers characterVoiceOverrides' results.
+	voiceOverrides voiceOverridesMemo
 	// sourceImportMu serializes handleImportBookURL; sourceSyncs holds the
 	// ids of books whose source check is running right now (the
 	// startSourceSync job) or whose stored pages are being re-read.
 	sourceImportMu sync.Mutex
-	sourceSyncs    sync.Map
+	// patreonOnce gives the Patreon source its stored session, once.
+	patreonOnce sync.Once
+	sourceSyncs sync.Map
 	// importPreviews holds links looked over and not yet imported
 	// (preview id -> *importPreview) - see source_preview.go.
 	importPreviews sync.Map
@@ -181,6 +185,9 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books", s.handleUploadBook)
 	mux.HandleFunc("POST /api/books/import-url", s.handleImportBookURL)
 	mux.HandleFunc("POST /api/books/import-url/preview", s.handlePreviewImportURL)
+	mux.HandleFunc("POST /api/books/{id}/sources", s.handleAddBookSource)
+	mux.HandleFunc("DELETE /api/books/{id}/sources/{sourceId}", s.handleRemoveBookSource)
+	mux.HandleFunc("PUT /api/books/{id}/sources/{sourceId}/title-rule", s.handleSetSourceTitleRule)
 	mux.HandleFunc("POST /api/books/{id}/source/sync", s.handleSyncBookSource)
 	mux.HandleFunc("POST /api/books/{id}/source/review", s.handleReviewBookSource)
 	mux.HandleFunc("POST /api/books/{id}/source/backfill", s.handleBackfillBookSource)
@@ -216,6 +223,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/books/{id}/recap/audio", s.handleGetBookRecapAudio)
 	mux.HandleFunc("GET /api/settings/sources", s.handleGetSourceSettings)
 	mux.HandleFunc("PUT /api/settings/sources", s.handleSetSourceSettings)
+	mux.HandleFunc("PUT /api/settings/patreon", s.handleSetPatreonSession)
 	mux.HandleFunc("POST /api/sources/check", s.handleCheckSources)
 	mux.HandleFunc("POST /api/recaps/check", s.handleCheckRecaps)
 	mux.HandleFunc("GET /api/settings/recap", s.handleGetRecapSettings)
@@ -259,6 +267,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/music-regions/{id}/regenerate", s.handleRegenerateMusicRegion)
 	mux.HandleFunc("POST /api/books/{id}/preprocess", s.handlePreprocessBook)
 	mux.HandleFunc("POST /api/books/{id}/preprocess-series", s.handlePreprocessSeries)
+	mux.HandleFunc("POST /api/library/preprocess", s.handlePreprocessLibrary)
 	mux.HandleFunc("POST /api/books/{id}/bulk/{action}", s.handleBulkAction)
 	mux.HandleFunc("POST /api/books/{id}/reset/{pass}", s.handleResetPass)
 	mux.HandleFunc("DELETE /api/books/{id}/chapters/{idx}/audio", s.handleDeleteChapterAudio)

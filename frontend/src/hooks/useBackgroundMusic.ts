@@ -2,13 +2,6 @@ import { useEffect, useRef } from 'react'
 import { useChapterMusic } from '../api/queries'
 import type { MusicRegion } from '../api/types'
 
-// Fixed, ducked background level - deliberately not a user-facing volume
-// control yet (a first version of this feature - see backend
-// store.MusicRegion's own doc comment for the generation pipeline this
-// plays back). Kept well under narration's own implicit "full volume" so
-// music never competes with the words being read.
-const MUSIC_GAIN = 0.22
-
 // Half the width of every region-to-region crossfade, in real (wall-
 // clock) seconds. Each switch is centred on the paragraph boundary that
 // owns it:
@@ -98,9 +91,13 @@ interface UseBackgroundMusicArgs {
   // playback would need real DSP (an AudioWorklet running something like
   // a phase vocoder, or a library such as SoundTouchJS) - not attempted
   // here; this accepts the pitch shift instead, given it plays back well
-  // under narration's own volume (MUSIC_GAIN) as texture, not something
+  // under narration's own volume (see volume) as texture, not something
   // a reader is meant to listen to critically on its own.
   playbackRate: number
+  // How loud music plays against narration's own full volume, 0-1 - the
+  // listener's own setting (useMusicVolume), kept low by default so music
+  // never competes with the words being read.
+  volume: number
 }
 
 // useBackgroundMusic mixes a chapter's own generated music regions in
@@ -127,6 +124,7 @@ export function useBackgroundMusic({
   musicEnabled,
   isPlaying,
   playbackRate,
+  volume,
 }: UseBackgroundMusicArgs) {
   const { data } = useChapterMusic(bookId, chapterIdx, musicEnabled)
   // Fetched purely so the pre-roll check below can look one region past
@@ -195,7 +193,7 @@ export function useBackgroundMusic({
       // (fetch, decode, start) working and nothing audible. Starting it
       // at the correct target immediately, rather than always 0, closes
       // that gap.
-      master.gain.value = musicEnabled ? MUSIC_GAIN : 0
+      master.gain.value = musicEnabled ? volume : 0
       master.connect(ctx.destination)
       ctxRef.current = ctx
       masterGainRef.current = master
@@ -260,19 +258,24 @@ export function useBackgroundMusic({
   // abrupt cut - and fully stops the active deck once faded out, so an
   // hours-long reading session doesn't leave silently-muted source nodes
   // accumulating.
+  //
+  // A volume change alone follows the slider at once instead.
+  const fadedEnabledRef = useRef(musicEnabled)
   useEffect(() => {
+    const toggled = fadedEnabledRef.current !== musicEnabled
+    fadedEnabledRef.current = musicEnabled
     const master = masterGainRef.current
     const ctx = ctxRef.current
     if (!master || !ctx) return
-    const target = musicEnabled ? MUSIC_GAIN : 0
+    const target = musicEnabled ? volume : 0
     master.gain.cancelScheduledValues(ctx.currentTime)
     master.gain.setValueAtTime(master.gain.value, ctx.currentTime)
-    master.gain.linearRampToValueAtTime(target, ctx.currentTime + 0.8)
-    if (!musicEnabled && activeDeckRef.current) {
+    master.gain.linearRampToValueAtTime(target, ctx.currentTime + (toggled ? 0.8 : 0.05))
+    if (toggled && !musicEnabled && activeDeckRef.current) {
       stopDeck(activeDeckRef.current, 0.8)
       activeDeckRef.current = null
     }
-  }, [musicEnabled])
+  }, [musicEnabled, volume])
 
   // getBuffer fetches+decodes+caches region's own clip (or returns the
   // already-cached one synchronously-resolved) - factored out of the
@@ -288,10 +291,9 @@ export function useBackgroundMusic({
     if (cached) return Promise.resolve(cached)
     const pending = pendingFetchRef.current.get(region.id)
     if (pending) return pending
-    // no-cache: a regenerated region keeps its same URL, so let the
-    // browser revalidate (http.ServeFile answers If-Modified-Since) rather
-    // than hand back the old clip from its heuristic cache.
-    const promise = fetch(region.audioUrl!, { cache: 'no-cache' })
+    // audioUrl names one render ("?v="), which the backend lets the
+    // browser cache for good; a regenerated region gets a new URL.
+    const promise = fetch(region.audioUrl!)
       .then((res) => {
         if (!res.ok) throw new Error(`music region ${region.id}: HTTP ${res.status}`)
         return res.arrayBuffer()

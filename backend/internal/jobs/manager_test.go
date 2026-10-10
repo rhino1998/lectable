@@ -2040,6 +2040,56 @@ func TestMusicGenerationWaitsForWholeChapterVoiced(t *testing.T) {
 	}
 }
 
+// "Generate chapter" on a music-enabled book covers the chapter's music: a
+// chapter already narrated and scored gets its music batch queued, and the
+// generate row stays in flight while that batch is.
+func TestGenerateChapterIncludesMusic(t *testing.T) {
+	s := openTestStore(t)
+	book, chapterID := createBookAndChapter(t, s, "", 0, "First paragraph.", "Second paragraph.")
+	if err := s.UpdateVoice(book.ID, book.VoicePresetID, book.VoiceInstruct, book.VoiceLanguage, book.VoiceSeed, book.CloneModel, book.CharacterVoiceMode, false, true); err != nil {
+		t.Fatalf("UpdateVoice(MusicEnabled=true): %v", err)
+	}
+	book, _ = s.GetBook(book.ID)
+	if _, err := s.AppendMusicRegions(chapterID, []store.MusicRegionInput{{StartIdx: 0, Mood: "calm", Prompt: "calm music"}}, 1); err != nil {
+		t.Fatalf("AppendMusicRegions: %v", err)
+	}
+	if err := s.SetChapterAmbienceScored(chapterID); err != nil {
+		t.Fatalf("SetChapterAmbienceScored: %v", err)
+	}
+	if err := s.SetChapterLit(chapterID); err != nil {
+		t.Fatalf("SetChapterLit: %v", err)
+	}
+	mgr := NewManager(s, ttsworkertest.New(t).Manager(), t.TempDir())
+	voice, err := mgr.narration.BookVoice(book)
+	if err != nil {
+		t.Fatalf("BookVoice: %v", err)
+	}
+	paragraphs, _ := s.ListParagraphsRaw(chapterID)
+	for _, p := range paragraphs {
+		if err := s.SetParagraphReady(p.ID, voice.VoiceID(), 2.5); err != nil {
+			t.Fatalf("SetParagraphReady: %v", err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	mgr.Start(ctx)
+	mgr.Pause() // keep the music batch queued
+
+	mgr.EnqueueChapter(book.ID, chapterID, 0)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		_, music := findTask(mgr, "music_gen:"+chapterID)
+		_, row := findTask(mgr, BulkID(book.ID, "generate_chapter:0"))
+		if music && row {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("music batch queued = %v, generate row in flight = %v; want both", music, row)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 // scareQuoteTestBlocks builds a chapter of the shape splitQuoteSegments
 // would really produce for "Their so-called "expert," had no idea what he
 // was doing." followed by an unrelated control paragraph: a narration

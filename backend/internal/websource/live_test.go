@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/rhino1998/lectable/backend/internal/epub"
+	"github.com/rhino1998/lectable/backend/internal/patreon"
 	"github.com/rhino1998/lectable/backend/internal/royalroad"
 	"github.com/rhino1998/lectable/backend/internal/wanderinginn"
 	"github.com/rhino1998/lectable/backend/internal/websource"
@@ -21,6 +22,10 @@ import (
 //	WEBSOURCE_LIVE=https://www.royalroad.com/fiction/21220 go test ./internal/websource -run TestLive -v
 //	WEBSOURCE_LIVE=https://wanderinginn.com/table-of-contents/#vol-1 go test ./internal/websource -run TestLive -v
 //	WEBSOURCE_LIVE=https://web.archive.org/web/2022/https://wanderinginn.com/table-of-contents/ go test ./internal/websource -run TestLive -v
+//	WEBSOURCE_LIVE=https://www.patreon.com/pirateaba go test ./internal/websource -run TestLive -v
+//
+// For Patreon, PATREON_SESSION (a signed-in browser's session_id cookie)
+// reads what that account can; without it only public posts are read.
 func TestLive(t *testing.T) {
 	target := os.Getenv("WEBSOURCE_LIVE")
 	if target == "" {
@@ -36,8 +41,14 @@ func TestLive(t *testing.T) {
 	if archived {
 		u = original
 	}
+	// With PATREON_SESSION, The Wandering Inn's patrons-only chapters are
+	// unlocked with that account; WEBSOURCE_LIVE_LAST=1 reads the work's
+	// last chapters (the newest, which are the locked ones) instead of
+	// its first.
+	inn := &wanderinginn.Source{}
+	inn.Authorize = patreonSource().Authorize
 	var src websource.Source
-	for _, s := range []websource.Source{&royalroad.Source{}, &wanderinginn.Source{}} {
+	for _, s := range []websource.Source{&royalroad.Source{}, inn, patreonSource()} {
 		if s.Match(u) {
 			src = s
 		}
@@ -114,7 +125,11 @@ func TestLive(t *testing.T) {
 		}
 	}
 	var chapters []*websource.Chapter
-	for _, ref := range w.Chapters[:min(2, len(w.Chapters))] {
+	sample := w.Chapters[:min(2, len(w.Chapters))]
+	if os.Getenv("WEBSOURCE_LIVE_LAST") != "" {
+		sample = w.Chapters[max(0, len(w.Chapters)-2):]
+	}
+	for _, ref := range sample {
 		ch, err := src.Chapter(ctx, f, ref)
 		if errors.Is(err, websource.ErrLocked) && !archived {
 			t.Logf("chapter %q is locked at the site; looking in the archive", ref.Title)
@@ -153,4 +168,10 @@ func TestLive(t *testing.T) {
 	if len(book.Chapters) != len(chapters) {
 		t.Fatalf("parsed %d chapters, wrote %d", len(book.Chapters), len(chapters))
 	}
+}
+
+func patreonSource() *patreon.Source {
+	src := &patreon.Source{}
+	src.SetSession(os.Getenv("PATREON_SESSION"))
+	return src
 }

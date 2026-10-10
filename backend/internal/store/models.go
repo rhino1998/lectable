@@ -330,13 +330,10 @@ type Chapter struct {
 // one background-music tone, as judged by internal/speakerattr.Client.
 // ScoreMusic - every paragraph in [StartIdx, EndIdx] (inclusive, by
 // store.Paragraph.Idx) gets this region's own generated clip playing under
-// it. Only StartIdx is ever actually scored by the LLM, per region -
-// EndIdx is filled in separately, by Store.AppendMusicRegions rather than
-// speakerattr (see EndIdx's own doc comment) - so a chapter's regions are
-// contiguous and non-overlapping by construction, covering every
-// paragraph exactly once, rather than something ScoreMusic/
-// parseMusicBoundaries have to separately validate against gaps/overlaps the
-// way an explicit LLM-supplied end once required.
+// it. ScoreMusic only ever decides a region's StartIdx - EndIdx is filled in
+// separately, by Store.AppendMusicRegions (see EndIdx's own doc comment) -
+// so a chapter's regions are contiguous and non-overlapping by
+// construction, covering every paragraph exactly once.
 //
 // Generation (internal/musicgen.GenerateRegion, dispatched via
 // jobs.Manager's KindMusicGeneration) waits for every paragraph in the

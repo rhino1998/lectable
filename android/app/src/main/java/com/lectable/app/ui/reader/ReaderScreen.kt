@@ -519,6 +519,10 @@ fun ReaderScreen(
                 viewModel.setParagraphSpeaker(target.chapterIdx, target.paragraphIndices, name)
                 speakerPickerTarget = null
             },
+            onCreate = { name ->
+                viewModel.setParagraphSpeaker(target.chapterIdx, target.paragraphIndices, name, isNew = true)
+                speakerPickerTarget = null
+            },
         )
     }
 

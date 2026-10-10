@@ -115,7 +115,11 @@ byte-for-byte.
   under the current paragraph from the `chapterMusic` topic; the reader
   also lazily runs the ambience pass when lights are on, even with music
   off. PlayerBar's "Lights" button opens `LightingPanel`. Mirrored by
-  android's `playback/lighting/` - keep the two in step.
+  android's `playback/lighting/` - keep the two in step. PlayerBar's
+  "Music" button opens `MusicPanel`: the book's background-music toggle
+  (the voice settings' `musicEnabled`) and a per-browser volume
+  (`useMusicVolume`, localStorage `lectable:music-volume`, default 0.22
+  like android's) that `useBackgroundMusic` applies to its master gain.
 - `src/hooks/useSleepTimer.ts` — sleep timer for `PlayerBar`'s
   `SleepTimerButton.tsx`: either a real-wall-clock countdown (5/10/15/30/
   45/60 min, ticks regardless of play/pause, same as e.g. Audible's) that
@@ -194,7 +198,10 @@ byte-for-byte.
   `components/ParagraphContextMenu` (the annotations-view right-click menu,
   opened imperatively like `AnnotationTooltip`; its reassign lists are
   "This chapter" then "All characters", alphabetical - `utils/speakerOrder`,
-  shared with the Book settings page's Narrator-first alphabetical roster).
+  shared with the Book settings page's Narrator-first alphabetical roster;
+  "New speaker…" takes a typed name and sends it with the speaker PUT's
+  `new`, making it a character of its own even if the roster knows the
+  name as someone's alias).
   The annotations-view toggle is remembered in `localStorage`
   (`lectable.annotationsView`).
 - `src/pages/BookSettingsPage.tsx` (`/books/$bookId/settings?tab=`) — a
