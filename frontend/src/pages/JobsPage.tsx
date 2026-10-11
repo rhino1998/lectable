@@ -33,6 +33,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   voice_design: 'Design',
   voice_design_preview: 'Design Preview',
   voice_provision: 'Voice Provision',
+  length_estimate: 'Length Estimate',
   speaker_attribution: 'Attribution',
   speaker_characterization: 'Characterization',
   'speaker-reattribute': 'Auto Split',
