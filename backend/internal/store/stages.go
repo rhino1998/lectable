@@ -294,3 +294,42 @@ func (s *SQLiteStore) SpeakersInChapters(bookID string, fromIdx, toIdx int) ([]s
 	}
 	return out, rows.Err()
 }
+
+// ChapterTextRevs maps each of bookID's chapter ids to its chapter_text
+// content_rev - a value that changes whenever one of the chapter's
+// paragraphs is added, removed or reworded (and not when one is given
+// another speaker). What the semantic index compares to find the chapters
+// it has to read again.
+func (s *SQLiteStore) ChapterTextRevs(bookID string) (map[string]int64, error) {
+	all, err := s.chapterTextRevs(`WHERE c.book_id = ?`, bookID)
+	return all[bookID], err
+}
+
+// AllChapterTextRevs is ChapterTextRevs for every book at once, by book id.
+func (s *SQLiteStore) AllChapterTextRevs() (map[string]map[string]int64, error) {
+	return s.chapterTextRevs(``)
+}
+
+func (s *SQLiteStore) chapterTextRevs(where string, args ...any) (map[string]map[string]int64, error) {
+	rows, err := s.db.Query(`
+		SELECT c.book_id, c.id, COALESCE(t.content_rev, 0)
+		FROM chapters c
+		LEFT JOIN chapter_text t ON t.chapter_id = c.id `+where, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]map[string]int64{}
+	for rows.Next() {
+		var bookID, id string
+		var rev int64
+		if err := rows.Scan(&bookID, &id, &rev); err != nil {
+			return nil, err
+		}
+		if out[bookID] == nil {
+			out[bookID] = map[string]int64{}
+		}
+		out[bookID][id] = rev
+	}
+	return out, rows.Err()
+}

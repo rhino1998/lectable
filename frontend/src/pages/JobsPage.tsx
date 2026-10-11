@@ -40,6 +40,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   scare_quote_tagging: 'Scare Quote Tagging',
   pronunciation: 'Pronunciation',
   chapter_summary: 'Summary',
+  chapter_embedding: 'Embedding',
   book_setting: 'Book Setting',
   roster_review: 'Roster Review',
   recap: 'Recap Text',
@@ -56,6 +57,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pipeline_ambience: 'Preprocess: Ambience',
   pipeline_pronunciation: 'Preprocess: Pronunciation',
   pipeline_summary: 'Preprocess: Summary',
+  pipeline_embedding: 'Preprocess: Embedding',
   // "Generate audio" (library page's All/Remaining, and the reader's
   // per-chapter action) - see backend jobs.Manager.EnqueueChapter/
   // EnqueueBookGenerate/EnqueueRemaining.
@@ -89,6 +91,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   pipeline_series_preprocess: 'Preprocess Series',
   // Every book in the library, a few series at a time (the library header's button).
   pipeline_library_preprocess: 'Preprocess Library',
+  pipeline_library_embedding: 'Embed Library',
   sfx_generation: 'SFX',
   sfx_preview: 'SFX/Music Preview',
   llm_preview: 'LLM Preview',

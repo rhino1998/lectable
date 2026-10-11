@@ -682,7 +682,8 @@ var apiRoutes = []apiRoute{
 		Method:   "GET",
 		Path:     "/api/books/{id}/search",
 		Name:     "searchBook",
-		Query:    "q: string",
+		Doc:      "handleSearchBook finds paragraphs of a book: those containing ?q= as\nwritten, in reading order, or with ?mode=meaning the ones closest to it\nin meaning, best first (semantic.Service.Search - \"how long do kobolds\nlive\" finds \"Kobolds only live to fifteen or so\"). A search by meaning\nanswers nothing for a book whose chapters haven't been embedded (a\npreprocessing phase), and 503 when there is no embedding model.",
+		Query:    "q: string; mode: string",
 		Response: "SearchResult[]",
 	},
 	{
@@ -942,6 +943,13 @@ var apiRoutes = []apiRoute{
 		Path:   "/api/lexicon/{entryId}",
 		Name:   "deleteGlobalLexicon",
 		Doc:    "handleDeleteGlobalLexicon removes a rule that applies to every book and\nclears generated audio for every paragraph in the library it matched.",
+	},
+	{
+		Method:   "POST",
+		Path:     "/api/library/embed",
+		Name:     "embedLibrary",
+		Doc:      "handleEmbedLibrary embeds every chapter of every book that the semantic\nindex hasn't read as it is now - preprocessing's embedding phase alone,\na book at a time, for a library preprocessed before there was one (a\nwhole-library preprocess would get to each book's embedding only behind\nall its other passes). One job-queue row (a jobs.BulkGroup, Kind\n\"pipeline_library_embedding\", on the first book); asking again while\none is queued or running joins it. 202 with the number of books, 503\nwithout an embedding model.",
+		Response: "QueuedResponse",
 	},
 	{
 		Method:   "POST",

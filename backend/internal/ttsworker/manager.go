@@ -812,6 +812,34 @@ func (m *Manager) LLMDecide(ctx context.Context, systemPrompt, userPrompt string
 	return out.Decisions, err
 }
 
+// Embed returns one unit-length embedding per text from the worker's
+// embedding model (llmworker.Embedder). query embeds on its CPU copy, for
+// a search phrase at any time; otherwise on the GPU one, which only a
+// jobs.KindEmbedding task should ask for, since that is what keeps it
+// inside the job queue's LLM pool.
+func (m *Manager) Embed(ctx context.Context, texts []string, query bool) ([][]float32, error) {
+	m.restartGate.RLock()
+	defer m.restartGate.RUnlock()
+	jobID := m.beginJob()
+	defer m.endJob(jobID)
+
+	var out ttsproto.EmbedResponse
+	if err := m.do(ctx, http.MethodPost, "/embed", ttsproto.EmbedRequest{Texts: texts, Query: query}, &out); err != nil {
+		return nil, err
+	}
+	if len(out.Vectors) != len(texts) {
+		return nil, fmt.Errorf("ttsworker: /embed answered %d of %d texts", len(out.Vectors), len(texts))
+	}
+	vecs := make([][]float32, len(out.Vectors))
+	for i, b := range out.Vectors {
+		if len(b) != 4*out.Dim {
+			return nil, fmt.Errorf("ttsworker: /embed vector %d is %d bytes, want %d", i, len(b), 4*out.Dim)
+		}
+		vecs[i] = ttsproto.DecodeVector(b)
+	}
+	return vecs, nil
+}
+
 // UnloadTTS asks the worker to free every currently-loaded TTS clone
 // model right now (audioworker.Worker.UnloadAll, via POST /unload) rather
 // than waiting for its own idle timer (LECTABLE_MODEL_IDLE_UNLOAD_AFTER) - called

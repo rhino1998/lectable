@@ -8,6 +8,11 @@
 // cmd/server" invariant).
 package ttsproto
 
+import (
+	"encoding/binary"
+	"math"
+)
+
 // GenerateRequest is POST /generate's body: clone cloneModel's voice from a
 // caller-supplied reference clip (raw WAV bytes, base64) plus a paragraph
 // of text. The worker holds no per-preset state - the caller (backend) owns
@@ -351,4 +356,42 @@ type HealthResponse struct {
 // ErrorResponse is the body of any non-2xx response from the worker.
 type ErrorResponse struct {
 	Detail string `json:"detail"`
+}
+
+// EmbedRequest is POST /embed's body: texts to embed as written - the
+// caller adds whatever query/document prefix the embedding model expects
+// (internal/semantic).
+type EmbedRequest struct {
+	Texts []string `json:"texts"`
+	// Query embeds on the worker's CPU copy of the model instead of the
+	// GPU one: a search phrase or two, at any time, without touching the
+	// VRAM the job queue schedules. Bulk embedding (a chapter's
+	// paragraphs, a jobs.KindEmbedding task) leaves it false.
+	Query bool `json:"query,omitempty"`
+}
+
+// EmbedResponse is POST /embed's response body: one unit-length vector per
+// text, in order, each Dim little-endian float32s (see DecodeVector).
+type EmbedResponse struct {
+	Dim     int      `json:"dim"`
+	Vectors [][]byte `json:"vectors"`
+}
+
+// EncodeVector packs v as little-endian float32s, EmbedResponse's wire
+// form of a vector.
+func EncodeVector(v []float32) []byte {
+	out := make([]byte, 4*len(v))
+	for i, f := range v {
+		binary.LittleEndian.PutUint32(out[4*i:], math.Float32bits(f))
+	}
+	return out
+}
+
+// DecodeVector undoes EncodeVector.
+func DecodeVector(b []byte) []float32 {
+	out := make([]float32, len(b)/4)
+	for i := range out {
+		out[i] = math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:]))
+	}
+	return out
 }

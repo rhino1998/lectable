@@ -33,6 +33,9 @@ function snippet(text: string, query: string) {
 // A toggleable search-this-book panel: type to find paragraphs containing
 // a phrase, click a result to jump playback there (same "click a
 // paragraph" jump ReaderPage already does for the paragraph list itself).
+// "By meaning" finds the paragraphs closest to what was typed instead -
+// a description of a passage rather than its words - best first, in a
+// book whose chapters have been embedded (a preprocessing phase).
 export function BookSearch({
   bookId,
   onJump,
@@ -48,6 +51,7 @@ export function BookSearch({
   const [open, setOpen] = useState(false)
   const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
+  const [byMeaning, setByMeaning] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -60,7 +64,7 @@ export function BookSearch({
     if (open) inputRef.current?.focus()
   }, [open])
 
-  const searchQuery = useSearchBook(bookId, query)
+  const searchQuery = useSearchBook(bookId, query, byMeaning)
   const results = searchQuery.data ?? []
   const showResults = query.trim().length > 1
 
@@ -92,11 +96,18 @@ export function BookSearch({
             <input
               ref={inputRef}
               type="text"
-              placeholder="Search this book…"
+              placeholder={byMeaning ? 'Describe what you are looking for…' : 'Search this book…'}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Escape' && close()}
             />
+            <button
+              className={'text-button-icon' + (byMeaning ? ' text-button-icon-active' : '')}
+              onClick={() => setByMeaning((v) => !v)}
+              title="Find passages by what they say rather than their exact words"
+            >
+              By meaning
+            </button>
             <button className="book-search-close" onClick={close} title="Close search">
               <RiCloseLine />
             </button>
@@ -107,7 +118,11 @@ export function BookSearch({
               {searchQuery.isLoading && <p className="muted">Searching…</p>}
               {searchQuery.isError && <p className="error-text">Search failed.</p>}
               {!searchQuery.isLoading && !searchQuery.isError && results.length === 0 && (
-                <p className="muted">No matches.</p>
+                <p className="muted">
+                  {byMeaning
+                    ? 'Nothing found. This book may not be preprocessed yet.'
+                    : 'No matches.'}
+                </p>
               )}
               {results.map((r) => (
                 <button
@@ -119,7 +134,7 @@ export function BookSearch({
                   <span className="book-search-result-snippet">{snippet(r.text, query)}</span>
                 </button>
               ))}
-              {results.length >= RESULT_LIMIT && (
+              {!byMeaning && results.length >= RESULT_LIMIT && (
                 <p className="muted book-search-truncated">Showing first {RESULT_LIMIT} matches.</p>
               )}
             </div>

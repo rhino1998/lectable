@@ -153,6 +153,7 @@ func (s *Server) enqueuePreprocess(book *store.Book) error {
 		jobs.PhaseAmbience:         s.preprocessAmbiencePhase(book, chapters),
 		jobs.PhasePronunciation:    s.preprocessPronunciationPhase(book, chapters),
 		jobs.PhaseSummary:          s.preprocessSummaryPhase(book, chapters),
+		jobs.PhaseEmbedding:        s.preprocessEmbeddingPhase(book, chapters),
 	}
 	return s.Jobs.EnqueuePipeline(book.ID, phases)
 }
@@ -289,6 +290,54 @@ func (s *Server) handlePreprocessLibrary(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(books)})
 }
 
+// libraryEmbedJobKey is the jobs.BulkGroup.Key of a whole-library
+// embedding run (handleEmbedLibrary), queued on the library's first book.
+const libraryEmbedJobKey = "library_embedding"
+
+// handleEmbedLibrary embeds every chapter of every book that the semantic
+// index hasn't read as it is now - preprocessing's embedding phase alone,
+// a book at a time, for a library preprocessed before there was one (a
+// whole-library preprocess would get to each book's embedding only behind
+// all its other passes). One job-queue row (a jobs.BulkGroup, Kind
+// "pipeline_library_embedding", on the first book); asking again while
+// one is queued or running joins it. 202 with the number of books, 503
+// without an embedding model.
+func (s *Server) handleEmbedLibrary(w http.ResponseWriter, r *http.Request) {
+	if s.Semantic == nil {
+		writeError(w, http.StatusServiceUnavailable, "search by meaning needs an embedding model (set LECTABLE_EMBED_MODEL_PATH)")
+		return
+	}
+	books, err := s.Store.ListBooks()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if len(books) == 0 {
+		writeJSON(w, http.StatusAccepted, queuedResponse{})
+		return
+	}
+	s.Jobs.EnqueueBulk(books[0].ID, jobs.BulkGroup{
+		Kind:  "pipeline_library_embedding",
+		Key:   libraryEmbedJobKey,
+		Label: fmt.Sprintf("Library (%d books)", len(books)),
+		Tier:  jobs.TierBackground,
+	}, func(ctx context.Context, tier func() int) error {
+		for _, b := range books {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			chapters, err := s.Store.ListChapterSummaries(b.ID, "", nil)
+			if err != nil {
+				log.Printf("httpapi: embed library: list chapters of %s: %v", b.ID, err)
+				continue
+			}
+			_ = s.preprocessEmbeddingPhase(&b, chapters)(ctx, tier)
+		}
+		return nil
+	})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(books)})
+}
+
 // libraryPreprocessOrder is the lanes a whole-library run takes books in,
 // in the order it starts them: each series its own lane in series order,
 // series by name, then each book in no series as a lane of its own,
@@ -382,7 +431,7 @@ func (s *Server) preprocessBooksInOrder(ctx context.Context, tier func() int, la
 // fan-out/join/best-effort shape as preprocessAttributionPhase.
 func (s *Server) preprocessScareQuotePhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
 	return s.chapterPhase(book, chapters, "scare-quote tagging",
-		func(p store.Passes) bool { return p.ScareQuote },
+		func(ch store.ChapterSummary) bool { return ch.Passes.ScareQuote },
 		func(ctx context.Context, tier int, ch *store.Chapter) error {
 			_, err := s.Jobs.RunScareQuote(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
 				return s.scareQuoteChapterForJob(ctx, book, ch)
@@ -396,7 +445,7 @@ func (s *Server) preprocessScareQuotePhase(book *store.Book, chapters []store.Ch
 // chapter's cast and scenes. Skips chapters with Passes.Summary.
 func (s *Server) preprocessSummaryPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
 	return s.chapterPhase(book, chapters, "summary",
-		func(p store.Passes) bool { return p.Summary },
+		func(ch store.ChapterSummary) bool { return ch.Passes.Summary },
 		func(ctx context.Context, tier int, ch *store.Chapter) error {
 			_, err := s.Jobs.RunSummary(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
 				return s.summarizeChapter(ctx, book, ch)
@@ -405,13 +454,42 @@ func (s *Server) preprocessSummaryPhase(book *store.Book, chapters []store.Chapt
 		})
 }
 
+// preprocessEmbeddingPhase is the embedding phase: every chapter whose
+// paragraphs the semantic index hasn't read as they are now
+// (semantic.Service.StaleChapters) is embedded, one jobs.KindEmbedding task
+// each. It needs nothing another phase produces and nothing waits on it.
+// What is done is the index's to say, not a store.Passes flag: a chapter
+// reworded later is simply stale again. Does nothing without an embedding
+// model (s.Semantic nil).
+func (s *Server) preprocessEmbeddingPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
+	return func(ctx context.Context, tier func() int) error {
+		if s.Semantic == nil {
+			return nil
+		}
+		stale, err := s.Semantic.StaleChapters(book.ID)
+		if err != nil {
+			log.Printf("httpapi: preprocess book %s: embedding: %v", book.ID, err)
+			return nil
+		}
+		return s.chapterPhase(book, chapters, "embedding",
+			func(ch store.ChapterSummary) bool { return !stale[ch.ID] },
+			func(ctx context.Context, tier int, ch *store.Chapter) error {
+				_, err := s.Jobs.RunEmbedding(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
+					n, err := s.Semantic.EmbedChapter(ctx, book.ID, ch.ID)
+					return n, nil, err
+				})
+				return err
+			})(ctx, tier)
+	}
+}
+
 // preprocessPronunciationPhase is the pronunciation resolution phase - like
 // direction tagging, it needs nothing any other phase produces, so it
 // dispatches immediately. Same skip reasoning as preprocessScareQuotePhase,
 // for Passes.Pronunciation.
 func (s *Server) preprocessPronunciationPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
 	return s.chapterPhase(book, chapters, "pronunciation resolution",
-		func(p store.Passes) bool { return p.Pronunciation },
+		func(ch store.ChapterSummary) bool { return ch.Passes.Pronunciation },
 		func(ctx context.Context, tier int, ch *store.Chapter) error {
 			_, err := s.Jobs.RunPronunciation(ctx, book.ID, ch.ID, ch.Idx, tier, func(ctx context.Context) (int, func(), error) {
 				return s.pronounceChapter(ctx, book, ch, nil)
@@ -424,11 +502,11 @@ func (s *Server) preprocessPronunciationPhase(book *store.Book, chapters []store
 // per-chapter phases above: one goroutine per chapter whose pass isn't
 // already done, each blocking on run, joined before the phase returns.
 // A chapter's failure is logged and skipped, never aborts the phase.
-func (s *Server) chapterPhase(book *store.Book, chapters []store.ChapterSummary, what string, done func(store.Passes) bool, run func(ctx context.Context, tier int, ch *store.Chapter) error) jobs.PipelinePhaseFunc {
+func (s *Server) chapterPhase(book *store.Book, chapters []store.ChapterSummary, what string, done func(store.ChapterSummary) bool, run func(ctx context.Context, tier int, ch *store.Chapter) error) jobs.PipelinePhaseFunc {
 	return func(ctx context.Context, tier func() int) error {
 		var wg sync.WaitGroup
 		for _, cs := range chapters {
-			if done(cs.Passes) {
+			if done(cs) {
 				continue
 			}
 			ch := cs.Chapter

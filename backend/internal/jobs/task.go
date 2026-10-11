@@ -243,6 +243,12 @@ const (
 	// and cast. KindScareQuote's shape; attribution and the ambience pass
 	// depend on it (summaryDependency).
 	KindSummary Kind = "chapter_summary"
+	// KindEmbedding embeds a chapter's paragraphs for search by meaning
+	// (internal/semantic.Service.EmbedChapter, via httpapi.embedChapter).
+	// KindScareQuote's shape, and LLM-pool work though no LLM call: the
+	// embedding model sits on the GPU beside the speaker LLM (llmworker.
+	// Embedder), so it has to run while that pool holds the card.
+	KindEmbedding Kind = "chapter_embedding"
 	// KindBookSetting is a book's setting pass (internal/speakerattr.Client.
 	// DescribeSetting, via httpapi.deriveBookSetting) - one per book, keyed
 	// by it. The ambience, characterization and summary tasks that read the
@@ -652,6 +658,8 @@ func (t *task) dedupKey() string {
 		return "pronunciation:" + t.llmKey
 	case KindSummary:
 		return "summary:" + t.llmKey
+	case KindEmbedding:
+		return "embedding:" + t.llmKey
 	case KindBookSetting:
 		return "book_setting:" + t.llmKey
 	case KindRecap:
@@ -666,7 +674,7 @@ func (t *task) dedupKey() string {
 }
 
 // kindPriority ranks Kind for tie-breaking same-tier tasks against each
-// other, inside task.Less - characterization first, then voice
+// other, inside task.Less - embedding first (see below), then characterization, then voice
 // provisioning, then actual clone/design generation, the same dependency
 // order this package's Manager.needs enforces as a hard rule
 // between pools (a character's voice needs characterizing before it's
@@ -678,6 +686,10 @@ func (t *task) dedupKey() string {
 // first.
 func kindPriority(k Kind) int {
 	switch k {
+	case KindEmbedding:
+		// A chapter embeds in under a second, and casting reads the
+		// result: behind a few hundred characterizations it waited hours.
+		return 4
 	case KindSpeakerCharacterization:
 		return 3
 	case KindVoiceProvision:
@@ -714,6 +726,7 @@ var kindCompare = map[Kind]func(a, b *task, priority int) int{
 	KindScareQuote:              comparePosition,
 	KindPronunciation:           comparePosition,
 	KindSummary:                 comparePosition,
+	KindEmbedding:               comparePosition,
 	KindBookSetting:             comparePosition,
 	KindRecap:                   comparePosition,
 	KindRosterReview:            comparePosition,

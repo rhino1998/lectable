@@ -39,6 +39,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -650,28 +651,30 @@ internal fun BookmarksSheet(
 }
 
 /** The Android analogue of frontend's BookSearch.tsx - a debounced full-text search across the
- *  book's paragraphs, jumping playback to whichever result is tapped. */
+ *  book's paragraphs, jumping playback to whichever result is tapped. "By meaning" finds the
+ *  paragraphs closest to what was typed instead of the ones containing it, best first. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SearchSheet(
-    search: (query: String, onResult: (List<SearchResultDto>) -> Unit) -> Unit,
+    search: (query: String, byMeaning: Boolean, onResult: (List<SearchResultDto>) -> Unit) -> Unit,
     onDismiss: () -> Unit,
     onJump: (chapterIdx: Int, paragraphIdx: Int) -> Unit,
 ) {
     var input by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<SearchResultDto>>(emptyList()) }
     var searching by remember { mutableStateOf(false) }
+    var byMeaning by remember { mutableStateOf(false) }
     val showResults = input.trim().length > 1
 
     // Debounced the same 300ms as BookSearch.tsx, so typing doesn't fire a request per keystroke.
-    LaunchedEffect(input) {
+    LaunchedEffect(input, byMeaning) {
         if (!showResults) {
             results = emptyList()
             return@LaunchedEffect
         }
         delay(300)
         searching = true
-        search(input) { results = it; searching = false }
+        search(input, byMeaning) { results = it; searching = false }
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -680,16 +683,22 @@ internal fun SearchSheet(
             TextField(
                 value = input,
                 onValueChange = { input = it },
-                placeholder = { Text("Search this book…") },
+                placeholder = { Text(if (byMeaning) "Describe what you are looking for…" else "Search this book…") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
+            )
+            FilterChip(
+                selected = byMeaning,
+                onClick = { byMeaning = !byMeaning },
+                label = { Text("By meaning") },
+                modifier = Modifier.padding(top = 4.dp),
             )
         }
         if (showResults) {
             when {
                 searching -> CircularProgressIndicator(modifier = Modifier.padding(24.dp))
                 results.isEmpty() -> Text(
-                    "No matches.",
+                    if (byMeaning) "Nothing found. This book may not be preprocessed yet." else "No matches.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),

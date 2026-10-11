@@ -511,7 +511,18 @@ the turn. Three designs, each on the same 12 characters at temperature 0:
   book" section. A dialogue hit that is a question is shown with the
   next line of dialogue when someone else speaks it within 3 paragraphs
   (`store.LookupMatch.Reply`, "[Yen: I'm seventy-six...]"): the question
-  holds the name and the word, the answer neither. Two runs: Anders Danish in both (British in every run
+  holds the name and the word, the answer neither. Since 2026-10-11 each
+  lookup is also searched **by meaning** (`httpapi.semanticExcerpts`,
+  `internal/semantic`): up to 3 more excerpts, from the 60 paragraphs of
+  the series closest to the lookup's words that name the character as a
+  whole word, are closer to the lookup's words than to the name alone
+  by `lookupSemanticLift` (most of what is closest to "Loth old" is just
+  short lines naming Loth), and that the exact search didn't already show
+  - the exact search needs the book to print the very word asked for. Not yet
+  measured on casting results; on retrieval alone, "Loth's voice" found
+  "Loth's raspy voice" three times where the trait phrases found only
+  "Loth's voice called from...". Nothing is added for a book that hasn't
+  been embedded. Two runs: Anders Danish in both (British in every run
   without lookups), Scylla Greek, Steve Northern, Jonas, Fritz, Bert,
   Ingrid and Zac as without; 2 of 12 changed between runs (4 of 12
   without). Jax came out General American in one of the two, and Hans

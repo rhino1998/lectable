@@ -44,6 +44,7 @@ const (
 	pipelinePhaseScareQuote
 	pipelinePhasePronunciation
 	pipelinePhaseSummary
+	pipelinePhaseEmbedding
 	pipelinePhaseCount
 )
 
@@ -56,6 +57,7 @@ var pipelinePhaseNames = [pipelinePhaseCount]string{
 	pipelinePhaseScareQuote:       "scare_quote",
 	pipelinePhasePronunciation:    "pronunciation",
 	pipelinePhaseSummary:          "summary",
+	pipelinePhaseEmbedding:        "embedding",
 }
 
 // PipelinePhases is EnqueuePipeline's argument - one PipelinePhaseFunc per
@@ -74,6 +76,7 @@ const (
 	PhaseAmbience         = pipelinePhaseAmbience
 	PhasePronunciation    = pipelinePhasePronunciation
 	PhaseSummary          = pipelinePhaseSummary
+	PhaseEmbedding        = pipelinePhaseEmbedding
 )
 
 // pipelinePhaseDeps lists, per phase, the phases of the same book's run
@@ -81,9 +84,11 @@ const (
 // constants' doc comment for why each edge exists. A phase with no entry
 // dispatches immediately.
 var pipelinePhaseDeps = [pipelinePhaseCount][]int{
-	pipelinePhaseAttribution:      {pipelinePhaseScareQuote, pipelinePhaseSummary},
-	pipelinePhaseAmbience:         {pipelinePhaseSummary},
-	pipelinePhaseCharacterization: {pipelinePhaseAttribution},
+	pipelinePhaseAttribution: {pipelinePhaseScareQuote, pipelinePhaseSummary},
+	pipelinePhaseAmbience:    {pipelinePhaseSummary},
+	// Embedding too: casting searches the book by meaning for what a
+	// character's material leaves unstated (httpapi.semanticExcerpts).
+	pipelinePhaseCharacterization: {pipelinePhaseAttribution, pipelinePhaseEmbedding},
 	pipelinePhaseVoiceProvision:   {pipelinePhaseCharacterization},
 }
 
@@ -104,6 +109,7 @@ var pipelineKindNames = [pipelinePhaseCount]Kind{
 	pipelinePhaseScareQuote:       "pipeline_scare_quote",
 	pipelinePhasePronunciation:    "pipeline_pronunciation",
 	pipelinePhaseSummary:          "pipeline_summary",
+	pipelinePhaseEmbedding:        "pipeline_embedding",
 }
 
 // PipelinePhaseFunc is one phase's own real work for one book - fan out
@@ -436,6 +442,7 @@ var phaseChildKinds = map[int]Kind{
 	pipelinePhaseScareQuote:    KindScareQuote,
 	pipelinePhasePronunciation: KindPronunciation,
 	pipelinePhaseSummary:       KindSummary,
+	pipelinePhaseEmbedding:     KindEmbedding,
 }
 
 // children reports which the queue tasks a promotion of t cascades to, or nil.

@@ -103,11 +103,12 @@ var tools = []tool{
 	},
 	{
 		Name:        "search",
-		Description: "Find where a phrase occurs in a book's text (a substring match, case-insensitive, up to 200 hits): chapter and paragraph index plus the text around it. Follow up with read for context.",
+		Description: "Find where a phrase occurs in a book's text (a substring match, case-insensitive, up to 200 hits): chapter and paragraph index plus the text around it. With meaning, finds the paragraphs closest to the query in meaning instead, best first, for a book that has been embedded. Follow up with read for context.",
 		Schema: schema([]string{"book", "query"}, map[string]any{
-			"book":  prop("string", bookArg),
-			"query": prop("string", "The phrase to look for, matched as one substring"),
-			"limit": prop("integer", "How many hits to show (default 40)"),
+			"book":    prop("string", bookArg),
+			"query":   prop("string", "The phrase to look for, matched as one substring"),
+			"limit":   prop("integer", "How many hits to show (default 40)"),
+			"meaning": prop("boolean", "Search by meaning rather than for the exact phrase: describe what you are looking for"),
 		}),
 		ReadOnly: true,
 		run:      runSearch,
@@ -639,9 +640,10 @@ func runRead(s *server, raw json.RawMessage) (string, error) {
 
 func runSearch(s *server, raw json.RawMessage) (string, error) {
 	a, err := args[struct {
-		Book  string `json:"book"`
-		Query string `json:"query"`
-		Limit int    `json:"limit"`
+		Book    string `json:"book"`
+		Query   string `json:"query"`
+		Limit   int    `json:"limit"`
+		Meaning bool   `json:"meaning"`
 	}](raw)
 	if err != nil {
 		return "", err
@@ -659,10 +661,17 @@ func runSearch(s *server, raw json.RawMessage) (string, error) {
 		ParagraphIdx int    `json:"paragraphIdx"`
 		Text         string `json:"text"`
 	}
-	if err := s.getJSON("/api/books/"+b.ID+"/search", map[string]any{"q": a.Query}, &hits); err != nil {
+	query := map[string]any{"q": a.Query}
+	if a.Meaning {
+		query["mode"] = "meaning"
+	}
+	if err := s.getJSON("/api/books/"+b.ID+"/search", query, &hits); err != nil {
 		return "", err
 	}
 	if len(hits) == 0 {
+		if a.Meaning {
+			return fmt.Sprintf("nothing found in %s: its chapters have not been embedded (a preprocessing phase)", b.Title), nil
+		}
 		return fmt.Sprintf("%q does not occur in %s", a.Query, b.Title), nil
 	}
 	if a.Limit <= 0 {

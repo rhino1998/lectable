@@ -37,7 +37,7 @@ func TestPipelinePhasesRunInDependencyOrder(t *testing.T) {
 
 	if err := mgr.EnqueuePipeline("book-1", [pipelinePhaseCount]PipelinePhaseFunc{
 		phase(pipelinePhaseAttribution), phase(pipelinePhaseCharacterization), phase(pipelinePhaseVoiceProvision), phase(pipelinePhaseDirection), phase(pipelinePhaseAmbience),
-		phase(pipelinePhaseScareQuote), phase(pipelinePhasePronunciation), phase(pipelinePhaseSummary),
+		phase(pipelinePhaseScareQuote), phase(pipelinePhasePronunciation), phase(pipelinePhaseSummary), phase(pipelinePhaseEmbedding),
 	}); err != nil {
 		t.Fatalf("EnqueuePipeline: %v", err)
 	}
@@ -62,6 +62,9 @@ func TestPipelinePhasesRunInDependencyOrder(t *testing.T) {
 	}
 	if pos[pipelinePhaseSummary] >= pos[pipelinePhaseAttribution] || pos[pipelinePhaseSummary] >= pos[pipelinePhaseAmbience] {
 		t.Fatalf("summary must finish before attribution and ambience, got %v", order)
+	}
+	if pos[pipelinePhaseEmbedding] >= pos[pipelinePhaseCharacterization] {
+		t.Fatalf("embedding must finish before characterization, got %v", order)
 	}
 	if pos[pipelinePhaseScareQuote] >= pos[pipelinePhaseAttribution] {
 		t.Fatalf("expected scare-quote tagging to run before attribution, got order %v", order)

@@ -878,10 +878,10 @@ export function useMarkRead() {
 // query is expected to already be debounced by the caller (BookSearch) -
 // this hook just skips firing while it's too short to be a useful search.
 // A one-off request/response, not live state.
-export function useSearchBook(bookId: string, query: string) {
+export function useSearchBook(bookId: string, query: string, byMeaning = false) {
   return useQuery({
-    queryKey: ['books', bookId, 'search', query],
-    queryFn: () => api.searchBook(bookId, query),
+    queryKey: ['books', bookId, 'search', query, byMeaning],
+    queryFn: () => api.searchBook(bookId, query, byMeaning),
     enabled: query.trim().length > 1,
   })
 }

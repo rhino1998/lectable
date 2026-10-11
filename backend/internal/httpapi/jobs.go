@@ -18,12 +18,12 @@ type queueTaskDTO struct {
 	// Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
 	// | "voice_provision" | "speaker_attribution" | "speaker_characterization"
 	// | "speech_direction" | "ambience" | "scare_quote_tagging" |
-	// "chapter_summary" | "book_setting" (per-item work, see
+	// "chapter_summary" | "chapter_embedding" | "book_setting" (per-item work, see
 	// jobs.Kind) or
 	// "pipeline_scare_quote" | "pipeline_attribution" |
 	// "pipeline_characterization" |
 	// "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
-	// | "pipeline_summary"
+	// | "pipeline_summary" | "pipeline_embedding"
 	// (one of a book's own preprocessing phases - see
 	// jobs.EnqueuePipeline/toPipelineQueueTask; deliberately "pipeline_"-
 	// prefixed so these can never collide with the per-item kind sharing a

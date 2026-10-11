@@ -45,6 +45,13 @@ type ModelParams struct {
 	// LoadMTP also loads the model's MTP (multi-token prediction) layers,
 	// if its GGUF has them - needed for Context.EnableMTP.
 	LoadMTP bool
+
+	// NoGPU keeps the model off every GPU device, whatever NGPULayers
+	// says. NGPULayers 0 alone leaves the weights on the CPU but still
+	// lets libllama use a GPU device for other buffers; this hands it an
+	// empty device list instead, for a small model that must not touch a
+	// card other models are sharing.
+	NoGPU bool
 }
 
 func (p ModelParams) cParams() C.struct_llama_model_params {
@@ -69,7 +76,15 @@ func LoadModel(path string, params ModelParams) (*Model, error) {
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
-	handle := C.llama_model_load_from_file(cPath, params.cParams())
+	cParams := params.cParams()
+	if params.NoGPU {
+		// A device list holding only its NULL terminator: no devices.
+		devices := (*C.ggml_backend_dev_t)(C.calloc(1, C.size_t(unsafe.Sizeof(C.ggml_backend_dev_t(nil)))))
+		defer C.free(unsafe.Pointer(devices))
+		cParams.devices = devices
+		cParams.n_gpu_layers = 0
+	}
+	handle := C.llama_model_load_from_file(cPath, cParams)
 	if handle == nil {
 		return nil, newError("llama_model_load_from_file")
 	}

@@ -113,6 +113,15 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
   logits over its options instead of generated (`llamacpp.Scheduler.
   Decide`) and comes back with its probability - what the pronunciation
   and emotion passes use.
+  The package also holds the **embedding model** (`embedder.go`,
+  `Embedder`: Jina v5 text nano, the file `internal/semantic` names),
+  loaded twice from one GGUF, each lazily: on the GPU for the chapters a
+  `jobs.KindEmbedding` task embeds - LLM-pool work, so it is on the card
+  only while that pool holds it, and `/llm/unload` and an exclusive LLM's
+  audio load unload it too - and on the CPU (`llamacpp.ModelParams.NoGPU`)
+  for a search phrase at any time. `POST /embed` picks by
+  `ttsproto.EmbedRequest.Query`. `LECTABLE_EMBED_GPU=false` keeps the bulk
+  copy on the CPU as well.
 - **`cmd/ttsworker/main.go`** is a thin `main()` wiring `audioworker.
   Worker` and `llmworker.Worker` up to one loopback HTTP server (default
   `:8091`), including `/llm/generate` and `/llm/decide` alongside the TTS
@@ -168,6 +177,13 @@ building/running `ttsworker` does, since both now link into that binary.
   `cmd/apigen` with the clients, so a new route shows up after `make
   generate`; a new *tool* is an entry in `tools.go`'s `tools` slice. Talks
   to the backend over HTTP only - it imports nothing from `internal/`.
+- `cmd/llmproxy/` — a standalone OpenAI-compatible endpoint
+  (`/v1/chat/completions`, `/v1/models`; default `127.0.0.1:8092`) in
+  front of the backend's own LLM, for tools that only speak that format
+  (DuckDB's `ai`/`flock` extensions). It calls `POST /api/llm/test`, so
+  each completion is a pooled, `TierUrgent` job rather than a call behind
+  the scheduler's back. No embeddings (501), no real streaming. Not built
+  or started by `make build`/`run.sh`: `go run ./cmd/llmproxy`.
 - `internal/audioworker/` — the worker's TTS model-loading/generation
   logic (imports `audiocpp-go`).
 - `internal/llmworker/` — the worker's LLM model-loading/generation logic
@@ -459,6 +475,26 @@ building/running `ttsworker` does, since both now link into that binary.
   applies around the model, and the benchmark history ("Speaker
   attribution", "Emotions", "SFX sound effects", ...) are in
   `docs/speakerattr.md` - read the relevant part before changing a pass.
+- `internal/semantic/` — search by meaning: one embedding per paragraph
+  of 20+ characters, kept in `LECTABLE_DATA_DIR/embeddings.sqlite` (its
+  own file - derived data, ~0.9 KB a paragraph, never in the library's
+  backups; an index made with another model is emptied on open), and
+  `Service.Search` over it. Vectors are stored a byte a dimension and
+  scanned in memory per book (cached, 1 GB at most) - a series is tens of
+  milliseconds, so there is no ANN index. A chapter is embedded by a
+  `jobs.KindEmbedding` task (`Service.EmbedChapter`, the "embedding"
+  preprocessing phase, which characterization waits for); what is stale
+  is decided by comparing `chapter_text.content_rev` (migration 00027:
+  `rev` for a chapter's text alone, untouched by a speaker change), not a
+  `store.Passes` flag, and only paragraphs whose text changed are embedded
+  again. A book list's `preprocessed` also needs every chapter embedded
+  (`Service.EmbeddedBooks`). `POST /api/library/embed` embeds a library
+  preprocessed before the phase existed. Readers of
+  it: casting's lookups (`httpapi.semanticExcerpts`) and
+  `GET /api/books/{id}/search?mode=meaning`. Off, with everything doing
+  without, when the model file (`LECTABLE_EMBED_MODEL_PATH`, default
+  `~/llm-models/jina-embeddings-v5-text-nano-retrieval-Q8_0.gguf`) is
+  missing. Why this model: `model.go`.
 - `internal/jobs/` — one queue for every chapter/paragraph/character-scoped
   background job, generalized over a `Kind` rather than one mechanism per
   feature, running on `internal/sched`. The queue is in memory: queued
@@ -914,7 +950,9 @@ Env vars (all optional): `LECTABLE_PORT` (8080), `LECTABLE_DATA_DIR` (`./data`),
 (`~/audio.cpp/build-rocm7/bin`; `run.sh` sets it from `AUDIOCPP_DIR`), `LECTABLE_AUDIOCPP_MODELS_DIR`
 (`~/audio.cpp/models` - where every default audio.cpp GGUF path resolves), `LECTABLE_SPEAKER_LLM_MODEL_PATH`/
 `LECTABLE_SPEAKER_LLM_GPU_LAYERS`/`LECTABLE_SPEAKER_LLM_CTX`/`LECTABLE_SPEAKER_LLM_MAX_CONCURRENT`/
-`LECTABLE_SPEAKER_LLM_NO_THINK`/`LECTABLE_MODEL_IDLE_UNLOAD_AFTER` (speaker attribution - see
+`LECTABLE_SPEAKER_LLM_NO_THINK`/`LECTABLE_MODEL_IDLE_UNLOAD_AFTER`,
+`LECTABLE_EMBED_MODEL_PATH`/`LECTABLE_EMBED_GPU`/`LECTABLE_EMBED_QUERY_THREADS`
+(search by meaning - see `internal/semantic`) (speaker attribution - see
 "ttsworker / audioworker / llmworker" and `internal/speakerattr` above;
 attribution is disabled, not fatal, if the model file doesn't exist). `LECTABLE_BACKUP_INTERVAL`
 (`24h`, a Go duration; `0` disables) and `LECTABLE_BACKUP_KEEP` (7) - see

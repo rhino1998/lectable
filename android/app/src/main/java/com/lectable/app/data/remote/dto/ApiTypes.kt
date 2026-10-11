@@ -593,9 +593,11 @@ data class BookDetailDto(
     /**
      * Preprocessed is true once every chapter has been through every
      * per-chapter pass a preprocessing run makes (scare quotes, summary,
-     * attribution, emotions, pronunciation, ambience) - nothing is left for
-     * POST .../preprocess to do but characters it hasn't described. False
-     * again when a book gains a chapter or has a pass reset.
+     * attribution, emotions, pronunciation, ambience) and every chapter is
+     * embedded for search by meaning as its text now stands (when there is
+     * an embedding model) - nothing is left for POST .../preprocess to do
+     * but characters it hasn't described. False again when a book gains a
+     * chapter, has a pass reset, or has a paragraph reworded.
      */
     val preprocessed: Boolean = false,
     /**
@@ -924,9 +926,11 @@ data class BookSummaryDto(
     /**
      * Preprocessed is true once every chapter has been through every
      * per-chapter pass a preprocessing run makes (scare quotes, summary,
-     * attribution, emotions, pronunciation, ambience) - nothing is left for
-     * POST .../preprocess to do but characters it hasn't described. False
-     * again when a book gains a chapter or has a pass reset.
+     * attribution, emotions, pronunciation, ambience) and every chapter is
+     * embedded for search by meaning as its text now stands (when there is
+     * an embedding model) - nothing is left for POST .../preprocess to do
+     * but characters it hasn't described. False again when a book gains a
+     * chapter, has a pass reset, or has a paragraph reworded.
      */
     val preprocessed: Boolean = false,
     /**
@@ -2258,12 +2262,12 @@ data class QueueTaskDto(
      * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
      * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
      * | "speech_direction" | "ambience" | "scare_quote_tagging" |
-     * "chapter_summary" | "book_setting" (per-item work, see
+     * "chapter_summary" | "chapter_embedding" | "book_setting" (per-item work, see
      * jobs.Kind) or
      * "pipeline_scare_quote" | "pipeline_attribution" |
      * "pipeline_characterization" |
      * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
-     * | "pipeline_summary"
+     * | "pipeline_summary" | "pipeline_embedding"
      * (one of a book's own preprocessing phases - see
      * jobs.EnqueuePipeline/toPipelineQueueTask; deliberately "pipeline_"-
      * prefixed so these can never collide with the per-item kind sharing a

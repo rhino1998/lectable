@@ -160,6 +160,11 @@ The kinds:
     narration's closure calls `Manager.NarrateText`, the one way to speak
     text that isn't a paragraph in a book's voice. See the `.../recap`
     entry in `api.md`.
+  - `KindEmbedding` (`poolLLM`) embeds one chapter's paragraphs for
+    search by meaning (`semantic.Service.EmbedChapter`) - the "embedding"
+    preprocessing phase (`RunEmbedding`), which characterization waits
+    for. No LLM call: it is in this pool because the embedding model sits
+    on the GPU beside the speaker LLM.
   - `KindScareQuote` (`poolLLM`) runs one chapter's scare-quote
     tagging - `KindSpeechDirection`'s shape (`EnqueueScareQuote`/
     `RunScareQuote`). `KindSpeakerAttribution` depends on the chapter's

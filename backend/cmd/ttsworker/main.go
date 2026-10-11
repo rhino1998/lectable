@@ -28,6 +28,7 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audioworker"
 	"github.com/rhino1998/lectable/backend/internal/llmworker"
+	"github.com/rhino1998/lectable/backend/internal/semantic"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 )
 
@@ -86,12 +87,16 @@ func main() {
 	llmModelPath := speakerattr.ModelPathFromEnv()
 	exclusive := llmExclusive(llmModelPath)
 	var llmRef atomic.Pointer[llmworker.Worker]
+	var gpuEmbedderRef atomic.Pointer[llmworker.Embedder]
 	var audioBeforeLoad func()
 	if exclusive {
 		log.Printf("ttsworker: speaker LLM %s is exclusive - it and the audio models unload each other", llmModelPath)
 		audioBeforeLoad = func() {
 			if lw := llmRef.Load(); lw != nil {
 				lw.Unload()
+			}
+			if e := gpuEmbedderRef.Load(); e != nil {
+				e.Unload()
 			}
 		}
 	}
@@ -148,6 +153,28 @@ func main() {
 	})
 	llmRef.Store(llmWorker)
 
+	// The embedding model (internal/semantic), loaded twice from one file,
+	// each on first use: on the GPU for the chapters a jobs.KindEmbedding
+	// task embeds - LLM-pool work, so it leaves with the speaker LLM - and
+	// on the CPU for a search phrase at any moment.
+	embedModelPath := semantic.ModelPathFromEnv()
+	gpuEmbedder := llmworker.NewEmbedder(llmworker.EmbedderConfig{
+		Name:            "gpu",
+		ModelPath:       embedModelPath,
+		NoGPU:           envOr("LECTABLE_EMBED_GPU", "true") != "true",
+		IdleUnloadAfter: idleUnloadAfter,
+	})
+	gpuEmbedderRef.Store(gpuEmbedder)
+	cpuEmbedder := llmworker.NewEmbedder(llmworker.EmbedderConfig{
+		Name:      "cpu",
+		ModelPath: embedModelPath,
+		NoGPU:     true,
+		Threads:   int32(envIntOr("LECTABLE_EMBED_QUERY_THREADS", 4)),
+		// A phrase at a time.
+		MaxSeqs:         2,
+		IdleUnloadAfter: 15 * time.Minute,
+	})
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /generate", audioWorker.HandleGenerate)
 	mux.HandleFunc("POST /design", audioWorker.HandleDesign)
@@ -163,7 +190,11 @@ func main() {
 	mux.HandleFunc("POST /unload", audioWorker.HandleUnload)
 	mux.HandleFunc("POST /llm/generate", llmWorker.HandleGenerate)
 	mux.HandleFunc("POST /llm/decide", llmWorker.HandleDecide)
-	mux.HandleFunc("POST /llm/unload", llmWorker.HandleUnload)
+	mux.HandleFunc("POST /llm/unload", func(rw http.ResponseWriter, r *http.Request) {
+		gpuEmbedder.Unload()
+		llmWorker.HandleUnload(rw, r)
+	})
+	mux.HandleFunc("POST /embed", llmworker.HandleEmbed(gpuEmbedder, cpuEmbedder))
 	mux.HandleFunc("GET /health", func(rw http.ResponseWriter, r *http.Request) {
 		// llmWorker.Loaded() is read fresh on every request (not captured
 		// once at registration time) so /health always reflects current

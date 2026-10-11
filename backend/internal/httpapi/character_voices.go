@@ -104,7 +104,11 @@ const (
 // name. A question that matches is shown with the line answering it
 // (store.LookupMatch.Reply): "how old are you, Yen?" matches Yen + old,
 // and the age is in her answer.
-func (s *Server) lookupExcerpts(bookIDs, names, terms []string) ([]string, error) {
+//
+// The words are also searched for by meaning (semanticExcerpts), which
+// finds what says the same thing in other words; those excerpts follow
+// the exact ones.
+func (s *Server) lookupExcerpts(ctx context.Context, bookIDs, names, terms []string) ([]string, error) {
 	named := false
 	for _, t := range terms {
 		for _, n := range names {
@@ -150,14 +154,100 @@ func (s *Server) lookupExcerpts(bookIDs, names, terms []string) ([]string, error
 		}
 		kept = append(kept, excerpt)
 	}
-	if len(kept) <= lookupResults {
-		return kept, nil
+	out := kept
+	if len(kept) > lookupResults {
+		out = make([]string, lookupResults)
+		for i := range out {
+			out[i] = kept[i*len(kept)/lookupResults]
+		}
 	}
-	out := make([]string, lookupResults)
-	for i := range out {
-		out[i] = kept[i*len(kept)/lookupResults]
+	return append(out, s.semanticExcerpts(ctx, bookIDs, names, terms, kept)...), nil
+}
+
+const (
+	// lookupSemanticResults is how many excerpts found by meaning a lookup
+	// adds to its exact ones.
+	lookupSemanticResults = 3
+	// lookupSemanticPool is how many of the closest paragraphs are looked
+	// through for ones that mention the character.
+	lookupSemanticPool = 60
+	// lookupSemanticLift is how much closer a paragraph must be to the
+	// lookup's words than to the character's name alone
+	// (semantic.Hit.Lift). Most of what is closest to "Loth old" is just
+	// short lines naming Loth ("Loth changed the subject."); over one
+	// series those sat at +0.03 or below and paragraphs about the word at
+	// +0.05 to +0.33 (2026-10-11, 12 lookups read by hand).
+	lookupSemanticLift = 0.05
+)
+
+// semanticExcerpts is a lookup's second source: the paragraphs of bookIDs
+// closest in meaning to terms (semantic.Service.Search) that mention the
+// character by one of names as a whole word - without that, "Loth +
+// raspy" returns anyone's raspy voice - and are about the lookup's word,
+// not only the name (lookupSemanticLift), as up to lookupSemanticResults
+// excerpts cut around the name, leaving out what have (the exact search's
+// excerpts) already shows. The exact search needs the book to print the
+// very word asked for; this finds "her voice was like gravel" for "rasp".
+// Nothing when there is no index, and a failure is logged, never the
+// lookup's: these only add to it.
+func (s *Server) semanticExcerpts(ctx context.Context, bookIDs, names, terms, have []string) []string {
+	if s.Semantic == nil {
+		return nil
 	}
-	return out, nil
+	// The character's names, and whatever the lookup itself called them.
+	mentions := slices.Clone(names)
+	var called []string
+	for _, t := range terms {
+		for _, n := range names {
+			if strings.Contains(strings.ToLower(n), strings.ToLower(t)) {
+				mentions = append(mentions, t)
+				called = append(called, t)
+				break
+			}
+		}
+	}
+	if len(called) == 0 {
+		called = names[:1]
+	}
+	hits, err := s.Semantic.SearchAbove(ctx, bookIDs, strings.Join(terms, " "), strings.Join(called, " "), lookupSemanticPool)
+	if err != nil {
+		log.Printf("httpapi: semantic lookup %q: %v", terms, err)
+		return nil
+	}
+	words := make([]*regexp.Regexp, 0, len(mentions))
+	for _, m := range mentions {
+		if strings.TrimSpace(m) != "" {
+			words = append(words, regexp.MustCompile(`(?i)\b`+regexp.QuoteMeta(m)+`\b`))
+		}
+	}
+	var out []string
+	for _, h := range hits {
+		if len(out) == lookupSemanticResults {
+			break
+		}
+		if h.Lift < lookupSemanticLift {
+			continue
+		}
+		named := ""
+		for _, w := range words {
+			if named = w.FindString(h.Text); named != "" {
+				break
+			}
+		}
+		if named == "" {
+			continue
+		}
+		excerpt := speakerattr.Excerpt(h.Text, named, lookupSentenceChars)
+		shown := slices.Contains(out, excerpt)
+		for _, e := range have {
+			// An exact excerpt may carry a reply after it.
+			shown = shown || strings.HasPrefix(e, excerpt)
+		}
+		if !shown {
+			out = append(out, excerpt)
+		}
+	}
+	return out
 }
 
 // castOptions are the preview's variations on castCharacter; the zero
@@ -227,8 +317,8 @@ func (s *Server) castCharacter(ctx context.Context, book *store.Book, char store
 	castingOpts := speakerattr.CastingOptions{Temp: opts.temp}
 	var lookups []string
 	if !opts.noLookup {
-		castingOpts.Lookup = func(_ context.Context, terms []string) ([]string, error) {
-			return s.lookupExcerpts(bookIDs, names, terms)
+		castingOpts.Lookup = func(ctx context.Context, terms []string) ([]string, error) {
+			return s.lookupExcerpts(ctx, bookIDs, names, terms)
 		}
 		castingOpts.OnLookup = func(terms []string, found int) {
 			lookups = append(lookups, fmt.Sprintf("%s: %d", strings.Join(terms, " + "), found))

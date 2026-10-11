@@ -596,9 +596,11 @@ export interface BookSummary {
   /**
    * Preprocessed is true once every chapter has been through every
    * per-chapter pass a preprocessing run makes (scare quotes, summary,
-   * attribution, emotions, pronunciation, ambience) - nothing is left for
-   * POST .../preprocess to do but characters it hasn't described. False
-   * again when a book gains a chapter or has a pass reset.
+   * attribution, emotions, pronunciation, ambience) and every chapter is
+   * embedded for search by meaning as its text now stands (when there is
+   * an embedding model) - nothing is left for POST .../preprocess to do
+   * but characters it hasn't described. False again when a book gains a
+   * chapter, has a pass reset, or has a paragraph reworded.
    */
   preprocessed: boolean
   /**
@@ -1834,12 +1836,12 @@ export interface QueueTask {
    * Kind is one of: "voice_clone" | "voice_design" | "voice_design_preview"
    * | "voice_provision" | "speaker_attribution" | "speaker_characterization"
    * | "speech_direction" | "ambience" | "scare_quote_tagging" |
-   * "chapter_summary" | "book_setting" (per-item work, see
+   * "chapter_summary" | "chapter_embedding" | "book_setting" (per-item work, see
    * jobs.Kind) or
    * "pipeline_scare_quote" | "pipeline_attribution" |
    * "pipeline_characterization" |
    * "pipeline_voice_provision" | "pipeline_direction" | "pipeline_ambience"
-   * | "pipeline_summary"
+   * | "pipeline_summary" | "pipeline_embedding"
    * (one of a book's own preprocessing phases - see
    * jobs.EnqueuePipeline/toPipelineQueueTask; deliberately "pipeline_"-
    * prefixed so these can never collide with the per-item kind sharing a
@@ -4477,9 +4479,17 @@ export interface Routes {
     response: QueuedResponse
     errorCode: never
   }
+  /**
+   * handleSearchBook finds paragraphs of a book: those containing ?q= as
+   * written, in reading order, or with ?mode=meaning the ones closest to it
+   * in meaning, best first (semantic.Service.Search - "how long do kobolds
+   * live" finds "Kobolds only live to fifteen or so"). A search by meaning
+   * answers nothing for a book whose chapters haven't been embedded (a
+   * preprocessing phase), and 503 when there is no embedding model.
+   */
   'GET /api/books/{id}/search': {
     path: { id: string }
-    query: { q?: string | number | boolean }
+    query: { q?: string | number | boolean; mode?: string | number | boolean }
     body: never
     response: SearchResult[]
     errorCode: never
@@ -4978,6 +4988,23 @@ export interface Routes {
     query: Record<never, never>
     body: never
     response: void
+    errorCode: never
+  }
+  /**
+   * handleEmbedLibrary embeds every chapter of every book that the semantic
+   * index hasn't read as it is now - preprocessing's embedding phase alone,
+   * a book at a time, for a library preprocessed before there was one (a
+   * whole-library preprocess would get to each book's embedding only behind
+   * all its other passes). One job-queue row (a jobs.BulkGroup, Kind
+   * "pipeline_library_embedding", on the first book); asking again while
+   * one is queued or running joins it. 202 with the number of books, 503
+   * without an embedding model.
+   */
+  'POST /api/library/embed': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
     errorCode: never
   }
   /**
@@ -5581,6 +5608,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/lexicon': 'json',
   'PUT /api/lexicon': 'json',
   'DELETE /api/lexicon/{entryId}': 'none',
+  'POST /api/library/embed': 'json',
   'POST /api/library/preprocess': 'json',
   'POST /api/llm/test': 'json',
   'GET /api/music-regions/{id}/audio': 'binary',

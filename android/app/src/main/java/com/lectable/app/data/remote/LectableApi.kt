@@ -1459,10 +1459,19 @@ interface LectableApi {
         @Path("id") id: String,
     ): QueuedResponseDto
 
+    /**
+     * handleSearchBook finds paragraphs of a book: those containing ?q= as
+     * written, in reading order, or with ?mode=meaning the ones closest to it
+     * in meaning, best first (semantic.Service.Search - "how long do kobolds
+     * live" finds "Kobolds only live to fifteen or so"). A search by meaning
+     * answers nothing for a book whose chapters haven't been embedded (a
+     * preprocessing phase), and 503 when there is no embedding model.
+     */
     @GET("api/books/{id}/search")
     suspend fun searchBook(
         @Path("id") id: String,
         @Query("q") q: String? = null,
+        @Query("mode") mode: String? = null,
     ): List<SearchResultDto>
 
     /**
@@ -1894,6 +1903,19 @@ interface LectableApi {
     suspend fun deleteGlobalLexicon(
         @Path("entryId") entryId: String,
     ): Unit
+
+    /**
+     * handleEmbedLibrary embeds every chapter of every book that the semantic
+     * index hasn't read as it is now - preprocessing's embedding phase alone,
+     * a book at a time, for a library preprocessed before there was one (a
+     * whole-library preprocess would get to each book's embedding only behind
+     * all its other passes). One job-queue row (a jobs.BulkGroup, Kind
+     * "pipeline_library_embedding", on the first book); asking again while
+     * one is queued or running joins it. 202 with the number of books, 503
+     * without an embedding model.
+     */
+    @POST("api/library/embed")
+    suspend fun embedLibrary(): QueuedResponseDto
 
     /**
      * handlePreprocessLibrary preprocesses every book in the library, up to

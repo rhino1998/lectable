@@ -1432,9 +1432,12 @@ class ReaderViewModel @Inject constructor(
         _uiState.update { it.copy(error = null) }
     }
 
-    fun searchBook(query: String, onResult: (List<SearchResultDto>) -> Unit) {
+    fun searchBook(query: String, byMeaning: Boolean, onResult: (List<SearchResultDto>) -> Unit) {
         viewModelScope.launch {
-            runCatching { libraryRepository.searchBook(bookId, query) }.onSuccess(onResult)
+            runCatching { libraryRepository.searchBook(bookId, query, byMeaning) }
+                // A failed search still has to end the spinner.
+                .onFailure { onResult(emptyList()) }
+                .onSuccess(onResult)
         }
     }
 

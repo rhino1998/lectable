@@ -323,6 +323,12 @@ func (m *Manager) RunSummary(ctx context.Context, bookID, chapterID string, chap
 	return m.runLLMTaskDirect(ctx, KindSummary, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
 }
 
+// RunEmbedding runs fn as a KindEmbedding task and waits for it - RunSummary's
+// shape, for the preprocess phase.
+func (m *Manager) RunEmbedding(ctx context.Context, bookID, chapterID string, chapterIdx, tier int, fn EmbeddingFunc) (int, error) {
+	return m.runLLMTaskDirect(ctx, KindEmbedding, tier, bookID, chapterID, chapterIdx, chapterID, "", fn)
+}
+
 // EnqueuePronunciation queues fn as a KindPronunciation task - same shape
 // as EnqueueScareQuote.
 func (m *Manager) EnqueuePronunciation(bookID, chapterID string, chapterIdx int, fn PronunciationFunc) {

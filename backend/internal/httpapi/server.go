@@ -19,6 +19,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/live"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/semantic"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
@@ -50,6 +51,10 @@ type Server struct {
 	// works (listing, voice assignment), only running new attribution
 	// requires this.
 	Speaker *speakerattr.Client
+	// Semantic is search by meaning over the library's paragraphs
+	// (internal/semantic) - nil when there is no embedding model, and
+	// everything that would use it then does without.
+	Semantic *semantic.Service
 	// InstanceID is stable across restarts/network-address changes as long as DataDir
 	// persists (see internal/instanceid) - lets a client that can be pointed at different
 	// backends (the Android app - see android/CLAUDE.md) tell them apart reliably, rather
@@ -278,6 +283,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/preprocess", s.handlePreprocessBook)
 	mux.HandleFunc("POST /api/books/{id}/preprocess-series", s.handlePreprocessSeries)
 	mux.HandleFunc("POST /api/library/preprocess", s.handlePreprocessLibrary)
+	mux.HandleFunc("POST /api/library/embed", s.handleEmbedLibrary)
 	mux.HandleFunc("POST /api/books/{id}/bulk/{action}", s.handleBulkAction)
 	mux.HandleFunc("POST /api/books/{id}/reset/{pass}", s.handleResetPass)
 	mux.HandleFunc("DELETE /api/books/{id}/chapters/{idx}/audio", s.handleDeleteChapterAudio)

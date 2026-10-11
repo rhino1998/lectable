@@ -10,8 +10,9 @@
 // wrapper is deliberately not 1:1: it exposes a small, idiomatic subset --
 // load a GGUF model, build a prompt (optionally through a chat template),
 // and run a token-by-token generation loop with a configurable sampler
-// chain -- rather than every function llama.h declares (no LoRA adapters,
-// no session/state save-load, no embeddings extraction, no quantization).
+// chain, and pooled embeddings from an embedding model (embed.go) --
+// rather than every function llama.h declares (no LoRA adapters, no
+// quantization).
 // Add to it as real call sites need more of the underlying API.
 //
 // Quick start:

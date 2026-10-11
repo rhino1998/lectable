@@ -741,8 +741,13 @@ export const api = {
   markRead: (bookId: string, read: boolean) =>
     call('PUT /api/books/{id}/read', { path: { id: bookId }, body: { read } }),
 
-  searchBook: (bookId: string, q: string) =>
-    call('GET /api/books/{id}/search', { path: { id: bookId }, query: { q } }),
+  // byMeaning finds the paragraphs closest to q in meaning (best first)
+  // rather than the ones containing it - httpapi.handleSearchBook.
+  searchBook: (bookId: string, q: string, byMeaning = false) =>
+    call('GET /api/books/{id}/search', {
+      path: { id: bookId },
+      query: byMeaning ? { q, mode: 'meaning' } : { q },
+    }),
 
   // Flags (chapterIdx, paragraphIdx) as bookmarked, or updates its note if
   // it already is - see backend Store.UpsertBookmark.

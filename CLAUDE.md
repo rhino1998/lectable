@@ -185,6 +185,12 @@ proposes each fix for the reader to accept or skip on the Speakers tab;
 nothing is merged on its own. See the `roster-review` entry in
 `backend/docs/api.md`.
 
+**Search by meaning**: preprocessing also embeds every paragraph (an
+embedding model in `ttsworker`), so a passage can be found by describing
+it - what casting's lookups use beside their exact-word search, and
+`GET /api/books/{id}/search?mode=meaning`. See `internal/semantic` in
+`backend/CLAUDE.md`.
+
 A per-chapter **summary pass** writes each chapter's summary, scenes
 (where, when, who's there) and cast (with what the text calls them);
 attribution reads the cast and ambience/lighting the scenes. See
@@ -283,6 +289,9 @@ the `cmd/lectable-mcp` entry in `backend/CLAUDE.md`.
   `backend/docs/latents.md`) and music seeds as
   `music/<regionID>.seed.lat` (Stable Audio latents; legacy `.seed.wav` is
   migrated in the background),
+  `embeddings.sqlite` (one embedding per paragraph, for search by meaning -
+  derived, rebuilt by preprocessing; see `backend/CLAUDE.md`'s
+  `internal/semantic`),
   `backups/library-<timestamp>.sqlite` (rolling daily copies of the
   database, see `backend/CLAUDE.md`'s `internal/dbbackup`),
   `audio/<bookID>/recap.opus` (the book's spoken recap),

@@ -58,9 +58,11 @@ type bookSummaryDTO struct {
 	Preprocessing bool `json:"preprocessing"`
 	// Preprocessed is true once every chapter has been through every
 	// per-chapter pass a preprocessing run makes (scare quotes, summary,
-	// attribution, emotions, pronunciation, ambience) - nothing is left for
-	// POST .../preprocess to do but characters it hasn't described. False
-	// again when a book gains a chapter or has a pass reset.
+	// attribution, emotions, pronunciation, ambience) and every chapter is
+	// embedded for search by meaning as its text now stands (when there is
+	// an embedding model) - nothing is left for POST .../preprocess to do
+	// but characters it hasn't described. False again when a book gains a
+	// chapter, has a pass reset, or has a paragraph reworded.
 	Preprocessed bool `json:"preprocessed"`
 	// MusicEnabled mirrors store.Book.MusicEnabled - included here (not
 	// just on voiceSettingsDTO, which is what actually reads/writes it)
@@ -207,6 +209,15 @@ func (s *Server) buildBookSummaryWith(b store.Book, preprocessing bool) (bookSum
 	chapters, stats := store.SumNarration(narration)
 	dto := toBookSummary(b, chapters, stats)
 	dto.Preprocessing = preprocessing
+	if dto.Preprocessed && s.Semantic != nil {
+		// Embedding is a preprocessing phase too, but what it has done is
+		// the semantic index's to say, not a chapter's pass flags.
+		embedded, err := s.Semantic.EmbeddedBooks()
+		if err != nil {
+			return bookSummaryDTO{}, nil, err
+		}
+		dto.Preprocessed = embedded[b.ID]
+	}
 	if dto.Source, err = s.bookSource(b.ID); err != nil {
 		return bookSummaryDTO{}, nil, err
 	}

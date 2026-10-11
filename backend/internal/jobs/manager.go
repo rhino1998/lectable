@@ -364,6 +364,7 @@ var kindPool = map[Kind]poolKey{
 	KindScareQuote:              poolLLM,
 	KindPronunciation:           poolLLM,
 	KindSummary:                 poolLLM,
+	KindEmbedding:               poolLLM,
 	KindBookSetting:             poolLLM,
 	KindRecap:                   poolLLM,
 	KindRosterReview:            poolLLM,

@@ -254,6 +254,11 @@ type BookSettingDeriver func(ctx context.Context, book *store.Book) error
 // KindSummary task. DirectionFunc's shape.
 type SummaryFunc func(ctx context.Context) (int, func(), error)
 
+// EmbeddingFunc embeds one chapter's paragraphs - the work behind a
+// KindEmbedding task - and reports how many it embedded. SummaryFunc's
+// shape; it never pauses, so its requeue is always nil.
+type EmbeddingFunc func(ctx context.Context) (int, func(), error)
+
 type ChapterPronouncer func(ctx context.Context, book *store.Book, ch *store.Chapter) (resolved int, requeue func(), err error)
 
 // SetCharacterVoiceProvisioner wires fn in as the lazy voice provisioner -

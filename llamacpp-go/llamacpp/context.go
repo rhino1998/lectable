@@ -90,6 +90,18 @@ type ContextParams struct {
 	// for a 248K vocab. A Scheduler needs at most nSlots x (1 + MTP draft)
 	// per round; a prompt decode needs one.
 	NOutputsMax uint32
+
+	// Embeddings makes the context extract embeddings instead of serving
+	// generation (Context.Embed), pooled per sequence as Pooling says.
+	Embeddings bool
+
+	// Pooling is how a sequence's token states become its one embedding.
+	// The zero value, PoolingDefault, takes the model's own.
+	Pooling PoolingType
+
+	// NoOpOffload keeps host tensor operations off the GPU - with
+	// ModelParams.NoGPU, a context that never touches one.
+	NoOpOffload bool
 }
 
 // FlashAttnMode is ContextParams.FlashAttn.
@@ -160,6 +172,14 @@ func (p ContextParams) cParams() C.struct_llama_context_params {
 	}
 	if p.NOutputsMax != 0 {
 		c.n_outputs_max = C.uint32_t(p.NOutputsMax)
+	}
+	c.embeddings = C.bool(p.Embeddings)
+	if t, ok := p.Pooling.cType(); ok {
+		c.pooling_type = t
+	}
+	if p.NoOpOffload {
+		c.op_offload = false
+		c.offload_kqv = false
 	}
 	return c
 }

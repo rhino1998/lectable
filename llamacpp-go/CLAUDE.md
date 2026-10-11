@@ -28,6 +28,9 @@ only works with both living in the same process.
   returns no error strings), `errors.go`, `model.go`, `vocab.go`
   (tokenize/detokenize/chat template), `context.go`, `batch.go`,
   `sampler.go`, `generate.go` (the high-level single-sequence decode loop),
+  `embed.go` (`Context.Embed`: pooled embeddings, several texts an
+  evaluation, for a context made with `ContextParams.Embeddings`;
+  `ModelParams.NoGPU` loads a model that never touches the GPU),
   `scheduler.go` (multi-sequence batching across concurrent callers - see
   below), `mtp.go` + `mtp.cpp`/`mtp.h` (MTP speculative decoding - see
   below).

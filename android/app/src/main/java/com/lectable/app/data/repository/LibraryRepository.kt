@@ -299,7 +299,10 @@ class LibraryRepository @Inject constructor(
         api.markRead(bookId, MarkReadRequestDto(read))
     }
 
-    suspend fun searchBook(bookId: String, query: String): List<SearchResultDto> = api.searchBook(bookId, query)
+    /** [byMeaning] finds the paragraphs closest to [query] in meaning, best first, rather than
+     *  the ones containing it. */
+    suspend fun searchBook(bookId: String, query: String, byMeaning: Boolean = false): List<SearchResultDto> =
+        api.searchBook(bookId, query, if (byMeaning) "meaning" else null)
 
     suspend fun listSpeakers(bookId: String): List<SpeakerDto> = api.listSpeakers(bookId)
 

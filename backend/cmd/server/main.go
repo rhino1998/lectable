@@ -24,6 +24,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/live"
 	"github.com/rhino1998/lectable/backend/internal/mdnsadvert"
 	"github.com/rhino1998/lectable/backend/internal/narration"
+	"github.com/rhino1998/lectable/backend/internal/semantic"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
@@ -227,6 +228,21 @@ func main() {
 	exports := bookexport.NewManager(bookexport.Source{Store: st, Voices: narrationResolver, DataDir: dataDir},
 		func() { liveHub.Invalidate(httpapi.DepExports) })
 
+	// Search by meaning (internal/semantic) is on when the embedding model
+	// is there; ttsworker loads it. Without the file nothing embeds and
+	// every lookup does without.
+	var semanticSvc *semantic.Service
+	if embedModel := semantic.ModelPathFromEnv(); fileExists(embedModel) {
+		var err error
+		if semanticSvc, err = semantic.Open(dataDir, embedModel, st, ttsMgr); err != nil {
+			log.Fatalf("open semantic index: %v", err)
+		}
+		defer semanticSvc.Close()
+		go dropDeletedBooks(semanticSvc, st)
+	} else {
+		log.Printf("semantic search disabled: no embedding model at %s", embedModel)
+	}
+
 	server := &httpapi.Server{
 		Store:       st,
 		TTS:         ttsMgr,
@@ -237,6 +253,7 @@ func main() {
 		Exports:     exports,
 		Narration:   narrationResolver,
 		Speaker:     speakerClient,
+		Semantic:    semanticSvc,
 		InstanceID:  instanceID,
 		LibraryName: libraryName,
 	}
@@ -295,4 +312,37 @@ func main() {
 	// main returns and the process exits before ttsMgr.Stop() runs, orphaning
 	// the ttsworker child instead of terminating it.
 	<-shutdownDone
+}
+
+func fileExists(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && !fi.IsDir()
+}
+
+// dropDeletedBooks forgets, once at startup, what the semantic index holds
+// for books the library no longer has. (A deleted chapter of a book still
+// there is dropped the next time that book is preprocessed.)
+func dropDeletedBooks(svc *semantic.Service, st store.Store) {
+	indexed, err := svc.IndexedBooks()
+	if err != nil {
+		log.Printf("semantic: list indexed books: %v", err)
+		return
+	}
+	books, err := st.ListBooks()
+	if err != nil {
+		log.Printf("semantic: list books: %v", err)
+		return
+	}
+	have := map[string]bool{}
+	for _, b := range books {
+		have[b.ID] = true
+	}
+	for _, id := range indexed {
+		if have[id] {
+			continue
+		}
+		if err := svc.DropBook(id); err != nil {
+			log.Printf("semantic: drop deleted book %s: %v", id, err)
+		}
+	}
 }
