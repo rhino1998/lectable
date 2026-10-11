@@ -672,6 +672,128 @@ successful generation. `pronunciationBatch` is the one exception -
 response there just defaults to each term's more common reading) - so
 there's nothing for a retry to fix.
 
+**World notes** (2026-10-10; `store.WorldFact`, `speakerattr/worldnotes.go`,
+`httpapi/facts.go`): keyed facts the reader records - "kobold: a
+short-lived kind, thirteen is old", "dwarf: Scottish accent" - per series
+or for every book, a series' fact replacing the global one under the same
+word (`store.BookWorldFacts`). Casting is shown the ones whose word
+appears in the character's names or gathered evidence
+(`MatchWorldNotes`, whole words, at most 8), as a "World notes" section
+the prompt ranks above its genre defaults.
+- *Why*: Loth (The Legend of William Oh) was cast "a young kobold boy".
+  The book says kobolds are short-lived only in dialogue about kobolds in
+  general (chapters 172, 211), which no search keyed to his name finds.
+- *Measured* (casting preview with `?notes=`, 2026-10-10): the note
+  "Kobolds are a short-lived kind: thirteen years is old for a kobold"
+  turned Loth into "an elderly kobold man", accent and manner unchanged -
+  but did the same to Grak, another kobold, and the text gives neither an
+  age. The prompt's rule now says a note on how a kind ages only says how
+  to read an age the material gives, and changes nothing without one;
+  **that wording has not been run yet.** A character's own age belongs in
+  a fact keyed to them ("Loth: thirteen years old"), on the book's Facts
+  tab.
+- Not done: facts in the age-stage calls (`ageByCastingSystemPrompt` still
+  says a non-human never changes), the summary/ambience prompts, an anchor
+  chapter so the recap can't read a fact from ahead of the reader, and
+  proposing facts automatically - which must wait for the reader to
+  accept, like roster review.
+- *Baseline facts* (migration 00026, an upsert; 28 of them): the
+  genre-standard voices the casting prompt lists (dwarf - Scottish, elf -
+  RP, orc/goblin - Cockney, giant/troll, dragon/demon, fairy,
+  robot/AI/construct, ghost), more kinds beside them (kobold, vampire,
+  werewolf, lizardfolk, gnome, halfling, ogre, undead, angel, elemental,
+  spirit, dungeon core, insectoid, merfolk), which kinds are long-lived,
+  short-lived or ageless, and three rules that aren't kinds (royalty,
+  pirate, telepathy), seeded as global facts. The casting prompt still
+  lists its own defaults, so deleting one of those facts changes nothing
+  yet; overriding one for a series does, since a note outranks the
+  prompt's default. Common words among the keys ("giant", "spirit",
+  "king", "construct") bring their fact up for characters who aren't one;
+  the prompt's "only if the material establishes the character as one" is
+  what holds that back, and hasn't been measured.
+
+**Age stages** (2026-10-10; `store.CharacterStage`, `narration/stages.go`,
+`httpapi/stages.go`): a character who grows up or grows old over a book
+or series can change voice. A stage says "from this chapter on, about N
+years old" and carries its own casting instruction; a character's lines
+resolve to the last stage their chapter has reached
+(`narration.Stages.At`), across the rest of that book and every later
+book of the series (`Resolver.BookStages` - a stage set in an earlier
+book is in force from chapter 0, one set in a later book doesn't apply).
+Before the first stage, and for a character with none, it is the
+character's own voice as always.
+- *The voice* (`narration.StageVoice`): the character's own casting
+  recipe - seed, reference line, design model - rendered from the stage's
+  instruction instead of `Summary`. Not stored: the preset id is derived
+  (`<presetID>~a<age>-<hash of the casting>`), like a numbered role's
+  sibling, so its reference clip, emotion variants, clip keys and
+  `voice_id` need nothing of their own, and an edited instruction is a new
+  id. Roles have no stages; a character with no voice of their own (still
+  on the narrator's) is left alone; in the instructed-narrator modes the
+  stage's instruction replaces `Summary` as the clone instruction.
+- *Why a redesign* - listening test on Will Oh (The Legend of William Oh:
+  "a fifteen-year-old" in chapter 116, "I'm twenty" in 324, cast "a
+  teenage boy" for all 6,109 lines), his clip rendered at 10/20/40/70
+  three ways and two real lines cloned from each through Higgs. BreezeTTS
+  instructed cloning of his clip (how emotion variants are made) kept the
+  voice and barely aged it (212 Hz -> 203 at "twenty", and *up* at
+  "seventy"); Praat pitch/formant shifting moved the pitch where told.
+  By ear neither sounded good; redesigning from an age-edited casting
+  under the same seed did. A speaker-embedding score ranked
+  them the other way round (redesign 0.49-0.73 against his own clip,
+  where other characters score ~0.6 and his emotion variants 0.84-0.92) -
+  it measures the wrong thing for this.
+- *The casting* (`Client.AgeCasting`, `agecasting.go`): the character's
+  `Summary` rewritten for the age by one small call that changes only the
+  opening age clause and the wording on pitch, timbre and pace, keeping
+  accent and manner word for word - what the castings in the test
+  differed by. The reader can edit it.
+- *Readiness*: `store.SpeakerVoice` rows carry a chapter range
+  (`FromIdx`/`ToIdx`), one row per stretch, so `ListChapterSummaries`/
+  `ChapterNarration` count a clip only under the voice of its own
+  chapter's stage. `Cached.ListCharacterStages` reads `chapters` (a stage
+  is placed by its chapter's current index), which is written constantly,
+  so a roster with no stages is answered from `CharacterStageScopes`.
+- *Time jumps* (`store.TimeJump`, table `book_time_jumps`,
+  `httpapi/timejumps.go`): "N years pass before this chapter", for the
+  whole cast - at a book's first chapter, the whole book is set that long
+  after the one before it in its series. Applying one needs no ages:
+  every characterized, non-role character who speaks on both sides of it
+  (`Store.SpeakersInChapters` over the series) is asked about in a
+  background characterization task (`Client.AgeCastingBy`), which
+  estimates their age from the casting's opening clause, adds the years,
+  and rewrites the casting only when the age *group* changes (child,
+  teenager, young adult, adult, elderly) - so an adult five years on keeps
+  their voice and makes no stage. The casting aged is the one in force
+  going into the jump (their latest earlier stage, else `Summary`), so
+  jumps compound. Each stage made carries the jump's id
+  (`character_stages.jump_id`); removing the jump removes them, and a
+  stage the reader had already set at that chapter is left alone. Not yet
+  run against the real model.
+- *Following the character's own voice* (2026-10-10): a recast
+  (`recharacterizeAndInvalidate`) rewrites every stage's instruction from
+  the new casting (`Server.recastStages`, one `AgeCasting` call a stage,
+  hand-edited instructions included; a failed rewrite leaves the stage
+  with none, which plays the character's own voice) - before that a stage
+  kept the casting the character had when it was set. And whenever a
+  voice's reference clip is rendered anew or deleted, the clips and
+  emotion variants of every voice derived from it - stages and a role's
+  numbered siblings, ids `<presetID>~...` - are deleted with its own
+  variants (`voicerefs.DeleteDerived`), to render again when next needed.
+- *Detection must propose, not apply* (the reader's instruction,
+  2026-10-10): when time jumps or stages are found automatically they
+  wait for the reader to accept or skip, the way roster review's
+  proposals do - a wrong one re-voices half a book.
+- *Not done yet*: stages and jumps are set by hand (Speakers tab, web
+  only). Finding them is two missing pieces - an approximate age per character (castings
+  carry only a group word: 8 of ~5,300 named characters have a number),
+  and where time passes: the summary pass cuts scenes at a time jump but
+  records only time of day, and a gap is often never announced (Will's
+  falls at the chapter titled "Epilogue"; the evidence is "over the last
+  few years" two chapters later). Flashbacks (a stage for one scene) aren't handled; a
+  younger self the text names apart ("Young Roland") is still its own
+  roster character.
+
 **Series-wide character scope**: characters (identity, `Summary`, voice
 assignment) are keyed by `store.SeriesScope(book)`, not by book - books
 sharing a non-empty `SeriesName` share one character roster across the

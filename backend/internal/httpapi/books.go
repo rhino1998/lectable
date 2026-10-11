@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -242,6 +243,17 @@ func (s *Server) characterVoiceOverrides(book *store.Book, bookVoice narration.R
 		})
 	})
 	key := book.ID + "\x00" + bookVoice.VoiceID()
+	// Where a stage starts moves with its chapter (a restructure), which
+	// is a write to none of voiceTables - so it's part of the key.
+	stages, err := s.Narration.BookStages(book)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range slices.Sorted(maps.Keys(stages)) {
+		for _, span := range stages[id] {
+			key += fmt.Sprintf("\x00%s@%d", id, span.FromIdx)
+		}
+	}
 	m.mu.Lock()
 	gen := m.gen
 	cached, ok := m.byBook[key]
@@ -268,7 +280,7 @@ func (s *Server) characterVoiceOverrides(book *store.Book, bookVoice narration.R
 // voiceTables are the tables a character's resolved voice is read from
 // (internal/narration.Resolver: the book's own voice settings, the roster,
 // its assignments and the presets they name).
-var voiceTables = []string{"books", "characters", "character_voices", "voice_presets", "default_voice"}
+var voiceTables = []string{"books", "characters", "character_voices", "character_stages", "voice_presets", "default_voice"}
 
 // voiceOverridesMemo is characterVoiceOverrides' result per book and book
 // voice, dropped whole on a write to any of voiceTables.
@@ -296,13 +308,34 @@ func (s *Server) resolveCharacterVoiceOverrides(book *store.Book, bookVoice narr
 	if err != nil {
 		return nil, err
 	}
+	stages, err := s.Narration.BookStages(book)
+	if err != nil {
+		return nil, err
+	}
 	overrides := make([]store.SpeakerVoice, 0, len(characters))
 	for _, c := range characters {
 		resolved, err := s.Narration.ResolveCharacterVoice(book, bookVoice, c, cloneModel, presetIDByChar[c.ID])
 		if err != nil {
 			return nil, err
 		}
-		overrides = append(overrides, store.SpeakerVoice{Speaker: c.Name, VoiceID: resolved.VoiceID()})
+		// A character with stages (narration.StageVoice) has one row per
+		// stretch of chapters: their own voice up to the first stage, then
+		// each stage's until the next.
+		spans := stages[c.ID]
+		if len(spans) == 0 || spans[0].FromIdx > 0 {
+			own := store.SpeakerVoice{Speaker: c.Name, VoiceID: resolved.VoiceID()}
+			if len(spans) > 0 {
+				own.ToIdx = spans[0].FromIdx
+			}
+			overrides = append(overrides, own)
+		}
+		for i, span := range spans {
+			row := store.SpeakerVoice{Speaker: c.Name, VoiceID: narration.StageVoice(resolved, bookVoice, c, &span.Stage).VoiceID(), FromIdx: span.FromIdx}
+			if i+1 < len(spans) {
+				row.ToIdx = spans[i+1].FromIdx
+			}
+			overrides = append(overrides, row)
+		}
 		// A role's numbered lines each have their own voice
 		// (narration.MemberVoice); a number with no row here, or on a
 		// character that isn't a role, takes the character's own.

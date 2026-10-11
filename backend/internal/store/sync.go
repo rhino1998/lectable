@@ -31,6 +31,7 @@ func (s *SQLiteStore) SyncFingerprints(bookID string) (book string, chapters map
 			coalesce((SELECT `+h("books", "b", bookVolatileColumns...)+` FROM books b WHERE id = ?), ''),
 			coalesce((SELECT bit_xor(`+h("characters", "t")+`) FROM characters t), ''),
 			coalesce((SELECT bit_xor(`+h("character_voices", "t")+`) FROM character_voices t), ''),
+			coalesce((SELECT bit_xor(`+h("character_stages", "t")+`) FROM character_stages t), ''),
 			coalesce((SELECT bit_xor(`+h("voice_presets", "t")+`) FROM voice_presets t), ''),
 			coalesce((SELECT bit_xor(`+h("default_voice", "t")+`) FROM default_voice t), ''))`, bookID).Scan(&book)
 	if err != nil {

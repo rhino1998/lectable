@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -24,10 +25,16 @@ import (
 // is the voice of that speaker's lines numbered n (Paragraph.SpeakerIndex -
 // several unnamed people sharing a role); a numbered line with no such row
 // takes the speaker's own voice.
+//
+// FromIdx and ToIdx limit a row to the chapters from index FromIdx up to
+// but not including ToIdx - a character whose voice changes over the book
+// (CharacterStage) has one row per stretch. A zero ToIdx is no limit.
 type SpeakerVoice struct {
 	Speaker      string
 	SpeakerIndex int
 	VoiceID      string
+	FromIdx      int
+	ToIdx        int
 }
 
 // MaxSpeakerIndex is the highest Paragraph.SpeakerIndex ever stored (see
@@ -39,10 +46,14 @@ const MaxSpeakerIndex = 6
 // name instead of book id.
 func speakerVoiceValues(overrides []SpeakerVoice) (fragment string, args []any) {
 	rows := make([]string, len(overrides))
-	args = make([]any, 0, len(overrides)*3)
+	args = make([]any, 0, len(overrides)*5)
 	for i, ov := range overrides {
-		rows[i] = "(CAST(? AS TEXT), CAST(? AS INTEGER), CAST(? AS TEXT))"
-		args = append(args, ov.Speaker, ov.SpeakerIndex, ov.VoiceID)
+		rows[i] = "(CAST(? AS TEXT), CAST(? AS INTEGER), CAST(? AS TEXT), CAST(? AS INTEGER), CAST(? AS INTEGER))"
+		to := ov.ToIdx
+		if to == 0 {
+			to = math.MaxInt32
+		}
+		args = append(args, ov.Speaker, ov.SpeakerIndex, ov.VoiceID, ov.FromIdx, to)
 	}
 	return strings.Join(rows, ", "), args
 }
@@ -68,14 +79,14 @@ func (s *SQLiteStore) ListChapterSummaries(bookID, voiceID string, overrides []S
 		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
 		args := append(append([]any{}, valuesArgs...), voiceID, bookID)
 		rows, err = s.db.Query(`
-			WITH speaker_voice(speaker, speaker_index, voice_id) AS (VALUES `+valuesFragment+`)
+			WITH speaker_voice(speaker, speaker_index, voice_id, from_idx, to_idx) AS (VALUES `+valuesFragment+`)
 			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
 				COUNT(p.id) AS total,
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
 			FROM chapters c
 			LEFT JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0
-			LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
+			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0 AND c.idx >= sv.from_idx AND c.idx < sv.to_idx
+			LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0 AND c.idx >= svm.from_idx AND c.idx < svm.to_idx
 			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
 			WHERE c.book_id = ?
 			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
@@ -168,14 +179,14 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 		args = append(append(args, onlyArgs...), voiceID, bookID)
 		args = append(args, onlyArgs...)
 		rows, err = s.db.Query(`
-			WITH speaker_voice(speaker, speaker_index, voice_id) AS (VALUES `+valuesFragment+`),
+			WITH speaker_voice(speaker, speaker_index, voice_id, from_idx, to_idx) AS (VALUES `+valuesFragment+`),
 			ready(chapter_id, n, chars, seconds) AS (
 				SELECT c.id, COUNT(*), SUM(LENGTH(p.content)), SUM(pa.duration_seconds)
 				FROM chapters c
 				JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.status = 'ready'
 				JOIN paragraphs p INDEXED BY idx_paragraphs_stats ON p.chapter_id = c.id AND p.id = pa.paragraph_id
-				LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0
-				LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0
+				LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0 AND c.idx >= sv.from_idx AND c.idx < sv.to_idx
+				LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0 AND c.idx >= svm.from_idx AND c.idx < svm.to_idx
 				WHERE c.book_id = ?`+only+` AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
 				GROUP BY c.id
 			)

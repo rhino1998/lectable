@@ -863,6 +863,7 @@ interface LectableApi {
         @Path("id") id: String,
         @Path("characterId") characterId: String,
         @Query("lookup") lookup: String? = null,
+        @Query("notes") notes: String? = null,
         @Query("temp") temp: String? = null,
     ): CharacterizePreviewResponseDto
 
@@ -977,6 +978,48 @@ interface LectableApi {
     ): Unit
 
     /**
+     * handleSetCharacterStage starts a stage of a character's voice at one of
+     * this book's chapters: from there on - and through the later books of
+     * the series - their lines are voiced as about that age. Setting one
+     * where the character already has one replaces it. With no instruct, the
+     * character's own casting is rewritten for the age, which needs the
+     * speaker LLM and a characterized character.
+     *
+     * Nothing is deleted: the lines from that chapter on resolve to another
+     * voice, so their audio under the old one stops counting as ready and is
+     * generated again like any other missing audio.
+     */
+    @POST("api/books/{id}/characters/{characterId}/stages")
+    suspend fun setCharacterStage(
+        @Path("id") id: String,
+        @Path("characterId") characterId: String,
+        @Body body: CharacterStageRequestDto,
+    ): SpeakerStageDto
+
+    /**
+     * handleUpdateCharacterStage changes a stage's age and casting; an empty
+     * instruct has the casting rewritten for the age again.
+     */
+    @PUT("api/books/{id}/characters/{characterId}/stages/{stageId}")
+    suspend fun updateCharacterStage(
+        @Path("id") id: String,
+        @Path("characterId") characterId: String,
+        @Path("stageId") stageId: String,
+        @Body body: CharacterStageRequestDto,
+    ): Unit
+
+    /**
+     * handleDeleteCharacterStage removes a stage: its lines go back to the
+     * stage before it, or to the character's own voice.
+     */
+    @DELETE("api/books/{id}/characters/{characterId}/stages/{stageId}")
+    suspend fun deleteCharacterStage(
+        @Path("id") id: String,
+        @Path("characterId") characterId: String,
+        @Path("stageId") stageId: String,
+    ): Unit
+
+    /**
      * handleSetCharacterVoice assigns (or, with "", clears) a character's own
      * narration voice - a character with no voice assigned still narrates in
      * the book's own voice even when book.MultiVoice is on (see
@@ -1033,6 +1076,43 @@ interface LectableApi {
         @Path("id") id: String,
         @Path("exportId") exportId: String,
     ): ResponseBody
+
+    @GET("api/books/{id}/facts")
+    suspend fun listBookFacts(
+        @Path("id") id: String,
+    ): List<WorldFactDto>
+
+    /**
+     * handleUpsertBookFact saves a fact for the book's series (or the book
+     * alone, outside a series), where it replaces any global fact sharing a
+     * word with it. Nothing is recast.
+     */
+    @PUT("api/books/{id}/facts")
+    suspend fun upsertBookFact(
+        @Path("id") id: String,
+        @Body body: UpsertWorldFactRequestDto,
+    ): IdResponseDto
+
+    /**
+     * handleFactsAffected lists the characterized characters of the book's
+     * series whose material brings up a fact in force - the ones a recast
+     * would now read differently. It searches the series once per character,
+     * so it is slow on a long roster, and is not a live topic.
+     */
+    @GET("api/books/{id}/facts/affected")
+    suspend fun factsAffected(
+        @Path("id") id: String,
+    ): List<AffectedCharacterDto>
+
+    /**
+     * handleDeleteBookFact removes one of the series' own facts; a global
+     * fact's id is left alone.
+     */
+    @DELETE("api/books/{id}/facts/{factId}")
+    suspend fun deleteBookFact(
+        @Path("id") id: String,
+        @Path("factId") factId: String,
+    ): Unit
 
     /**
      * handleGenerateBook enqueues background TTS generation for every chapter
@@ -1594,6 +1674,35 @@ interface LectableApi {
         @Body body: RegenerateVariantRequestDto,
     ): QueuedResponseDto
 
+    @GET("api/books/{id}/time-jumps")
+    suspend fun listTimeJumps(
+        @Path("id") id: String,
+    ): List<TimeJumpDto>
+
+    /**
+     * handleCreateTimeJump records that years pass before one of this book's
+     * chapters and ages the cast across it: every character who speaks on
+     * both sides of the jump is asked about in the background
+     * (ageAcrossJump), and each one whose age group changes gets a stage
+     * there (store.CharacterStage, marked with the jump). Most characters
+     * come back unchanged. 202 with how many are being asked about.
+     */
+    @POST("api/books/{id}/time-jumps")
+    suspend fun createTimeJump(
+        @Path("id") id: String,
+        @Body body: TimeJumpRequestDto,
+    ): QueuedResponseDto
+
+    /**
+     * handleDeleteTimeJump removes a time jump and the stages made for it;
+     * those lines go back to the voice they had before it.
+     */
+    @DELETE("api/books/{id}/time-jumps/{jumpId}")
+    suspend fun deleteTimeJump(
+        @Path("id") id: String,
+        @Path("jumpId") jumpId: String,
+    ): Unit
+
     /**
      * handleRenameBook sets a book's title and, optionally, its author - what
      * the library shows it as. An import names a book as its source does
@@ -1641,6 +1750,23 @@ interface LectableApi {
     suspend fun listEpubChapters(
         @Part file: MultipartBody.Part? = null,
     ): EpubChaptersResponseDto
+
+    @GET("api/facts")
+    suspend fun listGlobalFacts(): List<WorldFactDto>
+
+    /**
+     * handleUpsertGlobalFact saves a fact for every book. Nothing is recast:
+     * a fact reaches a character the next time their voice is cast.
+     */
+    @PUT("api/facts")
+    suspend fun upsertGlobalFact(
+        @Body body: UpsertWorldFactRequestDto,
+    ): IdResponseDto
+
+    @DELETE("api/facts/{factId}")
+    suspend fun deleteGlobalFact(
+        @Path("factId") factId: String,
+    ): Unit
 
     @Streaming
     @GET("api/images/{id}")
@@ -1744,6 +1870,29 @@ interface LectableApi {
     suspend fun setJobTier(
         @Path("id") id: String,
         @Body body: JobTierRequestDto,
+    ): Unit
+
+    @GET("api/lexicon")
+    suspend fun listGlobalLexicon(): List<GlobalLexiconEntryDto>
+
+    /**
+     * handleUpsertGlobalLexicon is handleUpsertLexicon for a rule that applies
+     * to every book, saved from the Settings page rather than from one book:
+     * it clears generated audio for every paragraph in the library that the
+     * old or new rule matches.
+     */
+    @PUT("api/lexicon")
+    suspend fun upsertGlobalLexicon(
+        @Body body: UpsertLexiconRequestDto,
+    ): IdResponseDto
+
+    /**
+     * handleDeleteGlobalLexicon removes a rule that applies to every book and
+     * clears generated audio for every paragraph in the library it matched.
+     */
+    @DELETE("api/lexicon/{entryId}")
+    suspend fun deleteGlobalLexicon(
+        @Path("entryId") entryId: String,
     ): Unit
 
     /**

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -408,5 +409,49 @@ func TestBoundLoudnessPeakCeiling(t *testing.T) {
 	}
 	if math.Abs(p-peakCeiling) > 0.005 {
 		t.Fatalf("peak = %.4f, want %.4f", p, peakCeiling)
+	}
+}
+
+// TestDeleteTakesDerivedVoices checks that removing a voice's clip removes
+// its numbered siblings' and age stages' clips and variants with it, and
+// nobody else's.
+func TestDeleteTakesDerivedVoices(t *testing.T) {
+	dataDir := t.TempDir()
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gone := []string{
+		audiopath.VoicePresetRefFile(dataDir, "abc"),
+		audiopath.VoicePresetVariantFile(dataDir, "abc", "angry"),
+		audiopath.VoicePresetRefFile(dataDir, "abc~2-1234"),
+		audiopath.VoicePresetRefVersionFile(dataDir, "abc~2-1234"),
+		audiopath.VoicePresetVariantFile(dataDir, "abc~a13-5678", "sad"),
+	}
+	kept := []string{
+		audiopath.VoicePresetRefFile(dataDir, "abcd"),
+		audiopath.VoicePresetRefFile(dataDir, "abcd~2-1234"),
+		audiopath.VoicePresetVariantFile(dataDir, "abcd~2-1234", "sad"),
+	}
+	for _, p := range append(gone, kept...) {
+		write(p)
+	}
+	if err := Delete(dataDir, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range gone {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s still there", p)
+		}
+	}
+	for _, p := range kept {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s: %v", p, err)
+		}
 	}
 }

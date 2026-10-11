@@ -20,7 +20,7 @@ func TestVoiceClues(t *testing.T) {
 		"The goblin screamed in a high-pitched voice and looked up at Sid.",
 		"Far away a baritone sang. Much later, after the storm had passed and the crew had eaten and slept and woken again to grey light, the watch changed and Sid went below.",
 	}
-	got := VoiceClues(tags, paragraphs, []string{"Sid"}, "he/him", 8)
+	got := VoiceClues(tags, paragraphs, []string{"Sid"}, nil, "he/him", 8)
 	want := []string{
 		"Sid's gruff voice said from behind.",
 		"he said, a tremble creeping into his normally steady voice.",
@@ -29,7 +29,7 @@ func TestVoiceClues(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("VoiceClues = %q, want %q", got, want)
 	}
-	if got := VoiceClues(tags, paragraphs, []string{"Sid"}, "he/him", 1); len(got) != 1 {
+	if got := VoiceClues(tags, paragraphs, []string{"Sid"}, nil, "he/him", 1); len(got) != 1 {
 		t.Fatalf("limit 1 returned %d clues", len(got))
 	}
 }
@@ -76,5 +76,18 @@ func TestStatedAges(t *testing.T) {
 	}
 	if got := StatedAges(lines, 1); !reflect.DeepEqual(got, want[:1]) {
 		t.Fatalf("limit 1 = %q", got)
+	}
+}
+
+// A first name someone else in the roster goes by tells nothing of this
+// character: the orphan Thomas's age is not Thomas Oh's.
+func TestVoiceCluesSkipSharedFirstName(t *testing.T) {
+	paragraphs := VoiceParagraphs([]string{"Thomas, an eight-year-old boy protested."})
+	if got := VoiceClues(nil, paragraphs, []string{"Thomas Oh"}, nil, "he/him", 8); len(got) != 1 {
+		t.Fatalf("unshared first name: got %q, want the sentence", got)
+	}
+	shared := SharedNames([]string{"Thomas (orphan)", "Will Oh"})
+	if got := VoiceClues(nil, paragraphs, []string{"Thomas Oh"}, shared, "he/him", 8); len(got) != 0 {
+		t.Fatalf("shared first name: got %q, want none", got)
 	}
 }

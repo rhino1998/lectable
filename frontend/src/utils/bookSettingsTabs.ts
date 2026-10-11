@@ -4,6 +4,7 @@ export const BOOK_SETTINGS_TABS = [
   'general',
   'chapters',
   'characters',
+  'facts',
   'pronunciations',
   'jobs',
 ] as const

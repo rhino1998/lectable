@@ -45,8 +45,10 @@ import { BookDetailsForm } from '../components/BookDetailsForm'
 import { BookSourcesPanel } from '../components/BookSourcesPanel'
 import { EpubMatchPanel } from '../components/EpubMatchPanel'
 import { LexiconPanel } from '../components/speakers/LexiconPanel'
+import { BookFactsPanel } from '../components/speakers/BookFactsPanel'
 import { SettingPanel } from '../components/speakers/SettingPanel'
 import { RosterReviewPanel } from '../components/speakers/RosterReviewPanel'
+import { TimeJumpsPanel } from '../components/speakers/TimeJumpsPanel'
 import { sortedRoster } from '../utils/speakerOrder'
 import { BOOK_SETTINGS_TABS, type BookSettingsTab } from '../utils/bookSettingsTabs'
 import { DEFAULT_CLONE_MODEL } from '../api/types'
@@ -56,6 +58,7 @@ const TAB_LABELS: Record<BookSettingsTab, string> = {
   general: 'General',
   chapters: 'Chapters',
   characters: 'Characters',
+  facts: 'Facts',
   pronunciations: 'Pronunciations',
   jobs: 'Jobs',
 }
@@ -105,7 +108,8 @@ function BookJobsTab({ bookId, bookTitle }: { bookId: string; bookTitle: string 
 // voice mode and setting profile), Chapters (run the LLM passes chapter by
 // chapter), Characters (review who's been identified so far and how much
 // of their dialogue has generated audio, and assign each their own
-// narration voice), Pronunciations (the series lexicon) and Jobs (this
+// narration voice), Facts (the series' world facts), Pronunciations (the
+// series lexicon) and Jobs (this
 // book's part of the queue). Voice
 // *selection* for the book's own (narrator) voice stays in VoicePanel/the
 // reader.
@@ -499,6 +503,8 @@ export function BookSettingsPage() {
         </>
       )}
 
+      {tab === 'facts' && <BookFactsPanel bookId={bookId} seriesName={book.seriesName} />}
+
       {tab === 'pronunciations' && <LexiconPanel bookId={bookId} seriesName={book.seriesName} />}
 
       {tab === 'jobs' && <BookJobsTab bookId={bookId} bookTitle={book.title} />}
@@ -613,6 +619,7 @@ export function BookSettingsPage() {
             )}
           </div>
           <RosterReviewPanel bookId={bookId} />
+          <TimeJumpsPanel bookId={bookId} />
           {speakersQuery.isLoading && <p>Loading…</p>}
           {speakersQuery.isError && <p className="error-text">Could not load speakers.</p>}
           {speakers.length === 0 && !speakersQuery.isLoading && (

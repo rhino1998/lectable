@@ -155,9 +155,23 @@ fun targetLabel(t: QueueTaskDto): String = t.label?.takeIf { it.isNotEmpty() } ?
 
 private const val INSTRUCT_PREVIEW_LENGTH = 40
 
+/** A derived voice preset id is its base preset's id plus what it is of that voice (backend
+ *  narration.memberPresetID / stagePresetID): "<id>~2-<hash>" is the second of several people
+ *  sharing a role's voice, "<id>~a20-<hash>" the voice a character has from about twenty. */
+private val DERIVED_PRESET = Regex("^(.+)~(a?)(\\d+)-[0-9a-f]+$")
+
+/** Names a voice preset for display - mirrors the web client's presetDisplayName: its name from
+ *  [presetNames], with a derived preset named after its base ("Guard 2", "Will Oh, about 20"). */
+fun presetDisplayName(presetId: String, presetNames: Map<String, String>): String {
+    presetNames[presetId]?.let { return it }
+    val m = DERIVED_PRESET.matchEntire(presetId) ?: return presetId
+    val base = presetDisplayName(m.groupValues[1], presetNames)
+    return if (m.groupValues[2].isNotEmpty()) "$base, about ${m.groupValues[3]}" else "$base ${m.groupValues[3]}"
+}
+
 fun voiceName(t: QueueTaskDto, presetNames: Map<String, String>): String {
     if (t.presetId.isNotEmpty()) {
-        val name = presetNames[t.presetId] ?: t.presetId
+        val name = presetDisplayName(t.presetId, presetNames)
         val emotion = t.emotion
         return if (!emotion.isNullOrEmpty()) "$name (${formatEmotion(emotion)})" else name
     }

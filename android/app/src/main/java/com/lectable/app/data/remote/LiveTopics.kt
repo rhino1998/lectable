@@ -48,6 +48,9 @@ object LiveTopics {
     fun characters(bookId: String): LiveTopic<List<CharacterNameDto>> =
         LiveTopic("characters", mapOf("bookId" to bookId), serializer<List<CharacterNameDto>>())
 
+    fun timeJumps(bookId: String): LiveTopic<List<TimeJumpDto>> =
+        LiveTopic("timeJumps", mapOf("bookId" to bookId), serializer<List<TimeJumpDto>>())
+
     /**
      * buildChapterNotes is the chapterNotes live topic's value and GET
      * .../notes' reply.
@@ -82,6 +85,15 @@ object LiveTopics {
      */
     fun lexicon(bookId: String): LiveTopic<List<LexiconEntryDto>> =
         LiveTopic("lexicon", mapOf("bookId" to bookId), serializer<List<LexiconEntryDto>>())
+
+    /**
+     * buildBookFacts lists the facts bookID's series has of its own
+     * (store.SeriesScope), then the global ones, each marked Superseded when
+     * a series fact shares a word with it - what store.BookWorldFacts leaves
+     * out for this book.
+     */
+    fun bookFacts(bookId: String): LiveTopic<List<WorldFactDto>> =
+        LiveTopic("bookFacts", mapOf("bookId" to bookId), serializer<List<WorldFactDto>>())
 
     /**
      * buildLexiconSuggestions offers the words of the series roster's names
@@ -135,4 +147,17 @@ object LiveTopics {
 
     fun sourceSettings(): LiveTopic<SourceSettingsDto> =
         LiveTopic("sourceSettings", emptyMap(), serializer<SourceSettingsDto>())
+
+    /**
+     * buildGlobalLexicon lists the rules that apply to every book.
+     */
+    fun globalLexicon(): LiveTopic<List<GlobalLexiconEntryDto>> =
+        LiveTopic("globalLexicon", emptyMap(), serializer<List<GlobalLexiconEntryDto>>())
+
+    /**
+     * buildGlobalFacts lists the facts that hold in every book
+     * (store.GlobalFactScope), alphabetical by key.
+     */
+    fun globalFacts(): LiveTopic<List<WorldFactDto>> =
+        LiveTopic("globalFacts", emptyMap(), serializer<List<WorldFactDto>>())
 }

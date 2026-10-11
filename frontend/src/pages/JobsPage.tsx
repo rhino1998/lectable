@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
+import { presetDisplayName } from '../utils/presetName'
 import {
   RiCloseCircleLine,
   RiPauseCircleLine,
@@ -437,7 +438,7 @@ export function JobLists({ snapshot }: { snapshot: JobsSnapshot }) {
 
   const voiceName = (t: QueueTask): string => {
     if (t.presetId) {
-      const name = presetNames.get(t.presetId) ?? t.presetId
+      const name = presetDisplayName(t.presetId, presetNames)
       return t.emotion ? `${name} (${emotionLabel(t.emotion)})` : name
     }
     if (!t.instruct) return '—'

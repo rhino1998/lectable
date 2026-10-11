@@ -76,52 +76,78 @@ type speakerDTO struct {
 	// Pronouns mirrors store.Character.Pronouns - "he/him", "she/her",
 	// "they/them", "it/its", or omitted when not established.
 	Pronouns string `json:"pronouns,omitempty"`
-	// Emotions is every emotion this speaker's dialogue in this book
-	// actually uses (store.Paragraph.EffectiveEmotion), in internal/emotions
-	// order, each with its line count and the state of the emotion-variant
-	// reference clip those lines clone from - the voice they generate under
-	// right now (their own preset, or the book's). Omitted when they have
-	// no emotional lines, or their voice has no preset to vary.
-	Emotions []speakerEmotionDTO `json:"emotions,omitempty"`
-	// Variants is every numbered member of this role in this book
-	// (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), in order - the
-	// Speakers page lists each as a speaker of its own. Emotions above then
-	// covers the role's unnumbered lines only. Omitted for a speaker that
-	// isn't a role, or has no numbered lines, and when the book narrates in
-	// one voice.
-	Variants []speakerVariantDTO `json:"variants,omitempty"`
+	// Voices is every voice this speaker's lines in this book are spoken
+	// in, each with its samples: their own first, then each numbered member
+	// of a role (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), then
+	// each age (store.CharacterStage) in story order. A speaker with one
+	// voice has one entry.
+	Voices []speakerVoiceDTO `json:"voices"`
 }
 
-// speakerVariantDTO is one numbered member of a role - see
-// speakerDTO.Variants. Every number reads the same way, whichever voice
-// narration.MemberVoice gives it (number 1 shares the role's own; a later
-// one has a sibling of it).
-type speakerVariantDTO struct {
-	Number         int `json:"number"`
+// speakerVoiceDTO is one of the voices a speaker's lines are spoken in
+// (speakerDTO.Voices): the reference clip its lines clone from - the
+// neutral sample - and its emotion variants. Every voice reads the same
+// way, whichever it is: Number and Stage say which.
+type speakerVoiceDTO struct {
+	// Number is the role member this voice belongs to ("Guard 2"), 0 for
+	// the speaker's unnumbered lines.
+	Number int `json:"number,omitempty"`
+	// Stage is the age this voice is the speaker's from (omitted for the
+	// voice they have before any stage). One that starts in a later book
+	// of the series is listed with no lines here.
+	Stage *speakerStageDTO `json:"stage,omitempty"`
+	// ParagraphCount is how many of the speaker's lines in this book are
+	// spoken in this voice, NeutralCount how many of those carry no
+	// emotion.
 	ParagraphCount int `json:"paragraphCount"`
-	// RefAudioURL is the reference clip this number's lines clone from,
-	// omitted until it's been rendered (it renders the first time one of
-	// these lines generates) or when the voice has no clip at all.
+	NeutralCount   int `json:"neutralCount"`
+	// RefAudioURL is the clip the voice's lines clone from, omitted until
+	// it's been rendered (a numbered member's or a stage's renders the
+	// first time one of its lines generates) and for a speaker with no
+	// voice of their own - the Narrator, or a character nobody has voiced.
 	RefAudioURL string `json:"refAudioUrl,omitempty"`
-	// Emotions is speakerDTO.Emotions for this number's lines alone.
+	// CanRegenerate says the neutral clip can be rendered afresh (POST
+	// .../speakers/variants/regenerate with no emotion): the speaker's own
+	// preset, or a stage's voice. A numbered member's is fixed by its
+	// role's.
+	CanRegenerate bool `json:"canRegenerate,omitempty"`
+	// Emotions is every emotion this voice's lines use
+	// (store.Paragraph.EffectiveEmotion), in internal/emotions order, each
+	// with its line count and the state of the variant clip those lines
+	// clone from. Omitted when it has no emotional lines, or no preset to
+	// vary.
 	Emotions []speakerEmotionDTO `json:"emotions,omitempty"`
 }
 
-// speakerVariants builds a speakerDTO.Variants list from counts (speaker
-// number -> line count) for the role char, whose own voice is resolved.
-// emotionCounts is each number's emotional lines (number -> emotion id ->
-// line count).
-func (s *Server) speakerVariants(resolved narration.ResolvedVoice, char store.Character, counts map[int]int, emotionCounts map[int]map[string]int) []speakerVariantDTO {
+// voiceSamples fills a voice's counts and emotion list from lines (how
+// many are spoken in it) and counts (those carrying each emotion), for
+// lines generating under presetID.
+func (s *Server) voiceSamples(v *speakerVoiceDTO, presetID string, lines int, counts map[string]int) {
+	v.ParagraphCount, v.NeutralCount = lines, lines
+	for _, n := range counts {
+		v.NeutralCount -= n
+	}
+	v.NeutralCount = max(v.NeutralCount, 0)
+	v.Emotions = s.speakerEmotions(presetID, counts)
+}
+
+// numberedVoices lists the voice of each numbered member of the role char
+// with lines in the book (speakerDTO.Voices), from counts (speaker number
+// -> line count) and emotionCounts (number -> emotion id -> line count).
+// resolved is the role's own voice: number 1 shares it, a later one has a
+// sibling of it (narration.MemberVoice).
+func (s *Server) numberedVoices(resolved narration.ResolvedVoice, char store.Character, counts map[int]int, emotionCounts map[int]map[string]int) []speakerVoiceDTO {
 	if !char.IsRole {
 		return nil
 	}
-	var out []speakerVariantDTO
+	var out []speakerVoiceDTO
 	for n := 1; n <= store.MaxSpeakerIndex; n++ {
 		if counts[n] == 0 {
 			continue
 		}
 		member := narration.MemberVoice(resolved, char, n)
-		dto := speakerVariantDTO{Number: n, ParagraphCount: counts[n], Emotions: s.speakerEmotions(member.PresetID, emotionCounts[n])}
+		dto := speakerVoiceDTO{Number: n}
+		s.voiceSamples(&dto, member.PresetID, counts[n], emotionCounts[n])
 		if path := audiopath.VoicePresetRefFile(s.DataDir, member.PresetID); member.PresetID != "" && fileExists(path) {
 			if member.PresetID == resolved.PresetID {
 				dto.RefAudioURL = s.versionedPresetAudioURL(member.PresetID)
@@ -140,7 +166,7 @@ func fileExists(path string) bool {
 }
 
 // speakerEmotionDTO is one emotion a speaker uses - see
-// speakerDTO.Emotions.
+// speakerVoiceDTO.Emotions.
 type speakerEmotionDTO struct {
 	Emotion string `json:"emotion"`
 	Label   string `json:"label"`
@@ -263,6 +289,31 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 
+	// Every stage of the roster (store.CharacterStage), with the series'
+	// books to say where each starts, and - for counting each stage's
+	// lines apart from the speaker's own - where they fall in this book.
+	stages, err := s.Store.ListCharacterStages(store.SeriesScope(book))
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	var scopeBooks []store.Book
+	var bookStages narration.Stages
+	var chapterIdx map[string]int
+	if len(stages) > 0 {
+		if scopeBooks, err = s.booksInScope(book); err != nil {
+			return nil, httpError(http.StatusInternalServerError, err.Error())
+		}
+		if bookStages, err = s.Narration.BookStages(book); err != nil {
+			return nil, httpError(http.StatusInternalServerError, err.Error())
+		}
+		if chapterIdx, err = s.Store.ChapterIdxByID(bookID); err != nil {
+			return nil, httpError(http.StatusInternalServerError, err.Error())
+		}
+	}
+	// Lines, and emotional lines by emotion, per stage id.
+	stageLines := map[string]int{}
+	stageEmotions := map[string]map[string]int{}
+
 	idsBySpeaker := map[string][]string{}
 	// Emotional lines per speaker and speaker number (0 for a line with
 	// none): a role's numbered lines clone from their own voice's variants.
@@ -279,6 +330,20 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 				numbersBySpeaker[name] = map[int]int{}
 			}
 			numbersBySpeaker[name][p.SpeakerIndex]++
+		}
+		// A line past one of its speaker's stages is voiced, and counted,
+		// under that stage.
+		if c, ok := charByName[name]; ok && len(bookStages[c.ID]) > 0 && !c.IsRole {
+			if st := bookStages.At(c.ID, chapterIdx[p.ChapterID]); st != nil {
+				stageLines[st.ID]++
+				if e := p.EffectiveEmotion(); e != emotions.Neutral {
+					if stageEmotions[st.ID] == nil {
+						stageEmotions[st.ID] = map[string]int{}
+					}
+					stageEmotions[st.ID][e]++
+				}
+				continue
+			}
 		}
 		if e := p.EffectiveEmotion(); e != emotions.Neutral {
 			if emotionsBySpeaker[name] == nil {
@@ -357,6 +422,7 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		// NOT set from this resolution; see below.
 		resolved := resolveFor(name)
 		row.ReadyCount = readyCounts[name][resolved.VoiceID()]
+		var numbered, staged []speakerVoiceDTO
 		// A role's numbered lines render under their own voices
 		// (narration.MemberVoice).
 		if c, ok := charByName[name]; ok && book.MultiVoice() {
@@ -365,7 +431,22 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 					row.ReadyCount += readyCounts[name][member.VoiceID()]
 				}
 			}
-			row.Variants = s.speakerVariants(resolved, c, numbersBySpeaker[name], emotionsBySpeaker[name])
+			numbered = s.numberedVoices(resolved, c, numbersBySpeaker[name], emotionsBySpeaker[name])
+		}
+		if c, ok := charByName[name]; ok && len(stages) > 0 {
+			staged = s.stageVoices(book, scopeBooks, bookVoice, resolved, c, stages, stageLines, stageEmotions)
+			// Lines past a stage render under its voice
+			// (narration.StageVoice).
+			counted := map[string]bool{resolved.VoiceID(): true}
+			for _, st := range stages {
+				if st.CharacterID != c.ID || !book.MultiVoice() {
+					continue
+				}
+				if id := narration.StageVoice(resolved, bookVoice, c, &st).VoiceID(); !counted[id] {
+					counted[id] = true
+					row.ReadyCount += readyCounts[name][id]
+				}
+			}
 		}
 		// RefAudioURL previews this speaker's *own* voice specifically -
 		// the Narrator row's own voice genuinely is the book's (that's
@@ -382,19 +463,31 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		} else if row.VoicePresetID != "" {
 			row.RefAudioURL = s.versionedPresetAudioURL(row.VoicePresetID)
 		}
+		// Their own voice: the lines no numbered member or stage speaks.
 		// Unlike RefAudioURL, emotion variants follow `resolved`: they're
 		// cloned from whichever preset these lines actually generate under.
-		// A role's numbered members list their own (speakerVariants).
+		own := speakerVoiceDTO{CanRegenerate: row.VoicePresetID != ""}
+		if name != "Narrator" {
+			own.RefAudioURL = row.RefAudioURL
+		}
+		ownLines := len(ids)
 		ownEmotions := map[string]int{}
 		for n, counts := range emotionsBySpeaker[name] {
-			if n > 0 && len(row.Variants) > 0 {
+			if n > 0 && len(numbered) > 0 {
 				continue
 			}
 			for e, k := range counts {
 				ownEmotions[e] += k
 			}
 		}
-		row.Emotions = s.speakerEmotions(resolved.PresetID, ownEmotions)
+		for _, v := range numbered {
+			ownLines -= v.ParagraphCount
+		}
+		for _, v := range staged {
+			ownLines -= v.ParagraphCount
+		}
+		s.voiceSamples(&own, resolved.PresetID, max(ownLines, 0), ownEmotions)
+		row.Voices = append(append([]speakerVoiceDTO{own}, numbered...), staged...)
 		rows = append(rows, row)
 	}
 	return rows, nil
@@ -1228,7 +1321,7 @@ func (s *Server) buildCharacterAppearances(bookID, characterID string) ([]speake
 		// see Store.CountReadyAudioForSpeaker's own doc comment for why
 		// that distinction matters here.
 		if b, ok := bookByID[a.BookID]; ok {
-			if v, err := s.Narration.ForParagraph(b, char.Name, a.SpeakerIndex); err == nil {
+			if v, err := s.Narration.ForParagraph(b, char.Name, a.SpeakerIndex, a.ChapterIdx); err == nil {
 				dto.AudioURL = s.resolveAppearanceAudioURL(a.ParagraphID, v.VoiceID())
 			}
 		}

@@ -85,8 +85,8 @@ func VoiceParagraphs(texts []string) []string {
 // shows them as "Voice clues": the quote sample is 20 lines of thousands,
 // so "Sid's gruff voice" and "his normally steady voice" never reached
 // characterization.
-func VoiceClues(tags, paragraphs, names []string, pronouns string, limit int) []string {
-	nameRes := clueNames(names)
+func VoiceClues(tags, paragraphs, names, shared []string, pronouns string, limit int) []string {
+	nameRes := clueNames(names, shared)
 	own := func(sentence string) bool {
 		for _, m := range otherVoice.FindAllStringSubmatch(sentence, -1) {
 			theirs := false

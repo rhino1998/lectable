@@ -42,6 +42,11 @@ func BookScope(bookID string) string { return bookScopePrefix + bookID }
 // table - for a subscriber that maps tables to something of its own.
 func IsBookScope(table string) bool { return strings.HasPrefix(table, bookScopePrefix) }
 
+// ScopedBook is the book a BookScope entry names.
+func ScopedBook(table string) (bookID string, ok bool) {
+	return strings.CutPrefix(table, bookScopePrefix)
+}
+
 // ChangeFunc receives the (deduplicated) set of tables a successful write
 // touched - one Exec outside a transaction, or every Exec inside one,
 // reported once on Commit.

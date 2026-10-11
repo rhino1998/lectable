@@ -282,7 +282,7 @@ func (s *SQLiteStore) SetCharacterInvalid(id string, invalid bool) error {
 	return err
 }
 
-// DeleteCharacter removes id's character_voices rows and the characters
+// DeleteCharacter removes id's character_voices and character_stages rows and the characters
 // row itself - manual cascade (no FK ON DELETE CASCADE - see this
 // package's own doc comment). Deliberately leaves the voice_presets those
 // character_voices rows may have pointed at alone: a preset is
@@ -298,6 +298,9 @@ func (s *SQLiteStore) DeleteCharacter(id string) error {
 	defer tx.Rollback()
 	if _, err := tx.Exec(`DELETE FROM character_voices WHERE character_id = ?`, id); err != nil {
 		return fmt.Errorf("delete character voices: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM character_stages WHERE character_id = ?`, id); err != nil {
+		return fmt.Errorf("delete character stages: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM characters WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete character: %w", err)

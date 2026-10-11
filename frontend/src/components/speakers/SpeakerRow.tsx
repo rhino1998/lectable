@@ -1,35 +1,25 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import {
   RiDeleteBinLine,
   RiEqualizerLine,
   RiForbidLine,
   RiGitMergeLine,
   RiGroupLine,
-  RiPauseFill,
-  RiPlayFill,
-  RiRefreshLine,
   RiScissorsCutLine,
   RiUserHeartLine,
   RiUserVoiceLine,
 } from 'react-icons/ri'
 import {
-  useRegenerateVariant,
   useRenameCharacter,
   useSetCharacterAliases,
   useSetCharacterPronouns,
 } from '../../api/queries'
 import { ApiError } from '../../api/client'
-import { withCacheBust } from '../../utils/cacheBust'
-import type {
-  CustomVoicePreset,
-  Speaker,
-  SpeakerAppearance,
-  SpeakerEmotion,
-  SpeakerVariant,
-  VoicePreset,
-} from '../../api/types'
+import type { CustomVoicePreset, Speaker, SpeakerAppearance, VoicePreset } from '../../api/types'
 import { AppearanceRow } from './SpeakerEvidence'
 import { CharacterVoiceEditor } from './CharacterVoiceEditor'
+import { AddStage, StageVoiceLine } from './SpeakerStages'
+import { SpeakerVoiceLine } from './SpeakerVoices'
 
 export function SpeakerRow({
   bookId,
@@ -164,22 +154,46 @@ export function SpeakerRow({
             Reference line: <em>&ldquo;{speaker.refLine}&rdquo;</em>
           </p>
         )}
-        {speaker.emotions && speaker.emotions.length > 0 && (
-          <SpeakerEmotions bookId={bookId} speakerName={speaker.name} emotions={speaker.emotions} />
+        {/* Every voice their lines are spoken in, one line of samples each:
+            their own, each numbered member of a role, each age. */}
+        {speaker.voices.map((v) =>
+          v.stage ? (
+            <StageVoiceLine
+              key={'stage:' + v.stage.id}
+              bookId={bookId}
+              characterId={speaker.id}
+              speakerName={speaker.name}
+              voice={v}
+              stage={v.stage}
+            />
+          ) : (
+            <SpeakerVoiceLine
+              key={'number:' + (v.number ?? 0)}
+              bookId={bookId}
+              speakerName={speaker.name}
+              voice={v}
+              label={
+                v.number ? (
+                  <span
+                    title={`One of several unnamed people sharing the role “${speaker.name}” - numbered within a conversation`}
+                  >
+                    {speaker.name} {v.number}
+                  </span>
+                ) : undefined
+              }
+            />
+          ),
+        )}
+        {!isNarrator && !speaker.role && !speaker.invalid && (
+          <AddStage
+            bookId={bookId}
+            characterId={speaker.id}
+            hasStages={speaker.voices.some((v) => v.stage)}
+            hasCasting={Boolean(speaker.summary)}
+          />
         )}
 
         <div className="speaker-row-actions">
-          {/* The Narrator always narrates in the book's own voice (see
-            backend handleListSpeakers' resolveFor) - previewing that voice
-            already lives in VoicePanel/the reader, so this ref-clip box is
-            only for an actual character's own assigned voice, not a
-            redundant copy of the book's. */}
-          {!isNarrator && speaker.refAudioUrl && (
-            <div className="speaker-row-audio">
-              <audio controls preload="none" src={speaker.refAudioUrl} />
-            </div>
-          )}
-
           {isNarrator ? (
             speaker.name === 'Narrator' ? (
               <span className="muted">
@@ -333,63 +347,7 @@ export function SpeakerRow({
           </div>
         )}
       </li>
-      {speaker.variants?.map((v) => (
-        <SpeakerVariantRow key={v.number} bookId={bookId} speakerName={speaker.name} variant={v} />
-      ))}
     </>
-  )
-}
-
-// One numbered member of a role ("Guard 2" - backend
-// speakerRowDTO.Variants), listed in the roster as a speaker of its own
-// right after the role: its line count, the reference clip its lines clone
-// from, and its emotion variants. The role's row above carries the casting
-// they all share and the role's unnumbered lines.
-function SpeakerVariantRow({
-  bookId,
-  speakerName,
-  variant,
-}: {
-  bookId: string
-  speakerName: string
-  variant: SpeakerVariant
-}) {
-  return (
-    <li className="speaker-row">
-      <div className="speaker-row-main">
-        <span>
-          {speakerName} {variant.number}
-          <span
-            className="speaker-role-badge"
-            title={`One of several unnamed people sharing the role “${speakerName}” - numbered within a conversation`}
-          >
-            role
-          </span>
-        </span>
-        <span className="muted">
-          {variant.paragraphCount} {variant.paragraphCount === 1 ? 'line' : 'lines'}
-        </span>
-      </div>
-      {variant.emotions && variant.emotions.length > 0 && (
-        <SpeakerEmotions
-          bookId={bookId}
-          speakerName={speakerName}
-          speakerIndex={variant.number}
-          emotions={variant.emotions}
-        />
-      )}
-      <div className="speaker-row-actions">
-        {variant.refAudioUrl ? (
-          <div className="speaker-row-audio">
-            <audio controls preload="none" src={variant.refAudioUrl} />
-          </div>
-        ) : (
-          <span className="muted">
-            Their voice renders the first time one of these lines generates
-          </span>
-        )}
-      </div>
-    </li>
   )
 }
 
@@ -579,101 +537,6 @@ function SpeakerPronouns({
         </select>
       </label>
       {error && <p className="error-text">{error}</p>}
-    </div>
-  )
-}
-
-// One speaker's emotion variants - every emotion their dialogue uses in
-// this book (backend speakerRowDTO.Emotions), each a chip with its line
-// count, a play button once the variant clip exists, and a regenerate
-// button (re-renders the variant and resets those lines' audio - see
-// api.regenerateVariant). A pending variant renders by itself the first
-// time one of its lines generates. With speakerIndex, the list is one
-// numbered member of a role's (SpeakerVariantRow).
-function SpeakerEmotions({
-  bookId,
-  speakerName,
-  speakerIndex,
-  emotions,
-}: {
-  bookId: string
-  speakerName: string
-  speakerIndex?: number
-  emotions: SpeakerEmotion[]
-}) {
-  const regenerate = useRegenerateVariant(bookId)
-  const [error, setError] = useState<string | null>(null)
-  // Bumped per emotion on regenerate, so the replaced clip's URL isn't
-  // served from the browser cache.
-  const [versions, setVersions] = useState<Record<string, number>>({})
-  const [playing, setPlaying] = useState<string | null>(null)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  useEffect(() => () => audioRef.current?.pause(), [])
-
-  const togglePlay = (e: SpeakerEmotion) => {
-    audioRef.current?.pause()
-    if (playing === e.emotion || !e.audioUrl) {
-      setPlaying(null)
-      return
-    }
-    const audio = new Audio(withCacheBust(e.audioUrl, versions[e.emotion]))
-    audio.onended = () => setPlaying(null)
-    audioRef.current = audio
-    setPlaying(e.emotion)
-    audio.play().catch(() => setPlaying(null))
-  }
-
-  const runRegenerate = (emotion: string) => {
-    setError(null)
-    regenerate.mutate(
-      { speaker: speakerName, emotion, speakerIndex },
-      {
-        onSuccess: () => setVersions((v) => ({ ...v, [emotion]: Date.now() })),
-        onError: (err) =>
-          setError(err instanceof ApiError ? err.message : 'Could not regenerate this variant'),
-      },
-    )
-  }
-
-  return (
-    <div className="speaker-emotions">
-      <span className="muted">Emotions:</span>
-      {emotions.map((e) => (
-        <span
-          key={e.emotion}
-          className={'speaker-emotion-chip speaker-emotion-' + e.status}
-          title={
-            e.status === 'ready'
-              ? `${e.label}: ${e.count} line(s), variant ready`
-              : e.status === 'failed'
-                ? `${e.label}: ${e.count} line(s) - the variant couldn't be rendered, so these lines use the base voice`
-                : `${e.label}: ${e.count} line(s) - the variant renders the first time one of these lines generates`
-          }
-        >
-          {e.status === 'ready' && (
-            <button
-              className="speaker-emotion-button"
-              onClick={() => togglePlay(e)}
-              aria-label={
-                playing === e.emotion ? `Stop ${e.label} sample` : `Play ${e.label} sample`
-              }
-            >
-              {playing === e.emotion ? <RiPauseFill /> : <RiPlayFill />}
-            </button>
-          )}
-          {e.label} <span className="muted">{e.count}</span>
-          <button
-            className="speaker-emotion-button"
-            onClick={() => runRegenerate(e.emotion)}
-            disabled={regenerate.isPending}
-            aria-label={`Regenerate ${e.label} variant`}
-            title={`Regenerate the ${e.label} variant (and re-voice these lines)`}
-          >
-            <RiRefreshLine />
-          </button>
-        </span>
-      ))}
-      {error && <span className="error-text">{error}</span>}
     </div>
   )
 }

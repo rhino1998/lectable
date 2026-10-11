@@ -1645,6 +1645,8 @@ Accent: every character gets exactly one named accent (Scottish, Received Pronun
 
 A "Note:" that the name is a ROLE label means several unnamed people shared it: cast the typical member of that type from traits that recur across lines, not one line's quirk. What happened to one of them - an injury, a described feature, a way of talking - belongs to that one person and never goes into the shared casting.
 
+"World notes" are facts the reader has recorded, each filed under the word that brought it up ("kobold: ...") - about this story's world, or rules for every book. They are true of this story and outrank the genre defaults above and anything you would assume from a human. A note on what accent a kind has or how it sounds replaces the genre-standard voice. A note on how long a kind lives or how it ages says how to read an age the material gives this character: the age group is where that age falls in their own kind's lifespan, so an age that is old for their kind is an elderly voice, however few the years. Without an age, or other evidence of how old this character is, such a note changes nothing about their age group. A note about a kind applies only if the material establishes the character as one.
+
 "Voice clues" are narration sentences about how they sound or how old they are, mostly the narration around their own lines. One that states a lasting quality (a deep voice, a lilting accent, "her usual drawl", "his normally steady voice", an age) is direct evidence for pitch, timbre, accent and age, and outranks what you would guess from the dialogue. One about a single moment (lowered, shaking, hoarse from shouting, put on as a disguise) is not their voice. A clue can be about someone else in the same sentence - use only what is said of this character.
 
 "Their age, in their own words" lists lines of theirs that give their age, each with the line it answered in brackets when there was one. It is the strongest evidence of how old they are and outranks every guess - unless the number is plainly something else (a level, a count, a rank) or an age they were at some earlier time.
@@ -1739,6 +1741,12 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 	}
 	if lines := setting.castingLines(); lines != "" {
 		fmt.Fprintf(&user, "\nBook setting notes:\n%s", lines)
+	}
+	if len(evidence.WorldNotes) > 0 {
+		user.WriteString("\nWorld notes:\n")
+		for _, n := range evidence.WorldNotes {
+			fmt.Fprintf(&user, "- %s\n", oneLine(n))
+		}
 	}
 	if len(quotes) > 0 {
 		user.WriteString("\nTheir dialogue:\n")

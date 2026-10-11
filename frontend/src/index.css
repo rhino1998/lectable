@@ -1020,6 +1020,72 @@ label {
   font-size: 0.85rem;
   margin: 0.15rem 0;
 }
+.time-jumps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}
+.time-jumps-row,
+.time-jumps-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.time-jumps select {
+  max-width: 18rem;
+}
+.speaker-stages {
+  display: flex;
+  flex-direction: column;
+}
+.speaker-stage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+.speaker-stage-note {
+  flex: 1 1 100%;
+  margin: 0;
+}
+.speaker-stage-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex: 1 1 100%;
+}
+.speaker-stage-edit textarea {
+  width: 100%;
+  font: inherit;
+}
+.speaker-stage-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.speaker-stage-age {
+  width: 5rem;
+}
+.speaker-stage select {
+  max-width: 18rem;
+}
+.speaker-emotions-label {
+  font-size: 0.85rem;
+}
+.speaker-emotions .link-button,
+.speaker-stage .link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent, inherit);
+  text-decoration: underline;
+  cursor: pointer;
+  font-size: inherit;
+}
 .speaker-aliases-input {
   flex: 1 1 16rem;
   min-width: 0;
@@ -1726,17 +1792,6 @@ label {
   align-items: center;
   justify-content: flex-end;
   gap: 0.6rem;
-}
-.speaker-row-actions audio {
-  height: 28px;
-  max-width: 220px;
-}
-.speaker-row-audio {
-  display: flex;
-  /* Anchors the audio sample to the left of .speaker-row-actions - an auto
-     margin here consumes the row's free space directly, pushing every
-     button after it to the right, regardless of how many buttons wrap. */
-  margin-right: auto;
 }
 .speaker-appearances {
   display: flex;
@@ -3644,4 +3699,14 @@ label {
   font-weight: 600;
   font-variant-caps: all-small-caps;
   letter-spacing: 0.03em;
+}
+
+/* Settings page facts (GlobalFactsPanel): the fact itself takes the row. */
+.lexicon-form .fact-form-fact {
+  flex: 1;
+  min-width: 18rem;
+}
+/* A global fact a book's series has replaced (BookFactsPanel). */
+.fact-superseded td:nth-child(-n + 2) {
+  opacity: 0.55;
 }

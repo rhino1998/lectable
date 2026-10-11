@@ -78,7 +78,7 @@ func dbDeps(tables ...string) []string {
 // narrationDeps covers everything a paragraph's effective voice (and so its
 // audio status/URL, and every ready-count/progress figure derived from
 // those) can depend on - see internal/narration.Resolver.
-var narrationDeps = dbDeps("books", "chapters", "paragraphs", "paragraph_audio", "characters", "character_voices", "voice_presets", "default_voice")
+var narrationDeps = dbDeps("books", "chapters", "paragraphs", "paragraph_audio", "characters", "character_voices", "character_stages", "voice_presets", "default_voice")
 
 func withDeps(base []string, extra ...string) []string {
 	return append(append([]string(nil), base...), extra...)
@@ -104,6 +104,7 @@ func withDeps(base []string, extra ...string) []string {
 //	bookRecap      {bookId}               GET /api/books/{id}/recap
 //	chapterNotes   {bookId, chapterIdx}   GET /api/books/{id}/chapters/{idx}/notes
 //	lexiconSuggestions {bookId}           GET /api/books/{id}/lexicon/suggestions
+//	bookFacts      {bookId}               GET /api/books/{id}/facts
 //	bookExports    {bookId}               GET /api/books/{id}/exports
 //	jobs                                  GET /api/jobs
 //	jobsQueue
@@ -114,6 +115,8 @@ func withDeps(base []string, extra ...string) []string {
 //	defaultVoice                          GET /api/voices/default
 //	recapSettings                         GET /api/settings/recap
 //	sourceSettings                        GET /api/settings/sources
+//	globalLexicon                         GET /api/lexicon
+//	globalFacts                           GET /api/facts
 //
 // MinInterval is set on the topics whose build scans a whole book (or the
 // whole library), so steady background generation - a write every couple
@@ -137,6 +140,7 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	// Match counts scan the book's paragraphs, hence the interval.
 	// Names only, for reassign pickers - cheap next to "speakers".
 	h.Register("characters", bookTopic("characters", dbDeps("characters", "books"), 0, s.buildCharacterNames))
+	h.Register("timeJumps", bookTopic("timeJumps", dbDeps("book_time_jumps", "character_stages", "chapters"), time.Second, s.buildTimeJumps))
 	h.Register("chapterNotes", chapterTopic("chapterNotes", dbDeps("chapter_summaries", "chapters"), 0, s.buildChapterNotes))
 	// Line counts aren't a dependency: they only order the list.
 	h.Register("rosterReview", bookTopic("rosterReview", dbDeps("roster_proposals", "characters", "books"), 2*time.Second, s.buildRosterReview))
@@ -145,6 +149,7 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	// DepJobs: "preparing" is the recap job being queued or running.
 	h.Register("bookRecap", bookTopic("bookRecap", withDeps(dbDeps("book_recaps", "books", "voice_presets"), DepJobs), 0, s.buildBookRecap))
 	h.Register("lexicon", bookTopic("lexicon", dbDeps("pronunciation_lexicon", "books", "paragraphs"), 2*time.Second, s.buildLexicon))
+	h.Register("bookFacts", bookTopic("bookFacts", dbDeps("world_facts", "books"), 0, s.buildBookFacts))
 	h.Register("lexiconSuggestions", bookTopic("lexiconSuggestions", dbDeps("pronunciation_lexicon", "characters", "books", "paragraphs"), 2*time.Second, s.buildLexiconSuggestions))
 	// Staleness is a whole-book fingerprint query, so this is rate-limited
 	// like the other whole-book topics; a build's progress still lands
@@ -170,6 +175,8 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	h.Register("defaultVoice", noParams("defaultVoice", dbDeps("default_voice"), 0, s.buildDefaultVoice))
 	h.Register("recapSettings", noParams("recapSettings", dbDeps("default_voice"), 0, s.buildRecapSettings))
 	h.Register("sourceSettings", noParams("sourceSettings", dbDeps("default_voice"), 0, s.buildSourceSettings))
+	h.Register("globalLexicon", noParams("globalLexicon", dbDeps("pronunciation_lexicon"), 0, s.buildGlobalLexicon))
+	h.Register("globalFacts", noParams("globalFacts", dbDeps("world_facts"), 0, s.buildGlobalFacts))
 }
 
 // handleEvents is GET /api/events - the live-state WebSocket (package

@@ -161,6 +161,23 @@ is written once per book by one LLM call over excerpts from across it, the first
 lighting and characterization prompts so each stops guessing the world
 from its own short span. See the `.../setting` entry in `backend/docs/api.md`.
 
+A character can have **age stages**: from a chosen chapter on, through
+the rest of the series, their lines are voiced as about that age - the
+same casting recipe redesigned from an instruction rewritten for it. A
+book **time jump** ("N years pass before this chapter", or for the whole
+book) makes them for everyone whose age group changes. Both are set by
+hand on the Speakers tab; nothing detects them yet, and whatever does
+must propose them for the reader to accept, not apply them. See "Age stages"
+in `backend/docs/speakerattr.md`.
+
+**World facts** are things the reader records about a story's world,
+each filed under the word that brings it up - "kobold: a short-lived
+kind", "dwarf: Scottish accent" - for one series or for every book (the
+Settings page), a series' fact replacing the general one. Casting is shown
+the facts a character's material mentions. Any pass that proposes facts
+must leave them for the reader to accept. See the `/api/facts` entry in
+`backend/docs/api.md` and "World notes" in `backend/docs/speakerattr.md`.
+
 A **roster review** looks over a series' characters for what many
 chapters of attribution left wrong - one person under two names, an alias
 that is someone else's name, a description never marked as a role - and

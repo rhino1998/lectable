@@ -168,6 +168,10 @@ type castOptions struct {
 	// noLookup casts from the gathered material alone, without letting
 	// the model search the book first (speakerattr.CastingOptions.Lookup).
 	noLookup bool
+	// notes, when set, are the casting call's "World notes"
+	// (speakerattr.CharacterEvidence.WorldNotes) in place of the stored
+	// facts the character's material brings up (worldNotes).
+	notes []string
 }
 
 // castCharacter gathers char's material across their series and casts
@@ -188,13 +192,9 @@ func (s *Server) castCharacter(ctx context.Context, book *store.Book, char store
 		bookIDs[i] = b.ID
 	}
 
-	quotes, err := s.Store.QuotesForBooks(bookIDs, char.Name, castingQuotes)
+	evidence, err := s.describedEvidence(books, bookIDs, char)
 	if err != nil {
-		return casting{}, fmt.Errorf("gather quotes: %w", err)
-	}
-	evidence := speakerattr.CharacterEvidence{Quotes: make([]speakerattr.QuoteContext, len(quotes))}
-	for i, q := range quotes {
-		evidence.Quotes[i] = speakerattr.QuoteContext{Text: q.Text, Context: q.Context}
+		return casting{}, err
 	}
 	names := append([]string{char.Name}, char.Aliases...)
 	setting := s.bookSetting(ctx, book)
@@ -218,25 +218,11 @@ func (s *Server) castCharacter(ctx context.Context, book *store.Book, char store
 	if err != nil {
 		return casting{}, fmt.Errorf("gather co-stars: %w", err)
 	}
-	origins, voiceClues, err := s.narrationClues(books, bookIDs, char)
-	if err != nil {
-		return casting{}, fmt.Errorf("gather narration clues: %w", err)
-	}
-	evidence.VoiceClues = voiceClues
-	for _, o := range origins {
-		// An accent word makes a sentence both kinds of clue.
-		if !slices.Contains(voiceClues, o) {
-			evidence.Origins = append(evidence.Origins, o)
+	if evidence.WorldNotes = opts.notes; evidence.WorldNotes == nil {
+		if evidence.WorldNotes, err = s.worldNotes(book, char, evidence); err != nil {
+			return casting{}, fmt.Errorf("gather world notes: %w", err)
 		}
 	}
-	if evidence.Introductions, err = s.Store.NarrationMatching(bookIDs, names, castingIntroductions); err != nil {
-		return casting{}, fmt.Errorf("gather introductions: %w", err)
-	}
-	traits, err := s.Store.NarrationMatching(bookIDs, speakerattr.TraitPhrases(names), castingTraitPool)
-	if err != nil {
-		return casting{}, fmt.Errorf("gather trait statements: %w", err)
-	}
-	evidence.Traits = speakerattr.TraitStatements(traits, names, castingTraits)
 
 	castingOpts := speakerattr.CastingOptions{Temp: opts.temp}
 	var lookups []string
@@ -253,6 +239,86 @@ func (s *Server) castCharacter(ctx context.Context, book *store.Book, char store
 		return casting{}, fmt.Errorf("characterize: %w", err)
 	}
 	return casting{instruct: instruct, refLine: refLine, lookups: lookups}, nil
+}
+
+// describedEvidence gathers the part of char's casting material that is
+// found by search across their series (books; bookIDs are the same
+// books): a spread of their lines with the narration around each, the
+// first narration naming them, their trait statements, and their voice and
+// origin clues.
+func (s *Server) describedEvidence(books []store.Book, bookIDs []string, char store.Character) (speakerattr.CharacterEvidence, error) {
+	quotes, err := s.Store.QuotesForBooks(bookIDs, char.Name, castingQuotes)
+	if err != nil {
+		return speakerattr.CharacterEvidence{}, fmt.Errorf("gather quotes: %w", err)
+	}
+	evidence := speakerattr.CharacterEvidence{Quotes: make([]speakerattr.QuoteContext, len(quotes))}
+	for i, q := range quotes {
+		evidence.Quotes[i] = speakerattr.QuoteContext{Text: q.Text, Context: q.Context}
+	}
+	names := append([]string{char.Name}, char.Aliases...)
+	origins, voiceClues, err := s.narrationClues(books, bookIDs, char)
+	if err != nil {
+		return evidence, fmt.Errorf("gather narration clues: %w", err)
+	}
+	evidence.VoiceClues = voiceClues
+	for _, o := range origins {
+		// An accent word makes a sentence both kinds of clue.
+		if !slices.Contains(voiceClues, o) {
+			evidence.Origins = append(evidence.Origins, o)
+		}
+	}
+	if evidence.Introductions, err = s.Store.NarrationMatching(bookIDs, names, castingIntroductions); err != nil {
+		return evidence, fmt.Errorf("gather introductions: %w", err)
+	}
+	traits, err := s.Store.NarrationMatching(bookIDs, speakerattr.TraitPhrases(names), castingTraitPool)
+	if err != nil {
+		return evidence, fmt.Errorf("gather trait statements: %w", err)
+	}
+	evidence.Traits = speakerattr.TraitStatements(traits, names, castingTraits)
+	return evidence, nil
+}
+
+// worldNotes returns the world facts in force for book (store.BookWorldFacts)
+// that char's gathered material brings up, as the casting call's "World
+// notes". The material is what is said *of* them: their names, the
+// narration around their lines, and the narration evidence. What they
+// say is left out - mentioning the king doesn't make the speaker one, and
+// with it nearly every lead was shown the facts about royalty.
+func (s *Server) worldNotes(book *store.Book, char store.Character, evidence speakerattr.CharacterEvidence) ([]string, error) {
+	facts, err := store.BookWorldFacts(s.Store, book)
+	if err != nil || len(facts) == 0 {
+		return nil, err
+	}
+	notes := make([]speakerattr.WorldNote, len(facts))
+	for i, f := range facts {
+		notes[i] = speakerattr.WorldNote{Key: f.Key, Aliases: f.Aliases, Fact: f.Fact}
+	}
+	texts := append([]string{char.Name}, char.Aliases...)
+	for _, q := range evidence.Quotes {
+		texts = append(texts, q.Context)
+	}
+	texts = append(texts, evidence.Introductions...)
+	texts = append(texts, evidence.Traits...)
+	texts = append(texts, evidence.VoiceClues...)
+	texts = append(texts, evidence.Origins...)
+	return speakerattr.MatchWorldNotes(notes, texts...), nil
+}
+
+// castingWorldNotes returns the world facts in force for book that a
+// casting of char brings up - their names and the casting's own words,
+// which name their kind ("an adult kobold woman") - for the calls that
+// rewrite a casting for another age. nil when the facts can't be read.
+func (s *Server) castingWorldNotes(book *store.Book, char store.Character, casting string) []string {
+	facts, err := store.BookWorldFacts(s.Store, book)
+	if err != nil {
+		log.Printf("httpapi: world facts for %q's casting: %v", char.Name, err)
+		return nil
+	}
+	notes := make([]speakerattr.WorldNote, len(facts))
+	for i, f := range facts {
+		notes[i] = speakerattr.WorldNote{Key: f.Key, Aliases: f.Aliases, Fact: f.Fact}
+	}
+	return speakerattr.MatchWorldNotes(notes, append(append([]string{char.Name}, char.Aliases...), casting)...)
 }
 
 // maxOriginClues is how many origin clues characterization is shown.
@@ -277,7 +343,19 @@ func (s *Server) narrationClues(books []store.Book, bookIDs []string, char store
 		return nil, nil, err
 	}
 	names := append([]string{char.Name}, char.Aliases...)
-	return speakerattr.OriginClues(originParas, names, maxOriginClues), speakerattr.VoiceClues(tags, voiceParas, names, char.Pronouns, maxVoiceClues), nil
+	roster, err := s.Store.ListCharacters(char.Scope)
+	if err != nil {
+		return nil, nil, err
+	}
+	var others []string
+	for _, o := range roster {
+		if o.ID != char.ID && !o.Invalid {
+			others = append(others, o.Name)
+			others = append(others, o.Aliases...)
+		}
+	}
+	shared := speakerattr.SharedNames(others)
+	return speakerattr.OriginClues(originParas, names, shared, maxOriginClues), speakerattr.VoiceClues(tags, voiceParas, names, shared, char.Pronouns, maxVoiceClues), nil
 }
 
 // cachedClueParagraphs is one book's speakerattr.OriginParagraphs (every
@@ -956,6 +1034,11 @@ func (s *Server) handlePreviewCharacterization(w http.ResponseWriter, r *http.Re
 	}
 
 	opts := castOptions{noLookup: r.URL.Query().Get("lookup") == "0"}
+	for _, n := range strings.Split(r.URL.Query().Get("notes"), "\n") {
+		if n = strings.TrimSpace(n); n != "" {
+			opts.notes = append(opts.notes, n)
+		}
+	}
 	if raw := r.URL.Query().Get("temp"); raw != "" {
 		temp, err := strconv.ParseFloat(raw, 32)
 		if err != nil || temp < 0 || temp > 2 {
@@ -1052,6 +1135,8 @@ func (s *Server) recharacterizeAndInvalidate(ctx context.Context, book *store.Bo
 		invalidated = true
 	}
 
+	s.recastStages(ctx, book, *fresh)
+
 	// A custom preset's own instruct just changed (invalidated), so every
 	// paragraph already generated in this character's old voice - across
 	// however many books in their series they've spoken in, not just this
@@ -1124,6 +1209,40 @@ func (s *Server) recharacterizeAndInvalidate(ctx context.Context, book *store.Bo
 	}
 
 	return fresh.Summary, invalidated, nil
+}
+
+// recastStages rewrites the casting of each of char's age stages
+// (store.CharacterStage) from their casting as it now stands: a stage's
+// instruction is the character's own rewritten for an age, so a recast
+// leaves it describing whoever they were cast as before - and since a
+// stage's voice is keyed on that instruction (narration.StageVoice), the
+// stage's lines would have gone on playing the old voice. One AgeCasting
+// call per stage, inside the characterization task that recast them. A
+// stage whose rewrite fails is left with no instruction, which plays the
+// character's own new voice until the stage is set again; an instruction
+// the reader had written by hand is replaced like any other.
+func (s *Server) recastStages(ctx context.Context, book *store.Book, char store.Character) {
+	if char.IsRole || s.Speaker == nil {
+		return
+	}
+	stages, err := s.Store.ListCharacterStages(char.Scope)
+	if err != nil {
+		log.Printf("httpapi: list %q's stages to recast them: %v", char.Name, err)
+		return
+	}
+	for _, st := range stages {
+		if st.CharacterID != char.ID {
+			continue
+		}
+		instruct, err := s.Speaker.AgeCasting(ctx, char.Summary, st.Age, s.castingWorldNotes(book, char, char.Summary))
+		if err != nil {
+			log.Printf("httpapi: recast %q at %d: %v", char.Name, st.Age, err)
+			instruct = ""
+		}
+		if _, err := s.Store.SetCharacterStage(st.CharacterID, st.BookID, st.ChapterID, st.Age, instruct, st.JumpID); err != nil {
+			log.Printf("httpapi: save %q's recast stage at %d: %v", char.Name, st.Age, err)
+		}
+	}
 }
 
 // handleCharacterizeSpeakers batch-enqueues re-characterization for a list
@@ -1227,11 +1346,75 @@ func (s *Server) handleRoleVariantAudio(w http.ResponseWriter, r *http.Request) 
 
 type regenerateVariantRequest struct {
 	Speaker string `json:"speaker"`
+	// Emotion is the variant to render again; empty is the voice's own
+	// reference clip, the neutral one (see regenerateNeutral).
 	Emotion string `json:"emotion"`
 	// SpeakerIndex picks one numbered member of a role
 	// (store.Paragraph.SpeakerIndex) - its sibling voice's variant, and
 	// only its lines. 0 for the speaker's own voice.
 	SpeakerIndex int `json:"speakerIndex,omitempty"`
+	// StageID picks the voice the speaker has from one of their stages on
+	// (store.CharacterStage) - its variant, and only that stage's lines.
+	StageID string `json:"stageId,omitempty"`
+}
+
+// regenerateNeutral is handleRegenerateVariant with no emotion: a fresh
+// render of the reference clip one of speaker's voices clones from (voice,
+// as resolved for req). Their own preset's is rendered again in place
+// (regenerateCharacterVoice, queued); a stage's moves to its next take
+// (store.CharacterStage.Take), which is another voice as far as audio
+// goes, so that stage's lines - emotional ones too - generate again. A
+// role's numbered sibling has no take of its own: it is its role's
+// casting under a seed fixed by its number. 202 on success.
+func (s *Server) regenerateNeutral(w http.ResponseWriter, book *store.Book, speaker string, req regenerateVariantRequest, voice narration.ResolvedVoice) {
+	char, err := s.Store.GetCharacterByName(store.SeriesScope(book), speaker)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if char == nil || char.Name != speaker {
+		writeError(w, http.StatusBadRequest, "this speaker has no voice of their own to render again")
+		return
+	}
+	if req.StageID != "" {
+		st, err := s.Store.GetCharacterStage(req.StageID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if st == nil || st.CharacterID != char.ID {
+			writeError(w, http.StatusNotFound, "stage not found")
+			return
+		}
+		if err := s.Store.NextCharacterStageTake(st.ID); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if st, err = s.Store.GetCharacterStage(st.ID); err == nil && st != nil {
+			s.renderStageRef(book, *char, *st)
+		}
+		writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
+		return
+	}
+	cloneModel := narration.EffectiveCloneModel(voice)
+	presetID, err := s.Store.CharacterVoiceForModel(char.ID, cloneModel)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if presetID == "" {
+		writeError(w, http.StatusBadRequest, "this speaker has no voice of their own to render again")
+		return
+	}
+	if voice.PresetID != presetID {
+		writeError(w, http.StatusBadRequest, "a numbered member's voice follows its role's - render the role's again instead")
+		return
+	}
+	c := *char
+	s.Jobs.EnqueueVoiceProvision(book.ID, c.ID, "regenerate", c.Name, func(ctx context.Context, attempt int) (string, error) {
+		return s.regenerateCharacterVoice(ctx, book.ID, c, cloneModel, attempt)
+	})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
 
 // handleRegenerateVariant re-renders the emotion variant speaker's lines in
@@ -1248,7 +1431,7 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if !emotions.Valid(req.Emotion) {
+	if req.Emotion != "" && !emotions.Valid(req.Emotion) {
 		writeError(w, http.StatusBadRequest, "unknown emotion "+strconv.Quote(req.Emotion))
 		return
 	}
@@ -1269,20 +1452,41 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "unknown speaker number")
 		return
 	}
-	// The preset each of this speaker's numbers generates under - a line
-	// is re-voiced only when its number shares the regenerated variant's.
-	presetByIndex := make([]string, store.MaxSpeakerIndex+1)
-	var voice narration.ResolvedVoice
-	for n := range presetByIndex {
-		v, err := s.Narration.ForParagraph(book, speaker, n)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
+	// The voice whose variant this is: the speaker's own (or their
+	// number's), or with StageID the one they have from that stage on.
+	voices, err := s.Narration.BookVoices(book)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	chapterIdx, err := s.Store.ChapterIdxByID(bookID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	at := narration.NoChapter
+	if req.StageID != "" {
+		found := false
+		for _, spans := range voices.Stages {
+			for _, span := range spans {
+				if span.Stage.ID == req.StageID {
+					at, found = span.FromIdx, true
+				}
+			}
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "stage not found in this book")
 			return
 		}
-		presetByIndex[n] = v.PresetID
-		if n == req.SpeakerIndex {
-			voice = v
-		}
+	}
+	voice, err := voices.ForSpeaker(speaker, req.SpeakerIndex, at)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if req.Emotion == "" {
+		s.regenerateNeutral(w, book, speaker, req, voice)
+		return
 	}
 	if voice.PresetID == "" {
 		writeError(w, http.StatusBadRequest, "this speaker's voice has no reference clip to vary")
@@ -1304,7 +1508,12 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 		if name == "" {
 			name = "Narrator"
 		}
-		if name == speaker && p.EffectiveEmotion() == req.Emotion && p.SpeakerIndex <= store.MaxSpeakerIndex && presetByIndex[p.SpeakerIndex] == voice.PresetID {
+		if name != speaker || p.EffectiveEmotion() != req.Emotion {
+			continue
+		}
+		// Re-voiced only when it generates under the regenerated variant's
+		// preset - another number of the role, or another stage, has its own.
+		if v, err := voices.ForSpeaker(p.Speaker, p.SpeakerIndex, chapterIdx[p.ChapterID]); err == nil && v.PresetID == voice.PresetID {
 			stale = append(stale, p)
 		}
 	}

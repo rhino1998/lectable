@@ -33,6 +33,19 @@ type Store interface {
 	ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error)
 	CharacterVoiceForModel(characterID, cloneModel string) (string, error)
 	CharacterVoicesForModel(characterIDs []string, cloneModel string) (map[string]string, error)
+	ListCharacterStages(scope string) ([]CharacterStage, error)
+	CharacterStageScopes() (map[string]bool, error)
+	GetCharacterStage(id string) (*CharacterStage, error)
+	SetCharacterStage(characterID, bookID, chapterID string, age int, instruct, jumpID string) (*CharacterStage, error)
+	ListTimeJumps(bookID string) ([]TimeJump, error)
+	GetTimeJump(id string) (*TimeJump, error)
+	CreateTimeJump(bookID, chapterID string, years int) (jump *TimeJump, created bool, err error)
+	DeleteTimeJump(id string) error
+	TimeJumpStageCounts(bookID string) (map[string]int, error)
+	SpeakersInChapters(bookID string, fromIdx, toIdx int) ([]string, error)
+	DeleteCharacterStage(id string) error
+	NextCharacterStageTake(id string) error
+	ChapterIdxByID(bookID string) (map[string]int, error)
 	ClearBookLighting(bookID string) error
 	ClearBookMusicRegions(bookID string) error
 	ClearBookSpeakers(bookID string) error
@@ -73,6 +86,7 @@ type Store interface {
 	DeleteBookAudio(bookID string) error
 	DeleteBookmark(id string) error
 	DeleteLexiconEntry(id string) (*LexiconEntry, error)
+	DeleteWorldFact(scope, id string) (bool, error)
 	DeleteChapterAudio(chapterID string) error
 	DeleteCharacter(id string) error
 	DeleteParagraphAudioByVoiceID(bookID, voiceID string) ([]SpeakerAudioRef, error)
@@ -106,6 +120,7 @@ type Store interface {
 	ImportBookRows(rows map[string][]json.RawMessage) error
 	ListBookmarks(bookID string) ([]Bookmark, error)
 	ListLexicon(scope string) ([]LexiconEntry, error)
+	ListWorldFacts(scope string) ([]WorldFact, error)
 	ListBooks() ([]Book, error)
 	ListBreaks(chapterID string) ([]Break, error)
 	ListChapterSummaries(bookID, voiceID string, overrides []SpeakerVoice) ([]ChapterSummary, error)
@@ -119,6 +134,7 @@ type Store interface {
 	MusicRegionCounts(bookID string) (map[string]MusicRegionCount, error)
 	OnChange(fn ChangeFunc)
 	ParagraphAudioStatuses(paragraphIDs []string, voiceID string) (map[string]AudioState, error)
+	ReadyParagraphAudio(paragraphIDs []string, voiceID string) (map[string]bool, error)
 	ParagraphSFXStates(paragraphIDs []string) (map[string]SFXState, error)
 	NarrationMatching(bookIDs []string, phrases []string, limit int) ([]string, error)
 	ParagraphsContainingAll(bookIDs []string, terms []string, limit int) ([]LookupMatch, error)
@@ -197,6 +213,7 @@ type Store interface {
 	UpdateVoicePresetSeed(id string, seed int) error
 	UpsertBookmark(paragraphID, note string) (string, error)
 	UpsertLexiconEntry(scope string, e pronounce.LexiconEntry) (entry LexiconEntry, previous *LexiconEntry, err error)
+	UpsertWorldFact(scope string, f WorldFact) (*WorldFact, error)
 	UpsertCharacter(scope, name string, isRole bool) (character Character, created bool, err error)
 	VoicePresetGroups() (map[string]string, error)
 	VoicePresetIDsForCharacter(characterID string) ([]string, error)

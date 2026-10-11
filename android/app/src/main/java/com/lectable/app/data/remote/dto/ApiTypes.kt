@@ -483,6 +483,28 @@ data class AddBookSourceRequestDto(
     val titleRule: SourceTitleRuleDto? = null,
 )
 
+/**
+ * affectedCharacterDTO is one character whose casting the facts in force
+ * bear on: the facts their material brings up.
+ */
+@Serializable
+data class AffectedCharacterDto(
+    val id: String = "",
+    val name: String = "",
+    /**
+     * Role: a pooled role label ("Guard") rather than one person.
+     */
+    val role: Boolean = false,
+    /**
+     * Notes are the "key: fact" lines their casting is shown.
+     */
+    val notes: List<String> = emptyList(),
+    /**
+     * Summary is their casting as it stands.
+     */
+    val summary: String = "",
+)
+
 @Serializable
 data class AliasesResponseDto(
     val aliases: List<String> = emptyList(),
@@ -1062,6 +1084,24 @@ data class CharacterNameDto(
     val invalid: Boolean = false,
 )
 
+@Serializable
+data class CharacterStageRequestDto(
+    /**
+     * ChapterIdx is the chapter of this book the stage starts at. Ignored
+     * when updating a stage, which stays where it is.
+     */
+    val chapterIdx: Int = 0,
+    /**
+     * Age is about how old the character is from there on, in years.
+     */
+    val age: Int = 0,
+    /**
+     * Instruct is the stage's casting. Empty asks for the character's own
+     * casting rewritten for Age (speakerattr.Client.AgeCasting).
+     */
+    val instruct: String? = null,
+)
+
 /**
  * characterizePreviewResponse is a characterization that was run but not
  * stored.
@@ -1448,6 +1488,23 @@ data class GenerateSFXRequestDto(
 data class GenerateVoiceResponseDto(
     val voicePresetId: String = "",
     val audioUrl: String = "",
+)
+
+/**
+ * globalLexiconEntryDTO is one pronunciation rule that applies to every
+ * book (store.GlobalLexiconScope), as the Settings page lists them - with
+ * no match counts, which would mean reading the whole library.
+ */
+@Serializable
+data class GlobalLexiconEntryDto(
+    val id: String = "",
+    val term: String = "",
+    val replacement: String = "",
+    val caseSensitive: Boolean = false,
+    /**
+     * Prefix: the rule also covers words starting with Term.
+     */
+    val prefix: Boolean = false,
 )
 
 @Serializable
@@ -2347,6 +2404,10 @@ data class RecapSettingsDto(
 @Serializable
 data class RegenerateVariantRequestDto(
     val speaker: String = "",
+    /**
+     * Emotion is the variant to render again; empty is the voice's own
+     * reference clip, the neutral one (see regenerateNeutral).
+     */
     val emotion: String = "",
     /**
      * SpeakerIndex picks one numbered member of a role
@@ -2354,6 +2415,11 @@ data class RegenerateVariantRequestDto(
      * only its lines. 0 for the speaker's own voice.
      */
     val speakerIndex: Int? = null,
+    /**
+     * StageID picks the voice the speaker has from one of their stages on
+     * (store.CharacterStage) - its variant, and only that stage's lines.
+     */
+    val stageId: String? = null,
 )
 
 @Serializable
@@ -2724,23 +2790,13 @@ data class SpeakerDto(
      */
     val pronouns: String? = null,
     /**
-     * Emotions is every emotion this speaker's dialogue in this book
-     * actually uses (store.Paragraph.EffectiveEmotion), in internal/emotions
-     * order, each with its line count and the state of the emotion-variant
-     * reference clip those lines clone from - the voice they generate under
-     * right now (their own preset, or the book's). Omitted when they have
-     * no emotional lines, or their voice has no preset to vary.
+     * Voices is every voice this speaker's lines in this book are spoken
+     * in, each with its samples: their own first, then each numbered member
+     * of a role (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), then
+     * each age (store.CharacterStage) in story order. A speaker with one
+     * voice has one entry.
      */
-    val emotions: List<SpeakerEmotionDto> = emptyList(),
-    /**
-     * Variants is every numbered member of this role in this book
-     * (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), in order - the
-     * Speakers page lists each as a speaker of its own. Emotions above then
-     * covers the role's unnumbered lines only. Omitted for a speaker that
-     * isn't a role, or has no numbered lines, and when the book narrates in
-     * one voice.
-     */
-    val variants: List<SpeakerVariantDto> = emptyList(),
+    val voices: List<SpeakerVoiceDto> = emptyList(),
 )
 
 @Serializable
@@ -2763,7 +2819,7 @@ data class SpeakerAppearanceDto(
 
 /**
  * speakerEmotionDTO is one emotion a speaker uses - see
- * speakerDTO.Emotions.
+ * speakerVoiceDTO.Emotions.
  */
 @Serializable
 data class SpeakerEmotionDto(
@@ -2781,23 +2837,72 @@ data class SpeakerEmotionDto(
 )
 
 /**
- * speakerVariantDTO is one numbered member of a role - see
- * speakerDTO.Variants. Every number reads the same way, whichever voice
- * narration.MemberVoice gives it (number 1 shares the role's own; a later
- * one has a sibling of it).
+ * speakerStageDTO is one of a speaker's stages (store.CharacterStage): from
+ * this chapter on they are voiced as about Age years old. A speaker's
+ * stages cover its whole series, so one may start in another book.
  */
 @Serializable
-data class SpeakerVariantDto(
-    val number: Int = 0,
-    val paragraphCount: Int = 0,
+data class SpeakerStageDto(
+    val id: String = "",
+    val bookId: String = "",
+    val bookTitle: String = "",
+    val chapterId: String = "",
+    val chapterIdx: Int = 0,
+    val chapterTitle: String = "",
+    val age: Int = 0,
     /**
-     * RefAudioURL is the reference clip this number's lines clone from,
-     * omitted until it's been rendered (it renders the first time one of
-     * these lines generates) or when the voice has no clip at all.
+     * Instruct is the casting this stage's voice is designed from - the
+     * speaker's own Summary rewritten for Age, or the reader's edit of it.
+     */
+    val instruct: String = "",
+)
+
+/**
+ * speakerVoiceDTO is one of the voices a speaker's lines are spoken in
+ * (speakerDTO.Voices): the reference clip its lines clone from - the
+ * neutral sample - and its emotion variants. Every voice reads the same
+ * way, whichever it is: Number and Stage say which.
+ */
+@Serializable
+data class SpeakerVoiceDto(
+    /**
+     * Number is the role member this voice belongs to ("Guard 2"), 0 for
+     * the speaker's unnumbered lines.
+     */
+    val number: Int? = null,
+    /**
+     * Stage is the age this voice is the speaker's from (omitted for the
+     * voice they have before any stage). One that starts in a later book
+     * of the series is listed with no lines here.
+     */
+    val stage: SpeakerStageDto? = null,
+    /**
+     * ParagraphCount is how many of the speaker's lines in this book are
+     * spoken in this voice, NeutralCount how many of those carry no
+     * emotion.
+     */
+    val paragraphCount: Int = 0,
+    val neutralCount: Int = 0,
+    /**
+     * RefAudioURL is the clip the voice's lines clone from, omitted until
+     * it's been rendered (a numbered member's or a stage's renders the
+     * first time one of its lines generates) and for a speaker with no
+     * voice of their own - the Narrator, or a character nobody has voiced.
      */
     val refAudioUrl: String? = null,
     /**
-     * Emotions is speakerDTO.Emotions for this number's lines alone.
+     * CanRegenerate says the neutral clip can be rendered afresh (POST
+     * .../speakers/variants/regenerate with no emotion): the speaker's own
+     * preset, or a stage's voice. A numbered member's is fixed by its
+     * role's.
+     */
+    val canRegenerate: Boolean = false,
+    /**
+     * Emotions is every emotion this voice's lines use
+     * (store.Paragraph.EffectiveEmotion), in internal/emotions order, each
+     * with its line count and the state of the variant clip those lines
+     * clone from. Omitted when it has no emotional lines, or no preset to
+     * vary.
      */
     val emotions: List<SpeakerEmotionDto> = emptyList(),
 )
@@ -2976,6 +3081,40 @@ data class TestVoiceRequestDto(
     val temperature: Double? = null,
 )
 
+/**
+ * timeJumpDTO is one of a book's time jumps (store.TimeJump): years pass
+ * in the story before this chapter, for everyone. A jump at the book's
+ * first chapter sets the whole book that long after the one before it in
+ * its series.
+ */
+@Serializable
+data class TimeJumpDto(
+    val id: String = "",
+    val chapterId: String = "",
+    val chapterIdx: Int = 0,
+    val chapterTitle: String = "",
+    val years: Int = 0,
+    /**
+     * Voices is how many characters the jump has given an older voice so
+     * far (the stages made for it) - it grows while the jump is applied,
+     * and most characters never need one.
+     */
+    val voices: Int = 0,
+)
+
+@Serializable
+data class TimeJumpRequestDto(
+    /**
+     * ChapterIdx is the chapter the jump falls before; 0 for the whole
+     * book.
+     */
+    val chapterIdx: Int = 0,
+    /**
+     * Years is how long has passed.
+     */
+    val years: Int = 0,
+)
+
 @Serializable
 data class TopicParamsDto(
     val bookId: String = "",
@@ -3055,6 +3194,18 @@ data class UpsertLexiconRequestDto(
      * Global saves the rule for every book instead of this book's series.
      */
     val global: Boolean = false,
+)
+
+@Serializable
+data class UpsertWorldFactRequestDto(
+    /**
+     * ID rewrites that fact, key included; without it the fact is added,
+     * or replaces the one already filed under Key.
+     */
+    val id: String? = null,
+    val key: String = "",
+    val aliases: List<String> = emptyList(),
+    val fact: String = "",
 )
 
 @Serializable
@@ -3221,4 +3372,35 @@ data class WordTimingDto(
     val text: String = "",
     val start: Double = 0.0,
     val end: Double = 0.0,
+)
+
+/**
+ * worldFactDTO is one keyed fact about a story's world (store.WorldFact):
+ * what the casting prompt is told whenever Key or one of Aliases comes up
+ * in a character's material.
+ */
+@Serializable
+data class WorldFactDto(
+    val id: String = "",
+    /**
+     * Key is the word the fact is filed under ("dwarf").
+     */
+    val key: String = "",
+    /**
+     * Aliases are other words that bring it up ("dwarven"); a plain
+     * plural of Key needs none.
+     */
+    val aliases: List<String> = emptyList(),
+    val fact: String = "",
+    /**
+     * Global: the fact holds in every book, rather than being one
+     * series' own.
+     */
+    val global: Boolean = false,
+    /**
+     * Superseded: a global fact the book's series has its own fact for,
+     * under a shared word - not in force in that series. Only set in a
+     * book's list.
+     */
+    val superseded: Boolean = false,
 )

@@ -5,11 +5,13 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/textsplit"
@@ -219,6 +221,89 @@ func (s *Server) handleDeleteLexicon(w http.ResponseWriter, r *http.Request) {
 	writeNoContent(w)
 }
 
+// globalLexiconEntryDTO is one pronunciation rule that applies to every
+// book (store.GlobalLexiconScope), as the Settings page lists them - with
+// no match counts, which would mean reading the whole library.
+type globalLexiconEntryDTO struct {
+	ID            string `json:"id"`
+	Term          string `json:"term"`
+	Replacement   string `json:"replacement"`
+	CaseSensitive bool   `json:"caseSensitive"`
+	// Prefix: the rule also covers words starting with Term.
+	Prefix bool `json:"prefix"`
+}
+
+func (s *Server) handleListGlobalLexicon(w http.ResponseWriter, r *http.Request) {
+	v, err := s.buildGlobalLexicon()
+	writeBuilt(w, v, err)
+}
+
+// buildGlobalLexicon lists the rules that apply to every book.
+func (s *Server) buildGlobalLexicon() ([]globalLexiconEntryDTO, error) {
+	entries, err := s.Store.ListLexicon(store.GlobalLexiconScope)
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	out := make([]globalLexiconEntryDTO, len(entries))
+	for i, e := range entries {
+		out[i] = globalLexiconEntryDTO{ID: e.ID, Term: e.Term, Replacement: e.Replacement, CaseSensitive: e.CaseSensitive, Prefix: e.Prefix}
+	}
+	return out, nil
+}
+
+// handleUpsertGlobalLexicon is handleUpsertLexicon for a rule that applies
+// to every book, saved from the Settings page rather than from one book:
+// it clears generated audio for every paragraph in the library that the
+// old or new rule matches.
+func (s *Server) handleUpsertGlobalLexicon(w http.ResponseWriter, r *http.Request) {
+	var req upsertLexiconRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	rule := req.rule()
+	if rule.Term == "" || rule.Replacement == "" {
+		writeError(w, http.StatusBadRequest, "term and replacement are required")
+		return
+	}
+	entry, previous, err := s.Store.UpsertLexiconEntry(store.GlobalLexiconScope, rule)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	rules := []pronounce.LexiconEntry{entry.LexiconEntry}
+	if previous != nil {
+		rules = append(rules, previous.LexiconEntry)
+	}
+	s.invalidateLexiconMatches(nil, store.GlobalLexiconScope, rules)
+	writeJSON(w, http.StatusOK, idResponse{ID: entry.ID})
+}
+
+// handleDeleteGlobalLexicon removes a rule that applies to every book and
+// clears generated audio for every paragraph in the library it matched.
+func (s *Server) handleDeleteGlobalLexicon(w http.ResponseWriter, r *http.Request) {
+	entries, err := s.Store.ListLexicon(store.GlobalLexiconScope)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	id := r.PathValue("entryId")
+	// Only a global rule: a series' own is removed from its book's page.
+	if !slices.ContainsFunc(entries, func(e store.LexiconEntry) bool { return e.ID == id }) {
+		writeNoContent(w)
+		return
+	}
+	entry, err := s.Store.DeleteLexiconEntry(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if entry != nil {
+		s.invalidateLexiconMatches(nil, store.GlobalLexiconScope, []pronounce.LexiconEntry{entry.LexiconEntry})
+	}
+	writeNoContent(w)
+}
+
 func (s *Server) lexiconBook(w http.ResponseWriter, bookID string) (*store.Book, bool) {
 	book, err := s.Store.GetBook(bookID)
 	if err != nil {
@@ -234,7 +319,7 @@ func (s *Server) lexiconBook(w http.ResponseWriter, bookID string) (*store.Book,
 
 // invalidateLexiconMatches resets generated audio for every paragraph that
 // any of rules matches, in every book scope covers - book's series, or the
-// whole library for a global rule. Best-effort like
+// whole library for a global rule (book may then be nil). Best-effort like
 // invalidateParagraphAudio: the rule itself is already saved, so a failure
 // here is logged, not returned.
 func (s *Server) invalidateLexiconMatches(book *store.Book, scope string, rules []pronounce.LexiconEntry) {
@@ -246,7 +331,7 @@ func (s *Server) invalidateLexiconMatches(book *store.Book, scope string, rules 
 		books, err = s.booksInScope(book)
 	}
 	if err != nil {
-		log.Printf("lexicon: list books in scope of %s: %v", book.ID, err)
+		log.Printf("lexicon: list books in scope %s: %v", scope, err)
 		return
 	}
 	for i := range books {
@@ -317,7 +402,7 @@ func (s *Server) handlePreviewLexicon(w http.ResponseWriter, r *http.Request) {
 	}
 	text := lexiconPreviewText(paragraphs, rule)
 
-	voice, err := s.Narration.ForParagraph(book, "", 0)
+	voice, err := s.Narration.ForParagraph(book, "", 0, narration.NoChapter)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

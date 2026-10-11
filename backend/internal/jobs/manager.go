@@ -460,8 +460,11 @@ type Manager struct {
 	// lookaheadMu): at most one enqueueLookahead runs per book, and
 	// requests arriving meanwhile collapse into one pending follow-up
 	// holding the newest position - see EnqueueLookahead.
-	lookaheadMu sync.Mutex
-	lookaheads  map[string]*lookaheadRun
+	// readyChapters lets enqueueLookahead pass over chapters with nothing
+	// left to generate - see readyChapters.
+	readyChapters readyChapters
+	lookaheadMu   sync.Mutex
+	lookaheads    map[string]*lookaheadRun
 	// paused stops any new task from being dispatched (see Pause/Resume,
 	// gate). Whatever's already in flight keeps running to completion.
 	paused bool

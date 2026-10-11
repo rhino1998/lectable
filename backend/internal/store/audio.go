@@ -70,6 +70,42 @@ func (s *SQLiteStore) ParagraphAudioStatuses(paragraphIDs []string, voiceID stri
 	return out, rows.Err()
 }
 
+// ReadyParagraphAudio is which of paragraphIDs have ready audio under
+// voiceID - ParagraphAudioStatuses for a caller deciding what still needs
+// generating, without reading each row's word timings: on a 300-paragraph
+// chapter those were 35 of the reader's 45ms lookahead, several times a
+// second while skipping through a chapter.
+func (s *SQLiteStore) ReadyParagraphAudio(paragraphIDs []string, voiceID string) (map[string]bool, error) {
+	out := make(map[string]bool, len(paragraphIDs))
+	if len(paragraphIDs) == 0 {
+		return out, nil
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(paragraphIDs)), ",")
+	args := make([]any, 0, len(paragraphIDs)+2)
+	for _, id := range paragraphIDs {
+		args = append(args, id)
+	}
+	args = append(args, voiceID, AudioReady)
+
+	rows, err := s.db.Query(
+		`SELECT paragraph_id FROM paragraph_audio
+		 WHERE paragraph_id IN (`+placeholders+`) AND voice_id = ? AND status = ?`,
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
+}
+
 // CountReadyAudioForSpeaker counts bookID's paragraphs attributed to
 // speaker (the "Narrator"/"" equivalence handled the same way
 // ParagraphsForSpeaker's own does) whose voiceID audio is ready -

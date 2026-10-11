@@ -100,7 +100,7 @@ func TestParseLighting(t *testing.T) {
 			prev: &Lighting{Description: "overcast daylight", Color: "#dfe8ff", Brightness: 42, Effect: "steady"},
 			want: Lighting{Description: "overcast daylight", Color: "#dfe8ff", Brightness: 42, Effect: "steady"},
 		},
-		{name: "same with nothing to keep", in: `{"light": "same"}`, wantErr: true},
+		{name: "same with nothing to keep is neutral", in: `{"light": "same"}`, want: NeutralLighting},
 		{name: "bad color", in: `{"color": "orange", "brightness": 20, "effect": "steady"}`, wantErr: true},
 		{name: "no json", in: `sorry`, wantErr: true},
 	}

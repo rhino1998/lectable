@@ -414,7 +414,7 @@ func (m *Manager) AdoptStaleClips(ctx context.Context) (adopted, dropped int) {
 		return 0, 0
 	}
 	books := map[string]*store.Book{}
-	current := map[string]string{} // book, speaker, index -> voice id
+	current := map[string]string{} // chapter, speaker, index -> voice id
 	retry := map[string]string{}   // chapter id -> book id
 	var stale []store.ClipUser
 	for _, u := range rows {
@@ -430,10 +430,14 @@ func (m *Manager) AdoptStaleClips(ctx context.Context) (adopted, dropped int) {
 		if err != nil || p == nil || book == nil {
 			continue
 		}
-		who := u.BookID + "\x00" + p.Speaker + "\x00" + strconv.Itoa(p.SpeakerIndex)
+		ch, err := m.store.GetChapterByID(p.ChapterID)
+		if err != nil || ch == nil {
+			continue
+		}
+		who := p.ChapterID + "\x00" + p.Speaker + "\x00" + strconv.Itoa(p.SpeakerIndex)
 		voiceID, ok := current[who]
 		if !ok {
-			v, err := m.narration.ForParagraph(book, p.Speaker, p.SpeakerIndex)
+			v, err := m.narration.ForParagraph(book, p.Speaker, p.SpeakerIndex, ch.Idx)
 			if err != nil {
 				continue
 			}
@@ -750,7 +754,7 @@ func (m *Manager) AdoptSharedClips(ctx context.Context) AdoptStats {
 }
 
 // adoptChapter is AdoptSharedClips for one chapter. voiceOf caches the
-// book's resolved voices by speaker.
+// resolved voices by chapter and speaker.
 func (m *Manager) adoptChapter(book *store.Book, ch *store.Chapter, voiceOf map[string]narration.ResolvedVoice, stats *AdoptStats) error {
 	all, err := m.store.ListParagraphsRaw(ch.ID)
 	if err != nil {
@@ -760,10 +764,10 @@ func (m *Manager) adoptChapter(book *store.Book, ch *store.Chapter, voiceOf map[
 	voicesByParagraph := make([]narration.ResolvedVoice, len(all))
 	idsByVoice := map[string][]string{}
 	for i, p := range all {
-		who := p.Speaker + "\x00" + strconv.Itoa(p.SpeakerIndex)
+		who := ch.ID + "\x00" + p.Speaker + "\x00" + strconv.Itoa(p.SpeakerIndex)
 		v, ok := voiceOf[who]
 		if !ok {
-			if v, err = m.narration.ForParagraph(book, p.Speaker, p.SpeakerIndex); err != nil {
+			if v, err = m.narration.ForParagraph(book, p.Speaker, p.SpeakerIndex, ch.Idx); err != nil {
 				return err
 			}
 			voiceOf[who] = v

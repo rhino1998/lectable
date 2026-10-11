@@ -163,8 +163,10 @@ func (r *Resolver) CharacterVoice(presetID, language, cloneModel string) (v Reso
 // or characters happen to have voices assigned.
 //
 // speakerIndex is the line's store.Paragraph.SpeakerIndex - see
-// MemberVoice.
-func (r *Resolver) ForParagraph(book *store.Book, speaker string, speakerIndex int) (ResolvedVoice, error) {
+// MemberVoice. chapterIdx is the paragraph's chapter, which picks the
+// character's stage (StageVoice); NoChapter for a voice asked about apart
+// from any line.
+func (r *Resolver) ForParagraph(book *store.Book, speaker string, speakerIndex, chapterIdx int) (ResolvedVoice, error) {
 	bookVoice, err := r.BookVoice(book)
 	if err != nil {
 		return ResolvedVoice{}, err
@@ -195,6 +197,11 @@ func (r *Resolver) ForParagraph(book *store.Book, speaker string, speakerIndex i
 	if err != nil {
 		return ResolvedVoice{}, err
 	}
+	stages, err := r.BookStages(book)
+	if err != nil {
+		return ResolvedVoice{}, err
+	}
+	v = StageVoice(v, bookVoice, *char, stages.At(char.ID, chapterIdx))
 	return MemberVoice(v, *char, speakerIndex), nil
 }
 
@@ -209,7 +216,9 @@ type BookVoices struct {
 	cloneModel   string
 	charByName   map[string]store.Character
 	presetByChar map[string]string
-	resolved     map[string]ResolvedVoice // character id -> voice
+	resolved     map[string]ResolvedVoice // character id -> voice, before any stage
+	// Stages are the book's character stages - see StageVoice.
+	Stages Stages
 }
 
 // BookVoices prepares a BookVoices for book. The roster is only loaded
@@ -240,12 +249,16 @@ func (r *Resolver) BookVoices(book *store.Book) (*BookVoices, error) {
 	if bv.presetByChar, err = r.store.CharacterVoicesForModel(ids, bv.cloneModel); err != nil {
 		return nil, err
 	}
+	if bv.Stages, err = r.BookStages(book); err != nil {
+		return nil, err
+	}
 	return bv, nil
 }
 
-// ForSpeaker is ForParagraph for a paragraph attributed to speaker, its
-// line numbered speakerIndex (store.Paragraph.SpeakerIndex).
-func (bv *BookVoices) ForSpeaker(speaker string, speakerIndex int) (ResolvedVoice, error) {
+// ForSpeaker is ForParagraph for a paragraph of chapter chapterIdx
+// attributed to speaker, its line numbered speakerIndex
+// (store.Paragraph.SpeakerIndex).
+func (bv *BookVoices) ForSpeaker(speaker string, speakerIndex, chapterIdx int) (ResolvedVoice, error) {
 	if !bv.book.MultiVoice() || speaker == "" || speaker == "Narrator" {
 		return bv.Book, nil
 	}
@@ -253,14 +266,15 @@ func (bv *BookVoices) ForSpeaker(speaker string, speakerIndex int) (ResolvedVoic
 	if !ok {
 		return bv.Book, nil
 	}
-	if v, ok := bv.resolved[c.ID]; ok {
-		return MemberVoice(v, c, speakerIndex), nil
+	v, ok := bv.resolved[c.ID]
+	if !ok {
+		var err error
+		if v, err = bv.r.ResolveCharacterVoice(bv.book, bv.Book, c, bv.cloneModel, bv.presetByChar[c.ID]); err != nil {
+			return ResolvedVoice{}, err
+		}
+		bv.resolved[c.ID] = v
 	}
-	v, err := bv.r.ResolveCharacterVoice(bv.book, bv.Book, c, bv.cloneModel, bv.presetByChar[c.ID])
-	if err != nil {
-		return ResolvedVoice{}, err
-	}
-	bv.resolved[c.ID] = v
+	v = StageVoice(v, bv.Book, c, bv.Stages.At(c.ID, chapterIdx))
 	return MemberVoice(v, c, speakerIndex), nil
 }
 

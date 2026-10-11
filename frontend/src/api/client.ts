@@ -8,6 +8,7 @@ import {
   type CreateExportRequest,
   type CustomVoicePresetInput,
   type UpsertLexiconRequest,
+  type UpsertWorldFactRequest,
   type ErrorCode,
   type GenerateSFXRequest,
   type JobTier,
@@ -327,10 +328,20 @@ export const api = {
   // this book's audio for their lines in that emotion - see
   // httpapi.handleRegenerateVariant. Fire-and-forget; the speakers topic
   // reports the new status once it renders.
-  regenerateVariant: (bookId: string, speaker: string, emotion: string, speakerIndex?: number) =>
+  //
+  // `voice` picks which of the speaker's voices (Speaker.voices): a role's
+  // numbered member, or the one they have from an age stage on. An empty
+  // emotion is the voice's own neutral clip, rendered afresh - a new take
+  // on the same casting.
+  regenerateVariant: (
+    bookId: string,
+    speaker: string,
+    emotion: string,
+    voice: { speakerIndex?: number; stageId?: string } = {},
+  ) =>
     call('POST /api/books/{id}/speakers/variants/regenerate', {
       path: { id: bookId },
-      body: { speaker, emotion, speakerIndex },
+      body: { speaker, emotion, ...voice },
     }),
 
   // Sound-effect (Stable Audio SFX) test surface (see backend/CLAUDE.md's
@@ -600,6 +611,54 @@ export const api = {
       body: { pronouns },
     }),
 
+  // Records that `years` pass in the story before one of this book's
+  // chapters (0: the whole book is set that long after the one before it
+  // in its series) and ages the cast across it in the background: each
+  // character who speaks on both sides and whose age group changes gets an
+  // older voice from there on. Answers how many characters are being asked
+  // about; 409 when that chapter already has a jump.
+  createTimeJump: (bookId: string, chapterIdx: number, years: number) =>
+    call('POST /api/books/{id}/time-jumps', { path: { id: bookId }, body: { chapterIdx, years } }),
+
+  // Removes a time jump and the older voices it made.
+  deleteTimeJump: (bookId: string, jumpId: string) =>
+    call('DELETE /api/books/{id}/time-jumps/{jumpId}', { path: { id: bookId, jumpId } }),
+
+  // Starts a stage of a character's voice at one of this book's chapters:
+  // from there on (and through the series' later books) their lines are
+  // voiced as about `age` years old. With no instruct the backend rewrites
+  // the character's own casting for that age, which takes an LLM call.
+  // Lines from that chapter on need generating again under the new voice.
+  setCharacterStage: (
+    bookId: string,
+    characterId: string,
+    stage: { chapterIdx: number; age: number; instruct?: string },
+  ) =>
+    call('POST /api/books/{id}/characters/{characterId}/stages', {
+      path: { id: bookId, characterId },
+      body: stage,
+    }),
+
+  // Changes a stage's age and casting; an empty instruct has the casting
+  // rewritten for the age again.
+  updateCharacterStage: (
+    bookId: string,
+    characterId: string,
+    stageId: string,
+    stage: { age: number; instruct?: string },
+  ) =>
+    call('PUT /api/books/{id}/characters/{characterId}/stages/{stageId}', {
+      path: { id: bookId, characterId, stageId },
+      body: { chapterIdx: 0, ...stage },
+    }),
+
+  // Removes a stage: its lines go back to the stage before it, or to the
+  // character's own voice.
+  deleteCharacterStage: (bookId: string, characterId: string, stageId: string) =>
+    call('DELETE /api/books/{id}/characters/{characterId}/stages/{stageId}', {
+      path: { id: bookId, characterId, stageId },
+    }),
+
   // Removes one character entirely - this book's own paragraphs
   // attributed to them revert to Unknown (still real dialogue, just no
   // longer attributed to this character - "Narrator" is reserved for
@@ -776,6 +835,27 @@ export const api = {
   // handleSetRecapSettings.
   setRecapSettings: (afterMinutes: number) =>
     call('PUT /api/settings/recap', { body: { afterMinutes } }),
+
+  // Pronunciation rules that apply to every book, edited from the Settings
+  // page - see backend handleUpsertGlobalLexicon (which clears audio for
+  // every paragraph in the library the old/new rule matches).
+  upsertGlobalLexiconEntry: (body: UpsertLexiconRequest) => call('PUT /api/lexicon', { body }),
+
+  deleteGlobalLexiconEntry: (entryId: string) =>
+    call('DELETE /api/lexicon/{entryId}', { path: { entryId } }),
+
+  // Facts that hold in every book - see backend httpapi/facts.go.
+  upsertGlobalFact: (body: UpsertWorldFactRequest) => call('PUT /api/facts', { body }),
+
+  deleteGlobalFact: (factId: string) => call('DELETE /api/facts/{factId}', { path: { factId } }),
+
+  // A series' own facts, edited from one of its books - see backend
+  // handleUpsertBookFact.
+  upsertBookFact: (bookId: string, body: UpsertWorldFactRequest) =>
+    call('PUT /api/books/{id}/facts', { path: { id: bookId }, body }),
+
+  deleteBookFact: (bookId: string, factId: string) =>
+    call('DELETE /api/books/{id}/facts/{factId}', { path: { id: bookId, factId } }),
 
   deleteLexiconEntry: (bookId: string, entryId: string) =>
     call('DELETE /api/books/{id}/lexicon/{entryId}', { path: { id: bookId, entryId } }),

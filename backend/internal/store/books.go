@@ -374,6 +374,12 @@ func (s *SQLiteStore) DeleteBook(id string) error {
 	if _, err := tx.Exec(`DELETE FROM chapter_summaries WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`, id); err != nil {
 		return fmt.Errorf("delete chapter summaries: %w", err)
 	}
+	if _, err := tx.Exec(`DELETE FROM character_stages WHERE book_id = ?`, id); err != nil {
+		return fmt.Errorf("delete character stages: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM book_time_jumps WHERE book_id = ?`, id); err != nil {
+		return fmt.Errorf("delete time jumps: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM chapters WHERE book_id = ?`, id); err != nil {
 		return fmt.Errorf("delete chapters: %w", err)
 	}

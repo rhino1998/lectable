@@ -411,3 +411,28 @@ func TestCachedChapterNarrationReadsOnlyTheWrittenBooksFingerprints(t *testing.T
 		t.Errorf("an unscoped write didn't re-read another book's fingerprints")
 	}
 }
+
+func TestReadyParagraphAudio(t *testing.T) {
+	s := openTestStore(t)
+	_, chapterID := oneChapterBook(t, s, "", 0, "One.", "Two.", "Three.")
+	paras, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetParagraphReady(paras[0].ID, "v", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetParagraphGenerating(paras[1].ID, "v"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetParagraphReady(paras[2].ID, "other", 1); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ReadyParagraphAudio([]string{paras[0].ID, paras[1].ID, paras[2].ID}, "v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]bool{paras[0].ID: true}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ready = %v, want %v", got, want)
+	}
+}

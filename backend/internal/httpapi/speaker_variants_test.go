@@ -9,7 +9,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
 
-func TestSpeakerVariants(t *testing.T) {
+func TestNumberedVoices(t *testing.T) {
 	s := &Server{DataDir: t.TempDir()}
 	voice := narration.ResolvedVoice{PresetID: "guard", Instruct: "a gruff guard", Seed: 7}
 	role := store.Character{Name: "Guard", IsRole: true}
@@ -24,7 +24,7 @@ func TestSpeakerVariants(t *testing.T) {
 	}
 
 	emotionCounts := map[int]map[string]int{1: {"angry": 2}, 2: {"angry": 1}}
-	got := s.speakerVariants(voice, role, counts, emotionCounts)
+	got := s.numberedVoices(voice, role, counts, emotionCounts)
 	if len(got) != 3 {
 		t.Fatalf("got %d variants, want 3: %+v", len(got), got)
 	}
@@ -37,13 +37,13 @@ func TestSpeakerVariants(t *testing.T) {
 		if len(v.Emotions) == 1 && v.Emotions[0].Emotion == "angry" {
 			angry = v.Emotions[0].Count
 		}
-		if v.Number != i+1 || v.ParagraphCount != want.count || angry != want.angry || (v.RefAudioURL != "") != want.audio {
+		if v.Number != i+1 || v.ParagraphCount != want.count || v.NeutralCount != want.count-want.angry || angry != want.angry || (v.RefAudioURL != "") != want.audio {
 			t.Errorf("number %d: got %+v, want %+v", i+1, v, want)
 		}
 	}
 
 	// Not a role: its lines are all the character's own.
-	if got := s.speakerVariants(voice, store.Character{Name: "Guard"}, counts, emotionCounts); got != nil {
+	if got := s.numberedVoices(voice, store.Character{Name: "Guard"}, counts, emotionCounts); got != nil {
 		t.Errorf("non-role has variants: %+v", got)
 	}
 }

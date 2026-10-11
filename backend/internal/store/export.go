@@ -16,7 +16,7 @@ import (
 var ExportTables = []string{
 	"voice_presets", "characters", "character_voices",
 	"books", "book_settings", "book_sources", "chapters", "chapter_summaries", "paragraphs", "paragraph_audio",
-	"images", "breaks", "bookmarks", "sfx", "music_regions", "paragraph_edits",
+	"images", "breaks", "bookmarks", "sfx", "music_regions", "paragraph_edits", "book_time_jumps", "character_stages",
 }
 
 // sharedExportTables are rows an importing library may already hold - a
@@ -47,6 +47,8 @@ var exportRowQueries = map[string]struct {
 	"bookmarks":         {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
 	"paragraph_edits":   {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
 	"sfx":               {`paragraph_id IN (SELECT p.id FROM paragraphs p JOIN chapters c ON c.id = p.chapter_id WHERE c.book_id = ?)`, bookArg},
+	"character_stages":  {`book_id = ?`, bookArg},
+	"book_time_jumps":   {`book_id = ?`, bookArg},
 	"characters":        {`scope = ?`, scopeArg},
 	"character_voices":  {`character_id IN (SELECT id FROM characters WHERE scope = ?)`, scopeArg},
 	// The book's own preset plus every preset its characters are assigned
@@ -104,8 +106,9 @@ func (s *SQLiteStore) ExportFingerprints(bookID, characterScope string) (book st
 			coalesce((SELECT `+h("books", "b", bookVolatileColumns...)+` FROM books b WHERE id = ?), ''),
 			coalesce((SELECT bit_xor(`+h("characters", "t")+`) FROM characters t WHERE scope = ?), ''),
 			coalesce((SELECT bit_xor(`+h("character_voices", "t")+`) FROM character_voices t WHERE character_id IN (SELECT id FROM characters WHERE scope = ?)), ''),
+			coalesce((SELECT bit_xor(`+h("character_stages", "t")+`) FROM character_stages t WHERE character_id IN (SELECT id FROM characters WHERE scope = ?)), ''),
 			coalesce((SELECT bit_xor(`+h("voice_presets", "t")+`) FROM voice_presets t), ''))`,
-		bookID, characterScope, characterScope).Scan(&book)
+		bookID, characterScope, characterScope, characterScope).Scan(&book)
 	if err != nil {
 		return "", nil, err
 	}

@@ -203,6 +203,10 @@ func (c *Client) DescribeLighting(ctx context.Context, bookTitle, chapterTitle s
 		fmt.Fprintf(&user, "- accent: %s\n", orNone(p.Accent))
 		fmt.Fprintf(&user, "- brightness: %d\n", p.Brightness)
 		fmt.Fprintf(&user, "- effect: %s\n", p.Effect)
+	} else {
+		// Without this a chapter opening on scene-less musing got "same"
+		// back three times running (Fallout ch. 31, 2026-10-10).
+		user.WriteString("\nThis is the chapter's first stretch - there is no previous lighting to keep, so write the lighting out in full.\n")
 	}
 	user.WriteString("\nText:\n")
 	for i, p := range in.Paragraphs {
@@ -238,7 +242,8 @@ func (c *Client) DescribeLighting(ctx context.Context, bookTitle, chapterTitle s
 // flameSourceWords), which lets a flicker stand even when the model's
 // description forgot to mention the lantern; alarmInText does the same for
 // a flash (see alarmSourceWords). A {"light": "same"} reply is prev's cue as
-// it stands; with no prev to keep it is a retry.
+// it stands; with no prev to keep it is NeutralLighting - the model saying
+// the text gives it nothing to light, which a retry only repeats.
 func parseLighting(content string, prev *Lighting, flameInText, alarmInText bool) (Lighting, error) {
 	value, found := firstJSONValue(content, '{')
 	if !found {
@@ -253,7 +258,7 @@ func parseLighting(content string, prev *Lighting, flameInText, alarmInText bool
 	// which would otherwise store a cue described as "same".
 	if isLightingSameMarker(raw.Light) {
 		if prev == nil {
-			return Lighting{}, fmt.Errorf("lighting %q with no previous stretch to keep", raw.Light)
+			return NeutralLighting, nil
 		}
 		return *prev, nil
 	}

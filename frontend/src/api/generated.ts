@@ -231,6 +231,27 @@ export interface AddBookSourceRequest {
   titleRule?: SourceTitleRule | null
 }
 
+/**
+ * affectedCharacterDTO is one character whose casting the facts in force
+ * bear on: the facts their material brings up.
+ */
+export interface AffectedCharacter {
+  id: string
+  name: string
+  /**
+   * Role: a pooled role label ("Guard") rather than one person.
+   */
+  role: boolean
+  /**
+   * Notes are the "key: fact" lines their casting is shown.
+   */
+  notes: string[]
+  /**
+   * Summary is their casting as it stands.
+   */
+  summary: string
+}
+
 export interface AliasesResponse {
   aliases: string[]
 }
@@ -723,6 +744,23 @@ export interface CharacterName {
   invalid: boolean
 }
 
+export interface CharacterStageRequest {
+  /**
+   * ChapterIdx is the chapter of this book the stage starts at. Ignored
+   * when updating a stage, which stays where it is.
+   */
+  chapterIdx: number
+  /**
+   * Age is about how old the character is from there on, in years.
+   */
+  age: number
+  /**
+   * Instruct is the stage's casting. Empty asks for the character's own
+   * casting rewritten for Age (speakerattr.Client.AgeCasting).
+   */
+  instruct?: string
+}
+
 /**
  * characterizePreviewResponse is a characterization that was run but not
  * stored.
@@ -1059,6 +1097,22 @@ export interface GenerateSFXRequest {
 export interface GenerateVoiceResponse {
   voicePresetId: string
   audioUrl: string
+}
+
+/**
+ * globalLexiconEntryDTO is one pronunciation rule that applies to every
+ * book (store.GlobalLexiconScope), as the Settings page lists them - with
+ * no match counts, which would mean reading the whole library.
+ */
+export interface GlobalLexiconEntry {
+  id: string
+  term: string
+  replacement: string
+  caseSensitive: boolean
+  /**
+   * Prefix: the rule also covers words starting with Term.
+   */
+  prefix: boolean
 }
 
 export interface IdResponse {
@@ -1921,6 +1975,10 @@ export interface RecapSettings {
 
 export interface RegenerateVariantRequest {
   speaker: string
+  /**
+   * Emotion is the variant to render again; empty is the voice's own
+   * reference clip, the neutral one (see regenerateNeutral).
+   */
   emotion: string
   /**
    * SpeakerIndex picks one numbered member of a role
@@ -1928,6 +1986,11 @@ export interface RegenerateVariantRequest {
    * only its lines. 0 for the speaker's own voice.
    */
   speakerIndex?: number
+  /**
+   * StageID picks the voice the speaker has from one of their stages on
+   * (store.CharacterStage) - its variant, and only that stage's lines.
+   */
+  stageId?: string
 }
 
 export interface ReimportChapterResponse {
@@ -2272,23 +2335,13 @@ export interface Speaker {
    */
   pronouns?: string
   /**
-   * Emotions is every emotion this speaker's dialogue in this book
-   * actually uses (store.Paragraph.EffectiveEmotion), in internal/emotions
-   * order, each with its line count and the state of the emotion-variant
-   * reference clip those lines clone from - the voice they generate under
-   * right now (their own preset, or the book's). Omitted when they have
-   * no emotional lines, or their voice has no preset to vary.
+   * Voices is every voice this speaker's lines in this book are spoken
+   * in, each with its samples: their own first, then each numbered member
+   * of a role (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), then
+   * each age (store.CharacterStage) in story order. A speaker with one
+   * voice has one entry.
    */
-  emotions?: SpeakerEmotion[]
-  /**
-   * Variants is every numbered member of this role in this book
-   * (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), in order - the
-   * Speakers page lists each as a speaker of its own. Emotions above then
-   * covers the role's unnumbered lines only. Omitted for a speaker that
-   * isn't a role, or has no numbered lines, and when the book narrates in
-   * one voice.
-   */
-  variants?: SpeakerVariant[]
+  voices: SpeakerVoice[]
 }
 
 export interface SpeakerAppearance {
@@ -2310,7 +2363,7 @@ export interface SpeakerAppearance {
 
 /**
  * speakerEmotionDTO is one emotion a speaker uses - see
- * speakerDTO.Emotions.
+ * speakerVoiceDTO.Emotions.
  */
 export interface SpeakerEmotion {
   emotion: string
@@ -2327,22 +2380,70 @@ export interface SpeakerEmotion {
 }
 
 /**
- * speakerVariantDTO is one numbered member of a role - see
- * speakerDTO.Variants. Every number reads the same way, whichever voice
- * narration.MemberVoice gives it (number 1 shares the role's own; a later
- * one has a sibling of it).
+ * speakerStageDTO is one of a speaker's stages (store.CharacterStage): from
+ * this chapter on they are voiced as about Age years old. A speaker's
+ * stages cover its whole series, so one may start in another book.
  */
-export interface SpeakerVariant {
-  number: number
-  paragraphCount: number
+export interface SpeakerStage {
+  id: string
+  bookId: string
+  bookTitle: string
+  chapterId: string
+  chapterIdx: number
+  chapterTitle: string
+  age: number
   /**
-   * RefAudioURL is the reference clip this number's lines clone from,
-   * omitted until it's been rendered (it renders the first time one of
-   * these lines generates) or when the voice has no clip at all.
+   * Instruct is the casting this stage's voice is designed from - the
+   * speaker's own Summary rewritten for Age, or the reader's edit of it.
+   */
+  instruct: string
+}
+
+/**
+ * speakerVoiceDTO is one of the voices a speaker's lines are spoken in
+ * (speakerDTO.Voices): the reference clip its lines clone from - the
+ * neutral sample - and its emotion variants. Every voice reads the same
+ * way, whichever it is: Number and Stage say which.
+ */
+export interface SpeakerVoice {
+  /**
+   * Number is the role member this voice belongs to ("Guard 2"), 0 for
+   * the speaker's unnumbered lines.
+   */
+  number?: number
+  /**
+   * Stage is the age this voice is the speaker's from (omitted for the
+   * voice they have before any stage). One that starts in a later book
+   * of the series is listed with no lines here.
+   */
+  stage?: SpeakerStage | null
+  /**
+   * ParagraphCount is how many of the speaker's lines in this book are
+   * spoken in this voice, NeutralCount how many of those carry no
+   * emotion.
+   */
+  paragraphCount: number
+  neutralCount: number
+  /**
+   * RefAudioURL is the clip the voice's lines clone from, omitted until
+   * it's been rendered (a numbered member's or a stage's renders the
+   * first time one of its lines generates) and for a speaker with no
+   * voice of their own - the Narrator, or a character nobody has voiced.
    */
   refAudioUrl?: string
   /**
-   * Emotions is speakerDTO.Emotions for this number's lines alone.
+   * CanRegenerate says the neutral clip can be rendered afresh (POST
+   * .../speakers/variants/regenerate with no emotion): the speaker's own
+   * preset, or a stage's voice. A numbered member's is fixed by its
+   * role's.
+   */
+  canRegenerate?: boolean
+  /**
+   * Emotions is every emotion this voice's lines use
+   * (store.Paragraph.EffectiveEmotion), in internal/emotions order, each
+   * with its line count and the state of the variant clip those lines
+   * clone from. Omitted when it has no emotional lines, or no preset to
+   * vary.
    */
   emotions?: SpeakerEmotion[]
 }
@@ -2513,6 +2614,38 @@ export interface TestVoiceRequest {
   temperature?: number | null
 }
 
+/**
+ * timeJumpDTO is one of a book's time jumps (store.TimeJump): years pass
+ * in the story before this chapter, for everyone. A jump at the book's
+ * first chapter sets the whole book that long after the one before it in
+ * its series.
+ */
+export interface TimeJump {
+  id: string
+  chapterId: string
+  chapterIdx: number
+  chapterTitle: string
+  years: number
+  /**
+   * Voices is how many characters the jump has given an older voice so
+   * far (the stages made for it) - it grows while the jump is applied,
+   * and most characters never need one.
+   */
+  voices: number
+}
+
+export interface TimeJumpRequest {
+  /**
+   * ChapterIdx is the chapter the jump falls before; 0 for the whole
+   * book.
+   */
+  chapterIdx: number
+  /**
+   * Years is how long has passed.
+   */
+  years: number
+}
+
 export interface TopicParams {
   bookId: string
   chapterIdx?: number | null
@@ -2587,6 +2720,17 @@ export interface UpsertLexiconRequest {
    * Global saves the rule for every book instead of this book's series.
    */
   global: boolean
+}
+
+export interface UpsertWorldFactRequest {
+  /**
+   * ID rewrites that fact, key included; without it the fact is added,
+   * or replaces the one already filed under Key.
+   */
+  id?: string
+  key: string
+  aliases: string[]
+  fact: string
 }
 
 export interface VoicePreset {
@@ -2696,6 +2840,36 @@ export interface WordTiming {
   end: number
 }
 
+/**
+ * worldFactDTO is one keyed fact about a story's world (store.WorldFact):
+ * what the casting prompt is told whenever Key or one of Aliases comes up
+ * in a character's material.
+ */
+export interface WorldFact {
+  id: string
+  /**
+   * Key is the word the fact is filed under ("dwarf").
+   */
+  key: string
+  /**
+   * Aliases are other words that bring it up ("dwarven"); a plain
+   * plural of Key needs none.
+   */
+  aliases: string[]
+  fact: string
+  /**
+   * Global: the fact holds in every book, rather than being one
+   * series' own.
+   */
+  global: boolean
+  /**
+   * Superseded: a global fact the book's series has its own fact for,
+   * under a shared word - not in force in that series. Only set in a
+   * book's list.
+   */
+  superseded?: boolean
+}
+
 // ---- Live topics ----
 
 /**
@@ -2715,6 +2889,7 @@ export interface LiveTopics {
    * cached), alphabetically (case-insensitive).
    */
   characters: { params: { bookId: string }; data: CharacterName[] }
+  timeJumps: { params: { bookId: string }; data: TimeJump[] }
   /**
    * buildChapterNotes is the chapterNotes live topic's value and GET
    * .../notes' reply.
@@ -2740,6 +2915,13 @@ export interface LiveTopics {
    * fires is visible).
    */
   lexicon: { params: { bookId: string }; data: LexiconEntry[] }
+  /**
+   * buildBookFacts lists the facts bookID's series has of its own
+   * (store.SeriesScope), then the global ones, each marked Superseded when
+   * a series fact shares a word with it - what store.BookWorldFacts leaves
+   * out for this book.
+   */
+  bookFacts: { params: { bookId: string }; data: WorldFact[] }
   /**
    * buildLexiconSuggestions offers the words of the series roster's names
    * and aliases that have no rule yet, unusual spellings first, then by how
@@ -2771,6 +2953,15 @@ export interface LiveTopics {
    */
   recapSettings: { params: Record<never, never>; data: RecapSettings }
   sourceSettings: { params: Record<never, never>; data: SourceSettings }
+  /**
+   * buildGlobalLexicon lists the rules that apply to every book.
+   */
+  globalLexicon: { params: Record<never, never>; data: GlobalLexiconEntry[] }
+  /**
+   * buildGlobalFacts lists the facts that hold in every book
+   * (store.GlobalFactScope), alphabetical by key.
+   */
+  globalFacts: { params: Record<never, never>; data: WorldFact[] }
 }
 
 // ---- Routes ----
@@ -3644,7 +3835,7 @@ export interface Routes {
    */
   'POST /api/books/{id}/characters/{characterId}/characterize/preview': {
     path: { id: string; characterId: string }
-    query: { lookup?: string | number | boolean; temp?: string | number | boolean }
+    query: { lookup?: string | number | boolean; notes?: string | number | boolean; temp?: string | number | boolean }
     body: never
     response: CharacterizePreviewResponse
     errorCode: never
@@ -3761,6 +3952,47 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleSetCharacterStage starts a stage of a character's voice at one of
+   * this book's chapters: from there on - and through the later books of
+   * the series - their lines are voiced as about that age. Setting one
+   * where the character already has one replaces it. With no instruct, the
+   * character's own casting is rewritten for the age, which needs the
+   * speaker LLM and a characterized character.
+   *
+   * Nothing is deleted: the lines from that chapter on resolve to another
+   * voice, so their audio under the old one stops counting as ready and is
+   * generated again like any other missing audio.
+   */
+  'POST /api/books/{id}/characters/{characterId}/stages': {
+    path: { id: string; characterId: string }
+    query: Record<never, never>
+    body: CharacterStageRequest
+    response: SpeakerStage
+    errorCode: never
+  }
+  /**
+   * handleUpdateCharacterStage changes a stage's age and casting; an empty
+   * instruct has the casting rewritten for the age again.
+   */
+  'PUT /api/books/{id}/characters/{characterId}/stages/{stageId}': {
+    path: { id: string; characterId: string; stageId: string }
+    query: Record<never, never>
+    body: CharacterStageRequest
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleDeleteCharacterStage removes a stage: its lines go back to the
+   * stage before it, or to the character's own voice.
+   */
+  'DELETE /api/books/{id}/characters/{characterId}/stages/{stageId}': {
+    path: { id: string; characterId: string; stageId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
+  /**
    * handleSetCharacterVoice assigns (or, with "", clears) a character's own
    * narration voice - a character with no voice assigned still narrates in
    * the book's own voice even when book.MultiVoice is on (see
@@ -3821,6 +4053,49 @@ export interface Routes {
     query: Record<never, never>
     body: never
     response: Blob
+    errorCode: never
+  }
+  'GET /api/books/{id}/facts': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: WorldFact[]
+    errorCode: never
+  }
+  /**
+   * handleUpsertBookFact saves a fact for the book's series (or the book
+   * alone, outside a series), where it replaces any global fact sharing a
+   * word with it. Nothing is recast.
+   */
+  'PUT /api/books/{id}/facts': {
+    path: { id: string }
+    query: Record<never, never>
+    body: UpsertWorldFactRequest
+    response: IdResponse
+    errorCode: never
+  }
+  /**
+   * handleFactsAffected lists the characterized characters of the book's
+   * series whose material brings up a fact in force - the ones a recast
+   * would now read differently. It searches the series once per character,
+   * so it is slow on a long roster, and is not a live topic.
+   */
+  'GET /api/books/{id}/facts/affected': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: AffectedCharacter[]
+    errorCode: never
+  }
+  /**
+   * handleDeleteBookFact removes one of the series' own facts; a global
+   * fact's id is left alone.
+   */
+  'DELETE /api/books/{id}/facts/{factId}': {
+    path: { id: string; factId: string }
+    query: Record<never, never>
+    body: never
+    response: void
     errorCode: never
   }
   /**
@@ -4436,6 +4711,39 @@ export interface Routes {
     response: QueuedResponse
     errorCode: never
   }
+  'GET /api/books/{id}/time-jumps': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: TimeJump[]
+    errorCode: never
+  }
+  /**
+   * handleCreateTimeJump records that years pass before one of this book's
+   * chapters and ages the cast across it: every character who speaks on
+   * both sides of the jump is asked about in the background
+   * (ageAcrossJump), and each one whose age group changes gets a stage
+   * there (store.CharacterStage, marked with the jump). Most characters
+   * come back unchanged. 202 with how many are being asked about.
+   */
+  'POST /api/books/{id}/time-jumps': {
+    path: { id: string }
+    query: Record<never, never>
+    body: TimeJumpRequest
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleDeleteTimeJump removes a time jump and the stages made for it;
+   * those lines go back to the voice they had before it.
+   */
+  'DELETE /api/books/{id}/time-jumps/{jumpId}': {
+    path: { id: string; jumpId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
   /**
    * handleRenameBook sets a book's title and, optionally, its author - what
    * the library shows it as. An import names a book as its source does
@@ -4487,6 +4795,31 @@ export interface Routes {
     query: Record<never, never>
     body: FormData
     response: EpubChaptersResponse
+    errorCode: never
+  }
+  'GET /api/facts': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: never
+    response: WorldFact[]
+    errorCode: never
+  }
+  /**
+   * handleUpsertGlobalFact saves a fact for every book. Nothing is recast:
+   * a fact reaches a character the next time their voice is cast.
+   */
+  'PUT /api/facts': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: UpsertWorldFactRequest
+    response: IdResponse
+    errorCode: never
+  }
+  'DELETE /api/facts/{factId}': {
+    path: { factId: string }
+    query: Record<never, never>
+    body: never
+    response: void
     errorCode: never
   }
   'GET /api/images/{id}': {
@@ -4613,6 +4946,37 @@ export interface Routes {
     path: { id: string }
     query: Record<never, never>
     body: JobTierRequest
+    response: void
+    errorCode: never
+  }
+  'GET /api/lexicon': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: never
+    response: GlobalLexiconEntry[]
+    errorCode: never
+  }
+  /**
+   * handleUpsertGlobalLexicon is handleUpsertLexicon for a rule that applies
+   * to every book, saved from the Settings page rather than from one book:
+   * it clears generated audio for every paragraph in the library that the
+   * old or new rule matches.
+   */
+  'PUT /api/lexicon': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: UpsertLexiconRequest
+    response: IdResponse
+    errorCode: never
+  }
+  /**
+   * handleDeleteGlobalLexicon removes a rule that applies to every book and
+   * clears generated audio for every paragraph in the library it matched.
+   */
+  'DELETE /api/lexicon/{entryId}': {
+    path: { entryId: string }
+    query: Record<never, never>
+    body: never
     response: void
     errorCode: never
   }
@@ -5140,12 +5504,19 @@ export const ROUTE_RESPONSE_KINDS = {
   'PUT /api/books/{id}/characters/{characterId}/name': 'none',
   'PUT /api/books/{id}/characters/{characterId}/pronouns': 'json',
   'PUT /api/books/{id}/characters/{characterId}/role': 'none',
+  'POST /api/books/{id}/characters/{characterId}/stages': 'json',
+  'PUT /api/books/{id}/characters/{characterId}/stages/{stageId}': 'none',
+  'DELETE /api/books/{id}/characters/{characterId}/stages/{stageId}': 'none',
   'PUT /api/books/{id}/characters/{characterId}/voice': 'none',
   'GET /api/books/{id}/cover': 'binary',
   'GET /api/books/{id}/exports': 'json',
   'POST /api/books/{id}/exports': 'json',
   'DELETE /api/books/{id}/exports/{exportId}': 'none',
   'GET /api/books/{id}/exports/{exportId}/file': 'binary',
+  'GET /api/books/{id}/facts': 'json',
+  'PUT /api/books/{id}/facts': 'json',
+  'GET /api/books/{id}/facts/affected': 'json',
+  'DELETE /api/books/{id}/facts/{factId}': 'none',
   'POST /api/books/{id}/generate': 'json',
   'POST /api/books/{id}/generate-remaining': 'json',
   'DELETE /api/books/{id}/jobs': 'json',
@@ -5187,11 +5558,17 @@ export const ROUTE_RESPONSE_KINDS = {
   'DELETE /api/books/{id}/speakers': 'none',
   'POST /api/books/{id}/speakers/reattribute': 'json',
   'POST /api/books/{id}/speakers/variants/regenerate': 'json',
+  'GET /api/books/{id}/time-jumps': 'json',
+  'POST /api/books/{id}/time-jumps': 'json',
+  'DELETE /api/books/{id}/time-jumps/{jumpId}': 'none',
   'PUT /api/books/{id}/title': 'none',
   'GET /api/books/{id}/voice': 'json',
   'PUT /api/books/{id}/voice': 'json',
   'GET /api/clips/{key}': 'binary',
   'POST /api/epub/chapters': 'json',
+  'GET /api/facts': 'json',
+  'PUT /api/facts': 'json',
+  'DELETE /api/facts/{factId}': 'none',
   'GET /api/images/{id}': 'binary',
   'GET /api/instance': 'json',
   'GET /api/jobs': 'json',
@@ -5201,6 +5578,9 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/jobs/resume': 'none',
   'DELETE /api/jobs/{id}': 'none',
   'PUT /api/jobs/{id}/tier': 'none',
+  'GET /api/lexicon': 'json',
+  'PUT /api/lexicon': 'json',
+  'DELETE /api/lexicon/{entryId}': 'none',
   'POST /api/library/preprocess': 'json',
   'POST /api/llm/test': 'json',
   'GET /api/music-regions/{id}/audio': 'binary',

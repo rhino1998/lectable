@@ -123,7 +123,7 @@ func (src Source) Import(r io.ReaderAt, size int64) (*Manifest, error) {
 // remapCharacters points the export's character rows at characters this
 // library already has under the same series scope and name, dropping the
 // duplicates - (scope, name) is unique, and paragraphs name speakers, not
-// ids, so only character_voices refers to a character id.
+// ids, so only character_voices and character_stages refer to a character id.
 func (src Source) remapCharacters(rows map[string][]json.RawMessage) error {
 	remap := map[string]string{}
 	var keep []json.RawMessage
@@ -146,11 +146,13 @@ func (src Source) remapCharacters(rows map[string][]json.RawMessage) error {
 	}
 	rows["characters"] = keep
 	if len(remap) > 0 {
-		rows["character_voices"] = patchRows(rows["character_voices"], func(r map[string]json.RawMessage) {
-			if to, ok := remap[jsonString(r["character_id"])]; ok {
-				r["character_id"], _ = json.Marshal(to)
-			}
-		})
+		for _, t := range []string{"character_voices", "character_stages"} {
+			rows[t] = patchRows(rows[t], func(r map[string]json.RawMessage) {
+				if to, ok := remap[jsonString(r["character_id"])]; ok {
+					r["character_id"], _ = json.Marshal(to)
+				}
+			})
+		}
 	}
 	return nil
 }

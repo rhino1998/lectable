@@ -1887,3 +1887,119 @@ func TestSpokenLinesAndLookupReplies(t *testing.T) {
 		t.Fatalf("ParagraphsContainingAll = %q, %v", got, err)
 	}
 }
+
+// A speaker whose voice changes partway through the book (CharacterStage)
+// has one override per stretch of chapters: a clip counts as ready only
+// under the voice of its own chapter's stretch.
+func TestChapterReadinessSpeakerVoiceByChapterRange(t *testing.T) {
+	s := openTestStore(t)
+	chapters := make([]ChapterInput, 3)
+	for i := range chapters {
+		chapters[i] = ChapterInput{Title: "Ch", Blocks: []BlockInput{{Kind: BlockText, Text: "“Hello.”"}}}
+	}
+	bookID, _, err := s.CreateBook("Book", "Author", "en", "", "", 0, chapters)
+	if err != nil {
+		t.Fatalf("CreateBook: %v", err)
+	}
+	// Every chapter's line is ready under the young voice; only the last
+	// chapter's under the older one too.
+	for idx := range chapters {
+		ch, err := s.GetChapterByIdx(bookID, idx)
+		if err != nil || ch == nil {
+			t.Fatalf("GetChapterByIdx(%d): %v", idx, err)
+		}
+		if err := s.SetParagraphSpeakersIndexed(ch.ID, map[int]string{0: "Will"}, nil); err != nil {
+			t.Fatalf("SetParagraphSpeakersIndexed: %v", err)
+		}
+		paragraphs, err := s.ListParagraphsRaw(ch.ID)
+		if err != nil {
+			t.Fatalf("ListParagraphsRaw: %v", err)
+		}
+		if err := s.SetParagraphReady(paragraphs[0].ID, "young", 1); err != nil {
+			t.Fatalf("SetParagraphReady: %v", err)
+		}
+		if idx == 2 {
+			if err := s.SetParagraphReady(paragraphs[0].ID, "older", 1); err != nil {
+				t.Fatalf("SetParagraphReady: %v", err)
+			}
+		}
+	}
+	overrides := []SpeakerVoice{
+		{Speaker: "Will", VoiceID: "young", ToIdx: 1},
+		{Speaker: "Will", VoiceID: "older", FromIdx: 1},
+	}
+	want := []int{1, 0, 1}
+	summaries, err := s.ListChapterSummaries(bookID, "book-voice", overrides)
+	if err != nil {
+		t.Fatalf("ListChapterSummaries: %v", err)
+	}
+	narration, err := s.ChapterNarration(bookID, "book-voice", overrides, nil)
+	if err != nil {
+		t.Fatalf("ChapterNarration: %v", err)
+	}
+	if len(summaries) != 3 || len(narration) != 3 {
+		t.Fatalf("got %d summaries and %d narration rows, want 3 of each", len(summaries), len(narration))
+	}
+	for idx, n := range want {
+		if summaries[idx].ReadyCount != n {
+			t.Errorf("ListChapterSummaries chapter %d: ready = %d, want %d", idx, summaries[idx].ReadyCount, n)
+		}
+		if narration[idx].ReadyCount != n {
+			t.Errorf("ChapterNarration chapter %d: ready = %d, want %d", idx, narration[idx].ReadyCount, n)
+		}
+	}
+}
+
+func TestWorldFactsSeriesSupersedesGlobal(t *testing.T) {
+	s := openTestStore(t)
+	// Without the baseline facts a new library starts with (migration 00026).
+	if _, err := s.db.Exec(`DELETE FROM world_facts`); err != nil {
+		t.Fatal(err)
+	}
+	book := &Book{ID: "b1", SeriesName: "Tower"}
+	scope := SeriesScope(book)
+	mustFact := func(scope string, f WorldFact) *WorldFact {
+		t.Helper()
+		out, err := s.UpsertWorldFact(scope, f)
+		if err != nil || out == nil {
+			t.Fatalf("upsert %q: %v, %v", f.Key, out, err)
+		}
+		return out
+	}
+	dwarf := mustFact(GlobalFactScope, WorldFact{Key: "Dwarf", Aliases: AliasList{"dwarven"}, Fact: "Scottish accent."})
+	mustFact(GlobalFactScope, WorldFact{Key: "elf", Fact: "Refined RP."})
+	mustFact(scope, WorldFact{Key: "dwarven", Fact: "Welsh accent here."})
+	mustFact(scope, WorldFact{Key: "kobold", Fact: "Proposed.", Status: WorldFactPending})
+
+	// The same key again, in another case, replaces rather than adds.
+	again := mustFact(GlobalFactScope, WorldFact{Key: "dwarf", Aliases: AliasList{"dwarven"}, Fact: "Scottish."})
+	if again.ID != dwarf.ID || again.Fact != "Scottish." {
+		t.Fatalf("upsert by key: got %+v, want id %s rewritten", again, dwarf.ID)
+	}
+	// Moving a fact onto a taken key is refused.
+	if _, err := s.UpsertWorldFact(GlobalFactScope, WorldFact{ID: dwarf.ID, Key: "Elf", Fact: "x"}); err != ErrFactKeyTaken {
+		t.Fatalf("rename onto a taken key: err = %v, want ErrFactKeyTaken", err)
+	}
+
+	facts, err := BookWorldFacts(s, book)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, f := range facts {
+		got = append(got, f.Scope+"/"+f.Key)
+	}
+	// The series' "dwarven" supersedes the global dwarf fact through its
+	// alias; the pending kobold fact isn't in force.
+	want := []string{scope + "/dwarven", "global/elf"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("BookWorldFacts = %v, want %v", got, want)
+	}
+
+	if ok, err := s.DeleteWorldFact(scope, dwarf.ID); err != nil || ok {
+		t.Fatalf("delete under the wrong scope: %v, %v", ok, err)
+	}
+	if ok, err := s.DeleteWorldFact(GlobalFactScope, dwarf.ID); err != nil || !ok {
+		t.Fatalf("delete: %v, %v", ok, err)
+	}
+}

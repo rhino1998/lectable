@@ -178,7 +178,7 @@ func (m *Manager) loadChapterMusic(bookID, chapterID string) (*chapterMusicState
 	// own regions' paragraphs.
 	idsByVoice := map[string][]string{}
 	for _, p := range paragraphs {
-		voice, verr := m.narration.ForParagraph(book, p.Speaker, p.SpeakerIndex)
+		voice, verr := m.narration.ForParagraph(book, p.Speaker, p.SpeakerIndex, ch.Idx)
 		if verr != nil {
 			return nil, verr
 		}

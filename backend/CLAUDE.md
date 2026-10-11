@@ -444,7 +444,10 @@ building/running `ttsworker` does, since both now link into that binary.
   `jobs`. A book with `MultiVoice` off, or with no characters assigned
   voices, resolves every paragraph to the book's own voice. Character
   lookup is keyed by `store.SeriesScope(book)`, not `book.ID` - see
-  `docs/speakerattr.md`.
+  `docs/speakerattr.md`. Resolution also takes the paragraph's chapter
+  index (`NoChapter` for a voice asked about apart from any line): a
+  character with age stages (`stages.go`, `StageVoice`) has a different
+  voice from each stage's chapter on - see "Age stages" there.
 - `internal/speakerattr/` — every LLM pass, as a thin caller-side `Client`
   (batching, prompt-building, reply parsing, malformed-response retry) over
   a GGUF model that actually runs in `ttsworker` (`internal/llmworker`):

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link } from '@tanstack/react-router'
+import { Link, useSearch } from '@tanstack/react-router'
 import { ApiError } from '../api/client'
 import {
   useCustomVoicePresets,
@@ -15,12 +15,17 @@ import {
 import { RECAP_AFTER_OPTIONS } from '../utils/recap'
 import { CLONE_MODELS, DEFAULT_CLONE_MODEL } from '../api/types'
 import { BookSettingsFields } from '../components/speakers/SpeakerSettings'
+import { GlobalFactsPanel } from '../components/settings/GlobalFactsPanel'
+import { GlobalLexiconPanel } from '../components/settings/GlobalLexiconPanel'
+import { SETTINGS_TABS, type SettingsTab } from '../utils/settingsTabs'
 
-// App-wide settings: what a newly added book starts with - the default
-// voice (picked with the star on the Voices page), the clone model, and
-// the per-book switches each book then has on its own Book settings page. All
-// of it is one value (GET|PUT /api/voices/default), so every save sends
-// the lot.
+const TAB_LABELS: Record<SettingsTab, string> = {
+  general: 'General',
+  sources: 'Sources',
+  facts: 'Facts',
+  pronunciations: 'Pronunciations',
+}
+
 const SOURCE_CHECK_OPTIONS = [
   { hours: 0, label: 'never' },
   { hours: 6, label: 'every 6 hours' },
@@ -38,7 +43,46 @@ function sourceCheckOptions(current: number | undefined) {
   return [...SOURCE_CHECK_OPTIONS, { hours: current, label: `every ${current} hours` }]
 }
 
+// App-wide settings, in tabs: General (what a newly added book starts
+// with, and the recap offer), Sources (checking websites for new
+// chapters, Patreon), Facts and Pronunciations (the ones that apply to
+// every book).
 export function SettingsPage() {
+  const { tab = 'general' } = useSearch({ from: '/settings' })
+  return (
+    <div className="voices-page">
+      <div className="library-header">
+        <h1>Settings</h1>
+      </div>
+
+      <nav className="page-tabs">
+        {SETTINGS_TABS.map((t) => (
+          <Link
+            key={t}
+            to="/settings"
+            search={{ tab: t }}
+            replace
+            className={t === tab ? 'page-tab page-tab-active' : 'page-tab'}
+          >
+            {TAB_LABELS[t]}
+          </Link>
+        ))}
+      </nav>
+
+      {tab === 'general' && <GeneralSettings />}
+      {tab === 'sources' && <SourceSettingsTab />}
+      {tab === 'facts' && <GlobalFactsPanel />}
+      {tab === 'pronunciations' && <GlobalLexiconPanel />}
+    </div>
+  )
+}
+
+// What a newly added book starts with - the default voice (picked with the
+// star on the Voices page), the clone model, and the per-book switches
+// each book then has on its own Book settings page. All of it is one value
+// (GET|PUT /api/voices/default), so every save sends the lot. Then the
+// recap offer.
+function GeneralSettings() {
   const defaultVoiceQuery = useDefaultVoice()
   const updateDefaultVoice = useUpdateDefaultVoice()
   const builtins = useVoicePresets().data?.presets ?? []
@@ -48,27 +92,10 @@ export function SettingsPage() {
   const cloneModel = defaults?.cloneModel ?? DEFAULT_CLONE_MODEL
   const defaultVoiceName = [...builtins, ...customs].find((p) => p.id === defaults?.presetId)?.name
 
-  const sourceSettings = useSourceSettings()
-  const setSourceSettings = useSetSourceSettings()
-  const setPatreonSession = useSetPatreonSession()
-  const [patreonSession, setPatreonSessionText] = useState('')
-  const [patreonError, setPatreonError] = useState<string | null>(null)
-  const signInToPatreon = (sessionId: string) => {
-    setPatreonError(null)
-    setPatreonSession.mutate(sessionId, {
-      onSuccess: () => setPatreonSessionText(''),
-      onError: (err) =>
-        setPatreonError(err instanceof ApiError ? err.message : 'Could not reach the server'),
-    })
-  }
   const recapSettings = useRecapSettings()
   const setRecapSettings = useSetRecapSettings()
   return (
-    <div className="voices-page">
-      <div className="library-header">
-        <h1>Settings</h1>
-      </div>
-
+    <>
       <h2>Defaults for new books</h2>
       <p className="muted">
         What a newly added book starts with. Each book has its own voice settings and the same
@@ -131,7 +158,26 @@ export function SettingsPage() {
         When you open a book you have been away from this long, the reader offers a spoken recap of
         where you left off. Shared by every device; the reader’s Recap button works either way.
       </p>
+    </>
+  )
+}
 
+function SourceSettingsTab() {
+  const sourceSettings = useSourceSettings()
+  const setSourceSettings = useSetSourceSettings()
+  const setPatreonSession = useSetPatreonSession()
+  const [patreonSession, setPatreonSessionText] = useState('')
+  const [patreonError, setPatreonError] = useState<string | null>(null)
+  const signInToPatreon = (sessionId: string) => {
+    setPatreonError(null)
+    setPatreonSession.mutate(sessionId, {
+      onSuccess: () => setPatreonSessionText(''),
+      onError: (err) =>
+        setPatreonError(err instanceof ApiError ? err.message : 'Could not reach the server'),
+    })
+  }
+  return (
+    <>
       <h2>New chapters</h2>
       <label>
         Check books imported from websites{' '}
@@ -198,6 +244,6 @@ export function SettingsPage() {
         is kept on this server only and sent only to patreon.com. If Patreon signs that browser out,
         chapters show as locked again and a new cookie is needed.
       </p>
-    </div>
+    </>
   )
 }

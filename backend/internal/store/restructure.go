@@ -138,6 +138,12 @@ func (s *SQLiteStore) DeleteChapter(bookID string, idx int) (chapterID string, i
 	if err := parkChapters(tx, bookID); err != nil {
 		return "", nil, err
 	}
+	if _, err := tx.Exec(`DELETE FROM character_stages WHERE chapter_id = ?`, chapterID); err != nil {
+		return "", nil, fmt.Errorf("delete character stages: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM book_time_jumps WHERE chapter_id = ?`, chapterID); err != nil {
+		return "", nil, fmt.Errorf("delete time jumps: %w", err)
+	}
 	if _, err := tx.Exec(`DELETE FROM chapters WHERE id = ?`, chapterID); err != nil {
 		return "", nil, fmt.Errorf("delete chapter: %w", err)
 	}

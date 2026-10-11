@@ -8,6 +8,7 @@ import { BookSettingsPage } from './pages/BookSettingsPage'
 import { BOOK_SETTINGS_TABS, type BookSettingsTab } from './utils/bookSettingsTabs'
 import { JobsPage } from './pages/JobsPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { SETTINGS_TABS, type SettingsTab } from './utils/settingsTabs'
 import { ExportPage } from './pages/ExportPage'
 import { RootLayout } from './components/RootLayout'
 
@@ -69,6 +70,10 @@ const settingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/settings',
   component: SettingsPage,
+  // ?tab= picks the page's tab; anything else is the first one.
+  validateSearch: (search: Record<string, unknown>): { tab?: SettingsTab } => ({
+    tab: SETTINGS_TABS.find((t) => t === search.tab),
+  }),
 })
 
 const routeTree = rootRoute.addChildren([

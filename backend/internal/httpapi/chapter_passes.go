@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -734,8 +735,17 @@ func (s *Server) expandToInlineSets(chapterID string, paragraphs []store.Paragra
 // cleared here just means a reader has to notice and hit "regenerate"
 // themselves, not a lost update.
 func (s *Server) invalidateParagraphAudio(book *store.Book, paragraphs []store.Paragraph) {
+	chapterIdx := map[string]int{}
 	for _, p := range paragraphs {
-		voice, err := s.Narration.ForParagraph(book, p.Speaker, p.SpeakerIndex)
+		idx, ok := chapterIdx[p.ChapterID]
+		if !ok {
+			idx = narration.NoChapter
+			if ch, err := s.chapterByID(p.ChapterID); err == nil && ch != nil {
+				idx = ch.Idx
+			}
+			chapterIdx[p.ChapterID] = idx
+		}
+		voice, err := s.Narration.ForParagraph(book, p.Speaker, p.SpeakerIndex, idx)
 		if err != nil {
 			log.Printf("invalidateParagraphAudio: resolve voice for paragraph %s: %v", p.ID, err)
 			continue

@@ -20,6 +20,9 @@ type CharacterEvidence struct {
 	Origins    []string
 	// StatedAges are their own lines giving their age (see StatedAges).
 	StatedAges []string
+	// WorldNotes are recorded facts about the story's world that this
+	// material brings up, as "key: fact" lines (see MatchWorldNotes).
+	WorldNotes []string
 	// Idioms counts the dialect-marking words in every line they speak,
 	// not only Quotes: of Jax's 3786 lines 99 say "mate" and 7 "aye", and
 	// a sample that happened to hold an "aye" cast him Scottish.

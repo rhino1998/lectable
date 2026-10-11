@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
@@ -27,7 +28,7 @@ func TestLexiconUpsertInvalidatesMatchesAndMarksThem(t *testing.T) {
 	if err != nil || ch == nil {
 		t.Fatalf("GetChapterByIdx: %v", err)
 	}
-	voice, err := srv.Narration.ForParagraph(book, "", 0)
+	voice, err := srv.Narration.ForParagraph(book, "", 0, narration.NoChapter)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}

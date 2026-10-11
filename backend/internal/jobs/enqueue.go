@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"log"
+	"maps"
 	"os"
 	"strings"
 	"time"
@@ -175,6 +176,25 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 		}
 	}
 
+	// The character's stage in this chapter, if they have any (see
+	// narration.StageVoice).
+	var stages narration.Stages
+	chapterIdx := narration.NoChapter
+	if book.MultiVoice() {
+		if stages, err = m.narration.BookStages(book); err != nil {
+			return nil, nil, err
+		}
+		if len(stages) > 0 {
+			ch, err := m.store.GetChapterByID(chapterID)
+			if err != nil {
+				return nil, nil, err
+			}
+			if ch != nil {
+				chapterIdx = ch.Idx
+			}
+		}
+	}
+
 	resolvedVoiceCache := map[string]narration.ResolvedVoice{} // character id -> resolved, avoids repeat lookups
 	voiceByParagraph := make([]narration.ResolvedVoice, len(all))
 	idsByVoice := map[string][]string{}
@@ -190,6 +210,7 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 					resolvedVoiceCache[c.ID] = resolved
 					v = resolved
 				}
+				v = narration.StageVoice(v, bookVoice, c, stages.At(c.ID, chapterIdx))
 				v = narration.MemberVoice(v, c, p.SpeakerIndex)
 			}
 		}
@@ -198,20 +219,18 @@ func (m *Manager) paragraphsNeedingGeneration(ctx context.Context, book *store.B
 		idsByVoice[vid] = append(idsByVoice[vid], p.ID)
 	}
 
-	audioStates := make(map[string]store.AudioState, len(all))
+	ready := make(map[string]bool, len(all))
 	for vid, ids := range idsByVoice {
-		states, err := m.store.ParagraphAudioStatuses(ids, vid)
+		got, err := m.store.ReadyParagraphAudio(ids, vid)
 		if err != nil {
 			return nil, nil, err
 		}
-		for id, st := range states {
-			audioStates[id] = st
-		}
+		maps.Copy(ready, got)
 	}
 
 	out := make([]resolvedParagraph, 0, len(all))
 	for i, p := range all {
-		if audioStates[p.ID].Status == store.AudioReady {
+		if ready[p.ID] {
 			continue
 		}
 		out = append(out, resolvedParagraph{paragraph: p, voice: voiceByParagraph[i]})
@@ -656,7 +675,7 @@ func (m *Manager) enqueueParagraphRegenerate(bookID, chapterID string, chapterId
 	} else {
 		m.provisionMissingCharacterVoices(m.ctx, book, []string{paragraph.Speaker}, narration.EffectiveCloneModel(bookVoice))
 	}
-	v, err := m.narration.ForParagraph(book, paragraph.Speaker, paragraph.SpeakerIndex)
+	v, err := m.narration.ForParagraph(book, paragraph.Speaker, paragraph.SpeakerIndex, chapterIdx)
 	if err != nil {
 		log.Printf("jobs: resolve voice for paragraph %s: %v", paragraph.ID, err)
 		return
@@ -795,10 +814,19 @@ func (m *Manager) enqueueLookahead(bookID, clientID string, fromChapterIdx, from
 			break
 		}
 
-		resolved, all, err := m.paragraphsNeedingGeneration(m.ctx, book, ch.ID)
-		if err != nil {
-			log.Printf("jobs: list paragraphs for chapter %s: %v", ch.ID, err)
-			return
+		var resolved []resolvedParagraph
+		var all []store.Paragraph
+		paragraphs, nothingLeft, gen := m.readyChapters.get(m.store, ch.ID)
+		if !nothingLeft {
+			resolved, all, err = m.paragraphsNeedingGeneration(m.ctx, book, ch.ID)
+			if err != nil {
+				log.Printf("jobs: list paragraphs for chapter %s: %v", ch.ID, err)
+				return
+			}
+			paragraphs = len(all)
+			if len(resolved) == 0 {
+				m.readyChapters.put(gen, bookID, ch.ID, paragraphs)
+			}
 		}
 		if chapterIdx == fromChapterIdx && fromParagraphIdx > 0 {
 			resolved = skipResolvedBeforeIdx(resolved, fromParagraphIdx)
@@ -819,11 +847,8 @@ func (m *Manager) enqueueLookahead(bookID, clientID string, fromChapterIdx, from
 				wanted[key] = true
 			}
 		}
-		for _, p := range all {
-			if p.Idx >= firstIdx {
-				urgentLeft--
-			}
-		}
+		// Every paragraph position from firstIdx on (a chapter's are 0..n-1).
+		urgentLeft -= max(paragraphs-firstIdx, 0)
 		if chapterIdx == fromChapterIdx {
 			m.PromoteChapterMusicNear(bookID, ch.ID)
 			m.advanceLiveChapterMusic(bookID, ch.ID, fromParagraphIdx)

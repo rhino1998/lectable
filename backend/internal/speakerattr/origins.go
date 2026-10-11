@@ -2,6 +2,7 @@ package speakerattr
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -51,8 +52,9 @@ var originTitleWords = map[string]bool{"mr": true, "mrs": true, "ms": true, "mis
 // clues": a sample of their lines rarely holds them, so "Ingrid, a Danish
 // archeologist" and "Lars whispered in Danish" never reached
 // characterization, which cast them as a British woman and a German man.
-func OriginClues(paragraphs, names []string, limit int) []string {
-	nameRes := clueNames(names)
+// shared is as in clueNames.
+func OriginClues(paragraphs, names, shared []string, limit int) []string {
+	nameRes := clueNames(names, shared)
 	if len(nameRes) == 0 {
 		return nil
 	}
@@ -83,8 +85,11 @@ func OriginClues(paragraphs, names []string, limit int) []string {
 
 // clueNames compiles a whole-word matcher for each of names - a
 // character's name and aliases, plus a multi-word name's first word -
-// skipping ones under 3 letters and bare title words.
-func clueNames(names []string) []*regexp.Regexp {
+// skipping ones under 3 letters and bare title words. A first word in
+// shared (lower case: what the rest of the roster is called, see
+// SharedNames) is someone else's name too and is left out: "Thomas, an
+// eight-year-old boy" cast Thomas Oh, the lead's father, as a child.
+func clueNames(names, shared []string) []*regexp.Regexp {
 	var nameRes []*regexp.Regexp
 	seen := map[string]bool{}
 	addName := func(n string) {
@@ -97,11 +102,29 @@ func clueNames(names []string) []*regexp.Regexp {
 	}
 	for _, n := range names {
 		addName(n)
-		if words := strings.Fields(n); len(words) > 1 {
+		if words := strings.Fields(n); len(words) > 1 && !slices.Contains(shared, strings.ToLower(words[0])) {
 			addName(words[0])
 		}
 	}
 	return nameRes
+}
+
+// SharedNames returns, in lower case, every name in others (the names and
+// aliases of the rest of a character's roster) and each one's first word:
+// the first names a character can't be told by (clueNames).
+func SharedNames(others []string) []string {
+	var out []string
+	for _, n := range others {
+		words := strings.Fields(strings.ToLower(n))
+		if len(words) == 0 {
+			continue
+		}
+		out = append(out, strings.Join(words, " "))
+		if len(words) > 1 {
+			out = append(out, words[0])
+		}
+	}
+	return out
 }
 
 // nearestToName returns the smallest distance in characters between a

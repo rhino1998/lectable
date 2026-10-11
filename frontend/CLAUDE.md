@@ -144,10 +144,19 @@ byte-for-byte.
 - `src/routes.tsx` — code-based TanStack Router route tree (not
   file-based routing / no router-plugin codegen — deliberate, to keep
   the build simple for a two-page app). Add new routes here directly.
-- `src/pages/SettingsPage.tsx` (`/settings`, in the sidebar) — app-wide
-  settings: "Defaults for new books" (clone model + the per-book switches,
-  `BookSettingsFields` shared with the Book settings page; the default voice is
-  the star on the Voices page). All one value, `GET|PUT /api/voices/default`.
+- `src/pages/SettingsPage.tsx` (`/settings?tab=`, in the sidebar) — app-wide
+  settings, in tabs (`utils/settingsTabs.ts`). General: "Defaults for new
+  books" (clone model + the per-book switches, `BookSettingsFields` shared
+  with the Book settings page; the default voice is the star on the Voices
+  page - all one value, `GET|PUT /api/voices/default`) and the recap
+  offer. Sources: the new-chapter check and Patreon. Facts and
+  Pronunciations (`components/settings/GlobalFactsPanel.tsx`,
+  `GlobalLexiconPanel.tsx`): the world facts and pronunciation rules that
+  apply to every book (`/api/facts`, `/api/lexicon`). `FactsEditor.tsx` is
+  the form and table shared with a book's own Facts tab
+  (`components/speakers/BookFactsPanel.tsx`, `/api/books/{id}/facts`),
+  which lists the series' facts and, read-only under them, the global
+  ones with an Override button.
 - `src/pages/LibraryPage.tsx`, `src/pages/ReaderPage.tsx` — the two
   screens. `ReaderPage` is an infinite-scroll reader: it keeps a `{start,
   end}` chapter-index window in state, renders every loaded chapter's

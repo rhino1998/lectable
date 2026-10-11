@@ -254,13 +254,15 @@ func cloneMap[K comparable, V any](m map[K]V) map[K]V {
 }
 
 var (
-	booksTables          = []string{"books", PositionTable}
-	chaptersTables       = []string{"chapters"}
-	paragraphsTables     = []string{"paragraphs"}
-	charactersTables     = []string{"characters"}
-	characterVoiceTables = []string{"character_voices"}
-	voicePresetTables    = []string{"voice_presets"}
-	defaultVoiceTables   = []string{"default_voice"}
+	booksTables               = []string{"books", PositionTable}
+	chaptersTables            = []string{"chapters"}
+	paragraphsTables          = []string{"paragraphs"}
+	charactersTables          = []string{"characters"}
+	characterVoiceTables      = []string{"character_voices"}
+	characterStageTables      = []string{"character_stages", "characters", "chapters"}
+	characterStageScopeTables = []string{"character_stages", "characters"}
+	voicePresetTables         = []string{"voice_presets"}
+	defaultVoiceTables        = []string{"default_voice"}
 )
 
 // ListLexicon is read once per generation task (jobs.Manager.lexiconFor),
@@ -329,6 +331,27 @@ func (c *Cached) CharacterVoicesForModel(characterIDs []string, cloneModel strin
 	key := cacheKey("CharacterVoicesForModel", append([]string{cloneModel}, characterIDs...)...)
 	return cachedRead(c, key, characterVoiceTables, cloneMap[string, string], func() (map[string]string, error) {
 		return c.Store.CharacterVoicesForModel(characterIDs, cloneModel)
+	})
+}
+
+func (c *Cached) CharacterStageScopes() (map[string]bool, error) {
+	return cachedRead(c, cacheKey("CharacterStageScopes"), characterStageScopeTables, cloneMap[string, bool], func() (map[string]bool, error) {
+		return c.Store.CharacterStageScopes()
+	})
+}
+
+// ListCharacterStages is read for every paragraph whose voice is resolved
+// (narration.Resolver). It reads chapters, which are written constantly,
+// so a scope with no stages - nearly all of them - is answered from
+// CharacterStageScopes, which isn't.
+func (c *Cached) ListCharacterStages(scope string) ([]CharacterStage, error) {
+	if scopes, err := c.CharacterStageScopes(); err != nil {
+		return nil, err
+	} else if !scopes[scope] {
+		return nil, nil
+	}
+	return cachedRead(c, cacheKey("ListCharacterStages", scope), characterStageTables, slices.Clone[[]CharacterStage], func() ([]CharacterStage, error) {
+		return c.Store.ListCharacterStages(scope)
 	})
 }
 

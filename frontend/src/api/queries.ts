@@ -19,9 +19,12 @@ import type {
   CustomVoicePresetInput,
   JobsSnapshot,
   JobsSummary,
+  GlobalLexiconEntry,
   LexiconEntry,
   LexiconSuggestion,
   UpsertLexiconRequest,
+  UpsertWorldFactRequest,
+  WorldFact,
   TestLLMRequest,
   Position,
   QueueTask,
@@ -38,6 +41,7 @@ import type {
   SourceTitleRule,
   BookSettingResponse,
   RosterReviewResponse,
+  TimeJump,
   ChapterNotes,
   ChapterNotesResponse,
 } from './types'
@@ -364,12 +368,15 @@ export function useRegenerateVariant(bookId: string) {
       speaker,
       emotion,
       speakerIndex,
+      stageId,
     }: {
       speaker: string
+      // '' for the voice's neutral clip.
       emotion: string
-      // A role's numbered member (SpeakerVariant.number), for its own voice.
+      // Which of the speaker's voices (SpeakerVoice.number / .stage).
       speakerIndex?: number
-    }) => api.regenerateVariant(bookId, speaker, emotion, speakerIndex),
+      stageId?: string
+    }) => api.regenerateVariant(bookId, speaker, emotion, { speakerIndex, stageId }),
   })
 }
 
@@ -696,6 +703,61 @@ export function useSetCharacterAliases(bookId: string) {
   })
 }
 
+// A book's time jumps, live - see api.createTimeJump.
+export function useTimeJumps(bookId: string): LiveResult<TimeJump[]> {
+  return useLive('timeJumps', { bookId })
+}
+
+export function useCreateTimeJump(bookId: string) {
+  return useMutation({
+    mutationFn: ({ chapterIdx, years }: { chapterIdx: number; years: number }) =>
+      api.createTimeJump(bookId, chapterIdx, years),
+  })
+}
+
+export function useDeleteTimeJump(bookId: string) {
+  return useMutation({ mutationFn: (jumpId: string) => api.deleteTimeJump(bookId, jumpId) })
+}
+
+// See api.setCharacterStage.
+export function useSetCharacterStage(bookId: string) {
+  return useMutation({
+    mutationFn: ({
+      characterId,
+      ...stage
+    }: {
+      characterId: string
+      chapterIdx: number
+      age: number
+      instruct?: string
+    }) => api.setCharacterStage(bookId, characterId, stage),
+  })
+}
+
+// See api.updateCharacterStage.
+export function useUpdateCharacterStage(bookId: string) {
+  return useMutation({
+    mutationFn: ({
+      characterId,
+      stageId,
+      ...stage
+    }: {
+      characterId: string
+      stageId: string
+      age: number
+      instruct?: string
+    }) => api.updateCharacterStage(bookId, characterId, stageId, stage),
+  })
+}
+
+// See api.deleteCharacterStage.
+export function useDeleteCharacterStage(bookId: string) {
+  return useMutation({
+    mutationFn: ({ characterId, stageId }: { characterId: string; stageId: string }) =>
+      api.deleteCharacterStage(bookId, characterId, stageId),
+  })
+}
+
 // See api.setCharacterPronouns.
 export function useSetCharacterPronouns(bookId: string) {
   return useMutation({
@@ -986,6 +1048,53 @@ export function usePreviewLexiconEntry(bookId: string) {
 
 export function useDeleteLexiconEntry(bookId: string) {
   return useMutation({ mutationFn: (entryId: string) => api.deleteLexiconEntry(bookId, entryId) })
+}
+
+// The rules that apply to every book (live topic) and their edits, for
+// the Settings page.
+export function useGlobalLexicon(): LiveResult<GlobalLexiconEntry[]> {
+  return useLive('globalLexicon', {})
+}
+
+export function useUpsertGlobalLexiconEntry() {
+  return useMutation({
+    mutationFn: (body: UpsertLexiconRequest) => api.upsertGlobalLexiconEntry(body),
+  })
+}
+
+export function useDeleteGlobalLexiconEntry() {
+  return useMutation({ mutationFn: (entryId: string) => api.deleteGlobalLexiconEntry(entryId) })
+}
+
+// The facts that hold in every book (live topic) and their edits.
+export function useGlobalFacts(): LiveResult<WorldFact[]> {
+  return useLive('globalFacts', {})
+}
+
+export function useUpsertGlobalFact() {
+  return useMutation({
+    mutationFn: (body: UpsertWorldFactRequest) => api.upsertGlobalFact(body),
+  })
+}
+
+export function useDeleteGlobalFact() {
+  return useMutation({ mutationFn: (factId: string) => api.deleteGlobalFact(factId) })
+}
+
+// The book's series' own facts, then the global ones (live topic), and
+// edits to the series' own.
+export function useBookFacts(bookId: string): LiveResult<WorldFact[]> {
+  return useLive('bookFacts', { bookId })
+}
+
+export function useUpsertBookFact(bookId: string) {
+  return useMutation({
+    mutationFn: (body: UpsertWorldFactRequest) => api.upsertBookFact(bookId, body),
+  })
+}
+
+export function useDeleteBookFact(bookId: string) {
+  return useMutation({ mutationFn: (factId: string) => api.deleteBookFact(bookId, factId) })
 }
 
 export function useVoicePresets(): LiveResult<VoicePresets> {

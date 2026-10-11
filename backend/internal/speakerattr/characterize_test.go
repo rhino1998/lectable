@@ -102,22 +102,22 @@ func TestOriginClues(t *testing.T) {
 	if len(paras) != 4 {
 		t.Fatalf("OriginParagraphs kept %d, want 4", len(paras))
 	}
-	got := OriginClues(paras, []string{"Ingrid"}, 5)
+	got := OriginClues(paras, []string{"Ingrid"}, nil, 5)
 	if len(got) != 1 || got[0] != "Unfortunately, outside he bumped into the second woman, Ingrid, a Danish archeologist." {
 		t.Fatalf("Ingrid clues = %q", got)
 	}
-	if got := OriginClues(paras, []string{"Lars Machmüller"}, 5); len(got) != 1 || got[0] != "Lars whispered in Danish, scribbling away." {
+	if got := OriginClues(paras, []string{"Lars Machmüller"}, nil, 5); len(got) != 1 || got[0] != "Lars whispered in Danish, scribbling away." {
 		t.Fatalf("Lars clues = %q", got)
 	}
-	if got := OriginClues(paras, []string{"Lord Ballast"}, 5); len(got) != 1 {
+	if got := OriginClues(paras, []string{"Lord Ballast"}, nil, 5); len(got) != 1 {
 		t.Fatalf("Lord Ballast clues = %q", got)
 	}
 	// A nationality in the next sentence is someone else's.
 	next := OriginParagraphs([]string{"West stood in the middle, grinning widely. The huge Nigerian clapped him on the back."})
-	if got := OriginClues(next, []string{"West"}, 5); len(got) != 0 {
+	if got := OriginClues(next, []string{"West"}, nil, 5); len(got) != 0 {
 		t.Fatalf("a clue crossed a sentence end: %q", got)
 	}
-	if got := OriginClues(paras, []string{"Lord Scarford"}, 5); len(got) != 0 {
+	if got := OriginClues(paras, []string{"Lord Scarford"}, nil, 5); len(got) != 0 {
 		t.Fatalf("a title alone matched: %q", got)
 	}
 }

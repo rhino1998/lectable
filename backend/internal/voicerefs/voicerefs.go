@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
@@ -253,7 +255,50 @@ func save(dataDir, presetID string, data []byte) (string, error) {
 	if err := DeleteVariants(dataDir, presetID); err != nil {
 		return "", err
 	}
+	// And the voices derived from this one go with it, like its variants.
+	if err := DeleteDerived(dataDir, presetID); err != nil {
+		return "", err
+	}
 	return path, nil
+}
+
+// DeleteDerived removes the reference clip and emotion variants of every
+// voice derived from presetID's - a role's numbered siblings and a
+// character's age stages (narration.MemberVoice, StageVoice), whose preset
+// ids are presetID, "~", and what tells them apart. Called whenever
+// presetID's own clip is rendered anew or removed: a derived voice is the
+// same casting under another seed or age, so a fresh take of the voice it
+// comes from is a fresh take of it too, and each is rendered again the
+// next time a line needs it - the same treatment its emotion variants
+// get. Clips left under a derived id no voice resolves to any more (its
+// casting was hashed into the id) go the same way.
+func DeleteDerived(dataDir, presetID string) error {
+	prefix := presetID + "~"
+	refDir := filepath.Dir(audiopath.VoicePresetRefFile(dataDir, presetID))
+	entries, err := os.ReadDir(refDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+			if err := os.Remove(filepath.Join(refDir, e.Name())); err != nil && !os.IsNotExist(err) {
+				return err
+			}
+		}
+	}
+	variantsDir := filepath.Dir(audiopath.VoicePresetVariantDir(dataDir, presetID))
+	entries, err = os.ReadDir(variantsDir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+			if err := os.RemoveAll(filepath.Join(variantsDir, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // stampVersion records, at path, that the clip it describes was just
@@ -322,11 +367,14 @@ func LookupCachedDesign(dataDir, hash string) ([]byte, bool) {
 	return data, true
 }
 
-// Delete removes presetID's cached reference clip and every emotion
-// variant of it, if any. Best-effort - safe to call on one that was never
-// created.
+// Delete removes presetID's cached reference clip, every emotion variant
+// of it, and the clips of the voices derived from it (DeleteDerived), if
+// any. Best-effort - safe to call on one that was never created.
 func Delete(dataDir, presetID string) error {
 	if err := DeleteVariants(dataDir, presetID); err != nil {
+		return err
+	}
+	if err := DeleteDerived(dataDir, presetID); err != nil {
 		return err
 	}
 	_ = os.Remove(audiopath.VoicePresetRefVersionFile(dataDir, presetID))

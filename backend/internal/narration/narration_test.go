@@ -133,7 +133,7 @@ func TestForParagraphMultiVoiceOffAlwaysUsesBookVoice(t *testing.T) {
 
 	// book.MultiVoice defaults to false - a character's assigned voice must
 	// not override the book's own voice until it's explicitly turned on.
-	got, err := r.ForParagraph(book, "Alice", 0)
+	got, err := r.ForParagraph(book, "Alice", 0, NoChapter)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestForParagraphMultiVoiceOnUsesCharacterVoice(t *testing.T) {
 	}
 
 	r := NewResolver(s)
-	got, err := r.ForParagraph(book, "Alice", 0)
+	got, err := r.ForParagraph(book, "Alice", 0, NoChapter)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestForParagraphMultiVoiceOnUsesCharacterVoice(t *testing.T) {
 		t.Fatalf("BookVoice: %v", err)
 	}
 	for _, speaker := range []string{"", "Narrator"} {
-		got, err := r.ForParagraph(book, speaker, 0)
+		got, err := r.ForParagraph(book, speaker, 0, NoChapter)
 		if err != nil {
 			t.Fatalf("ForParagraph(%q): %v", speaker, err)
 		}
@@ -225,11 +225,11 @@ func TestForParagraphAgreesWithBookVoicesOnCase(t *testing.T) {
 		t.Fatalf("BookVoices: %v", err)
 	}
 	for _, speaker := range []string{"Unknown", "unknown"} {
-		one, err := r.ForParagraph(book, speaker, 0)
+		one, err := r.ForParagraph(book, speaker, 0, NoChapter)
 		if err != nil {
 			t.Fatalf("ForParagraph(%q): %v", speaker, err)
 		}
-		bulk, err := bv.ForSpeaker(speaker, 0)
+		bulk, err := bv.ForSpeaker(speaker, 0, NoChapter)
 		if err != nil {
 			t.Fatalf("ForSpeaker(%q): %v", speaker, err)
 		}
@@ -259,7 +259,7 @@ func TestForParagraphFallsBackWhenCharacterHasNoVoiceYet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BookVoice: %v", err)
 	}
-	got, err := r.ForParagraph(book, "Bob", 0)
+	got, err := r.ForParagraph(book, "Bob", 0, NoChapter)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}
@@ -323,7 +323,7 @@ func TestForParagraphInstructCharacterVoicesUsesNarratorRefWithCloneInstruct(t *
 		t.Fatalf("BookVoice: %v", err)
 	}
 
-	aliceVoice, err := r.ForParagraph(book, "Alice", 0)
+	aliceVoice, err := r.ForParagraph(book, "Alice", 0, NoChapter)
 	if err != nil {
 		t.Fatalf("ForParagraph(Alice): %v", err)
 	}
@@ -337,7 +337,7 @@ func TestForParagraphInstructCharacterVoicesUsesNarratorRefWithCloneInstruct(t *
 		t.Fatalf("expected Alice's voice_id to differ from the narrator's own despite sharing a preset")
 	}
 
-	bobVoice, err := r.ForParagraph(book, "Bob", 0)
+	bobVoice, err := r.ForParagraph(book, "Bob", 0, NoChapter)
 	if err != nil {
 		t.Fatalf("ForParagraph(Bob): %v", err)
 	}
@@ -378,7 +378,7 @@ func TestForParagraphInstructCharacterVoicesNoOpForOtherCloneModel(t *testing.T)
 	if err != nil {
 		t.Fatalf("BookVoice: %v", err)
 	}
-	got, err := r.ForParagraph(book, "Alice", 0)
+	got, err := r.ForParagraph(book, "Alice", 0, NoChapter)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}
@@ -431,7 +431,7 @@ func TestForParagraphInstructAllOverridesExplicitAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BookVoice: %v", err)
 	}
-	got, err := r.ForParagraph(book, "Alice", 0)
+	got, err := r.ForParagraph(book, "Alice", 0, NoChapter)
 	if err != nil {
 		t.Fatalf("ForParagraph: %v", err)
 	}

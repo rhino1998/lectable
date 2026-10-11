@@ -36,6 +36,10 @@ func (c *collector) standalone(out *Book, idxs []int) {
 	// A subset isn't the website's book any more: checking its sources
 	// would add every chapter left out of it.
 	delete(rows, "book_sources")
+	// A stage or time jump names the chapter it starts at, which a part of
+	// the book may not hold.
+	delete(rows, "character_stages")
+	delete(rows, "book_time_jumps")
 	paragraphs := map[string]bool{}
 	for _, raw := range rows["paragraphs"] {
 		var r map[string]json.RawMessage
