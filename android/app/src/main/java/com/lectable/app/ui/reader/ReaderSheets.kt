@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.Spellcheck
 import androidx.compose.material.icons.filled.TaskAlt
 import androidx.compose.material.icons.outlined.Mood
@@ -388,6 +389,7 @@ internal fun ChapterPickerSheet(
     onGenerateChapter: (idx: Int) -> Unit,
     onChapterPass: (idx: Int, pass: ChapterPass) -> Unit,
     onEditNotes: (idx: Int) -> Unit,
+    onSetMatter: (idx: Int, matter: Boolean) -> Unit,
 ) {
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (currentChapterIdx - 3).coerceAtLeast(0))
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -425,7 +427,15 @@ internal fun ChapterPickerSheet(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f),
                             )
-                            if (chapter.paragraphCount > 0) {
+                            if (chapter.matter) {
+                                // Front or back matter: playback steps over it.
+                                Text(
+                                    "Skipped",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(end = 8.dp),
+                                )
+                            } else if (chapter.paragraphCount > 0) {
                                 Text(
                                     durationFor(chapter),
                                     style = MaterialTheme.typography.labelSmall,
@@ -491,6 +501,11 @@ internal fun ChapterPickerSheet(
                                 onClick = { onChapterPass(chapter.idx, pass); showChapterMenu = false },
                             )
                         }
+                        DropdownMenuItem(
+                            text = { Text(if (chapter.matter) "Read as part of the story" else "Skip when listening") },
+                            leadingIcon = { Icon(Icons.Filled.SkipNext, contentDescription = null) },
+                            onClick = { onSetMatter(chapter.idx, !chapter.matter); showChapterMenu = false },
+                        )
                         DropdownMenuItem(
                             text = { Text("Edit chapter notes") },
                             leadingIcon = { Icon(Icons.Filled.EditNote, contentDescription = null) },

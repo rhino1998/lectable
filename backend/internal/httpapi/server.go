@@ -168,6 +168,7 @@ func NewRouter(s *Server) http.Handler {
 			s.Jobs.SetChapterWindowPronouncer(s.pronounceChapterRange)
 			s.Jobs.SetChapterSummarizer(s.summarizeChapter)
 			s.Jobs.SetBookSettingDeriver(s.deriveBookSettingForJob)
+			s.Jobs.SetBookMatterFinder(s.findBookMatterForJob)
 			// ambienceChapter itself calls s.Speaker.ScoreMusic - same
 			// s.Speaker-configured gate as the three above, and the same
 			// reason jobs.Manager.maybeRunChapterAmbience's own nil-scorer
@@ -273,6 +274,8 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/summarize", s.handleSummarizeChapter)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/notes", s.handleGetChapterNotes)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/notes", s.handlePutChapterNotes)
+	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/matter", s.handleSetChapterMatter)
+	mux.HandleFunc("POST /api/books/{id}/matter/detect", s.handleDetectBookMatter)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/tag-directions", s.handleTagDirections)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/resolve-pronunciation", s.handleResolvePronunciation)
 	mux.HandleFunc("GET /api/books/{id}/chapters/{idx}/music", s.handleGetChapterMusic)

@@ -671,7 +671,11 @@ export function PlayerBar({
           {bookChapters.map((c) => (
             <option key={c.idx} value={c.idx}>
               {c.title}{' '}
-              {c.readyCount < c.paragraphCount ? `(${c.readyCount}/${c.paragraphCount})` : ''}
+              {c.matter
+                ? '(skipped)'
+                : c.readyCount < c.paragraphCount
+                  ? `(${c.readyCount}/${c.paragraphCount})`
+                  : ''}
             </option>
           ))}
         </select>

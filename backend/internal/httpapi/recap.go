@@ -44,7 +44,9 @@ const (
 	recapMaxChapters = 6
 	recapReachChars  = 200_000
 	// recapSkipChars is the chapter length under which a chapter is front
-	// or back matter, not story - left out of a position recap.
+	// or back matter, not story - left out of a position recap, as is one
+	// marked as matter (store.Chapter.Matter): a book from a website has no
+	// matter pass, and a pass can miss a one-line page.
 	recapSkipChars = 200
 	// recapTextChars caps the text of the current chapter a recap is shown
 	// (one summary window's worth).
@@ -218,9 +220,11 @@ func (s *Server) planRecap(book *store.Book) (*recapPlan, error) {
 	if err != nil {
 		return nil, err
 	}
-	before := 0 // text behind the reader, in this book
+	before := 0 // story behind the reader, in this book
 	for _, e := range extents[:pos] {
-		before += e.Chars
+		if !e.Matter {
+			before += e.Chars
+		}
 	}
 	plan := &recapPlan{chapterIdx: cur.Idx}
 	last := 0
@@ -228,9 +232,9 @@ func (s *Server) planRecap(book *store.Book) (*recapPlan, error) {
 		last = paragraphs[n-1].Idx
 	}
 	posParagraph := min(max(book.PosParagraphIdx, 0), last)
-	heard := 0 // of the current chapter
+	heard := 0 // of the current chapter - nothing, of a title page or an author's note
 	for _, p := range paragraphs {
-		if p.Idx < posParagraph {
+		if p.Idx < posParagraph && !cur.Matter {
 			heard += len(p.Text)
 		}
 	}
@@ -262,7 +266,7 @@ func (s *Server) planRecap(book *store.Book) (*recapPlan, error) {
 		if n >= recapMaxChapters || n >= recapMinChapters && reach >= recapReachChars {
 			break
 		}
-		if extents[i].Chars < recapSkipChars {
+		if extents[i].Matter || extents[i].Chars < recapSkipChars {
 			continue
 		}
 		plan.chapters = append([]store.ChapterExtent{extents[i]}, plan.chapters...)
@@ -275,16 +279,27 @@ func (s *Server) planRecap(book *store.Book) (*recapPlan, error) {
 	return plan, nil
 }
 
-// storyChapters drops front and back matter (chapters under
-// recapSkipChars) from extents.
+// storyChapters drops front and back matter (chapters marked as matter,
+// or under recapSkipChars) from extents.
 func storyChapters(extents []store.ChapterExtent) []store.ChapterExtent {
 	var out []store.ChapterExtent
 	for _, e := range extents {
-		if e.Chars >= recapSkipChars {
+		if !e.Matter && e.Chars >= recapSkipChars {
 			out = append(out, e)
 		}
 	}
 	return out
+}
+
+// lastStoryChapter is the chapter a book's story ends in: its last one
+// that isn't back matter (its last one, if every chapter is marked).
+func lastStoryChapter(extents []store.ChapterExtent) store.ChapterExtent {
+	for i := len(extents) - 1; i >= 0; i-- {
+		if !extents[i].Matter {
+			return extents[i]
+		}
+	}
+	return extents[len(extents)-1]
 }
 
 // previousInSeries returns the book right before book in its series, nil
@@ -928,7 +943,8 @@ func (s *Server) prepareIdleRecap(book *store.Book) (bool, error) {
 	if err != nil || len(extents) == 0 {
 		return false, err
 	}
-	if last := extents[len(extents)-1]; book.PosChapterIdx >= last.Idx && book.PosParagraphIdx >= last.Paragraphs-1 {
+	// At its end: on the story's last paragraph, or on into the back matter.
+	if last := lastStoryChapter(extents); book.PosChapterIdx > last.Idx || book.PosChapterIdx == last.Idx && book.PosParagraphIdx >= last.Paragraphs-1 {
 		next, err := s.nextInSeries(book)
 		if err != nil || next == nil {
 			return false, err

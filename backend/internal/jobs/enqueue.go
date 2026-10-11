@@ -776,6 +776,9 @@ func (m *Manager) enqueueLookahead(bookID, clientID string, fromChapterIdx, from
 		if err != nil || ch == nil {
 			break
 		}
+		if ch.Matter {
+			continue
+		}
 		for _, key := range m.requestChapterPasses(book, ch, TierLookahead, source) {
 			wanted[key] = true
 		}
@@ -798,6 +801,13 @@ func (m *Manager) enqueueLookahead(bookID, clientID string, fromChapterIdx, from
 		}
 		if ch == nil {
 			break // ran off the end of the book
+		}
+		if ch.Matter && chapterIdx != fromChapterIdx {
+			// Front or back matter past the reader's own chapter: playback
+			// steps over it, so the window does too. A reader who opened
+			// one has it read.
+			chapterIdx++
+			continue
 		}
 		if m.strictBlocked(book, ch) {
 			// Strict order: no narration until this chapter is attributed.

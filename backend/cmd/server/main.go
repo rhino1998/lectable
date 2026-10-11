@@ -267,6 +267,9 @@ func main() {
 	// Checks books imported from websites for new entries, each as often
 	// as the library's setting says.
 	tasks.Add(cron.Task{Name: "source-checks", Every: httpapi.SourceCheckEvery, Delay: 5 * time.Minute, Run: server.CheckSources})
+	// Marks front and back matter in books that haven't had their matter
+	// pass - a library from before it existed, or a pass that failed.
+	tasks.Add(cron.Task{Name: "matter-passes", Every: httpapi.MatterCheckEvery, Delay: 2 * time.Minute, Run: server.EnqueueMissingMatter})
 	go tasks.Run(ctx)
 
 	// Only header and keep-alive idle timeouts: a ReadTimeout would cut off

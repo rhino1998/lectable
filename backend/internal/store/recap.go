@@ -118,13 +118,15 @@ type ChapterExtent struct {
 	Paragraphs int
 	Chars      int
 	Summarized bool
+	// Matter is Chapter.Matter: front or back matter, not story.
+	Matter bool
 }
 
 // ChapterExtents returns bookID's chapters in order, each with its
 // paragraph count, text length and whether it has been summarized.
 func (s *SQLiteStore) ChapterExtents(bookID string) ([]ChapterExtent, error) {
 	rows, err := s.db.Query(`SELECT c.id, c.idx, c.title, COUNT(p.id), COALESCE(SUM(length(p.content)), 0),
-			EXISTS (SELECT 1 FROM chapter_summaries cs WHERE cs.chapter_id = c.id)
+			EXISTS (SELECT 1 FROM chapter_summaries cs WHERE cs.chapter_id = c.id), c.matter
 		FROM chapters c LEFT JOIN paragraphs p ON p.chapter_id = c.id
 		WHERE c.book_id = ? GROUP BY c.id ORDER BY c.idx ASC`, bookID)
 	if err != nil {
@@ -134,7 +136,7 @@ func (s *SQLiteStore) ChapterExtents(bookID string) ([]ChapterExtent, error) {
 	var out []ChapterExtent
 	for rows.Next() {
 		var e ChapterExtent
-		if err := rows.Scan(&e.ID, &e.Idx, &e.Title, &e.Paragraphs, &e.Chars, &e.Summarized); err != nil {
+		if err := rows.Scan(&e.ID, &e.Idx, &e.Title, &e.Paragraphs, &e.Chars, &e.Summarized, &e.Matter); err != nil {
 			return nil, err
 		}
 		out = append(out, e)

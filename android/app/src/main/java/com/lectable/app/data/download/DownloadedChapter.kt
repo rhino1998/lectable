@@ -63,6 +63,9 @@ data class DownloadedChapter(
     // it. A region is READY here only while its clip is on disk (under the book's music dir,
     // by region id), with the durationSeconds of that clip.
     @ColumnInfo(defaultValue = "") val musicJson: String = "",
+    // Whether the chapter is front or back matter (ChapterDetailDto.matter), which playback
+    // steps over - kept so it does offline too.
+    @ColumnInfo(defaultValue = "0") val matter: Boolean = false,
     // Directory holding this chapter's clips (%05d.audio) - always
     // context.filesDir/downloads/<libraryId-hash>/<bookId>/<chapterIdx>/<voiceKey-hash>/ in
     // practice (see DownloadRepository.chapterDir), stored explicitly rather than recomputed so

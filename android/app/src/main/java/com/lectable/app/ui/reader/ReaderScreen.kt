@@ -396,20 +396,8 @@ fun ReaderScreen(
             // the current playback position (same spirit as ReaderPage.tsx's liveProgressPercent),
             // rather than the possibly-stale progressPercent from whenever the book was last loaded.
             val bookChapters = uiState.book?.chapters ?: emptyList()
-            var totalParagraphs = 0
-            var completedParagraphs = 0
-            bookChapters.forEach { c ->
-                totalParagraphs += c.paragraphCount
-                when {
-                    c.idx < activeChapterIdx -> completedParagraphs += c.paragraphCount
-                    c.idx == activeChapterIdx -> completedParagraphs += currentParagraphIdx.coerceAtMost(c.paragraphCount)
-                }
-            }
-            val liveProgressPercent = if (totalParagraphs > 0) {
-                (completedParagraphs.toDouble() / totalParagraphs * 100).coerceAtMost(100.0)
-            } else {
-                0.0
-            }
+            // Front and back matter counts for nothing - see readingProgressPercent.
+            val liveProgressPercent = readingProgressPercent(bookChapters, activeChapterIdx, currentParagraphIdx)
             val bookRemainingSeconds = ((uiState.book?.estimatedTotalSeconds ?: 0.0) * (1 - liveProgressPercent / 100)).coerceAtLeast(0.0)
             val finished = uiState.book?.finished ?: false
 
@@ -586,6 +574,7 @@ fun ReaderScreen(
             onLongPressDownload = viewModel::cancelOrDeleteDownload,
             onGenerateChapter = viewModel::generateChapter,
             onChapterPass = viewModel::runChapterPass,
+            onSetMatter = viewModel::setChapterMatter,
             onEditNotes = { idx ->
                 notesChapterIdx = idx
                 showChapterPicker = false

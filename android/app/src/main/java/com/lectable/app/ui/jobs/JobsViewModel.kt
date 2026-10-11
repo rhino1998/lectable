@@ -196,6 +196,7 @@ fun kindLabel(kind: String): String = when (kind) {
     "chapter_summary" -> "Summary"
     "chapter_embedding" -> "Embedding"
     "book_setting" -> "Book Setting"
+    "book_matter" -> "Front & Back Matter"
     "roster_review" -> "Roster Review"
     "recap" -> "Recap Text"
     "recap_narration" -> "Recap Narration"

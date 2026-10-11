@@ -612,6 +612,24 @@ export function useRegenerateChapterNotes(bookId: string) {
 
 // Saves the reader's version of a chapter's notes; the chapterNotes live
 // topic carries the result back.
+// The chapter's mark arrives on the live book topic.
+export function useSetChapterMatter(bookId: string) {
+  return useMutation({
+    mutationFn: ({ chapterIdx, matter }: { chapterIdx: number; matter: boolean }) =>
+      api.setChapterMatter(bookId, chapterIdx, matter),
+  })
+}
+
+// Queues the book's matter pass (a book_matter job) - fire-and-forget; the
+// marks arrive on the live book topic.
+export function useDetectBookMatter(bookId: string) {
+  return useMutation({ mutationFn: () => api.detectBookMatter(bookId) })
+}
+
+export function useDetectingBookMatter(bookId: string): boolean {
+  return useBookJobs(bookId, 'book_matter').length > 0
+}
+
 export function useSaveChapterNotes(bookId: string) {
   return useMutation({
     mutationFn: ({ chapterIdx, notes }: { chapterIdx: number; notes: ChapterNotes }) =>

@@ -15,6 +15,7 @@ import {
   useRetagScareQuotes,
   useRunChapterAmbience,
   useSaveChapterNotes,
+  useSetChapterMatter,
   useScareQuotingChapters,
   useTagDirections,
 } from '../api/queries'
@@ -38,6 +39,7 @@ export function useChapterActions(bookId: string) {
   const attributeSpeakers = useAttributeSpeakers(bookId)
   const attributeAroundEdits = useAttributeAroundEdits(bookId)
   const saveChapterNotes = useSaveChapterNotes(bookId)
+  const setChapterMatter = useSetChapterMatter(bookId)
   const regenerateChapterNotes = useRegenerateChapterNotes(bookId)
   const attributingIdxs = useAttributingChapters(bookId)
   const retagScareQuotes = useRetagScareQuotes(bookId)
@@ -74,6 +76,22 @@ export function useChapterActions(bookId: string) {
   )
 
   const { run: runReimportChapter, reimportingIdx } = useReimportChapterAction(bookId, setError)
+
+  // Marks a chapter as front or back matter (playback steps over it) or as
+  // story again; the book topic carries the change back.
+  const runSetChapterMatter = useCallback(
+    (idx: number, matter: boolean) => {
+      setError(null)
+      setChapterMatter.mutate(
+        { chapterIdx: idx, matter },
+        {
+          onError: (err) =>
+            setError(err instanceof ApiError ? err.message : 'Could not change this chapter'),
+        },
+      )
+    },
+    [setChapterMatter],
+  )
 
   const runAttributeChapter = useCallback(
     (idx: number) => {
@@ -208,6 +226,7 @@ export function useChapterActions(bookId: string) {
     runChapterAmbience,
     runClearChapterAudio,
     runReimportChapter,
+    runSetChapterMatter,
     runAttributeChapter,
     runAttributeAroundEdits,
     saveNotes,

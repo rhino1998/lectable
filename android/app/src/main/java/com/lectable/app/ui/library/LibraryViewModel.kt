@@ -438,7 +438,12 @@ class LibraryViewModel @Inject constructor(
                 .onSuccess { voice ->
                     val voiceKey = voiceKeyOf(voice.presetId, voice.instruct, voice.language)
                     val tag = ChapterDownloadWorker.bookDownloadTag(bookId)
+                    // Front and back matter is left out (see ReaderViewModel.downloadBook); if
+                    // the chapter list can't be read, everything is downloaded as before.
+                    val matter = runCatching { repository.getBook(bookId) }.getOrNull()
+                        ?.chapters.orEmpty().filter { it.matter }.map { it.idx }.toSet()
                     for (idx in fromChapterIdx until book.chapterCount) {
+                        if (idx in matter) continue
                         val request = OneTimeWorkRequestBuilder<ChapterDownloadWorker>()
                             .setInputData(ChapterDownloadWorker.inputData(bookId, idx, voiceKey, pinned = true))
                             .addTag(tag)

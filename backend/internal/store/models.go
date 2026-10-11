@@ -324,7 +324,26 @@ type Chapter struct {
 	// attributed/directed separately, derived from this struct, so the API
 	// surface existing frontend code depends on is unchanged.
 	Passes Passes
+	// Matter marks front or back matter (a title page, the copyright page,
+	// "About the Author"), not story: background narration, the LLM passes,
+	// the recap and reading progress leave the chapter out, and the clients
+	// step over it. A reader who opens one can still have it read.
+	Matter bool
+	// MatterBy is who set Matter: MatterUnjudged, MatterByPass or
+	// MatterByReader.
+	MatterBy string
 }
+
+// Who set Chapter.Matter.
+const (
+	// MatterUnjudged: nobody yet - the book's matter pass hasn't run since
+	// the chapter was added.
+	MatterUnjudged = ""
+	// MatterByPass: the book's matter pass (speakerattr.Client.FindMatter).
+	MatterByPass = "pass"
+	// MatterByReader: the reader, whose word the pass never replaces.
+	MatterByReader = "reader"
+)
 
 // MusicRegion is one contiguous span of a chapter's own paragraphs sharing
 // one background-music tone, as judged by internal/speakerattr.Client.

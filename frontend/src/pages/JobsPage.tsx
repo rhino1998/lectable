@@ -43,6 +43,7 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   chapter_summary: 'Summary',
   chapter_embedding: 'Embedding',
   book_setting: 'Book Setting',
+  book_matter: 'Front & Back Matter',
   roster_review: 'Roster Review',
   recap: 'Recap Text',
   recap_narration: 'Recap Narration',
@@ -245,7 +246,8 @@ function cancelTitle(t: QueueTask, inFlight: boolean): string {
     t.kind === 'scare_quote_tagging' ||
     t.kind === 'pronunciation' ||
     t.kind === 'chapter_summary' ||
-    t.kind === 'book_setting'
+    t.kind === 'book_setting' ||
+    t.kind === 'book_matter'
   ) {
     return "Cancel — won't take effect until its current LLM call finishes"
   }

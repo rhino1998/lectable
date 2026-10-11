@@ -393,8 +393,11 @@ type contentItemDTO struct {
 }
 
 type chapterDetailDTO struct {
-	Idx        int              `json:"idx"`
-	Title      string           `json:"title"`
+	Idx   int    `json:"idx"`
+	Title string `json:"title"`
+	// Matter is chapterSummaryDTO.Matter, here for the players: each holds
+	// the chapters it has loaded, not the book's list.
+	Matter     bool             `json:"matter"`
 	Generating bool             `json:"generating"`
 	Paragraphs []paragraphDTO   `json:"paragraphs"`
 	Content    []contentItemDTO `json:"content" tstype:"ContentItem[]"`
@@ -496,7 +499,7 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 		return chapterDetailDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 
-	dto := chapterDetailDTO{Idx: ch.Idx, Title: ch.Title, Generating: s.Jobs.IsGenerating(ch.ID)}
+	dto := chapterDetailDTO{Idx: ch.Idx, Title: ch.Title, Matter: ch.Matter, Generating: s.Jobs.IsGenerating(ch.ID)}
 	prevAudioURL := ""
 	for _, p := range paragraphs {
 		state, ok := audioStates[p.ID]

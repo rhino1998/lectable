@@ -10,12 +10,16 @@ import {
   RiLightbulbLine,
   RiMapPinFill,
   RiMapPinLine,
+  RiSkipForwardLine,
   RiMusic2Line,
   RiUserSearchLine,
   RiVoiceprintLine,
 } from 'react-icons/ri'
 import {
   useUpdatePosition,
+  useSetChapterMatter,
+  useDetectBookMatter,
+  useDetectingBookMatter,
   useAttributeSpeakers,
   useResetPass,
   useAttributingChapters,
@@ -74,6 +78,28 @@ export function ChapterPassTable({
           onBulkError(err instanceof ApiError ? err.message : 'Could not move your place'),
       },
     )
+  }
+  const setChapterMatter = useSetChapterMatter(bookId)
+  const runSetMatter = (chapterIdx: number, matter: boolean) => {
+    onBulkError(null)
+    setChapterMatter.mutate(
+      { chapterIdx, matter },
+      {
+        onError: (err) =>
+          onBulkError(err instanceof ApiError ? err.message : 'Could not change this chapter'),
+      },
+    )
+  }
+  // Asks the model again which chapters are front or back matter; what the
+  // reader set by hand stays.
+  const detectMatter = useDetectBookMatter(bookId)
+  const detectingMatter = useDetectingBookMatter(bookId)
+  const runDetectMatter = () => {
+    onBulkError(null)
+    detectMatter.mutate(undefined, {
+      onError: (err) =>
+        onBulkError(err instanceof ApiError ? err.message : 'Could not check the chapters'),
+    })
   }
   const retagScareQuotes = useRetagScareQuotes(bookId)
   const tagDirections = useTagDirections(bookId)
@@ -213,26 +239,29 @@ export function ChapterPassTable({
 
   // "Rest" skips chapters whose pass is already done (ChapterSummary.passes);
   // "All" re-runs every chapter. Both are one backend bulk task each.
+  // Front and back matter isn't preprocessed or narrated with the book
+  // (the backend's bulk runs leave it out), so it never counts as "rest".
+  const storyChapters = book.chapters.filter((c) => !c.matter)
   const runAttributeAll = () => runBulk('attribution', 'all')
   const runAttributeUnattributed = () => runBulk('attribution', 'rest')
-  const hasUnattributed = book.chapters.some((c) => !c.passes.attribution)
+  const hasUnattributed = storyChapters.some((c) => !c.passes.attribution)
   const runRetagScareQuotesAll = () => runBulk('scare_quote', 'all')
   const runRetagScareQuotesUntagged = () => runBulk('scare_quote', 'rest')
-  const hasUnscareQuoted = book.chapters.some((c) => !c.passes.scareQuote)
+  const hasUnscareQuoted = storyChapters.some((c) => !c.passes.scareQuote)
   const runDirectionAll = () => runBulk('direction', 'all')
   const runDirectionUndirected = () => runBulk('direction', 'rest')
-  const hasUndirected = book.chapters.some((c) => !c.passes.direction)
+  const hasUndirected = storyChapters.some((c) => !c.passes.direction)
   const runSummaryAll = () => runBulk('summary', 'all')
   const runSummaryRest = () => runBulk('summary', 'rest')
-  const hasUnsummarized = book.chapters.some((c) => !c.passes.summary)
+  const hasUnsummarized = storyChapters.some((c) => !c.passes.summary)
   const runPronunciationAll = () => runBulk('pronunciation', 'all')
   const runPronunciationUnresolved = () => runBulk('pronunciation', 'rest')
-  const hasUnresolvedPronunciation = book.chapters.some((c) => !c.passes.pronunciation)
+  const hasUnresolvedPronunciation = storyChapters.some((c) => !c.passes.pronunciation)
   // Always allowed regardless of the book-wide musicEnabled toggle - see
   // api.runChapterAmbience.
   const runAmbienceAll = () => runBulk('ambience', 'all')
   const runAmbienceRest = () => runBulk('ambience', 'rest')
-  const hasAmbienceRest = book.chapters.some((c) => !(c.passes.ambience && c.passes.lighting))
+  const hasAmbienceRest = storyChapters.some((c) => !(c.passes.ambience && c.passes.lighting))
 
   // A chapter's narration audio is done once every paragraph is ready - see
   // PlayerBar's identical "c.readyCount < c.paragraphCount" check.
@@ -241,7 +270,7 @@ export function ChapterPassTable({
   // "All" and "Rest" are the same one whole-book generate task.
   const runGenerateAll = () => runBulk('generate', 'all')
   const runGenerateUngenerated = runGenerateAll
-  const hasUngenerated = book.chapters.some((c) => !isGenerated(c))
+  const hasUngenerated = storyChapters.some((c) => !isGenerated(c))
 
   // A chapter's music can only generate once it's scored and its narration
   // is fully generated (each region's clip is sized to its own narration -
@@ -279,7 +308,19 @@ export function ChapterPassTable({
       <table className="chapter-attribute-table">
         <thead>
           <tr>
-            <th>Chapter</th>
+            <th>
+              <div className="chapter-attribute-cell">
+                <button
+                  className="icon-action-button"
+                  disabled={detectMatter.isPending || detectingMatter}
+                  onClick={runDetectMatter}
+                  title="Check again which chapters are front or back matter (title page, copyright, about the author) to skip when listening — the ones you set yourself are kept"
+                >
+                  <RiSkipForwardLine className={detectingMatter ? 'spin' : undefined} />
+                </button>
+                Chapter
+              </div>
+            </th>
             <th title="Per-chapter notes - a short summary, its scenes (where and when), and its cast - that attribution, ambience and lighting read">
               Summary
             </th>
@@ -555,7 +596,20 @@ export function ChapterPassTable({
                       >
                         {c.idx === book.posChapterIdx ? <RiMapPinFill /> : <RiMapPinLine />}
                       </button>
+                      <button
+                        className={`icon-action-button${c.matter ? ' icon-action-button-active' : ''}`}
+                        disabled={setChapterMatter.isPending}
+                        onClick={() => runSetMatter(c.idx, !c.matter)}
+                        title={
+                          c.matter
+                            ? 'Front or back matter, skipped when listening — click to read it as part of the story'
+                            : 'Mark as front or back matter, to skip when listening'
+                        }
+                      >
+                        <RiSkipForwardLine />
+                      </button>
                       {c.title}
+                      {c.matter && <span className="chapter-matter-badge">Skipped</span>}
                     </div>
                   </td>
                   <td>

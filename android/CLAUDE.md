@@ -259,7 +259,14 @@ compiled-in default in place if nothing answers in time.
   pairs looked up in a loaded-chapters map rather than a flat index, and
   parks on `pendingTarget` + fires `onNeedChapter` when the next
   paragraph's chapter/audio isn't ready yet - `ReaderViewModel` re-feeds it
-  via `setChapter()` once that data arrives. Also owns the sleep timer
+  via `setChapter()` once that data arrives. Running on from one chapter
+  to the next steps over front and back matter (`ChapterDetailDto.matter`,
+  `nextStoryChapter` in `PlaybackQueue.kt`); a chapter that wasn't loaded
+  yet is only known to be matter once it arrives (`pendingIsAdvance`). A
+  matter chapter the reader opens plays. The mark is toggled from the
+  chapter picker's long-press menu, kept for downloaded chapters
+  (`DownloadedChapter.matter`, `DownloadDatabase` v8, `MIGRATION_7_8`),
+  and "Download book" leaves marked chapters out. Also owns the sleep timer
   (`setSleepTimer`/`sleepTimer` - countdown or "end of chapter"), for the
   same survive-backgrounding reason.
 - `playback/BackgroundMusicPlayer.kt` - the Android analogue of

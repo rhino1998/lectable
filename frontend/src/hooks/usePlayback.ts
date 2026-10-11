@@ -47,6 +47,10 @@ interface UsePlaybackArgs {
   // Called when playback reaches the end of a loaded chapter and the next
   // one isn't loaded yet, so the caller can grow its loaded range.
   onNeedChapter: (chapterIdx: number) => void
+  // The chapter playback goes on to after chapterIdx - the next one that
+  // isn't front or back matter (utils/matter's nextStoryChapter), at least
+  // totalChapters when the book is over.
+  nextChapter: (chapterIdx: number) => number
 }
 
 export interface PlaybackController {
@@ -126,6 +130,7 @@ function resolveNextClipUrl(
   chapters: Map<number, ChapterDetail>,
   chapterIdx: number,
   paragraphIdx: number,
+  nextChapter: (chapterIdx: number) => number,
 ): string | undefined {
   const current = chapters.get(chapterIdx)?.paragraphs[paragraphIdx]
   const currentUrl = current?.audioStatus === 'ready' ? current.audioUrl : undefined
@@ -135,7 +140,7 @@ function resolveNextClipUrl(
     const chapter = chapters.get(ci)
     if (!chapter) return undefined
     if (pi >= chapter.paragraphs.length) {
-      ci += 1
+      ci = nextChapter(ci)
       pi = 0
       continue
     }
@@ -154,6 +159,7 @@ function resolveReadyUrl(
   chapters: Map<number, ChapterDetail>,
   chapterIdx: number,
   paragraphIdx: number,
+  nextChapter: (chapterIdx: number) => number,
 ): string | undefined {
   const chapter = chapters.get(chapterIdx)
   const paragraph = chapter?.paragraphs[paragraphIdx]
@@ -161,7 +167,7 @@ function resolveReadyUrl(
     return paragraph.audioStatus === 'ready' ? paragraph.audioUrl : undefined
   }
   if (chapter && paragraphIdx >= chapter.paragraphs.length) {
-    const next = chapters.get(chapterIdx + 1)?.paragraphs[0]
+    const next = chapters.get(nextChapter(chapterIdx))?.paragraphs[0]
     return next?.audioStatus === 'ready' ? next.audioUrl : undefined
   }
   return undefined
@@ -176,6 +182,7 @@ export function usePlayback({
   ready,
   onPosition,
   onNeedChapter,
+  nextChapter,
 }: UsePlaybackArgs): PlaybackController {
   // Two <audio> elements, alternating which is "active" (playing, exposed
   // as audioElement) and which is "standby". The standby element preloads
@@ -250,8 +257,8 @@ export function usePlayback({
       ? currentParagraph.durationSeconds
       : duration
   const nextReadyAudioUrl = useMemo(
-    () => resolveNextClipUrl(chapters, chapterIdx, paragraphIdx),
-    [chapters, chapterIdx, paragraphIdx],
+    () => resolveNextClipUrl(chapters, chapterIdx, paragraphIdx, nextChapter),
+    [chapters, chapterIdx, paragraphIdx, nextChapter],
   )
 
   // Keep latest values reachable from event handlers without re-attaching
@@ -263,6 +270,7 @@ export function usePlayback({
     totalChapters,
     onPosition,
     onNeedChapter,
+    nextChapter,
     playbackRate,
     nextReadyAudioUrl,
   })
@@ -273,6 +281,7 @@ export function usePlayback({
     totalChapters,
     onPosition,
     onNeedChapter,
+    nextChapter,
     playbackRate,
     nextReadyAudioUrl,
   }
@@ -324,7 +333,11 @@ export function usePlayback({
           totalChapters: tc,
           onPosition: report,
           onNeedChapter: needChapter,
+          nextChapter: next,
         } = stateRef.current
+        // Where playback goes after this chapter: past any front or back
+        // matter, which also makes the last story chapter the book's end.
+        const nextCi = next(ci)
 
         const chapter = chs.get(ci)
         // Belt-and-suspenders alongside handleTimeUpdate's own fallback
@@ -337,11 +350,11 @@ export function usePlayback({
         report(ci, resolvedPi, el.duration || 0)
 
         const advanceWithin = chapter?.paragraphs[resolvedPi + 1] !== undefined
-        const nextChapterReady = (chs.get(ci + 1)?.paragraphs.length ?? 0) > 0
+        const nextChapterReady = (chs.get(nextCi)?.paragraphs.length ?? 0) > 0
 
         const otherIdx = idx === 0 ? 1 : 0
         const standby = elements[otherIdx]
-        const nextUrl = resolveReadyUrl(chs, ci, resolvedPi + 1)
+        const nextUrl = resolveReadyUrl(chs, ci, resolvedPi + 1, next)
         const standbyReady =
           nextUrl !== undefined && standby.currentSrc.endsWith(nextUrl) && standby.readyState >= 2
 
@@ -360,7 +373,7 @@ export function usePlayback({
           setCurrentTime(0)
           return
         }
-        if (ci + 1 < tc) {
+        if (nextCi < tc) {
           if (nextChapterReady) {
             if (standbyReady) {
               setActiveIndex(otherIdx)
@@ -368,11 +381,11 @@ export function usePlayback({
               standby.playbackRate = stateRef.current.playbackRate
               standby.play().catch(() => {})
             }
-            setChapterIdx(ci + 1)
+            setChapterIdx(nextCi)
             setParagraphIdx(0)
             setCurrentTime(0)
           } else {
-            needChapter(ci + 1)
+            needChapter(nextCi)
             pendingAdvanceRef.current = true
           }
           return
@@ -442,14 +455,15 @@ export function usePlayback({
   // it shows up in the map (e.g. the infinite-scroll fetch caught up).
   useEffect(() => {
     if (!pendingAdvanceRef.current) return
-    const nextChapter = chapters.get(chapterIdx + 1)
-    if (nextChapter && nextChapter.paragraphs.length > 0) {
+    const nextIdx = nextChapter(chapterIdx)
+    const loaded = chapters.get(nextIdx)
+    if (loaded && loaded.paragraphs.length > 0) {
       pendingAdvanceRef.current = false
-      setChapterIdx(chapterIdx + 1)
+      setChapterIdx(nextIdx)
       setParagraphIdx(0)
       setCurrentTime(0)
     }
-  }, [chapters, chapterIdx])
+  }, [chapters, chapterIdx, nextChapter])
 
   // Load (and play, if requested) the active element whenever the resolved
   // audio src changes. If a gapless swap (in handleEnded above) already put

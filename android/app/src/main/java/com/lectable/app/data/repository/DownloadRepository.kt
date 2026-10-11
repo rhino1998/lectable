@@ -255,7 +255,9 @@ class DownloadRepository @Inject constructor(
         val chapters = dao.forBook(libraryId, bookId)
             .filter { it.status == DownloadStatus.COMPLETE }
             .sortedBy { it.chapterIdx }
-            .map { ChapterSummaryDto(idx = it.chapterIdx, title = it.title, paragraphCount = it.totalParagraphs, readyCount = it.totalParagraphs) }
+            .map {
+                ChapterSummaryDto(idx = it.chapterIdx, title = it.title, paragraphCount = it.totalParagraphs, readyCount = it.totalParagraphs, matter = it.matter)
+            }
         BookDetailDto(
             id = book.bookId,
             title = book.title,
@@ -296,6 +298,7 @@ class DownloadRepository @Inject constructor(
         ChapterDetailDto(
             idx = chapterIdx,
             title = row.title,
+            matter = row.matter,
             generating = false,
             paragraphs = paragraphs,
             content = content,
@@ -741,6 +744,7 @@ class DownloadRepository @Inject constructor(
                         pinned = pinned,
                         status = DownloadStatus.COMPLETE,
                         title = chapter.title,
+                        matter = chapter.matter,
                         paragraphsJson = json.encodeToString(offlineParagraphs),
                         contentJson = json.encodeToString(chapter.content),
                         readyParagraphs = total,

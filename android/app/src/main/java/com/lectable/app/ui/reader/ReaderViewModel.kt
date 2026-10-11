@@ -419,8 +419,11 @@ class ReaderViewModel @Inject constructor(
         val voiceKey = _uiState.value.voiceKey ?: return
         val tag = ChapterDownloadWorker.bookDownloadTag(bookId)
         val alreadyComplete = _uiState.value.downloadStates.filterValues { it.status == DownloadStatus.COMPLETE }.keys
+        // Front and back matter isn't narrated unless someone opens it, and a download asks for
+        // the chapter's audio - so it is left to be downloaded on its own, if wanted.
+        val matter = book.chapters.filter { it.matter }.map { it.idx }.toSet()
         for (idx in 0 until book.chapterCount) {
-            if (idx in alreadyComplete) continue
+            if (idx in alreadyComplete || idx in matter) continue
             // KEEP: re-tapping "download book" must not re-queue (or worse, discard the progress
             // of) whatever's already downloading/queued - only chapters with no work item at all
             // get a fresh one.
@@ -1149,6 +1152,15 @@ class ReaderViewModel @Inject constructor(
      *  tagging, queuing it itself if it's never run), so nothing here
      *  sequences them. A failure (e.g. the LLM being unconfigured server-side) surfaces as the
      *  reader's error banner. */
+    /** The chapter picker's "Skip when listening" / "Read as part of the story": marks a
+     *  chapter as front or back matter, or not. The book's live value carries the change. */
+    fun setChapterMatter(chapterIdx: Int, matter: Boolean) {
+        viewModelScope.launch {
+            runCatching { libraryRepository.setChapterMatter(bookId, chapterIdx, matter) }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message ?: "Could not change this chapter") } }
+        }
+    }
+
     fun runChapterPass(chapterIdx: Int, pass: ChapterPass) {
         viewModelScope.launch {
             runCatching {

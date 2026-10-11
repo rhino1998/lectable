@@ -305,6 +305,17 @@ func (m *Manager) SetChapterScareQuoter(fn ChapterScareQuoter) {
 	m.scareQuote = fn
 }
 
+// BookMatterFinder runs one book's matter pass (marking which of its
+// chapters are front or back matter) - the work behind a KindBookMatter
+// task. Never configured (nil) means nothing waits on it.
+type BookMatterFinder func(ctx context.Context, book *store.Book) error
+
+// SetBookMatterFinder wires fn in as the matter pass - see
+// BookMatterFinder. Called once from httpapi.NewRouter.
+func (m *Manager) SetBookMatterFinder(fn BookMatterFinder) {
+	m.findMatter = fn
+}
+
 // SetBookSettingDeriver wires fn in as the lazy setting pass - see
 // BookSettingDeriver. Called once from httpapi.NewRouter.
 func (m *Manager) SetBookSettingDeriver(fn BookSettingDeriver) {

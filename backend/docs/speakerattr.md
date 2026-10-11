@@ -662,6 +662,52 @@ the plot - what the Claude subagent (`.claude/agents/roster-fixer.md`)
 files through `POST .../roster-review/proposals`. Its prompt is not in
 `SystemPrompts`.
 
+**Front and back matter** (2026-10-11; `matter.go`, `Client.FindMatter`,
+`httpapi/matter.go`): one call per book over its chapter list - each
+section's number, title, length and the start of its text - answering with
+the sections that aren't story, each as its number and title. Applied at
+once (a mark is reversible and deletes nothing); see the `.../matter`
+entry in `api.md` for what reads it.
+- **Why a model**: the fixed title list (`httpapi.notStory`) matched 223
+  of the 707 matter sections in this library's 86 epubs. The rest is each
+  publisher's own ("Don't Miss Out", "Join the Conversation", "LitRPG!",
+  "Backyard Starship Wiki" - 139 distinct titles).
+- **What the prompt shows** (each measured with the guard below, against
+  hand labels: 707 matter sections, 64 synopses of earlier books, 3,629
+  story chapters): titles alone skipped 685 of 707 - the misses all title
+  pages named for the book or series ("Expeditionary Force", "Citadel"),
+  which read as a named chapter. Titles and lengths skipped 703 but kept
+  24 synopses for being long and lost four chapters whose titles are epub
+  ids ("cA10", opening "Chapter 84: Home Visit"). With the opening text
+  too: 703 of 707, 61 of 64 synopses, 2 story chapters lost.
+- **Title beside each number**: answering with numbers alone, the model
+  once named the section before the one it meant (a play's last scene for
+  the Gutenberg licence after it). Asked to copy each title beside its
+  number, it didn't in any book, and `parseMatter` drops an entry whose
+  title isn't its section's. The model sometimes copies the rest of the
+  line too ("Thanks [1985 chars] - Hi everyone..."), which is cut before
+  comparing. With this: 702 of 707, 63 of 64, 1 lost.
+- **The guard** (`matterGuard`, code, after the answer): in a book with
+  numbered chapters (85 of 86) a section is never matter if its title
+  says chapter, prologue or epilogue, or it sits between two that do.
+  Unguarded the model skipped 21-23 story sections a run: two epilogues,
+  a "Chapter 45", three very short numbered chapters, 14 character sheets
+  printed between chapters. A book with none (a play) has only the
+  model's answer, so matter there is the run it named from the start and
+  the run it named to the end.
+- **"The End" pages**: a section under 60 characters titled "The End..."
+  after the last chapter is matter whatever the model says - it left five
+  of them in on one run, two on another. With it: 707 of 707.
+- **Still wrong**: a "Post-Credits Scene" after the last chapter is
+  skipped (the prompt names after-credits scenes as story; the guard
+  can't help, nothing numbered follows it), and one "Book One:" synopsis
+  is kept. Both are one toggle to fix.
+- **Limits of the measurement**: one run per variant; the library is a
+  few series deep (33 of the 86 books are one series), so nearer a dozen
+  publishers' habits than 86 books; mid-book chapters were labeled story
+  after a spot check of the short ones.
+- A book of more than 160 sections is shown its first and last 60.
+
 **Malformed-response retry**: every batch call in this package
 (`attributeBatch`, `describeBatch`, `emotionBatch`,
 `CharacterizeVoice`) goes through `generateAndParse`/`retryParse`

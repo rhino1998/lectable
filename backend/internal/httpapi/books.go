@@ -19,6 +19,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/bookexport"
 	"github.com/rhino1998/lectable/backend/internal/epub"
+	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
@@ -115,7 +116,12 @@ func estimateTotalSeconds(stats store.NarrationStats, fastSecPerChar float64) (s
 // progress value: percent-through-book is (paragraphs before the current
 // chapter + paragraphs into the current chapter) / total paragraphs.
 // "Finished" means the saved position is on (or past) the last paragraph
-// of the last chapter.
+// of the last chapter. Front and back matter (store.Chapter.Matter) counts
+// for none of it: the book is its story chapters, finished at the end of
+// the last of them, and preprocessed when they are. A book nobody has
+// opened yet starts at its first story chapter rather than its title page.
+// The clients compute the same progress live (frontend ReaderPage's
+// liveProgressPercent, Android ReaderScreen) - change them together.
 func toBookSummary(b store.Book, chapters []store.ChapterSummary, stats store.NarrationStats) bookSummaryDTO {
 	dto := bookSummaryDTO{
 		ID:              b.ID,
@@ -138,7 +144,25 @@ func toBookSummary(b store.Book, chapters []store.ChapterSummary, stats store.Na
 	dto.Preprocessed = len(chapters) > 0
 	totalParagraphs := 0
 	completedParagraphs := 0
+	firstStory, lastStory := -1, -1
 	for i, c := range chapters {
+		if !c.Matter {
+			if firstStory < 0 {
+				firstStory = i
+			}
+			lastStory = i
+		}
+	}
+	if firstStory > 0 && b.LastReadAt == 0 && b.PosChapterIdx == 0 && b.PosParagraphIdx == 0 {
+		dto.PosChapterIdx = chapters[firstStory].Idx
+	}
+	for i, c := range chapters {
+		if c.Matter {
+			if i > lastStory && lastStory >= 0 && c.Idx <= b.PosChapterIdx {
+				dto.Finished = true // on into the back matter
+			}
+			continue
+		}
 		if p := c.Passes; !p.ScareQuote || !p.Summary || !p.Attribution || !p.Direction || !p.Pronunciation || !p.AmbienceDone() {
 			dto.Preprocessed = false
 		}
@@ -152,7 +176,7 @@ func toBookSummary(b store.Book, chapters []store.ChapterSummary, stats store.Na
 				n = c.ParagraphCount
 			}
 			completedParagraphs += n
-			if i == len(chapters)-1 && b.PosParagraphIdx >= c.ParagraphCount-1 {
+			if i == lastStory && b.PosParagraphIdx >= c.ParagraphCount-1 {
 				dto.Finished = true
 			}
 		}
@@ -481,23 +505,47 @@ func (s *Server) importEpub(src interface {
 		return bookSummaryDTO{}, httpError(http.StatusInternalServerError, err.Error())
 	}
 
+	// Which chapters are front matter decides where the sample below is
+	// taken from and where the book opens, so it is asked for first.
+	s.enqueueBookMatter(b, jobs.TierUrgent)
 	if sample && len(chapters) > 0 {
-		// Real narration in the book's own voice, so the reader has
-		// something to listen to immediately - this alone used to also be
-		// what calibrated the length estimate below, which meant that
-		// estimate's own accuracy was hostage to however slow the book's
-		// selected engine happens to be.
-		s.Jobs.EnqueueSample(bookID, chapters[0].ID, chapters[0].Idx, 1000)
-		// A separate, much cheaper PocketTTS-cloned sample (see
-		// jobs.Manager.EnqueueLengthEstimate) so the library page can show
-		// a real, generated-audio-calibrated length estimate right away
-		// regardless of the line above - it's superseded the moment the
-		// book's own voice has ready audio of its own (see
-		// estimateTotalSeconds's own tiering).
-		s.Jobs.EnqueueLengthEstimate(bookID, chapters[0].ID, 300)
+		first := chapters[0]
+		if s.Speaker == nil {
+			s.sampleImportedBook(bookID, first.ID, first.Idx)
+		} else {
+			go s.sampleImportedBook(bookID, first.ID, first.Idx)
+		}
 	}
 
 	return summary, nil
+}
+
+// sampleImportedBook queues a just-imported book's first narration, from
+// its first story chapter (fallbackID/fallbackIdx - its first chapter -
+// when every chapter is matter) once the matter pass has said which that
+// is: before the pass, the sample was the title page.
+func (s *Server) sampleImportedBook(bookID, fallbackID string, fallbackIdx int) {
+	s.Jobs.EnsureBookMatter(context.Background(), bookID, jobs.TierUrgent)
+	chapterID, chapterIdx := fallbackID, fallbackIdx
+	if chapters, err := s.Store.ListChapterSummaries(bookID, "", nil); err == nil {
+		for _, c := range chapters {
+			if !c.Matter {
+				chapterID, chapterIdx = c.ID, c.Idx
+				break
+			}
+		}
+	}
+	// Real narration in the book's own voice, so the reader has something
+	// to listen to immediately - this alone used to also be what calibrated
+	// the length estimate below, which meant that estimate's own accuracy
+	// was hostage to however slow the book's selected engine happens to be.
+	s.Jobs.EnqueueSample(bookID, chapterID, chapterIdx, 1000)
+	// A separate, much cheaper PocketTTS-cloned sample (see
+	// jobs.Manager.EnqueueLengthEstimate) so the library page can show a
+	// real, generated-audio-calibrated length estimate right away regardless
+	// of the line above - it's superseded the moment the book's own voice
+	// has ready audio of its own (see estimateTotalSeconds's own tiering).
+	s.Jobs.EnqueueLengthEstimate(bookID, chapterID, 300)
 }
 
 type renameBookRequest struct {
@@ -867,6 +915,13 @@ type chapterSummaryDTO struct {
 	// when direction-tagging was tracked per-clone-model); a client reads
 	// passes.attribution/passes.direction directly instead.
 	Passes store.Passes `json:"passes"`
+	// Matter marks front or back matter (a title page, the copyright page,
+	// "About the Author") rather than story: playback steps over the
+	// chapter, and background narration, the passes and reading progress
+	// leave it out. Set by the book's matter pass or by the reader (PUT
+	// .../chapters/{idx}/matter); a reader who opens one can still have it
+	// read.
+	Matter bool `json:"matter"`
 	// Music* are this chapter's background-music regions: how many were
 	// scored, and how many of those have a ready clip / failed. All 0 for
 	// a chapter that isn't scored.
@@ -909,6 +964,7 @@ func (s *Server) buildBook(id string) (bookDetailDTO, error) {
 		dto.Chapters = append(dto.Chapters, chapterSummaryDTO{
 			Idx: c.Idx, Title: c.Title, ParagraphCount: c.ParagraphCount, ReadyCount: c.ReadyCount,
 			Passes:           c.Passes,
+			Matter:           c.Matter,
 			MusicRegionCount: mc.Total, MusicReadyCount: mc.Ready, MusicErrorCount: mc.Error,
 		})
 	}

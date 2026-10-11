@@ -18,6 +18,7 @@ import com.lectable.app.data.remote.dto.ImportBookURLRequestDto
 import com.lectable.app.data.remote.dto.ImportPreviewResponseDto
 import com.lectable.app.data.remote.dto.LookaheadRequestDto
 import com.lectable.app.data.remote.dto.MarkReadRequestDto
+import com.lectable.app.data.remote.dto.SetChapterMatterRequestDto
 import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.RenameBookRequestDto
 import com.lectable.app.data.remote.dto.ReviewBookSourceRequestDto
@@ -233,6 +234,11 @@ class LibraryRepository @Inject constructor(
     /** Saves the reader's own version of a chapter's notes (backend handlePutChapterNotes),
      *  marked edited so the summary pass keeps it. A refusal (a group name, a scene listing
      *  someone not in the cast) throws with the server's explanation, which the editor shows. */
+    /** Marks a chapter as front or back matter (playback steps over it), or as story after all
+     *  - the reader's word, which the book's own matter pass leaves alone. */
+    suspend fun setChapterMatter(bookId: String, idx: Int, matter: Boolean) =
+        withServerMessage("Could not change this chapter") { api.setChapterMatter(bookId, idx, SetChapterMatterRequestDto(matter)) }
+
     suspend fun saveChapterNotes(bookId: String, idx: Int, notes: ChapterNotesDto) =
         withServerMessage("Could not save the notes") { api.putChapterNotes(bookId, idx, notes) }
 

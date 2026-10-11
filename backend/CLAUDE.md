@@ -468,7 +468,7 @@ building/running `ttsworker` does, since both now link into that binary.
   (batching, prompt-building, reply parsing, malformed-response retry) over
   a GGUF model that actually runs in `ttsworker` (`internal/llmworker`):
   speaker attribution, scare quotes, chapter summaries and cast, the
-  per-book setting profile, characterization,
+  per-book setting profile, front and back matter, characterization,
   emotions, pronunciation, ambience (music and lighting) and SFX. Disabled
   as a whole when the model file (`LECTABLE_SPEAKER_LLM_MODEL_PATH`,
   default `Qwen3.6-35B-A3B`) is missing. The prompts, the rules each pass

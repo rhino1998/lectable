@@ -43,6 +43,7 @@ fun DownloadedChapter.mergedWith(chapter: ChapterDetailDto, json: Json): Downloa
     }
     return copy(
         title = chapter.title,
+        matter = chapter.matter,
         paragraphsJson = json.encodeToString(paragraphs),
         contentJson = json.encodeToString(chapter.content),
         hash = if (audioInSync && chapter.hash.isNotEmpty()) chapter.hash else hash,

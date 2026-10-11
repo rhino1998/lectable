@@ -130,6 +130,32 @@ class PlaybackQueueTest {
     }
 
     @Test
+    fun `the next clip steps over front and back matter`() {
+        val loaded = chapters(
+            chapter(0, ready(0)),
+            chapter(1, ready(0)).copy(matter = true),
+            chapter(2, ready(0)).copy(matter = true),
+            chapter(3, ready(0, url = "/audio/story")),
+        )
+        assertEquals(3 to 0, clipStartAfter(loaded, 0 to 0, "/audio/0"))
+        assertEquals(3, nextStoryChapter(loaded, 0))
+    }
+
+    @Test
+    fun `a matter chapter the reader opened is read through`() {
+        val loaded = chapters(chapter(0, ready(0, url = "/a"), ready(1, url = "/b")).copy(matter = true), chapter(1, ready(0, url = "/c")))
+        assertEquals(0 to 1, clipStartAfter(loaded, 0 to 0, "/a"))
+        assertEquals(1 to 0, clipStartAfter(loaded, 0 to 1, "/b"))
+    }
+
+    @Test
+    fun `whether an unloaded chapter is matter isn't known yet`() {
+        val loaded = chapters(chapter(0, ready(0)), chapter(1, ready(0)).copy(matter = true))
+        assertEquals(2, nextStoryChapter(loaded, 0))
+        assertNull(clipStartAfter(loaded, 0 to 0, "/audio/0"))
+    }
+
+    @Test
     fun `there is no next clip past the last loaded chapter`() {
         assertNull(clipStartAfter(chapters(chapter(0, ready(0))), 0 to 0, "/audio/0"))
     }

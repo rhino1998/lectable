@@ -106,16 +106,31 @@ func (s *Server) deriveBookSetting(ctx context.Context, book *store.Book, force 
 	if err != nil {
 		return nil, err
 	}
+	// Front and back matter says nothing of the story's world: an advert
+	// for another series, a synopsis of the last book.
+	extents, err := s.Store.ChapterExtents(book.ID)
+	if err != nil {
+		return nil, err
+	}
+	matter := map[string]bool{}
+	for _, e := range extents {
+		matter[e.ID] = e.Matter
+	}
 	counts := speakerattr.TechCounts{}
 	idioms := speakerattr.IdiomCounts{}
 	var chapters [][]speakerattr.ParagraphInput
-	for i, p := range all {
+	last := ""
+	for _, p := range all {
+		if matter[p.ChapterID] {
+			continue
+		}
 		counts.Add(p.Text)
 		if p.IsQuote {
 			idioms.Add(p.Text)
 		}
-		if i == 0 || p.ChapterID != all[i-1].ChapterID {
+		if p.ChapterID != last {
 			chapters = append(chapters, nil)
+			last = p.ChapterID
 		}
 		chapters[len(chapters)-1] = append(chapters[len(chapters)-1], speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote})
 	}

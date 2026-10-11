@@ -39,6 +39,7 @@ import { AnnotationTooltip } from '../components/AnnotationTooltip'
 import type { AnnotationTooltipHandle } from '../components/AnnotationTooltip'
 import type { ChapterDetail, ChapterNotes, MusicRegion, Paragraph } from '../api/types'
 import { matchesSelectedSpeaker } from '../utils/annotations'
+import { nextStoryChapter, readingProgress } from '../utils/matter'
 
 // How many loaded chapters on each side of whichever one is actually on
 // screen stay fully mounted - see useChapterWindowing's chapterHeights
@@ -140,6 +141,7 @@ export function ReaderPage() {
     runChapterAmbience,
     runClearChapterAudio,
     runReimportChapter,
+    runSetChapterMatter,
     runAttributeChapter,
     runAttributeAroundEdits,
     saveNotes,
@@ -277,6 +279,19 @@ export function ReaderPage() {
   const expandDown = useCallback(() => {
     setRange((r) => (r ? { ...r, end: Math.min(r.end + 1, totalChapters - 1) } : r))
   }, [totalChapters])
+  // Playback asking for the chapter it goes on to, which is past any front
+  // or back matter in between - so further than expandDown's one.
+  const loadThrough = useCallback(
+    (idx: number) => {
+      setRange((r) => (r ? { ...r, end: Math.max(r.end, Math.min(idx, totalChapters - 1)) } : r))
+    },
+    [totalChapters],
+  )
+  const bookChapterList = bookQuery.data?.chapters
+  const nextChapter = useCallback(
+    (idx: number) => nextStoryChapter(bookChapterList ?? [], idx),
+    [bookChapterList],
+  )
   const expandUp = useCallback(() => {
     setRange((r) => (r ? { ...r, start: Math.max(r.start - 1, 0) } : r))
   }, [])
@@ -297,7 +312,8 @@ export function ReaderPage() {
     initialSeconds: bookQuery.data?.posSeconds ?? 0,
     ready: bookQuery.data !== undefined,
     onPosition: handlePosition,
-    onNeedChapter: expandDown,
+    onNeedChapter: loadThrough,
+    nextChapter,
   })
   // What the player bar and shortcuts drive - see recapTransport.
   const barPlayback = useMemo(
@@ -425,27 +441,15 @@ export function ReaderPage() {
   // Recomputed client-side from the book's chapter/paragraph counts plus
   // live playback position, so it updates in real time as the reader
   // listens rather than only when the book topic's saved position changes.
-  // Mirrors the backend's toBookSummary calculation exactly.
+  // Mirrors the backend's toBookSummary calculation exactly
+  // (readingProgress): front and back matter counts for nothing.
   const { liveProgressPercent, liveFinished } = useMemo(() => {
-    const bookChapters = bookQuery.data?.chapters ?? []
-    let total = 0
-    let completed = 0
-    let finished = false
-    bookChapters.forEach((c, i) => {
-      total += c.paragraphCount
-      if (c.idx < playback.chapterIdx) {
-        completed += c.paragraphCount
-      } else if (c.idx === playback.chapterIdx) {
-        completed += Math.min(playback.paragraphIdx, c.paragraphCount)
-        if (i === bookChapters.length - 1 && playback.paragraphIdx >= c.paragraphCount - 1) {
-          finished = true
-        }
-      }
-    })
-    return {
-      liveProgressPercent: total > 0 ? Math.min(100, (completed / total) * 100) : 0,
-      liveFinished: finished,
-    }
+    const { percent, finished } = readingProgress(
+      bookQuery.data?.chapters ?? [],
+      playback.chapterIdx,
+      playback.paragraphIdx,
+    )
+    return { liveProgressPercent: percent, liveFinished: finished }
   }, [bookQuery.data?.chapters, playback.chapterIdx, playback.paragraphIdx])
 
   const topSentinelRef = useRef<HTMLDivElement>(null)
@@ -770,6 +774,8 @@ export function ReaderPage() {
                 bookmarkByKey={bookmarkByKey}
                 onClearAudio={runClearChapterAudio}
                 onReimport={runReimportChapter}
+                matter={!!chapterSummary?.matter}
+                onSetMatter={runSetChapterMatter}
                 onAttribute={runAttributeChapter}
                 onAttributeAroundEdits={runAttributeAroundEdits}
                 onSaveNotes={saveNotes}

@@ -488,6 +488,16 @@ export const api = {
   // summary), marked edited - see backend httpapi.handlePutChapterNotes.
   // 400 with a readable message for a group name, a duplicate cast member,
   // or a scene listing someone not in the cast.
+  // Marks a chapter as front or back matter, or as story after all - the
+  // reader's word, which the book's matter pass leaves alone.
+  setChapterMatter: (bookId: string, chapterIdx: number, matter: boolean) =>
+    call('PUT /api/books/{id}/chapters/{idx}/matter', {
+      path: { id: bookId, idx: chapterIdx },
+      body: { matter },
+    }),
+  // Queues the book's matter pass again (a book_matter job).
+  detectBookMatter: (bookId: string) =>
+    call('POST /api/books/{id}/matter/detect', { path: { id: bookId } }),
   putChapterNotes: (bookId: string, chapterIdx: number, notes: ChapterNotes) =>
     call('PUT /api/books/{id}/chapters/{idx}/notes', {
       path: { id: bookId, idx: chapterIdx },

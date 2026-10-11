@@ -12,7 +12,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 // integrity" rather than ever reaching the fallback.
 @Database(
     entities = [DownloadedChapter::class, DownloadedBook::class, PendingPosition::class],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 abstract class DownloadDatabase : RoomDatabase() {
@@ -39,5 +39,13 @@ val MIGRATION_5_6 = object : Migration(5, 6) {
 val MIGRATION_6_7 = object : Migration(6, 7) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE downloaded_chapters ADD COLUMN musicJson TEXT NOT NULL DEFAULT ''")
+    }
+}
+
+/** 7 -> 8 adds whether a downloaded chapter is front or back matter, which playback steps
+ *  over - a real migration for the same reason. */
+val MIGRATION_7_8 = object : Migration(7, 8) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE downloaded_chapters ADD COLUMN matter INTEGER NOT NULL DEFAULT 0")
     }
 }

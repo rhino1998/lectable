@@ -80,9 +80,22 @@ internal fun seekTargetSeconds(paragraph: ParagraphDto, startSeconds: Double): D
     if (startSeconds > 0) startSeconds else paragraph.audioPointerSeconds
 
 /**
+ * The chapter playback goes on to after [chapterIdx]: the next one that isn't front or back
+ * matter ([ChapterDetailDto.matter] - a title page, the copyright page, "About the Author").
+ * Only a loaded chapter is known to be matter, so this stops at the first one that isn't
+ * loaded: the caller asks for it, and looks again once it arrives. A reader who opens a matter
+ * chapter still has it read - it is only never gone *on* to.
+ */
+internal fun nextStoryChapter(chapters: Map<Int, ChapterDetailDto>, chapterIdx: Int): Int {
+    var next = chapterIdx + 1
+    while (chapters[next]?.matter == true) next++
+    return next
+}
+
+/**
  * The paragraph whose clip plays after [from]'s (whose clip is [url]): the first paragraph
  * past that clip's scare-quote merge group (whose members all share one clip), crossing into
- * the next chapter when that's already loaded. Null when it isn't ready yet or doesn't start
+ * the next story chapter ([nextStoryChapter]) when that's already loaded. Null when it isn't ready yet or doesn't start
  * its own clip.
  */
 internal fun clipStartAfter(chapters: Map<Int, ChapterDetailDto>, from: Pair<Int, Int>, url: String): Pair<Int, Int>? {
@@ -91,7 +104,7 @@ internal fun clipStartAfter(chapters: Map<Int, ChapterDetailDto>, from: Pair<Int
         val chapter = chapters[chapterIdx] ?: return null
         paragraphIdx++
         if (paragraphIdx >= chapter.paragraphs.size) {
-            chapterIdx++
+            chapterIdx = nextStoryChapter(chapters, chapterIdx)
             paragraphIdx = -1
             continue
         }

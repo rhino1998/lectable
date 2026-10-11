@@ -46,6 +46,11 @@ type Store interface {
 	DeleteCharacterStage(id string) error
 	NextCharacterStageTake(id string) error
 	ChapterIdxByID(bookID string) (map[string]int, error)
+	BookNeedsMatterPass(bookID string) (bool, error)
+	BooksNeedingMatterPass() ([]string, error)
+	MatterSections(bookID string) ([]MatterSection, error)
+	SetBookMatter(bookID string, matterChapterIDs []string) error
+	SetChapterMatter(chapterID string, matter bool) error
 	ChapterTextRevs(bookID string) (map[string]int64, error)
 	AllChapterTextRevs() (map[string]map[string]int64, error)
 	ClearBookLighting(bookID string) error

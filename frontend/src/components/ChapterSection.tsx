@@ -8,6 +8,7 @@ import {
   RiCodeSSlashLine,
   RiDeleteBinLine,
   RiFileHistoryLine,
+  RiSkipForwardLine,
   RiDoubleQuotesL,
   RiEmotionLine,
   RiMusic2Line,
@@ -755,6 +756,10 @@ interface ChapterSectionProps {
   bookmarkByKey: Map<string, string>
   onClearAudio: (idx: number, title: string) => void
   onReimport: (idx: number, title: string) => void
+  // Whether this chapter is front or back matter - not story, so playback
+  // steps over it - and the reader's switch for that.
+  matter: boolean
+  onSetMatter: (idx: number, matter: boolean) => void
   onAttribute: (idx: number) => void
   onAttributeAroundEdits: (idx: number) => void
   onSaveNotes: (idx: number, notes: ChapterNotes) => Promise<void>
@@ -834,6 +839,8 @@ export const ChapterSection = memo(function ChapterSection({
   bookmarkByKey,
   onClearAudio,
   onReimport,
+  matter,
+  onSetMatter,
   onAttribute,
   onAttributeAroundEdits,
   onSaveNotes,
@@ -988,8 +995,29 @@ export const ChapterSection = memo(function ChapterSection({
       ref={(el) => registerSectionRef(idx, el)}
     >
       <div className="chapter-heading-row">
-        <h2 className="chapter-heading">{chapterTitle}</h2>
+        <h2 className="chapter-heading">
+          {chapterTitle}
+          {matter && (
+            <span
+              className="chapter-matter-badge"
+              title="Front or back matter: playback steps over this chapter"
+            >
+              Skipped
+            </span>
+          )}
+        </h2>
         <span className="chapter-heading-actions">
+          <button
+            className={`icon-action-button${matter ? ' icon-action-button-active' : ''}`}
+            onClick={() => onSetMatter(idx, !matter)}
+            title={
+              matter
+                ? 'Front or back matter, skipped when listening — click to read it as part of the story'
+                : 'Mark as front or back matter, to skip when listening'
+            }
+          >
+            <RiSkipForwardLine />
+          </button>
           <button
             className="icon-action-button"
             onClick={() => onClearAudio(idx, chapterTitle)}

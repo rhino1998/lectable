@@ -1887,6 +1887,21 @@ label {
   color: var(--text-h);
 }
 
+/* A chapter marked as front or back matter, which playback steps over. */
+.chapter-matter-badge {
+  display: inline-block;
+  margin-left: 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  vertical-align: middle;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  color: var(--text);
+}
+
 .chapter-heading-actions {
   display: flex;
   align-items: center;

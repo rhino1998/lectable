@@ -156,6 +156,19 @@ which also unlocks The Wandering Inn's own patrons-only chapters. See the `.../s
 for a serial whose early chapters the site has taken down - widened with
 the Internet Archive's copies of the delisted ones or an epub of them. See the `import-url` entry in `backend/docs/api.md`.
 
+**Front and back matter** - a title page, the copyright page, the table
+of contents, "About the Author", adverts for other books, a synopsis of
+the last one - is marked per chapter by a **matter pass**: one LLM call
+over the book's chapter list at import, applied at once. Playback steps
+over a marked chapter, and background narration, the passes, the recap and
+reading progress leave it out; a book nobody has opened starts at its
+first story chapter. The reader can mark or unmark any chapter (the web's
+chapter heading and Chapters tab, Android's chapter picker), which the
+pass then leaves alone, and a marked chapter is still read to a reader who
+opens it. Books from websites aren't checked. See the `.../matter` entry
+in `backend/docs/api.md` and "Front and back matter" in
+`backend/docs/speakerattr.md`.
+
 A per-book **setting profile** (era, technology, place, accent, genre)
 is written once per book by one LLM call over excerpts from across it, the first time a pass needs it, and shown to the ambience,
 lighting and characterization prompts so each stops guessing the world

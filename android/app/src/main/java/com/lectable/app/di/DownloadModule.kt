@@ -8,6 +8,7 @@ import com.lectable.app.data.download.DownloadedBookDao
 import com.lectable.app.data.download.DownloadedChapterDao
 import com.lectable.app.data.download.MIGRATION_5_6
 import com.lectable.app.data.download.MIGRATION_6_7
+import com.lectable.app.data.download.MIGRATION_7_8
 import com.lectable.app.data.download.PendingPositionDao
 import dagger.Module
 import dagger.Provides
@@ -28,7 +29,7 @@ object DownloadModule {
             // source of truth worth writing real migrations for at this stage (app isn't
             // shipped yet - see android/CLAUDE.md) - a schema change just drops and recreates it.
             // Except where a real migration is cheap and a wipe would orphan downloaded files.
-            .addMigrations(MIGRATION_5_6, MIGRATION_6_7)
+            .addMigrations(MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
             .fallbackToDestructiveMigration()
             .build()
 

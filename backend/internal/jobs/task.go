@@ -254,6 +254,12 @@ const (
 	// by it. The ambience, characterization and summary tasks that read the
 	// setting depend on it (bookSettingDependency) when the book has none.
 	KindBookSetting Kind = "book_setting"
+	// KindBookMatter is a book's matter pass (internal/speakerattr.Client.
+	// FindMatter, via httpapi.findBookMatter): which of its chapters are
+	// front or back matter - one per book, keyed by it. Queued at import;
+	// background generation and preprocessing wait for it (EnsureBookMatter)
+	// while the book has chapters nobody has judged.
+	KindBookMatter Kind = "book_matter"
 	// KindRecap writes a book's "previously on" recap
 	// (internal/speakerattr.Client.Recap/SeriesRecap, via
 	// httpapi.writeRecap) - one per book, keyed by it; see RunRecap.
@@ -662,6 +668,8 @@ func (t *task) dedupKey() string {
 		return "embedding:" + t.llmKey
 	case KindBookSetting:
 		return "book_setting:" + t.llmKey
+	case KindBookMatter:
+		return "book_matter:" + t.llmKey
 	case KindRecap:
 		return "recap:" + t.llmKey
 	case KindRosterReview:
@@ -728,6 +736,7 @@ var kindCompare = map[Kind]func(a, b *task, priority int) int{
 	KindSummary:                 comparePosition,
 	KindEmbedding:               comparePosition,
 	KindBookSetting:             comparePosition,
+	KindBookMatter:              comparePosition,
 	KindRecap:                   comparePosition,
 	KindRosterReview:            comparePosition,
 }

@@ -69,7 +69,7 @@ func (s *SQLiteStore) ListChapterSummaries(bookID, voiceID string, overrides []S
 	var err error
 	if len(overrides) == 0 {
 		rows, err = s.db.Query(`
-			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
+			SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
 				(SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id) AS total,
 				(SELECT COUNT(*) FROM paragraph_audio pa WHERE pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready') AS ready
 			FROM chapters c
@@ -80,7 +80,7 @@ func (s *SQLiteStore) ListChapterSummaries(bookID, voiceID string, overrides []S
 		args := append(append([]any{}, valuesArgs...), voiceID, bookID)
 		rows, err = s.db.Query(`
 			WITH speaker_voice(speaker, speaker_index, voice_id, from_idx, to_idx) AS (VALUES `+valuesFragment+`)
-			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
+			SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
 				COUNT(p.id) AS total,
 				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
 			FROM chapters c
@@ -89,7 +89,7 @@ func (s *SQLiteStore) ListChapterSummaries(bookID, voiceID string, overrides []S
 			LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0 AND c.idx >= svm.from_idx AND c.idx < svm.to_idx
 			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
 			WHERE c.book_id = ?
-			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
+			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by
 			ORDER BY c.idx ASC`, args...)
 	}
 	if err != nil {
@@ -100,7 +100,7 @@ func (s *SQLiteStore) ListChapterSummaries(bookID, voiceID string, overrides []S
 	var out []ChapterSummary
 	for rows.Next() {
 		var cs ChapterSummary
-		if err := rows.Scan(&cs.ID, &cs.BookID, &cs.Idx, &cs.Title, &cs.Passes, &cs.ParagraphCount, &cs.ReadyCount); err != nil {
+		if err := rows.Scan(&cs.ID, &cs.BookID, &cs.Idx, &cs.Title, &cs.Passes, &cs.Matter, &cs.MatterBy, &cs.ParagraphCount, &cs.ReadyCount); err != nil {
 			return nil, err
 		}
 		out = append(out, cs)
@@ -118,12 +118,17 @@ type ChapterNarration struct {
 }
 
 // SumNarration splits a book's chapters into its chapter summaries and
-// whole-book NarrationStats.
+// whole-book NarrationStats, which leave out front and back matter
+// (Chapter.Matter) - never narrated in the background, so counting it
+// would leave every book short of fully generated.
 func SumNarration(chapters []ChapterNarration) ([]ChapterSummary, NarrationStats) {
 	var stats NarrationStats
 	summaries := make([]ChapterSummary, len(chapters))
 	for i, c := range chapters {
 		summaries[i] = c.ChapterSummary
+		if c.Matter {
+			continue
+		}
 		stats.TotalChars += c.TotalChars
 		stats.TotalWords += c.TotalWords
 		stats.ReadyChars += c.ReadyChars
@@ -162,7 +167,7 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 		// paragraph_audio's own chapter_id/chars (idx_paragraph_audio_chapter).
 		args := append([]any{voiceID, bookID}, onlyArgs...)
 		rows, err = s.db.Query(`
-			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
+			SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
 				COALESCE(t.paragraphs, 0), COALESCE(t.chars, 0), COALESCE(t.words, 0),
 				COUNT(pa.paragraph_id),
 				COALESCE(SUM(pa.chars), 0),
@@ -171,7 +176,7 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 			LEFT JOIN chapter_text t ON t.chapter_id = c.id
 			LEFT JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready'
 			WHERE c.book_id = ?`+only+`
-			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes
+			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by
 			ORDER BY c.idx ASC`, args...)
 	} else {
 		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
@@ -190,7 +195,7 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 				WHERE c.book_id = ?`+only+` AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
 				GROUP BY c.id
 			)
-			SELECT c.id, c.book_id, c.idx, c.title, c.passes,
+			SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
 				COALESCE(t.paragraphs, 0), COALESCE(t.chars, 0), COALESCE(t.words, 0),
 				COALESCE(r.n, 0), COALESCE(r.chars, 0), COALESCE(r.seconds, 0)
 			FROM chapters c
@@ -207,7 +212,7 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 	var out []ChapterNarration
 	for rows.Next() {
 		var cn ChapterNarration
-		if err := rows.Scan(&cn.ID, &cn.BookID, &cn.Idx, &cn.Title, &cn.Passes,
+		if err := rows.Scan(&cn.ID, &cn.BookID, &cn.Idx, &cn.Title, &cn.Passes, &cn.Matter, &cn.MatterBy,
 			&cn.ParagraphCount, &cn.TotalChars, &cn.TotalWords, &cn.ReadyCount, &cn.ReadyChars, &cn.ReadySeconds); err != nil {
 			return nil, err
 		}
@@ -225,7 +230,7 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 func (s *SQLiteStore) ChapterFingerprints(bookID string) (map[string]string, error) {
 	prints := map[string][]byte{}
 	chapters, err := s.db.Query(`
-		SELECT c.id, c.idx, c.title, CAST(c.passes AS TEXT), COALESCE(t.rev, 0)
+		SELECT c.id, c.idx, c.title, CAST(c.passes AS TEXT) || c.matter, COALESCE(t.rev, 0)
 		FROM chapters c
 		LEFT JOIN chapter_text t ON t.chapter_id = c.id
 		WHERE c.book_id = ?`, bookID)
@@ -285,8 +290,8 @@ func (s *SQLiteStore) ChapterFingerprints(bookID string) (map[string]string, err
 
 func (s *SQLiteStore) GetChapterByID(id string) (*Chapter, error) {
 	var c Chapter
-	err := s.db.QueryRow(`SELECT id, book_id, idx, title, passes FROM chapters WHERE id = ?`, id).
-		Scan(&c.ID, &c.BookID, &c.Idx, &c.Title, &c.Passes)
+	err := s.db.QueryRow(`SELECT id, book_id, idx, title, passes, matter, matter_by FROM chapters WHERE id = ?`, id).
+		Scan(&c.ID, &c.BookID, &c.Idx, &c.Title, &c.Passes, &c.Matter, &c.MatterBy)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -305,8 +310,8 @@ func (s *SQLiteStore) CountChapters(bookID string) (int, error) {
 
 func (s *SQLiteStore) GetChapterByIdx(bookID string, idx int) (*Chapter, error) {
 	var c Chapter
-	err := s.db.QueryRow(`SELECT id, book_id, idx, title, passes FROM chapters WHERE book_id = ? AND idx = ?`, bookID, idx).
-		Scan(&c.ID, &c.BookID, &c.Idx, &c.Title, &c.Passes)
+	err := s.db.QueryRow(`SELECT id, book_id, idx, title, passes, matter, matter_by FROM chapters WHERE book_id = ? AND idx = ?`, bookID, idx).
+		Scan(&c.ID, &c.BookID, &c.Idx, &c.Title, &c.Passes, &c.Matter, &c.MatterBy)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

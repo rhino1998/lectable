@@ -142,17 +142,20 @@ func (s *Server) enqueuePreprocess(book *store.Book) error {
 		return err
 	}
 
+	// Every phase but embedding runs over the story chapters only
+	// (storyPhase): front and back matter is embedded, so it can be found,
+	// and otherwise left alone.
 	// No voice provisioning phase: a character's voice is made when a line
 	// of theirs is first generated (or by the roster's own buttons), not
 	// for the whole roster up front.
 	phases := jobs.PipelinePhases{
-		jobs.PhaseScareQuote:       s.preprocessScareQuotePhase(book, chapters),
-		jobs.PhaseAttribution:      s.preprocessAttributionPhase(book, chapters),
+		jobs.PhaseScareQuote:       s.storyPhase(book, chapters, s.preprocessScareQuotePhase),
+		jobs.PhaseAttribution:      s.storyPhase(book, chapters, s.preprocessAttributionPhase),
 		jobs.PhaseCharacterization: s.preprocessCharacterizationPhase(book),
-		jobs.PhaseDirection:        s.preprocessDirectionPhase(book, chapters),
-		jobs.PhaseAmbience:         s.preprocessAmbiencePhase(book, chapters),
-		jobs.PhasePronunciation:    s.preprocessPronunciationPhase(book, chapters),
-		jobs.PhaseSummary:          s.preprocessSummaryPhase(book, chapters),
+		jobs.PhaseDirection:        s.storyPhase(book, chapters, s.preprocessDirectionPhase),
+		jobs.PhaseAmbience:         s.storyPhase(book, chapters, s.preprocessAmbiencePhase),
+		jobs.PhasePronunciation:    s.storyPhase(book, chapters, s.preprocessPronunciationPhase),
+		jobs.PhaseSummary:          s.storyPhase(book, chapters, s.preprocessSummaryPhase),
 		jobs.PhaseEmbedding:        s.preprocessEmbeddingPhase(book, chapters),
 	}
 	return s.Jobs.EnqueuePipeline(book.ID, phases)

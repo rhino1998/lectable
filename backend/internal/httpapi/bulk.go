@@ -281,6 +281,9 @@ func (s *Server) chapterBulkRun(book *store.Book, scope bulkScope, action bulkAc
 	}
 	var chapters []store.Chapter
 	for _, cs := range summaries {
+		if cs.Matter {
+			continue // front or back matter: run a pass on it from the chapter itself
+		}
 		if scope == bulkScopeRest && pass.done(cs.Passes) {
 			continue
 		}

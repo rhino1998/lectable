@@ -126,6 +126,11 @@ class ParagraphPlayer @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val chapters = mutableMapOf<Int, ChapterDetailDto>()
     private var pendingTarget: Pair<Int, Int>? = null
+
+    // Whether [pendingTarget] is a chapter playback ran on into (rather than one the reader
+    // picked) that wasn't loaded yet, so nobody knew whether it is front or back matter:
+    // if it is, [setChapter] goes on past it instead of playing it.
+    private var pendingIsAdvance = false
     // The (chapterIdx, paragraphIdx) whose audio is actually loaded into [player] right now -
     // distinct from _state's chapterIdx/paragraphIdx, which also gets set to a target that's
     // merely parked/pending (see the audioStatus != READY branch below) so the UI can show
@@ -285,7 +290,13 @@ class ParagraphPlayer @Inject constructor(
         chapters[chapter.idx] = chapter
         val target = pendingTarget
         if (target != null && target.first == chapter.idx) {
-            playParagraph(target.first, target.second)
+            if (pendingIsAdvance && chapter.matter) {
+                // Playback ran on into this chapter and it turns out to be front or back
+                // matter: go on to the one after instead.
+                advanceToChapter(nextStoryChapter(chapters, chapter.idx))
+            } else {
+                playParagraph(target.first, target.second)
+            }
         } else if (loadedTarget != null) {
             queueNextClip()
         }
@@ -294,6 +305,7 @@ class ParagraphPlayer @Inject constructor(
     fun clearChapters() {
         chapters.clear()
         pendingTarget = null
+        pendingIsAdvance = false
         loadedTarget = null
         loadedAudioUrl = null
         // A clip queued behind the current one belongs to the data just dropped.
@@ -308,6 +320,7 @@ class ParagraphPlayer @Inject constructor(
     fun hasPositionIn(bookId: String): Boolean = this.bookId == bookId && _state.value.chapterIdx >= 0
 
     fun playFrom(chapterIdx: Int, paragraphIdx: Int, startSeconds: Double = 0.0) {
+        pendingIsAdvance = false
         playParagraph(chapterIdx, paragraphIdx, startSeconds)
     }
 
@@ -584,8 +597,14 @@ class ParagraphPlayer @Inject constructor(
         if (nextParagraphIdx < chapter.paragraphs.size) {
             playParagraph(cur.chapterIdx, nextParagraphIdx)
         } else {
-            playParagraph(cur.chapterIdx + 1, 0)
+            advanceToChapter(nextStoryChapter(chapters, cur.chapterIdx))
         }
+    }
+
+    /** Playback running on, by itself, into [chapterIdx] - see [pendingIsAdvance]. */
+    private fun advanceToChapter(chapterIdx: Int) {
+        playParagraph(chapterIdx, 0)
+        pendingIsAdvance = pendingTarget != null
     }
 
     /**

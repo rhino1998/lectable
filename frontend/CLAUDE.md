@@ -79,6 +79,14 @@ byte-for-byte.
   index would shift out from under whatever was mid-playback. If the next
   chapter isn't loaded yet when a chapter ends, it calls `onNeedChapter`
   and parks in a "pending advance" ref until that chapter's data shows up.
+  "The next chapter" is its `nextChapter` argument's answer, not
+  `chapterIdx + 1`: ReaderPage passes `utils/matter.ts`'s
+  `nextStoryChapter`, which steps over chapters marked as front or back
+  matter (`ChapterSummary.matter`) and makes the last story chapter the
+  book's end. The same file's `readingProgress` is the live progress
+  figure (it mirrors the backend's `toBookSummary`). The mark is toggled
+  from the chapter heading's skip button and the Chapters tab, whose
+  header button asks the backend to check the book again.
   Effects are keyed on the *resolved ready audio URL* (a string), not the
   whole chapter object, specifically so a live chapter patch (another
   paragraph finishing) doesn't restart playback.

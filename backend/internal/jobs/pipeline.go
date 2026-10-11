@@ -551,6 +551,7 @@ func (m *Manager) EnqueueBookGenerate(bookID string) {
 }
 
 func (m *Manager) enqueueBookGenerate(ctx context.Context, bookID string) {
+	m.EnsureBookMatter(ctx, bookID, TierBackground)
 	chapters, err := m.store.ListChapterSummaries(bookID, "", nil)
 	if err != nil {
 		log.Printf("jobs: generate book %s: list chapters: %v", bookID, err)
@@ -563,6 +564,9 @@ func (m *Manager) enqueueBookGenerate(ctx context.Context, bookID string) {
 		case <-ctx.Done():
 			return
 		default:
+		}
+		if cs.Matter {
+			continue // front or back matter is narrated only when a reader opens it
 		}
 		m.enqueueChapter(ctx, bookID, cs.Chapter.ID, cs.Chapter.Idx, 0)
 		pushed[cs.Chapter.ID] = true
@@ -597,6 +601,7 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 		return
 	}
 
+	m.EnsureBookMatter(ctx, bookID, TierBackground)
 	fromChapterIdx := book.PosChapterIdx
 	chapterIdx := fromChapterIdx
 	pushed := map[string]bool{}
@@ -615,6 +620,10 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 		}
 		if ch == nil {
 			return // ran off the end of the book
+		}
+		if ch.Matter {
+			chapterIdx++
+			continue
 		}
 
 		m.maybeRunChapterAmbience(ctx, bookID, ch.ID, chapterIdx, book)

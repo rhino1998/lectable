@@ -366,6 +366,7 @@ var kindPool = map[Kind]poolKey{
 	KindSummary:                 poolLLM,
 	KindEmbedding:               poolLLM,
 	KindBookSetting:             poolLLM,
+	KindBookMatter:              poolLLM,
 	KindRecap:                   poolLLM,
 	KindRosterReview:            poolLLM,
 	KindRecapNarration:          poolGeneration,
@@ -430,6 +431,7 @@ type Manager struct {
 	pronounce     ChapterPronouncer
 	summarize     ChapterSummarizer
 	deriveSetting BookSettingDeriver
+	findMatter    BookMatterFinder
 	// directWindow/pronounceWindow: see SetChapterWindowDirector.
 	directWindow    ChapterWindowPass
 	pronounceWindow ChapterWindowPass
@@ -441,7 +443,9 @@ type Manager struct {
 	// has run in this process, whatever the outcome - see
 	// bookSettingDependency.
 	settingTried sync.Map
-	ctx          context.Context // set by Start; used by fire-and-forget Enqueue* resolution goroutines
+	// matterTried is settingTried for the matter pass - see EnsureBookMatter.
+	matterTried sync.Map
+	ctx         context.Context // set by Start; used by fire-and-forget Enqueue* resolution goroutines
 
 	// sched is the whole priority/dependency/dispatch engine (see
 	// internal/sched and docs/scheduler-design.md). This package is the

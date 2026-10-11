@@ -121,7 +121,9 @@ func paragraphAudioHash(p paragraphDTO, voiceID string) string {
 
 // chapterHash is a chapter's node: its own title and content order plus
 // every paragraph's two leaves. Generating is excluded - it's transient
-// job state, not content.
+// job state, not content. Matter is in it only when set, so marking a
+// chapter reaches offline copies without the hash of every chapter that
+// isn't marked changing with the field's arrival.
 func chapterHash(c chapterDetailDTO) string {
 	type leaf struct {
 		Idx     int
@@ -136,7 +138,8 @@ func chapterHash(c chapterDetailDTO) string {
 		Title      string
 		Content    []contentItemDTO
 		Paragraphs []leaf
-	}{c.Title, c.Content, leaves})
+		Matter     bool `json:",omitempty"`
+	}{c.Title, c.Content, leaves, c.Matter})
 }
 
 type chapterHashDTO struct {
