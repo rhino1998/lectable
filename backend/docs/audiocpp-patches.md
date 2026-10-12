@@ -115,15 +115,49 @@ working tree - check `git diff --stat` in `/home/rhino/audio.cpp` before
 rebuilding; a full copy of every local patch is kept at
 `/home/rhino/audio.cpp/lectable-local-patches.diff`.)
 
-**Patch base.** Rebased 2026-10-06 onto upstream `6fa5a3c8` (61 commits
-past `ed96b730`): `main` there sits at that commit with the patch
+**Patch base.** Rebased 2026-10-11 onto upstream `96269554` (40 commits
+past `6fa5a3c8`): `main` there sits at that commit with the patch
 uncommitted, and the same patch is also committed as branch
-`lectable-patches`. Earlier bases are kept: `ed96b730` (2026-09-29) as tag
+`lectable-patches`. Earlier bases are kept: `6fa5a3c8` (2026-10-06) as tag
+`lectable-patches-6fa5a3c8`, `lectable-local-patches.6fa5a3c8.diff` and the
+built `build-rocm7-bin.6fa5a3c8/`; `ed96b730` (2026-09-29) as tag
 `lectable-patches-ed96b730`, `lectable-local-patches.ed96b730.diff` and the
 built `build-rocm7-bin.ed96b730/`; `e3de8e3f` as tag
 `lectable-patches-e3de8e3` and `lectable-local-patches.e3de8e3.diff`. The
-library is built in `build-rocm7-next/` and its `bin/` copied over
-`build-rocm7/bin/`, so the live path never holds a half-built library.
+library is built in `build-rocm7-next/` (the `audiocpp` target alone is
+enough) and its `libaudiocpp.so.0.1.0` copied over the one in
+`build-rocm7/bin/` by rename, so the live path never holds a half-built
+library.
+
+What the 2026-10-11 rebase changed in the patch:
+- Upstream added `WakeWord` and `AudioClassification` tasks; `Codec` now
+  follows them in the enum and vocabulary. Tasks cross the C API by name,
+  so nothing in `audiocpp-go` depends on the order.
+- Upstream's CLI request reader now asserts that `ArtifactKind::Custom` is
+  the last kind it names (#844). `Latents` stays after `Custom`, unnamed
+  there: the C API maps it explicitly, and the CLI can't send one.
+- Higgs gained streaming upstream (#859), written against the single
+  `generate()` we had split into `begin_sequence`/`accept_logits`/
+  `finish_sequence`. It is carried through the split (`generate(request,
+  stream)`, `finish_sequence(sequence, decode_audio)`), with two
+  differences from upstream: the prefill graph is still released after
+  every run, and a streaming request on a session with
+  `decode_batch_size` > 1 is refused. Nothing here streams.
+- BreezeTTS's `generate()` grew its own generated-codes out-parameter
+  upstream (#858, which anchors a reference-less long text's later chunks
+  on the first chunk's voice); `return_latents` now uses it.
+- `include/audiocpp.h` changed only in a comment, so a `ttsworker` built
+  against the previous library loads this one; the vendored copy in
+  `audiocpp-go` is updated.
+
+Every `audiocpp-go` test passes on HIP against it. Measured against the
+`6fa5a3c8` build, same `ttsworker`, 32 paragraphs of "Spire's Spite" ch. 41
+and three reference clips (wall seconds per second of audio): Higgs batch 8
+0.068-0.069 both (six rounds each; a round with a runaway generation is
+~0.12 on either), BreezeTTS instructed clone 0.95 -> 0.87, BreezeTTS design
+0.78 -> 0.79, Qwen3 VoiceDesign 0.36 -> 0.35, Stable Audio Medium 30 s and
+SFX 0.05 both, alignment and transcription unchanged, peak worker RSS 8.7
+-> 8.8 GB.
 
 What the 2026-10-06 rebase changed in the patch:
 - Our `StableAudioSameRuntime::encode` short-window fix is dropped;
@@ -186,6 +220,12 @@ throughput RTF at batch 4 (0.094 at batch 8, the default). Each piece, all in
   Q8's 0.094), so Q8 stays the model.
 - **Frame-budget floor** (`kMinimumFrameBudget` = 250 frames) - see
   `audioworker.higgsFrameBudgetMultiplier`.
+- **Digits in the frame budget** (`spoken_length`, 2026-10-11): the budget
+  projects the text's length, and a digit counts as 8 characters of it. A
+  number is spoken as several times its written length, so "Progress to
+  level 49 stands at 4,475,881/6,455,000" (50 characters, ~12s spoken) hit
+  the 250-frame floor on every attempt - and, having no sentence or clause
+  boundary for `jobs.bisectForGeneration` to split at, failed for good.
 
 **Latents/codec patch, same local checkout, same caveats** (2026-09-26;
 this change alone is in `/home/rhino/audio.cpp/lectable-latents-codec.diff`,

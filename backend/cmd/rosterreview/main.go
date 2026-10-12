@@ -4,12 +4,16 @@
 // It writes proposals to the library it is given, so give it a copy:
 //
 //	sqlite3 data/library.sqlite ".backup /tmp/library-copy.sqlite"
-//	go run ./cmd/rosterreview -db /tmp/library-copy.sqlite -book <bookID> [-llm http://127.0.0.1:8091] [-v]
+//	go run ./cmd/rosterreview -db /tmp/library-copy.sqlite -book <bookID> [-llm http://127.0.0.1:8091] [-embeddings <dir>] [-v]
 //
 // Without -llm no model is called: each pair of names that would be read
 // about is ruled out as unclear, and -v prints the prompt it would have
 // been asked with. -llm is a running ttsworker, whose model it shares with
-// whatever the job queue is doing.
+// whatever the job queue is doing. -embeddings is a directory holding a
+// COPY of embeddings.sqlite (sqlite3 data/embeddings.sqlite ".backup
+// <dir>/embeddings.sqlite"), for the review's reading of how each name is
+// used; an index made with another model than LECTABLE_EMBED_MODEL_PATH
+// names is emptied when opened, hence the copy.
 package main
 
 import (
@@ -24,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/rhino1998/lectable/backend/internal/httpapi"
+	"github.com/rhino1998/lectable/backend/internal/semantic"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
@@ -76,6 +81,7 @@ func main() {
 	dbPath := flag.String("db", "", "a COPY of library.sqlite (proposals are written to it)")
 	bookID := flag.String("book", "", "id of a book whose roster to review")
 	llmURL := flag.String("llm", "", "a running ttsworker to ask (e.g. http://127.0.0.1:8091); none: no model is called")
+	embeddings := flag.String("embeddings", "", "a directory holding a COPY of embeddings.sqlite; none: names' usage isn't compared")
 	verbose := flag.Bool("v", false, "print each prompt and reply")
 	flag.Parse()
 	if *dbPath == "" || *bookID == "" {
@@ -92,6 +98,13 @@ func main() {
 		log.Fatalf("book %s: not found (%v)", *bookID, err)
 	}
 	srv := &httpapi.Server{Store: st, Speaker: speakerattr.NewClient(speakerattr.Config{}, llm{url: *llmURL, verbose: *verbose})}
+	if *embeddings != "" {
+		// Nothing here searches by a phrase, so there is no model to ask.
+		if srv.Semantic, err = semantic.Open(*embeddings, semantic.ModelPathFromEnv(), st, nil); err != nil {
+			log.Fatal(err)
+		}
+		defer srv.Semantic.Close()
+	}
 	if err := srv.ReviewRoster(context.Background(), book); err != nil {
 		log.Fatal(err)
 	}

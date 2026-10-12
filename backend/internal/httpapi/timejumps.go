@@ -24,6 +24,14 @@ type timeJumpDTO struct {
 	// far (the stages made for it) - it grows while the jump is applied,
 	// and most characters never need one.
 	Voices int `json:"voices"`
+	// Proposed marks a jump fact finding found and the reader hasn't ruled
+	// on: nothing is aged across it until it is accepted (POST
+	// .../time-jumps/proposals/{id}/accept, at this chapter and length or
+	// others), and skipping it keeps it from being found again.
+	Proposed bool `json:"proposed,omitempty"`
+	// Evidence is the sentences a proposed jump rests on, one a line, each
+	// after the title of its chapter.
+	Evidence string `json:"evidence,omitempty"`
 }
 
 func (s *Server) handleListTimeJumps(w http.ResponseWriter, r *http.Request) {
@@ -47,6 +55,20 @@ func (s *Server) buildTimeJumps(bookID string) ([]timeJumpDTO, error) {
 			out[i].ChapterTitle = ch.Title
 		}
 	}
+	proposals, err := s.Store.ListTimeJumpProposals(bookID)
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	for _, p := range proposals {
+		if p.Status != store.ProposalPending {
+			continue
+		}
+		dto := timeJumpDTO{ID: p.ID, ChapterID: p.ChapterID, ChapterIdx: p.ChapterIdx, Years: p.Years, Proposed: true, Evidence: p.Evidence}
+		if ch, err := s.chapterByID(p.ChapterID); err == nil && ch != nil {
+			dto.ChapterTitle = ch.Title
+		}
+		out = append(out, dto)
+	}
 	return out, nil
 }
 
@@ -68,52 +90,119 @@ const maxJumpYears = 1000
 // there (store.CharacterStage, marked with the jump). Most characters
 // come back unchanged. 202 with how many are being asked about.
 func (s *Server) handleCreateTimeJump(w http.ResponseWriter, r *http.Request) {
+	if queued, ok := s.makeTimeJump(w, r); ok {
+		writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
+	}
+}
+
+// makeTimeJump is handleCreateTimeJump's work: it reads a timeJumpRequest
+// for the book in r's path, records the jump and queues the ageing,
+// returning how many characters are being asked about. On failure it has
+// written the error.
+func (s *Server) makeTimeJump(w http.ResponseWriter, r *http.Request) (int, bool) {
 	if s.Speaker == nil {
 		writeError(w, http.StatusServiceUnavailable, "ageing voices across a time jump needs the speaker LLM (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
-		return
+		return 0, false
 	}
 	var req timeJumpRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+		return 0, false
 	}
 	if req.Years < 1 || req.Years > maxJumpYears {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("years must be between 1 and %d", maxJumpYears))
-		return
+		return 0, false
 	}
 	book, err := s.Store.GetBook(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return 0, false
 	}
 	if book == nil {
 		writeError(w, http.StatusNotFound, "book not found")
-		return
+		return 0, false
 	}
 	ch, err := s.Store.GetChapterByIdx(book.ID, req.ChapterIdx)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return 0, false
 	}
 	if ch == nil {
 		writeError(w, http.StatusNotFound, "chapter not found")
-		return
+		return 0, false
 	}
 	jump, created, err := s.Store.CreateTimeJump(book.ID, ch.ID, req.Years)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return 0, false
 	}
 	if !created {
 		writeError(w, http.StatusConflict, "that chapter already has a time jump - remove it first")
-		return
+		return 0, false
 	}
 	queued, err := s.applyTimeJump(book, *jump)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
+		return 0, false
+	}
+	return queued, true
+}
+
+// timeJumpProposal returns the pending proposal the path names, having
+// written the error when there is none: 404 for no such proposal in this
+// book, 409 for one already ruled on.
+func (s *Server) timeJumpProposal(w http.ResponseWriter, r *http.Request) (*store.TimeJumpProposal, bool) {
+	p, err := s.Store.GetTimeJumpProposal(r.PathValue("proposalId"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return nil, false
+	}
+	if p == nil || p.BookID != r.PathValue("id") {
+		writeError(w, http.StatusNotFound, "proposed time jump not found")
+		return nil, false
+	}
+	if p.Status != store.ProposalPending {
+		writeError(w, http.StatusConflict, "that time jump is not waiting for review")
+		return nil, false
+	}
+	return p, true
+}
+
+// handleAcceptTimeJumpProposal serves POST
+// /api/books/{id}/time-jumps/proposals/{proposalId}/accept: makes the
+// jump a proposal found, at the chapter and length in the body - the
+// reader's, which need not be the proposal's (the pass tends to place a
+// jump a chapter late) - exactly as POST .../time-jumps does.
+func (s *Server) handleAcceptTimeJumpProposal(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.timeJumpProposal(w, r)
+	if !ok {
+		return
+	}
+	queued, ok := s.makeTimeJump(w, r)
+	if !ok {
+		return
+	}
+	if err := s.Store.SetTimeJumpProposalStatus(p.ID, store.ProposalAccepted); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
+}
+
+// handleSkipTimeJumpProposal serves POST
+// /api/books/{id}/time-jumps/proposals/{proposalId}/skip: turns a
+// proposed jump down for good - kept, out of sight, so fact finding
+// doesn't propose one near it again.
+func (s *Server) handleSkipTimeJumpProposal(w http.ResponseWriter, r *http.Request) {
+	p, ok := s.timeJumpProposal(w, r)
+	if !ok {
+		return
+	}
+	if err := s.Store.SetTimeJumpProposalStatus(p.ID, store.ProposalSkipped); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeNoContent(w)
 }
 
 // handleDeleteTimeJump removes a time jump and the stages made for it;

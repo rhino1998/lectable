@@ -62,6 +62,7 @@ type Server struct {
 	designCalls     []ttsproto.DesignRequest
 	alignCalls      []ttsproto.AlignRequest
 	transcribeCalls []ttsproto.TranscribeRequest
+	listenCalls     []ttsproto.ListenRequest
 	llmGenCalls     []ttsproto.LLMGenerateRequest
 	generateCount   int
 	designCount     int
@@ -82,7 +83,9 @@ type Server struct {
 	OnAlign           func(ttsproto.AlignRequest) ([]ttsproto.Word, error)
 	// OnTranscribe's default returns an empty transcript, which jobs'
 	// completeness check reads as "no extra words".
-	OnTranscribe  func(ttsproto.TranscribeRequest) (string, error)
+	OnTranscribe func(ttsproto.TranscribeRequest) (string, error)
+	// OnListen answers POST /listen; unset, every question gets "".
+	OnListen      func(ttsproto.ListenRequest) (string, error)
 	OnLLMGenerate func(ttsproto.LLMGenerateRequest) (string, error)
 	// OnLLMDecide answers POST /llm/decide; unset, every step takes its
 	// first option.
@@ -99,6 +102,7 @@ func New(t testing.TB) *Server {
 	mux.HandleFunc("POST /design", s.handleDesign)
 	mux.HandleFunc("POST /align", s.handleAlign)
 	mux.HandleFunc("POST /transcribe", s.handleTranscribe)
+	mux.HandleFunc("POST /listen", s.handleListen)
 	mux.HandleFunc("POST /llm/generate", s.handleLLMGenerate)
 	mux.HandleFunc("POST /llm/decide", s.handleLLMDecide)
 	mux.HandleFunc("POST /unload", s.handleUnloadTTS)
@@ -253,6 +257,29 @@ func (s *Server) handleTranscribe(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(ttsproto.TranscribeResponse{Text: text})
 }
 
+func (s *Server) handleListen(w http.ResponseWriter, r *http.Request) {
+	var req ttsproto.ListenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	s.mu.Lock()
+	s.listenCalls = append(s.listenCalls, req)
+	hook := s.OnListen
+	s.mu.Unlock()
+
+	var text string
+	if hook != nil {
+		var err error
+		if text, err = hook(req); err != nil {
+			writeErr(w, err)
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(ttsproto.ListenResponse{Text: text})
+}
+
 func (s *Server) handleAlign(w http.ResponseWriter, r *http.Request) {
 	var req ttsproto.AlignRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -403,6 +430,12 @@ func (s *Server) TranscribeCalls() []ttsproto.TranscribeRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]ttsproto.TranscribeRequest(nil), s.transcribeCalls...)
+}
+
+func (s *Server) ListenCalls() []ttsproto.ListenRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ttsproto.ListenRequest(nil), s.listenCalls...)
 }
 
 func (s *Server) LLMGenerateCalls() []ttsproto.LLMGenerateRequest {

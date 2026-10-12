@@ -62,7 +62,12 @@ this moved it here specifically for the VRAM-sharing/idle-unload reason:
   see `alignerSampleRate`'s comment for a real, easy-to-get-wrong gotcha
   about the sample rate audio.cpp reports timestamps in), `/transcribe`
   (free ASR via Parakeet TDT, for the completeness check's extra-words
-  half), and `/health`.
+  half), `/listen` (a question asked about a clip of Audio Flamingo Next,
+  an audio-language model - `listen.go`, the "listener" aux engine: ~9 GB
+  at Q8, one session only since each session allocates its own copy of
+  the weights and two answered no faster than one; the model file,
+  `LECTABLE_AUDIOCPP_LISTENER_MODEL_PATH`, isn't installed by default and
+  is under NVIDIA's noncommercial license), and `/health`.
   Holds **no per-preset state** - the caller (backend) resends a preset's
   reference audio bytes on every call; audio.cpp's own session-level cache
   (`cloneFamily.sessionOptions`, 8 slots) transparently dedupes repeated
@@ -222,6 +227,11 @@ building/running `ttsworker` does, since both now link into that binary.
   `variants.go` renders/caches each preset's
   emotion variants (`EnsureVariantFile`, its own per-(preset, emotion)
   lock) - see "Emotions" in `docs/speakerattr.md`.
+- `internal/voicecheck/` — the voice check's rules, with no model calls:
+  the questions asked of a reference clip, what the answers and a casting
+  each say about gender, age band, pitch and accent, and where the two
+  clearly disagree. Sized to what the listener was measured to hear - see
+  the `voice-check` entry in `docs/api.md` before tightening a rule.
 - `internal/wsola/` — a from-scratch Go port of Chromium's WSOLA
   (Waveform Similarity Overlap-Add) time-domain pitch-preserving
   time-stretcher. Verified against a numpy reference port across the full
@@ -450,6 +460,29 @@ building/running `ttsworker` does, since both now link into that binary.
   `Options.BackupBeforeMigrate` - `cmd/server` passes a path in
   `backups/`, so the copy is pruned with the scheduled ones - and refuses
   to migrate if the copy fails.
+- `internal/voicefx/` — **voice effects**: plain signal processing a kind
+  of being's lines are put through after they are generated (`Insectoid`:
+  a pitched-up copy layered under the voice, a fast flutter, a short
+  metallic resonance; `Underwater`: a pitch-wavering copy and a muffled
+  tone), for what no voice model produces from a casting. Tuned by ear as
+  ffmpeg filter graphs on rendered lines (2026-10-12: effect on the clip
+  beat effect on the reference clip; synthesized bubble noise was
+  rejected) and ported to Go. An effect keeps a clip's length (word
+  timings stay true) and average level. Where it comes from: a world fact
+  names one (`store.WorldFact.Effect`), `narration.Resolver.
+  CharacterEffect` gives it to every character whose race note is one of
+  the fact's words (cached two seconds per roster),
+  `ResolveCharacterVoice` sets it on the `ResolvedVoice` - whatever voice
+  reads the line, the narrator's included - and it is no part of the
+  voice id. Generation applies it (`jobs.withVoiceEffect`, dropping the
+  clip's latents, which no longer decode to its samples) and keys the
+  clip on it (`clipkey.Recipe.Effect`, `voicefx.Tag` - name and chain
+  version, hashed only when set, so every other key is unchanged). Bump an
+  effect's version when its chain changes. A voice's reference
+  clip is never changed - lines are cloned from it clean - but playing
+  it (the custom-preset, variant and role-variant audio routes,
+  `serveCharacterVoiceClip`) puts it through the effect of the character
+  it voices (`Resolver.PresetEffect`), so a sample sounds like the lines.
 - `internal/narration/` — resolves a paragraph's *effective* narration
   voice: `Resolver.BookVoice` (a book's own single voice) as the fallback,
   overridden per paragraph by `Resolver.CharacterVoice` when (a)
@@ -490,8 +523,10 @@ building/running `ttsworker` does, since both now link into that binary.
   again. A book list's `preprocessed` also needs every chapter embedded
   (`Service.EmbeddedBooks`). `POST /api/library/embed` embeds a library
   preprocessed before the phase existed. Readers of
-  it: casting's lookups (`httpapi.semanticExcerpts`) and
-  `GET /api/books/{id}/search?mode=meaning`. Off, with everything doing
+  it: casting's lookups (`httpapi.semanticExcerpts`),
+  `GET /api/books/{id}/search?mode=meaning`, and roster review, which
+  compares how a series uses two names (`Usage`/`Alike`,
+  `httpapi/roster_usage.go`). Off, with everything doing
   without, when the model file (`LECTABLE_EMBED_MODEL_PATH`, default
   `~/llm-models/jina-embeddings-v5-text-nano-retrieval-Q8_0.gguf`) is
   missing. Why this model: `model.go`.
@@ -539,6 +574,12 @@ building/running `ttsworker` does, since both now link into that binary.
   `ExtractInsertions`/`Merge` (diffing an annotated copy of a text against
   the original, rejecting any changed word - used by one-off cmd tools
   over the legacy `tts_tags` column).
+- `internal/namekey/` — leaf package deciding when two spellings are one
+  character name: `Fold` lower-cases and makes every apostrophe a plain
+  one ("Ve’delina" is "Ve'delina"), `Equal` compares by it. The store's
+  by-name lookup (the SQL function `namekey()`), attribution's name
+  canonicalization and resolver, dedupe and the alias checks all use it;
+  compare character names with it rather than `strings.EqualFold`.
 - `internal/emotions/` — leaf package holding the fixed emotion set
   (`All`: id, label, LLM description, BreezeTTS instruction, variant
   reference line) shared by `speakerattr`, `store`, `voicerefs`, `jobs`

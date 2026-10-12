@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/store"
+	"github.com/rhino1998/lectable/backend/internal/voicefx"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 )
@@ -1128,7 +1130,7 @@ func (s *Server) handleGetCustomVoiceAudio(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadGateway, "ttsworker unavailable: "+err.Error())
 		return
 	}
-	serveVoiceClip(w, r, path)
+	s.serveCharacterVoiceClip(w, r, path, id)
 }
 
 // serveVoiceClip serves a reference clip or emotion variant. Revalidated
@@ -1138,4 +1140,41 @@ func (s *Server) handleGetCustomVoiceAudio(w http.ResponseWriter, r *http.Reques
 func serveVoiceClip(w http.ResponseWriter, r *http.Request, path string) {
 	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, path)
+}
+
+// serveCharacterVoiceClip is serveVoiceClip for the reference clip (or a
+// variant of it) of preset presetID, played the way that voice's lines
+// sound: through its character's kind's voice effect
+// (narration.Resolver.PresetEffect), when it has one. Only what is played
+// here - the clip on disk, which lines are cloned from, stays clean. The
+// ETag carries the effect, so a client's copy goes stale when it changes.
+func (s *Server) serveCharacterVoiceClip(w http.ResponseWriter, r *http.Request, path, presetID string) {
+	effect, err := s.Narration.PresetEffect(presetID)
+	if err != nil {
+		log.Printf("httpapi: voice effect of preset %s: %v", presetID, err)
+	}
+	if voicefx.Tag(effect) == "" {
+		serveVoiceClip(w, r, path)
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "clip not found")
+		return
+	}
+	clean, err := os.ReadFile(path)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	processed, err := voicefx.Apply(effect, clean)
+	if err != nil {
+		log.Printf("httpapi: voice effect %s on %s: %v", effect, path, err)
+		serveVoiceClip(w, r, path)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("ETag", fmt.Sprintf(`"%x-%s"`, info.ModTime().UnixNano(), voicefx.Tag(effect)))
+	http.ServeContent(w, r, "", info.ModTime(), bytes.NewReader(processed))
 }

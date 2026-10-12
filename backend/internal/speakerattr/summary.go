@@ -25,7 +25,9 @@ const summaryWindowChars = 24000
 // answer rather than a failure: a converter's one-line "Converted Ebook"
 // page or a bare half-title has no story to tell, the model says so, and
 // rejecting that failed the task for good - taking the book's ambience and
-// attribution runs with it. Such a chapter gets empty notes.
+// attribution runs with it. Such a chapter gets empty notes. So does a
+// longer one with no prose in it at all (nothingToTell): Industrial Strength
+// Magic's contents page is 85 chapter titles, 2,400 characters.
 const summaryMinChars = 200
 
 // errEmptySummary is parseSummary's error for an answer with no summary.
@@ -129,10 +131,10 @@ func (s *Scene) promptLines() string {
 // names are sanitized and resolved onto the roster like attribution
 // answers (a description becomes a role label - see RoleLabel), and a
 // reference survives only if it appears word for word in the text. A
-// chapter under summaryMinChars the model finds nothing to say about gets
-// empty notes.
+// chapter with nothing to tell (nothingToTell) that the model finds nothing
+// to say about gets empty notes.
 func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, roster Roster, paragraphs []ParagraphInput) (ChapterSummary, error) {
-	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases).WithFirstPerson(roster.FirstPerson)
+	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases).WithTitles(roster.World).WithFirstPerson(roster.FirstPerson)
 	var out ChapterSummary
 	castIndex := map[string]int{}
 	var prev []ParagraphInput
@@ -140,7 +142,7 @@ func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle s
 		carry := carryOver(out) + leadIn(prev)
 		raw, err := c.summarizeWindow(ctx, bookTitle, chapterTitle, setting, roster, window, carry, "")
 		prev = window
-		if errors.Is(err, errEmptySummary) && len(strings.TrimSpace(windowText(paragraphs))) < summaryMinChars {
+		if errors.Is(err, errEmptySummary) && nothingToTell(paragraphs) {
 			return ChapterSummary{}, nil
 		}
 		if err != nil {
@@ -242,6 +244,22 @@ func addTaggedToScenes(sum *ChapterSummary, paragraphs []ParagraphInput, resolve
 			}
 		}
 	}
+}
+
+// nothingToTell reports whether a chapter's text is one an empty summary is
+// a fair answer to: under summaryMinChars in all, or a list - no dialogue
+// and no paragraph as long as summaryMinChars (a contents page, a list of
+// the author's other books).
+func nothingToTell(paragraphs []ParagraphInput) bool {
+	if len(strings.TrimSpace(windowText(paragraphs))) < summaryMinChars {
+		return true
+	}
+	for _, p := range paragraphs {
+		if p.IsQuote || len(p.Text) >= summaryMinChars {
+			return false
+		}
+	}
+	return true
 }
 
 func summaryWindows(paragraphs []ParagraphInput) [][]ParagraphInput {
@@ -634,7 +652,7 @@ func FoldFirstPersonCast(sum ChapterSummary, roster Roster, paragraphs []Paragra
 		}
 		sum = folded
 	}
-	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases)
+	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases).WithTitles(roster.World)
 	known := func(name string) bool {
 		c := resolver.Canonical(name)
 		return c != name || slices.ContainsFunc(roster.Names, func(n string) bool { return strings.EqualFold(n, name) })
@@ -706,7 +724,7 @@ func (r Roster) WithCast(cast []CastMember) Roster {
 	out.Pronouns = cloneMap(r.Pronouns)
 	out.Roles = cloneMap(r.Roles)
 	out.Cast = append([]CastMember(nil), cast...)
-	resolver := NewSpeakerNameResolver(r.Names, r.Aliases)
+	resolver := NewSpeakerNameResolver(r.Names, r.Aliases).WithTitles(r.World)
 	for i, m := range cast {
 		m.Refs = mergeRefs(nil, m.Refs) // notes stored before a filter was added
 		m.Refs = resolver.dropOthersNames(m.Name, m.Refs)

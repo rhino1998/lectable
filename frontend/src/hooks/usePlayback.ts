@@ -1,5 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChapterDetail } from '../api/types'
+import {
+  createSpatialStage,
+  DEFAULT_SPATIAL_SETTINGS,
+  paragraphPan,
+  type SpatialSettings,
+  type SpatialStage,
+} from '../utils/spatialAudio'
 
 const POSITION_REPORT_INTERVAL_MS = 3000
 const PLAYBACK_RATE_STORAGE_KEY = 'lectable:playback-rate'
@@ -51,6 +58,10 @@ interface UsePlaybackArgs {
   // isn't front or back matter (utils/matter's nextStoryChapter), at least
   // totalChapters when the book is over.
   nextChapter: (chapterIdx: number) => number
+  /** Where each speaker is heard from - see utils/spatialAudio. Off when omitted. */
+  spatial?: SpatialSettings
+  /** A first-person book's narrator, given no seat of their own, like narration. */
+  centerSpeaker?: string
 }
 
 export interface PlaybackController {
@@ -183,6 +194,8 @@ export function usePlayback({
   onPosition,
   onNeedChapter,
   nextChapter,
+  spatial = DEFAULT_SPATIAL_SETTINGS,
+  centerSpeaker = '',
 }: UsePlaybackArgs): PlaybackController {
   // Two <audio> elements, alternating which is "active" (playing, exposed
   // as audioElement) and which is "standby". The standby element preloads
@@ -208,6 +221,12 @@ export function usePlayback({
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [playbackRate, setPlaybackRateState] = useState(loadStoredPlaybackRate)
+
+  // Speaker positions (utils/spatialAudio): null until they are first
+  // switched on, and then only once playback has started, since its
+  // AudioContext needs a user gesture behind it. Kept from then on, even
+  // switched off - the elements can't be taken back out of it.
+  const stageRef = useRef<SpatialStage | null>(null)
 
   const appliedInitialSeek = useRef(false)
   const appliedInitialPosition = useRef(false)
@@ -273,6 +292,8 @@ export function usePlayback({
     nextChapter,
     playbackRate,
     nextReadyAudioUrl,
+    centerSpeaker,
+    spatial,
   })
   stateRef.current = {
     chapterIdx,
@@ -284,6 +305,19 @@ export function usePlayback({
     nextChapter,
     playbackRate,
     nextReadyAudioUrl,
+    centerSpeaker,
+    spatial,
+  }
+
+  // Seats one element for the paragraph it is playing or about to. Reads
+  // the settings through stateRef, so handleEnded's call is never stale.
+  const placeElement = (elementIdx: number, chapter: ChapterDetail | undefined, idx: number) => {
+    const { spatial: settings, centerSpeaker: center } = stateRef.current
+    stageRef.current?.place(
+      elementIdx,
+      settings.mode,
+      paragraphPan(chapter, idx, center, settings.width),
+    )
   }
 
   // Attached once per element, for the element's whole lifetime - each
@@ -367,6 +401,7 @@ export function usePlayback({
             // about to become active is at the right rate right as it
             // starts playing, regardless of how it got preloaded.
             standby.playbackRate = stateRef.current.playbackRate
+            placeElement(otherIdx, chapter, resolvedPi + 1)
             standby.play().catch(() => {})
           }
           setParagraphIdx(resolvedPi + 1)
@@ -379,6 +414,7 @@ export function usePlayback({
               setActiveIndex(otherIdx)
               standby.currentTime = 0
               standby.playbackRate = stateRef.current.playbackRate
+              placeElement(otherIdx, chs.get(nextCi), 0)
               standby.play().catch(() => {})
             }
             setChapterIdx(nextCi)
@@ -523,6 +559,27 @@ export function usePlayback({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [readyAudioUrl, isPlaying, activeIndex])
+
+  // Speaker positions: the active element follows the current paragraph's
+  // seat (a jump, a merge group's next member mid-clip, a changed
+  // setting); handleEnded seats the standby element itself, before it
+  // starts playing.
+  useEffect(() => {
+    if (isPlaying && !stageRef.current && spatial.mode !== 'off') {
+      stageRef.current = createSpatialStage(elements)
+    }
+    if (isPlaying) stageRef.current?.resume()
+    placeElement(activeIndex, currentChapter, paragraphIdx)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elements, isPlaying, activeIndex, currentChapter, paragraphIdx, centerSpeaker, spatial])
+
+  useEffect(
+    () => () => {
+      stageRef.current?.close()
+      stageRef.current = null
+    },
+    [],
+  )
 
   // Preloads the next paragraph's clip onto the standby element as soon as
   // it's ready, while the active element is still playing the current one.

@@ -56,3 +56,28 @@ func TestCanonicalizeSpeakerNamesIsCaseInsensitive(t *testing.T) {
 		t.Fatalf("canonicalizeSpeakerNames() = %v, want both lines attributed to the same speaker", got)
 	}
 }
+
+func TestCanonicalizeSpeakerNamesIgnoresApostropheStyle(t *testing.T) {
+	got := canonicalizeSpeakerNames([]string{"Ve’delina"}, map[int]string{0: "Ve'delina", 1: "Ve’delina", 2: "Olesm"}, nil)
+	if got[0] != got[1] {
+		t.Fatalf("apostrophe variants kept apart: %q, %q", got[0], got[1])
+	}
+	if got[2] != "Olesm" {
+		t.Fatalf("unrelated name changed: %q", got[2])
+	}
+	if !containsWholeName("Wall Lord Ve’delina", "Ve'delina") {
+		t.Fatal("containsWholeName should ignore the apostrophe's style")
+	}
+}
+
+func TestSpeakerNameResolverIgnoresApostropheStyle(t *testing.T) {
+	r := NewSpeakerNameResolver([]string{"Ve’delina"}, map[string][]string{"Ve’delina": {"The Wall Lord's daughter"}})
+	for _, written := range []string{"Ve'delina", "ve‘delina", "Ve'delina's", "Ve’delina’s", "the Wall Lord’s daughter"} {
+		if got, ok := r.Resolve(written); !ok || got != "Ve’delina" {
+			t.Errorf("Resolve(%q) = %q, %v", written, got, ok)
+		}
+	}
+	if got := r.Canonical("Ve'delina"); got != "Ve’delina" {
+		t.Errorf("Canonical = %q", got)
+	}
+}

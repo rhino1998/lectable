@@ -14,7 +14,10 @@ package narration
 import (
 	"crypto/sha256"
 	"fmt"
+	"sync"
+
 	"github.com/rhino1998/lectable/backend/internal/store"
+	"github.com/rhino1998/lectable/backend/internal/voicefx"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
@@ -50,6 +53,12 @@ type ResolvedVoice struct {
 	// instruction alongside a reference clip in the same call
 	// (voices.InstructedCloneModel today) - silently ignored by any other.
 	CloneInstruct string
+	// Effect is a voice effect the generated clip is put through
+	// (voicefx.Apply) - the speaker's kind's, from the world fact about it
+	// (Resolver.CharacterEffect). It is no part of the voice (VoiceID): the
+	// same voice with and without it differ only in their clips' keys
+	// (clipkey.Recipe.Effect).
+	Effect voicefx.VoiceEffect
 }
 
 // VoiceID is this voice's cache key, matching store.VoiceID exactly (same
@@ -68,6 +77,9 @@ func (v ResolvedVoice) VoiceID() string {
 // effective narration voices.
 type Resolver struct {
 	store store.Store
+
+	effectsMu sync.Mutex
+	effects   map[string]scopeEffects // by roster scope
 }
 
 func NewResolver(s store.Store) *Resolver { return &Resolver{store: s} }
@@ -288,6 +300,19 @@ func (bv *BookVoices) ForSpeaker(speaker string, speakerIndex, chapterIdx int) (
 // fallback chain ForParagraph does, rather than each hand-rolling its own
 // slightly different copy of it.
 func (r *Resolver) ResolveCharacterVoice(book *store.Book, bookVoice ResolvedVoice, char store.Character, cloneModel, presetID string) (ResolvedVoice, error) {
+	v, err := r.resolveCharacterVoice(book, bookVoice, char, cloneModel, presetID)
+	if err != nil {
+		return ResolvedVoice{}, err
+	}
+	// Whatever voice reads the line - even the narrator's, for a character
+	// with none of their own - it is this character speaking.
+	if v.Effect, err = r.CharacterEffect(book, char.ID); err != nil {
+		return ResolvedVoice{}, err
+	}
+	return v, nil
+}
+
+func (r *Resolver) resolveCharacterVoice(book *store.Book, bookVoice ResolvedVoice, char store.Character, cloneModel, presetID string) (ResolvedVoice, error) {
 	// CharacterVoiceModeInstructAll overrides everything below, including
 	// an explicit assignment - checked first, before presetID is even
 	// looked at, since "all" means all. A no-op (falls through to the

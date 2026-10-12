@@ -10,9 +10,21 @@ import (
 type replyLLM struct {
 	replies []string
 	users   []string
+	// accent is the accent step's reply ("" for one it can't use), and
+	// accentAsked the turns it was asked with.
+	accent      string
+	accentAsked []string
 }
 
-func (l *replyLLM) LLMGenerate(_ context.Context, _, user string, _ float32, _ int) (string, error) {
+func (l *replyLLM) LLMGenerate(_ context.Context, system, user string, _ float32, _ int) (string, error) {
+	if system == accentSystemPrompt {
+		// Not one of the replies: the accent step is asked beside them.
+		l.accentAsked = append(l.accentAsked, user)
+		if l.accent == "" {
+			return "no idea", nil
+		}
+		return l.accent, nil
+	}
 	l.users = append(l.users, user)
 	r := l.replies[0]
 	if len(l.replies) > 1 {
@@ -170,5 +182,56 @@ func TestCharacterizeVoiceLookups(t *testing.T) {
 	}
 	if len(llm.users) != 2 || !strings.Contains(llm.users[1], "Scylla + Greek:\n- She's a Greek demigoddess or whatever!") {
 		t.Fatalf("second turn lacks the lookup results:\n%s", llm.users[len(llm.users)-1])
+	}
+}
+
+// TestCharacterizeVoiceDecidedAccent covers the accent step: the accent it
+// decides is put to the casting call, and a casting in another accent is
+// retried with a reminder.
+func TestCharacterizeVoiceDecidedAccent(t *testing.T) {
+	british := "Speak as a young woman with a light, clear pitch and a brisk, intelligent pace. Use a British accent. She sounds shrewd and curious."
+	danish := "Speak as a young woman with a light, clear pitch and a brisk, intelligent pace. Use a Danish accent speaking English. She sounds shrewd and curious."
+	ref := "I have catalogued every shard from the lower trench. The dating will take another week. Ja, it is slow work, but it is honest."
+	reply := func(instruct string) string {
+		return `{"evidence": "a Danish archeologist", "instruct": "` + instruct + `", "refLine": "` + ref + `"}`
+	}
+	llm := &replyLLM{
+		replies: []string{reply(british), reply(danish)},
+		accent:  `{"evidence": "Ingrid, a Danish archeologist.", "whose": "this character", "basis": "origin", "accent": "Danish accent"}`,
+	}
+	c := &Client{llm: llm}
+	var decided AccentDecision
+	instruct, _, err := c.CharacterizeVoice(context.Background(), "Ingrid", false, "she/her", nil, CharacterEvidence{Origins: []string{"Ingrid, a Danish archeologist."}}, nil,
+		CastingOptions{OnAccent: func(d AccentDecision) { decided = d }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instruct != danish {
+		t.Fatalf("instruct = %q, want the retried Danish casting", instruct)
+	}
+	if decided.Accent != "Danish" || decided.Basis != "origin" {
+		t.Errorf("decided = %+v", decided)
+	}
+	if len(llm.accentAsked) != 1 || !strings.Contains(llm.accentAsked[0], "Origin clues:\n- Ingrid, a Danish archeologist.") {
+		t.Errorf("accent step asked %d times: %q", len(llm.accentAsked), llm.accentAsked)
+	}
+	if len(llm.users) != 2 || !strings.Contains(llm.users[0], "\nAccent (decided from the evidence, do not choose another): Danish\n") ||
+		!strings.Contains(llm.users[1], "must name the Danish accent") {
+		t.Errorf("casting turns: %q", llm.users)
+	}
+}
+
+// An accent resting on a sentence about someone else is not used: the
+// casting goes ahead without a decided accent.
+func TestDecideAccentRejectsSomeoneElses(t *testing.T) {
+	llm := &replyLLM{accent: `{"evidence": "he asked, and there was Miryam's Italian accent.", "whose": "a stranger Miryam had described", "basis": "described accent", "accent": "Italian"}`}
+	c := &Client{llm: llm}
+	if d, err := c.decideAccent(context.Background(), "Character: Miryam"); err == nil {
+		t.Errorf("decideAccent = %+v, want an error", d)
+	}
+	for accent, want := range map[string]bool{"Danish": true, "General American": true, "Greek": false} {
+		if got := castsAccent("Use a General American accent. Or a Danish accent speaking English.", accent); got != want {
+			t.Errorf("castsAccent(%q) = %v", accent, got)
+		}
 	}
 }

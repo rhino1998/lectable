@@ -90,6 +90,23 @@ byte-for-byte.
   Effects are keyed on the *resolved ready audio URL* (a string), not the
   whole chapter object, specifically so a live chapter patch (another
   paragraph finishing) doesn't restart playback.
+- `src/utils/spatialAudio.ts` + `src/hooks/useSpatialSettings.ts` +
+  `src/components/PlaybackPanel.tsx` — **speaker positions**: each
+  character is heard from a seat left or right of a centred narrator,
+  applied at playback (clips stay mono, the backend isn't involved).
+  `paragraphPan` seats a chapter's speakers by order of first line;
+  narration, unattributed lines and a first-person book's narrator (the
+  setting profile's `narrator`) get none. `usePlayback` routes its two
+  elements through a `SpatialStage` (one `AudioContext`: plain, stereo
+  panner and HRTF panner paths per element), created the first time a
+  mode other than off is playing and kept from then on. Modes: `stereo`,
+  `hrtf`, and `hrtf-head` (narration skips the HRTF filter, so it is heard
+  inside the head). Per-browser settings (localStorage
+  `lectable:spatial-mode`, `lectable:spatial-width`), set from PlayerBar's
+  Playback popover - the button showing the speed - which also holds the
+  speed control. Mirrored by android's `playback/SpatialAudio.kt` (same
+  seating rule and spread; its headphones mode is a simpler model, with
+  no twin of `hrtf`) - keep the two in step.
 - `src/lighting/` + `src/hooks/useLighting.ts` + `src/components/LightingPanel.tsx`
   — Philips Hue room lighting from the ambience pass's per-region
   `lighting` cues (backend `store.Lighting`). The browser talks to the
@@ -164,7 +181,19 @@ byte-for-byte.
   the form and table shared with a book's own Facts tab
   (`components/speakers/BookFactsPanel.tsx`, `/api/books/{id}/facts`),
   which lists the series' facts and, read-only under them, the global
-  ones with an Override button.
+  ones with an Override button. Above them `ProposedFacts.tsx`: the
+  "Find facts" button (a `fact_finding` job) and what it proposed, each
+  with its quote, editable wording, Accept (which recasts the characters
+  of that kind) and Skip. Below them `KindAccents.tsx`: each kind's
+  characters grouped by the accent they are cast with
+  (`/api/books/{id}/facts/accents`, fetched, not live); picking one makes
+  it the kind's fact and recasts the others. Under that
+  `CharacterNotes.tsx`: what the same search found about single
+  characters (kind, age), proposed notes grouped by kind with "Accept
+  all", accepted ones with a remove link (`characterNotes` live topic).
+  The time jumps it found are proposals at the top of
+  `TimeJumpsPanel.tsx` on the Speakers tab, chapter and years editable
+  before Accept.
 - `src/pages/LibraryPage.tsx`, `src/pages/ReaderPage.tsx` — the two
   screens. `ReaderPage` is an infinite-scroll reader: it keeps a `{start,
   end}` chapter-index window in state, renders every loaded chapter's
@@ -232,7 +261,8 @@ byte-for-byte.
   summary notes - `chapterNotes` live topic - and its Ambience column's
   eye icon a per-region ambience preview, `AmbiencePreview`: mood,
   lighting swatch, soundscape, music prompt and a play button for
-  generated regions), `SpeakerRow` (+ aliases/pronouns/emotions/role variants/merge),
+  generated regions), `SpeakerRow` (+ aliases - with "Split off" for a name that is really
+  someone else - /pronouns/emotions/role variants/merge),
   `SpeakerEvidence` (appearance rows), `CharacterVoiceEditor`,
   `PassStatus` (status cells, bulk button), `SettingPanel` (the book's
   setting profile - `bookSetting` live topic, editable, with a re-read

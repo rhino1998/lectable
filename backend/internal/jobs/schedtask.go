@@ -149,6 +149,7 @@ func (t *task) adopt(n *task) {
 	t.cloneModel = n.cloneModel
 	t.designModel = n.designModel
 	t.cloneInstruct = n.cloneInstruct
+	t.effect = n.effect
 }
 
 // Retryable matches retryEligible, which handleResult uses to decide

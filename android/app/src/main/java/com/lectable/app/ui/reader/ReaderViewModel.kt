@@ -537,6 +537,12 @@ class ReaderViewModel @Inject constructor(
                 result.data?.let(::applyVoice)
             }
         }
+        // A first-person book's narrator gets no seat of their own - see ParagraphPlayer.
+        viewModelScope.launch {
+            liveStore.bookSetting(bookId).collect { result ->
+                result.data?.let { player.setCenterSpeaker(it.setting?.narrator.orEmpty()) }
+            }
+        }
         viewModelScope.launch {
             liveStore.bookmarks(bookId).collect { result ->
                 result.data?.let { bookmarks -> _uiState.update { it.copy(bookmarksByKey = bookmarks.toBookmarksByKey()) } }

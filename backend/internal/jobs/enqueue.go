@@ -304,6 +304,7 @@ func (m *Manager) pushSingleTask(bookID, chapterID string, chapterIdx, tier int,
 		cloneModel:      rp.voice.CloneModel,
 		designModel:     rp.voice.DesignModel,
 		cloneInstruct:   rp.voice.CloneInstruct,
+		effect:          rp.voice.Effect,
 	}
 	if m.resolveAtEnqueue(t) {
 		return ""
@@ -345,6 +346,7 @@ func (m *Manager) pushMergedTask(bookID, chapterID string, chapterIdx, tier int,
 		cloneModel:      voice.CloneModel,
 		designModel:     voice.DesignModel,
 		cloneInstruct:   voice.CloneInstruct,
+		effect:          voice.Effect,
 	}
 	if m.resolveAtEnqueue(t) {
 		return ""

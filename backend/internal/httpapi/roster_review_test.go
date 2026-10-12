@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rhino1998/lectable/backend/internal/semantic"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
@@ -159,5 +160,69 @@ func TestRosterReview(t *testing.T) {
 	}
 	if resp := doJSON(t, http.MethodPost, url+"/proposals", createRosterProposalRequest{Kind: speakerattr.RosterMerge, Subject: "Nobody", Target: "Baron Sanguis"}, nil); resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("unknown subject: %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestRosterReviewNamesUsedAlike: two spellings of one name never share a
+// paragraph, so no passage can show both names for one person - with a
+// semantic index, the book using the two the same way stands in for that.
+func TestRosterReviewNamesUsedAlike(t *testing.T) {
+	const want = "merge Dr. Zheng -> Doctor Zheng"
+	for _, indexed := range []bool{false, true} {
+		srv, s, _, ts := newTestServer(t)
+		llm := &samePersonLLM{reply: `{"evidence": "Dr. Zheng collected pond samples", "verdict": "same"}`}
+		srv.Speaker = speakerattr.NewClient(speakerattr.Config{}, llm)
+		book := rosterTestBook(t, s,
+			[2]string{"Doctor Zheng", "“Hand me that jar.”"},
+			[2]string{"Dr. Zheng", "“Hold this.”"},
+			[2]string{"", "Doctor Zheng collected pond samples for the biology lab."},
+			[2]string{"", "Doctor Zheng knelt in the freezing stream with her sample jars."},
+			[2]string{"", "Doctor Zheng carried the sample jars back to the biology lab."},
+			[2]string{"", "Dr. Zheng collected pond samples for the biology lab."},
+			[2]string{"", "Dr. Zheng knelt in the freezing stream with her sample jars."},
+			[2]string{"", "Dr. Zheng carried the sample jars back to the biology lab."},
+			[2]string{"", "The gunner loaded another railgun magazine and fired at the cruiser."},
+			[2]string{"", "The railgun fired again and the enemy cruiser broke apart."},
+			[2]string{"", "Missiles streaked past the frigate as the pilot rolled away."},
+			[2]string{"", "The admiral ordered every frigate to jump before the missiles hit."},
+			[2]string{"", "Rain hammered the tin roof of the market all afternoon."},
+			[2]string{"", "A merchant argued over the price of salted fish and bread."},
+			[2]string{"", "The old king signed the treaty with a shaking hand."},
+			[2]string{"", "Nobody at court believed the treaty would last the winter."},
+			[2]string{"", "Smoke drifted over burning wheat fields beyond the river."},
+			[2]string{"", "Two wolves circled a wounded elk beneath tall pines."},
+			[2]string{"", "Her violin teacher demanded perfect scales every single morning."},
+			[2]string{"", "Dockworkers unloaded crates of oranges until midnight came."},
+			[2]string{"", "An avalanche buried half that mountain village overnight."},
+			[2]string{"", "Candles guttered while monks chanted evening prayers quietly."},
+			[2]string{"", "Thieves slipped through sewer tunnels under those palace vaults."},
+			[2]string{"", "Grandmother baked plum cakes whenever cousins visited us."},
+		)
+		if indexed {
+			svc, err := semantic.Open(t.TempDir(), "model.gguf", s, wordVectors{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer svc.Close()
+			ch, _ := s.GetChapterByIdx(book.ID, 0)
+			if _, err := svc.EmbedChapter(context.Background(), book.ID, ch.ID); err != nil {
+				t.Fatal(err)
+			}
+			srv.Semantic = svc
+		}
+		if err := srv.ReviewRoster(context.Background(), book); err != nil {
+			t.Fatal(err)
+		}
+		got := pendingProposals(t, ts.URL+"/api/books/"+book.ID+"/roster-review")
+		if llm.calls != 1 {
+			t.Errorf("indexed %v: %d calls, want the pair asked about once", indexed, llm.calls)
+		}
+		p, ok := got[want]
+		switch {
+		case !indexed && len(got) != 0:
+			t.Errorf("without an index: pending %v, want nothing proposed (no passage names both)", got)
+		case indexed && (!ok || p.Source != store.RosterFromLLM || len(p.Evidence) != 1 || !strings.Contains(p.Reason, "the same way")):
+			t.Errorf("with an index: pending %v, want %q from the model with its evidence", got, want)
+		}
 	}
 }

@@ -5,6 +5,20 @@
 // a compile error here until it gets a label), lookup tables derived from
 // the catalog, and shapes TS can model more precisely than Go.
 export * from './generated'
+
+// What each word class (a fact's `class`) is called in the UI.
+export const WORD_CLASS_LABELS: Record<import('./generated').WordClass, string> = {
+  title: 'Title',
+  role: 'Role',
+  race: 'Race',
+  nationality: 'Nationality',
+  place: 'Place',
+}
+// VOICE_EFFECT_LABELS names each voice effect a kind of being can be given.
+export const VOICE_EFFECT_LABELS: Record<import('./generated').VoiceEffect, string> = {
+  insectoid: 'Insect buzz',
+  underwater: 'Underwater gurgle',
+}
 import {
   CLONE_MODELS,
   DESIGN_MODELS,

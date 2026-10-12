@@ -16,6 +16,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/jobs"
+	"github.com/rhino1998/lectable/backend/internal/namekey"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -76,6 +77,20 @@ type speakerDTO struct {
 	// Pronouns mirrors store.Character.Pronouns - "he/him", "she/her",
 	// "they/them", "it/its", or omitted when not established.
 	Pronouns string `json:"pronouns,omitempty"`
+	// Race is the kind of being this speaker is ("drake") and Nationality
+	// where they are from or whose they are ("Pallassian") - an accepted
+	// character note of each (store.NoteKind, store.NoteNationality), set
+	// here by hand or accepted from fact finding. Their casting is shown
+	// both, with the facts about them. Omitted when not established.
+	Race        string `json:"race,omitempty"`
+	Nationality string `json:"nationality,omitempty"`
+	// Age is what the text states of their age, from the accepted
+	// character notes (store.NoteAge): "12 as of Chapter 3", several
+	// joined with "; " in the order found. Omitted when none is accepted.
+	Age string `json:"age,omitempty"`
+	// AgeYears is the last of those ages, in years - what the Speakers
+	// page sorts by and edits. 0 when none is accepted.
+	AgeYears int `json:"ageYears,omitempty"`
 	// Voices is every voice this speaker's lines in this book are spoken
 	// in, each with its samples: their own first, then each numbered member
 	// of a role (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), then
@@ -399,6 +414,38 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		}
 	}
 
+	// people is each character's accepted race and nationality.
+	people := map[string]map[store.CharacterNoteKind]string{}
+	accepted, err := s.Store.ListCharacterNotes(store.SeriesScope(book))
+	if err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
+	}
+	// ages is each character's accepted ages, as "12 as of <chapter>".
+	ages := map[string][]string{}
+	ageYears := map[string]int{}
+	for _, n := range accepted {
+		if n.Status != store.ProposalAccepted {
+			continue
+		}
+		if n.Kind == store.NoteAge {
+			age := n.Value
+			if ch, err := s.Store.GetChapterByID(n.ChapterID); err == nil && ch != nil && strings.TrimSpace(ch.Title) != "" {
+				age += " as of " + strings.TrimSpace(ch.Title)
+			}
+			ages[n.CharacterID] = append(ages[n.CharacterID], age)
+			if years, err := strconv.Atoi(n.Value); err == nil {
+				ageYears[n.CharacterID] = years
+			}
+			continue
+		}
+		if people[n.CharacterID] == nil {
+			people[n.CharacterID] = map[store.CharacterNoteKind]string{}
+		}
+		if people[n.CharacterID][n.Kind] == "" {
+			people[n.CharacterID][n.Kind] = n.Value
+		}
+	}
+
 	rows := make([]speakerDTO, 0, len(order))
 	for _, name := range order {
 		ids := idsBySpeaker[name]
@@ -412,6 +459,8 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 			row.Role = c.IsRole
 			row.Aliases = c.Aliases
 			row.Pronouns = c.Pronouns
+			row.Race, row.Nationality = people[c.ID][store.NoteKind], people[c.ID][store.NoteNationality]
+			row.Age, row.AgeYears = strings.Join(ages[c.ID], "; "), ageYears[c.ID]
 		}
 		// The voice this speaker's dialogue actually generates/plays under
 		// right now - their own assigned preset if they have one for this
@@ -638,6 +687,11 @@ type mergeCharacterRequest struct {
 	// "character" ("the older man") into its kind ("Man"), where the
 	// description is no name the target goes by.
 	AsRole bool `json:"asRole,omitempty"`
+	// NoAlias merges without making the merged-away name (or its own
+	// aliases) another name for the target - for a name that was never
+	// theirs (a mislabel, someone else's name on their lines), which
+	// attribution would otherwise keep folding into them.
+	NoAlias bool `json:"noAlias,omitempty"`
 }
 
 // handleMergeCharacter folds one character into another: every paragraph
@@ -704,6 +758,12 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	storeTargetName := targetName
+	// slot is the speaker number the merged lines take: a role stored with
+	// its number in its name ("Drake 8") folded into the plain role keeps
+	// that number on its lines (speakerattr.SplitRoleIndex wraps it into
+	// the slots there are), instead of all of them becoming the role's
+	// one unnumbered voice.
+	slot := 0
 	if targetName == "Narrator" {
 		storeTargetName = ""
 	} else if targetName != "Unknown" {
@@ -719,6 +779,11 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		storeTargetName = target.Name
+		if target.IsRole || req.AsRole {
+			if label, n := speakerattr.SplitRoleIndex(char.Name); n > 0 && strings.EqualFold(label, target.Name) {
+				slot = n
+			}
+		}
 		if req.AsRole && !target.IsRole {
 			if err := s.Store.SetCharacterRole(target.ID, true); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
@@ -730,7 +795,7 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 		// it back in, reads "Albert said" as the target, and the same
 		// split doesn't come back. Not for a junk name ("Fritz and
 		// Bert", "No one"), which was never anyone's name.
-		if clean, _ := speakerattr.SanitizeSpeaker(char.Name); clean == char.Name && !req.AsRole {
+		if clean, _ := speakerattr.SanitizeSpeaker(char.Name); clean == char.Name && !req.AsRole && !req.NoAlias {
 			if err := s.Store.AddCharacterAliases(target.ID, append([]string{char.Name}, char.Aliases...)...); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
@@ -753,9 +818,19 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-	} else if err := s.renameSpeakerEverywhere(books, char.Name, storeTargetName); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	} else {
+		if slot > 0 {
+			for _, b := range books {
+				if err := s.Store.NumberSpeakerLines(b.ID, char.Name, slot); err != nil {
+					writeError(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			}
+		}
+		if err := s.renameSpeakerEverywhere(books, char.Name, storeTargetName); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	if err := s.deleteCharacterIdentity(r, *char); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -782,8 +857,9 @@ type reattributeSpeakerRequest struct {
 // character attribution's own accidental character row, or the "Unknown"
 // sentinel itself, e.g. after a reader manually renamed/deleted the wrong
 // speaker upstream - it re-judges every one of that speaker's own
-// paragraphs in this book (chapter by chapter, one KindSpeakerReattribution
-// task per chapter, all grouped under one pipeline_auto_split task - see
+// paragraphs in every book of the series (in this book only, for
+// "Unknown"), chapter by chapter - one KindSpeakerReattribution
+// task per chapter, grouped under one pipeline_auto_split task a book - see
 // jobs.Manager.EnqueueBulk/RunReattribution) and
 // redistributes them to whichever real character/Narrator/Unknown they
 // actually belong to, using the exact same chapter-wide LLM pass
@@ -867,46 +943,62 @@ func (s *Server) handleReattributeSpeaker(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	paragraphs, err := s.Store.ListParagraphsRawForBook(bookID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	targetByChapter := map[string]map[int]bool{}
-	for _, p := range paragraphs {
-		if p.Speaker != name {
-			continue
+	// A real character is split wherever they speak: the roster is the
+	// series', and marking the name invalid leaves their lines in the other
+	// books orphaned otherwise. "Unknown" is every book's own catch-all,
+	// so only the open book's is re-judged.
+	books := []store.Book{*book}
+	if name != "Unknown" {
+		if books, err = s.booksInScope(book); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
 		}
-		if targetByChapter[p.ChapterID] == nil {
-			targetByChapter[p.ChapterID] = map[int]bool{}
-		}
-		targetByChapter[p.ChapterID][p.Idx] = true
 	}
-
 	type chapterTarget struct {
 		ch        *store.Chapter
 		targetIdx map[int]bool
 	}
-	var targets []chapterTarget
-	for chapterID, targetIdx := range targetByChapter {
-		ch, err := s.Store.GetChapterByID(chapterID)
+	queued := 0
+	for i := range books {
+		b := &books[i]
+		paragraphs, err := s.Store.ListParagraphsRawForBook(b.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if ch == nil {
+		targetByChapter := map[string]map[int]bool{}
+		for _, p := range paragraphs {
+			if p.Speaker != name {
+				continue
+			}
+			if targetByChapter[p.ChapterID] == nil {
+				targetByChapter[p.ChapterID] = map[int]bool{}
+			}
+			targetByChapter[p.ChapterID][p.Idx] = true
+		}
+		var targets []chapterTarget
+		for chapterID, targetIdx := range targetByChapter {
+			ch, err := s.Store.GetChapterByID(chapterID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			if ch == nil {
+				continue
+			}
+			targets = append(targets, chapterTarget{ch: ch, targetIdx: targetIdx})
+		}
+		if len(targets) == 0 {
 			continue
 		}
-		targets = append(targets, chapterTarget{ch: ch, targetIdx: targetIdx})
-	}
-	sort.Slice(targets, func(i, j int) bool { return targets[i].ch.Idx < targets[j].ch.Idx })
+		sort.Slice(targets, func(i, j int) bool { return targets[i].ch.Idx < targets[j].ch.Idx })
+		queued += len(targets)
 
-	// One pipeline_auto_split task wraps every chapter's own
-	// KindSpeakerReattribution task, so the whole click shows up (and can
-	// be canceled/promoted) as a single Jobs-dashboard row - see
-	// jobs.BulkGroup.
-	if len(targets) > 0 {
-		s.Jobs.EnqueueBulk(book.ID, jobs.BulkGroup{
+		// One pipeline_auto_split task a book wraps every chapter's own
+		// KindSpeakerReattribution task, so the click shows up (and can
+		// be canceled/promoted) as one Jobs-dashboard row per book - see
+		// jobs.BulkGroup.
+		s.Jobs.EnqueueBulk(b.ID, jobs.BulkGroup{
 			Kind:     "pipeline_auto_split",
 			Key:      "auto_split:" + speakerKey,
 			Label:    name,
@@ -918,10 +1010,10 @@ func (s *Server) handleReattributeSpeaker(w http.ResponseWriter, r *http.Request
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					if _, err := s.Jobs.RunReattribution(ctx, book.ID, t.ch.ID, t.ch.Idx, tier(), speakerKey, name, func(ctx context.Context) (int, func(), error) {
-						return s.reattributeChapterSpeaker(ctx, book, t.ch, speakerKey, name, t.targetIdx)
+					if _, err := s.Jobs.RunReattribution(ctx, b.ID, t.ch.ID, t.ch.Idx, tier(), speakerKey, name, func(ctx context.Context) (int, func(), error) {
+						return s.reattributeChapterSpeaker(ctx, b, t.ch, speakerKey, name, false, t.targetIdx)
 					}); err != nil {
-						log.Printf("httpapi: auto split %q in book %s: chapter %d: %v", name, book.ID, t.ch.Idx, err)
+						log.Printf("httpapi: auto split %q in book %s: chapter %d: %v", name, b.ID, t.ch.Idx, err)
 					}
 				}()
 			}
@@ -930,7 +1022,7 @@ func (s *Server) handleReattributeSpeaker(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(targets)})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
 }
 
 type setCharacterAliasesRequest struct {
@@ -999,7 +1091,7 @@ func (s *Server) handleRenameCharacter(w http.ResponseWriter, r *http.Request) {
 		if c.ID == char.ID {
 			continue
 		}
-		if strings.EqualFold(c.Name, name) {
+		if namekey.Equal(c.Name, name) {
 			if c.Invalid {
 				writeError(w, http.StatusConflict, fmt.Sprintf("%q is a character marked as not a speaker - delete it first", c.Name))
 			} else {
@@ -1007,7 +1099,7 @@ func (s *Server) handleRenameCharacter(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		if !c.Invalid && slices.ContainsFunc(c.Aliases, func(a string) bool { return strings.EqualFold(a, name) }) {
+		if !c.Invalid && slices.ContainsFunc(c.Aliases, func(a string) bool { return namekey.Equal(a, name) }) {
 			writeError(w, http.StatusConflict, fmt.Sprintf("%q is another name for %s - merge the two instead", name, c.Name))
 			return
 		}
@@ -1054,14 +1146,14 @@ func (s *Server) handleSetCharacterAliases(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	taken := map[string]string{} // lower-cased name/alias -> owning character's name
+	taken := map[string]string{} // folded (namekey.Fold) name/alias -> owning character's name
 	for _, c := range roster {
 		if c.ID == char.ID || c.Invalid {
 			continue
 		}
-		taken[strings.ToLower(c.Name)] = c.Name
+		taken[namekey.Fold(c.Name)] = c.Name
 		for _, a := range c.Aliases {
-			taken[strings.ToLower(a)] = c.Name
+			taken[namekey.Fold(a)] = c.Name
 		}
 	}
 	for _, a := range req.Aliases {
@@ -1073,7 +1165,7 @@ func (s *Server) handleSetCharacterAliases(w http.ResponseWriter, r *http.Reques
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("%q isn't one person's name", a))
 			return
 		}
-		if owner, ok := taken[strings.ToLower(a)]; ok {
+		if owner, ok := taken[namekey.Fold(a)]; ok {
 			writeError(w, http.StatusConflict, fmt.Sprintf("%q already belongs to %s - merge the two characters instead", a, owner))
 			return
 		}
@@ -1088,6 +1180,203 @@ func (s *Server) handleSetCharacterAliases(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, aliasesResponse{Aliases: updated.Aliases})
+}
+
+// splitCharacterAliasRequest is POST .../characters/{characterId}/aliases/split's body.
+type splitCharacterAliasRequest struct {
+	// Alias is the one of the character's other names that is really
+	// somebody else.
+	Alias string `json:"alias,omitempty"`
+	// Aliases is several of them at once, each somebody else and nobody the
+	// same as another: one pass over the character's lines sorts them among
+	// everyone, rather than a pass per name each looking at the same lines.
+	Aliases []string `json:"aliases,omitempty"`
+}
+
+// handleSplitCharacterAlias makes one of a character's aliases (or
+// several, each their own person) a character of its own - for a name
+// that was merged or folded into the wrong person. The alias comes off
+// the character (so attribution stops
+// folding it back), a character of that name is created if the series has
+// none, and the lines that may be theirs are looked over again: in every
+// chapter of the series whose text writes the alias, the character's lines
+// are re-judged among them (and anyone else) by the same per-chapter
+// reattribution Auto Split runs, one pipeline_auto_split row per book.
+// Lines the reader set by hand stay, as does every line in a chapter that
+// never writes the alias.
+//
+// Answers 202 with the chapters queued - 0 when no chapter writes the
+// alias, or when the LLM isn't configured (the roster change is still
+// made). 400 for a name that isn't one of the character's aliases; 409
+// when the series has that name as a character marked not a speaker.
+func (s *Server) handleSplitCharacterAlias(w http.ResponseWriter, r *http.Request) {
+	var req splitCharacterAliasRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	book, err := s.Store.GetBook(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if book == nil {
+		writeError(w, http.StatusNotFound, "book not found")
+		return
+	}
+	char, err := s.Store.GetCharacter(r.PathValue("characterId"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if char == nil || char.Scope != store.SeriesScope(book) {
+		writeError(w, http.StatusNotFound, "character not found")
+		return
+	}
+	aliases := req.Aliases
+	if req.Alias != "" {
+		aliases = append([]string{req.Alias}, aliases...)
+	}
+	queued, err := s.splitCharacterAliases(book, char, aliases)
+	if err != nil {
+		writeBuildError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
+}
+
+// splitCharacterAliases is handleSplitCharacterAlias's change, shared with
+// a roster-review proposal accepted as a split: each alias off char, a
+// character of each name, and char's lines re-judged in the chapters that
+// write any of them - one pass however many names, so a line is weighed
+// between all of them at once. It returns how many chapters were queued; a
+// refusal is an httpError, made before anything is changed.
+func (s *Server) splitCharacterAliases(book *store.Book, char *store.Character, aliases []string) (int, error) {
+	remaining := slices.Clone([]string(char.Aliases))
+	var names []string
+	for _, alias := range aliases {
+		alias = strings.TrimSpace(alias)
+		if slices.ContainsFunc(names, func(n string) bool { return namekey.Equal(n, alias) }) {
+			continue
+		}
+		at := slices.IndexFunc(remaining, func(a string) bool { return namekey.Equal(a, alias) })
+		if alias == "" || at < 0 {
+			return 0, httpError(http.StatusBadRequest, fmt.Sprintf("%q isn't another name of %s", alias, char.Name))
+		}
+		alias = remaining[at]
+		existing, err := s.Store.GetCharacterByName(char.Scope, alias)
+		if err != nil {
+			return 0, err
+		}
+		if existing != nil && existing.Invalid {
+			return 0, httpError(http.StatusConflict, fmt.Sprintf("%q is a character marked as not a speaker - delete it first", existing.Name))
+		}
+		if existing != nil && existing.ID == char.ID {
+			// A case variant of the character's own name, not another person.
+			return 0, httpError(http.StatusBadRequest, fmt.Sprintf("%q is this character's own name (names are matched ignoring case)", alias))
+		}
+		remaining = slices.Delete(remaining, at, at+1)
+		names = append(names, alias)
+	}
+	if len(names) == 0 {
+		return 0, httpError(http.StatusBadRequest, "name the alias to split off")
+	}
+
+	if err := s.Store.SetCharacterAliases(char.ID, remaining); err != nil {
+		return 0, err
+	}
+	splitIDs := make([]string, 0, len(names))
+	for i, name := range names {
+		split, _, err := s.Store.UpsertCharacter(char.Scope, name, false)
+		if err != nil {
+			return 0, err
+		}
+		names[i] = split.Name
+		splitIDs = append(splitIDs, split.ID)
+	}
+	if s.Speaker == nil {
+		return 0, nil
+	}
+
+	books, err := s.booksInScope(book)
+	if err != nil {
+		return 0, err
+	}
+	// Its own key, so an Auto Split of the same character isn't taken for
+	// this (see EnqueueReattribution's dedup key).
+	sort.Strings(splitIDs)
+	speakerKey := char.ID + ":alias:" + strings.Join(splitIDs, "+")
+	label := strings.Join(names, ", ") + " from " + char.Name
+	queued := 0
+	for _, b := range books {
+		paragraphs, err := s.Store.ListParagraphsRawForBook(b.ID)
+		if err != nil {
+			return 0, err
+		}
+		// Only chapters that write one of the aliases: nobody speaks under a name
+		// their chapter never uses, and a lead's every line in every
+		// chapter is a lot to ask about again.
+		written := map[string]bool{}
+		targetByChapter := map[string]map[int]bool{}
+		for _, p := range paragraphs {
+			if !written[p.ChapterID] && slices.ContainsFunc(names, func(n string) bool { return speakerattr.MentionsWord(p.Text, n) }) {
+				written[p.ChapterID] = true
+			}
+			if p.Speaker != char.Name {
+				continue
+			}
+			if targetByChapter[p.ChapterID] == nil {
+				targetByChapter[p.ChapterID] = map[int]bool{}
+			}
+			targetByChapter[p.ChapterID][p.Idx] = true
+		}
+		type chapterTarget struct {
+			ch        *store.Chapter
+			targetIdx map[int]bool
+		}
+		var targets []chapterTarget
+		for chapterID, targetIdx := range targetByChapter {
+			if !written[chapterID] {
+				continue
+			}
+			ch, err := s.Store.GetChapterByID(chapterID)
+			if err != nil {
+				return 0, err
+			}
+			if ch == nil {
+				continue
+			}
+			targets = append(targets, chapterTarget{ch: ch, targetIdx: targetIdx})
+		}
+		if len(targets) == 0 {
+			continue
+		}
+		sort.Slice(targets, func(i, j int) bool { return targets[i].ch.Idx < targets[j].ch.Idx })
+		queued += len(targets)
+		s.Jobs.EnqueueBulk(b.ID, jobs.BulkGroup{
+			Kind:     "pipeline_auto_split",
+			Key:      "auto_split:" + speakerKey,
+			Label:    label,
+			Tier:     jobs.TierBackground,
+			Children: &jobs.ChildFilter{Kinds: []jobs.Kind{jobs.KindSpeakerReattribution}, Label: label},
+		}, func(ctx context.Context, tier func() int) error {
+			var wg sync.WaitGroup
+			for _, t := range targets {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if _, err := s.Jobs.RunReattribution(ctx, b.ID, t.ch.ID, t.ch.Idx, tier(), speakerKey, label, func(ctx context.Context) (int, func(), error) {
+						return s.reattributeChapterSpeaker(ctx, &b, t.ch, speakerKey, char.Name, true, t.targetIdx)
+					}); err != nil {
+						log.Printf("httpapi: split %q from %q in book %s: chapter %d: %v", names, char.Name, b.ID, t.ch.Idx, err)
+					}
+				}()
+			}
+			wg.Wait()
+			return nil
+		})
+	}
+	return queued, nil
 }
 
 type setCharacterPronounsRequest struct {
@@ -1128,6 +1417,103 @@ func (s *Server) handleSetCharacterPronouns(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, pronounsResponse{Pronouns: pronouns})
+}
+
+// speakerLinesDTO is one speaker's dialogue lines across a series.
+type speakerLinesDTO struct {
+	Name  string `json:"name"`
+	Lines int    `json:"lines"`
+}
+
+// seriesSpeakerLinesResponse is GET .../speakers/series-lines' reply.
+type seriesSpeakerLinesResponse struct {
+	// Speakers are the series' speakers with at least one line of
+	// dialogue, most lines first.
+	Speakers []speakerLinesDTO `json:"speakers"`
+}
+
+// handleSeriesSpeakerLines serves GET /api/books/{id}/speakers/series-lines:
+// how many lines of dialogue each speaker has across every book of the
+// book's series - what the Speakers page's whole-series view counts and
+// sorts by (the speakers topic counts one book's). Not a live topic: it
+// reads every book of the series.
+func (s *Server) handleSeriesSpeakerLines(w http.ResponseWriter, r *http.Request) {
+	book, ok := s.lexiconBook(w, r.PathValue("id"))
+	if !ok {
+		return
+	}
+	books, err := s.booksInScope(book)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	lines, err := s.rosterLineCounts(books)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]speakerLinesDTO, 0, len(lines))
+	for name, n := range lines {
+		out = append(out, speakerLinesDTO{Name: name, Lines: n})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Lines != out[j].Lines {
+			return out[i].Lines > out[j].Lines
+		}
+		return out[i].Name < out[j].Name
+	})
+	writeJSON(w, http.StatusOK, seriesSpeakerLinesResponse{Speakers: out})
+}
+
+type setCharacterPeopleRequest struct {
+	// Race is the kind of being they are ("drake") and Nationality where
+	// they are from or whose they are ("Pallassian"); "" clears one.
+	Race        string `json:"race"`
+	Nationality string `json:"nationality"`
+	// Age is their age in years, as the reader states it; 0 clears it.
+	// Setting one replaces the ages the text gave (they stay listed as
+	// skipped notes).
+	Age int `json:"age"`
+}
+
+// handleSetCharacterPeople serves PUT
+// /api/books/{id}/characters/{characterId}/people: sets one character's
+// race, nationality and age by hand - each the one accepted character note
+// of its kind (store.SetCharacterNoteValue), replacing whatever fact finding
+// proposed or the reader accepted before. Their casting is shown both,
+// and the world facts filed under those words. Like pronouns, it doesn't
+// re-characterize on its own - the Speakers page's "Regenerate" does.
+func (s *Server) handleSetCharacterPeople(w http.ResponseWriter, r *http.Request) {
+	var req setCharacterPeopleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	id := r.PathValue("characterId")
+	char, err := s.Store.GetCharacter(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if char == nil {
+		writeError(w, http.StatusNotFound, "character not found")
+		return
+	}
+	if req.Age < 0 || req.Age > 1_000_000 {
+		writeError(w, http.StatusBadRequest, "age must be a number of years")
+		return
+	}
+	age := ""
+	if req.Age > 0 {
+		age = strconv.Itoa(req.Age)
+	}
+	for kind, value := range map[store.CharacterNoteKind]string{store.NoteKind: req.Race, store.NoteNationality: req.Nationality, store.NoteAge: age} {
+		if err := s.Store.SetCharacterNoteValue(id, kind, value); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	writeNoContent(w)
 }
 
 type setCharacterRoleRequest struct {

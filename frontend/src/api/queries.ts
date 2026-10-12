@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from './client'
 import { useLive, useLiveMany } from './live'
 import { useStableCallback } from '../hooks/useStableCallback'
@@ -23,6 +23,8 @@ import type {
   LexiconEntry,
   LexiconSuggestion,
   UpsertLexiconRequest,
+  SetKindAccentRequest,
+  CharacterNote,
   UpsertWorldFactRequest,
   WorldFact,
   TestLLMRequest,
@@ -41,6 +43,7 @@ import type {
   SourceTitleRule,
   BookSettingResponse,
   RosterReviewResponse,
+  VoiceCheckResponse,
   TimeJump,
   ChapterNotes,
   ChapterNotesResponse,
@@ -721,6 +724,14 @@ export function useSetCharacterAliases(bookId: string) {
   })
 }
 
+// See api.splitCharacterAliases.
+export function useSplitCharacterAliases(bookId: string) {
+  return useMutation({
+    mutationFn: ({ characterId, aliases }: { characterId: string; aliases: string[] }) =>
+      api.splitCharacterAliases(bookId, characterId, aliases),
+  })
+}
+
 // A book's time jumps, live - see api.createTimeJump.
 export function useTimeJumps(bookId: string): LiveResult<TimeJump[]> {
   return useLive('timeJumps', { bookId })
@@ -735,6 +746,30 @@ export function useCreateTimeJump(bookId: string) {
 
 export function useDeleteTimeJump(bookId: string) {
   return useMutation({ mutationFn: (jumpId: string) => api.deleteTimeJump(bookId, jumpId) })
+}
+
+export function useAcceptTimeJumpProposal(bookId: string) {
+  return useMutation({
+    mutationFn: ({ id, chapterIdx, years }: { id: string; chapterIdx: number; years: number }) =>
+      api.acceptTimeJumpProposal(bookId, id, chapterIdx, years),
+  })
+}
+
+export function useSkipTimeJumpProposal(bookId: string) {
+  return useMutation({ mutationFn: (id: string) => api.skipTimeJumpProposal(bookId, id) })
+}
+
+// What the text states of single characters in a book's series - proposed
+// and accepted notes, live.
+export function useCharacterNotes(bookId: string): LiveResult<CharacterNote[]> {
+  return useLive('characterNotes', { bookId })
+}
+
+export function useRuleCharacterNotes(bookId: string) {
+  return useMutation({
+    mutationFn: ({ ids, accept, review }: { ids: string[]; accept: boolean; review?: boolean }) =>
+      api.ruleCharacterNotes(bookId, ids, accept, review),
+  })
 }
 
 // See api.setCharacterStage.
@@ -784,6 +819,34 @@ export function useSetCharacterPronouns(bookId: string) {
   })
 }
 
+// Each speaker's lines across the whole series, by name - fetched only
+// while the Speakers page shows the whole series (not live state).
+export function useSeriesSpeakerLines(bookId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['books', bookId, 'series-speaker-lines'],
+    queryFn: () => api.seriesSpeakerLines(bookId),
+    enabled,
+    staleTime: 60_000,
+  })
+}
+
+// See api.setCharacterPeople.
+export function useSetCharacterPeople(bookId: string) {
+  return useMutation({
+    mutationFn: ({
+      characterId,
+      race,
+      nationality,
+      age,
+    }: {
+      characterId: string
+      race: string
+      nationality: string
+      age: number
+    }) => api.setCharacterPeople(bookId, characterId, race, nationality, age),
+  })
+}
+
 export function useDeleteCharacter(bookId: string) {
   return useMutation({
     mutationFn: (characterId: string) => api.deleteCharacter(bookId, characterId),
@@ -792,8 +855,15 @@ export function useDeleteCharacter(bookId: string) {
 
 export function useMergeCharacter(bookId: string) {
   return useMutation({
-    mutationFn: ({ characterId, targetName }: { characterId: string; targetName: string }) =>
-      api.mergeCharacter(bookId, characterId, targetName),
+    mutationFn: ({
+      characterId,
+      targetName,
+      noAlias,
+    }: {
+      characterId: string
+      targetName: string
+      noAlias?: boolean
+    }) => api.mergeCharacter(bookId, characterId, targetName, noAlias),
   })
 }
 
@@ -1022,10 +1092,41 @@ export function useRosterReviewRunning(bookId: string): boolean {
 
 export function useDecideRosterProposal(bookId: string) {
   return useMutation({
-    mutationFn: (args: { proposalId: string; accept: boolean }) =>
+    mutationFn: (args: {
+      proposalId: string
+      accept: boolean
+      noAlias?: boolean
+      split?: boolean
+    }) =>
       args.accept
-        ? api.acceptRosterProposal(bookId, args.proposalId)
+        ? api.acceptRosterProposal(bookId, args.proposalId, args.noAlias, args.split)
         : api.skipRosterProposal(bookId, args.proposalId),
+  })
+}
+
+// The voices of the book's roster that a voice check found not to sound
+// like their casting (live topic) - see backend httpapi/voice_check.go.
+export function useVoiceCheck(bookId: string): LiveResult<VoiceCheckResponse> {
+  return useLive('voiceCheck', { bookId })
+}
+
+export function useRunVoiceCheck(bookId: string) {
+  return useMutation({ mutationFn: () => api.runVoiceCheck(bookId) })
+}
+
+// Whether bookId's voice check is queued or running.
+export function useVoiceCheckRunning(bookId: string): boolean {
+  return useBookJobs(bookId, 'voice_check').length > 0
+}
+
+// The speakers whose voice is queued to render, or rendering.
+export function useVoiceRendering(bookId: string): Set<string> {
+  return useLabelSet(bookId, 'voice_provision')
+}
+
+export function useDismissVoiceCheck(bookId: string) {
+  return useMutation({
+    mutationFn: (presetId: string) => api.dismissVoiceCheck(bookId, presetId),
   })
 }
 
@@ -1113,6 +1214,44 @@ export function useUpsertBookFact(bookId: string) {
 
 export function useDeleteBookFact(bookId: string) {
   return useMutation({ mutationFn: (factId: string) => api.deleteBookFact(bookId, factId) })
+}
+
+export function useFindBookFacts(bookId: string) {
+  return useMutation({ mutationFn: () => api.findBookFacts(bookId) })
+}
+
+// Whether the search for bookId's series' facts is queued or running.
+export function useFactFindingRunning(bookId: string): boolean {
+  return useBookJobs(bookId, 'fact_finding').length > 0
+}
+
+// How each kind's characters are cast, by accent. Fetched, not pushed: it
+// reads every casting of the series.
+export function useKindAccents(bookId: string) {
+  return useQuery({
+    queryKey: ['kind-accents', bookId],
+    queryFn: () => api.kindAccents(bookId),
+  })
+}
+
+export function useSetKindAccent(bookId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: SetKindAccentRequest) => api.setKindAccent(bookId, body),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['kind-accents', bookId] }),
+  })
+}
+
+export function useResetBookFacts(bookId: string) {
+  return useMutation({ mutationFn: () => api.resetBookFacts(bookId) })
+}
+
+export function useReviewBookFact(bookId: string) {
+  return useMutation({ mutationFn: (factId: string) => api.reviewBookFact(bookId, factId) })
+}
+
+export function useSkipBookFact(bookId: string) {
+  return useMutation({ mutationFn: (factId: string) => api.skipBookFact(bookId, factId) })
 }
 
 export function useVoicePresets(): LiveResult<VoicePresets> {

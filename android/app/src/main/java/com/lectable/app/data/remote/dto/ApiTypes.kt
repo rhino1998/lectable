@@ -112,6 +112,24 @@ object BulkScopes {
 }
 
 /**
+ * CharacterNoteKind is what a CharacterNote says about its character.
+ *
+ *
+ * Values: see [CharacterNoteKinds].
+ */
+typealias CharacterNoteKind = String
+
+/**
+ * [CharacterNoteKind]'s wire values, in declaration order.
+ */
+object CharacterNoteKinds {
+    const val KIND: CharacterNoteKind = "kind"
+    const val NATIONALITY: CharacterNoteKind = "nationality"
+    const val AGE: CharacterNoteKind = "age"
+    val VALUES: List<CharacterNoteKind> = listOf(KIND, NATIONALITY, AGE)
+}
+
+/**
  * CharacterVoiceMode is store.Book.CharacterVoiceMode's own type - one of
  * four mutually exclusive settings for whether/how a character's own
  * narration voice can override the book's:
@@ -308,9 +326,10 @@ typealias RosterFixKind = String
 object RosterFixKinds {
     const val MERGE: RosterFixKind = "merge"
     const val REMOVE_ALIAS: RosterFixKind = "remove_alias"
+    const val SPLIT_ALIAS: RosterFixKind = "split_alias"
     const val MARK_ROLE: RosterFixKind = "mark_role"
     const val INVALIDATE: RosterFixKind = "invalidate"
-    val VALUES: List<RosterFixKind> = listOf(MERGE, REMOVE_ALIAS, MARK_ROLE, INVALIDATE)
+    val VALUES: List<RosterFixKind> = listOf(MERGE, REMOVE_ALIAS, SPLIT_ALIAS, MARK_ROLE, INVALIDATE)
 }
 
 /**
@@ -388,6 +407,62 @@ object SFXPlannings {
     const val MELODY: SFXPlanning = "melody"
     const val FULL: SFXPlanning = "full"
     val VALUES: List<SFXPlanning> = listOf(OFF, MELODY, FULL)
+}
+
+/**
+ * Trait names a field of Traits, as Mismatches reports it.
+ *
+ *
+ * Values: see [Traits].
+ */
+typealias Trait = String
+
+/**
+ * [Trait]'s wire values, in declaration order.
+ */
+object Traits {
+    const val GENDER: Trait = "gender"
+    const val AGE: Trait = "age"
+    const val PITCH: Trait = "pitch"
+    val VALUES: List<Trait> = listOf(GENDER, AGE, PITCH)
+}
+
+/**
+ * VoiceEffect names one of the effects ("" for none).
+ *
+ *
+ * Values: see [VoiceEffects].
+ */
+typealias VoiceEffect = String
+
+/**
+ * [VoiceEffect]'s wire values, in declaration order.
+ */
+object VoiceEffects {
+    const val INSECTOID: VoiceEffect = "insectoid"
+    const val UNDERWATER: VoiceEffect = "underwater"
+    val VALUES: List<VoiceEffect> = listOf(INSECTOID, UNDERWATER)
+}
+
+/**
+ * WordClass is what sort of word a WorldFact is filed under, for the
+ * roster rules.
+ *
+ *
+ * Values: see [WordClasses].
+ */
+typealias WordClass = String
+
+/**
+ * [WordClass]'s wire values, in declaration order.
+ */
+object WordClasses {
+    const val TITLE: WordClass = "title"
+    const val ROLE: WordClass = "role"
+    const val RACE: WordClass = "race"
+    const val NATIONALITY: WordClass = "nationality"
+    const val PLACE: WordClass = "place"
+    val VALUES: List<WordClass> = listOf(TITLE, ROLE, RACE, NATIONALITY, PLACE)
 }
 
 /** Backend catalog values - see each constant. */
@@ -470,6 +545,19 @@ object ApiCatalog {
      */
     const val DEFAULT_CHARACTER_VOICE_MODE: String = "narrator"
 }
+
+/**
+ * accentGroupDTO is the characters of one kind cast with one accent.
+ */
+@Serializable
+data class AccentGroupDto(
+    /**
+     * Accent is the accent's name as speakerattr.CastingAccent reads it
+     * from a casting ("General American", "Cockney").
+     */
+    val accent: String = "",
+    val characters: List<CharacterRefDto> = emptyList(),
+)
 
 @Serializable
 data class AddBookSourceRequestDto(
@@ -965,6 +1053,23 @@ data class CanceledCountResponseDto(
     val canceled: Int = 0,
 )
 
+/**
+ * castAccentDTO is the accent a casting was held to
+ * (speakerattr.AccentDecision).
+ */
+@Serializable
+data class CastAccentDto(
+    val accent: String = "",
+    /**
+     * Evidence is the sentence it rests on ("none" for the setting's),
+     * Whose who the model read that sentence as being about, and Basis the
+     * rule that decided it ("origin", "idiom", "setting", ...).
+     */
+    val evidence: String = "",
+    val whose: String = "",
+    val basis: String = "",
+)
+
 @Serializable
 data class CastMemberDto(
     val name: String = "",
@@ -977,6 +1082,11 @@ data class CastMemberDto(
 data class ChapterDetailDto(
     val idx: Int = 0,
     val title: String = "",
+    /**
+     * Matter is chapterSummaryDTO.Matter, here for the players: each holds
+     * the chapters it has loaded, not the book's list.
+     */
+    val matter: Boolean = false,
     val generating: Boolean = false,
     val paragraphs: List<ParagraphDto> = emptyList(),
     val content: List<ContentItemDto> = emptyList(),
@@ -1048,6 +1158,15 @@ data class ChapterSummaryDto(
      */
     val passes: PassesDto = PassesDto(),
     /**
+     * Matter marks front or back matter (a title page, the copyright page,
+     * "About the Author") rather than story: playback steps over the
+     * chapter, and background narration, the passes and reading progress
+     * leave it out. Set by the book's matter pass or by the reader (PUT
+     * .../chapters/{idx}/matter); a reader who opens one can still have it
+     * read.
+     */
+    val matter: Boolean = false,
+    /**
      * Music* are this chapter's background-music regions: how many were
      * scored, and how many of those have a ready clip / failed. All 0 for
      * a chapter that isn't scored.
@@ -1088,6 +1207,53 @@ data class CharacterNameDto(
     val invalid: Boolean = false,
 )
 
+/**
+ * characterNoteDTO is one entry of a character's dossier
+ * (store.CharacterNote): a single thing the text states about them, with
+ * the sentence it rests on.
+ */
+@Serializable
+data class CharacterNoteDto(
+    val id: String = "",
+    val characterId: String = "",
+    val characterName: String = "",
+    /**
+     * Kind says what Value is: the kind of being they are ("goblin"), or
+     * their age in years at the evidence's chapter ("12").
+     */
+    val kind: CharacterNoteKind = "",
+    val value: String = "",
+    /**
+     * Proposed marks a note fact finding found and the reader hasn't ruled
+     * on; casting is shown accepted notes only.
+     */
+    val proposed: Boolean = false,
+    /**
+     * Skipped marks a note the reader turned down: not shown to casting,
+     * and listed only so it can be put back for review (rule with
+     * review).
+     */
+    val skipped: Boolean = false,
+    /**
+     * Evidence is the sentence of the book the note rests on, word for
+     * word, and the Evidence* fields the chapter it is in.
+     */
+    val evidence: String? = null,
+    val evidenceBookId: String? = null,
+    val evidenceBookTitle: String? = null,
+    val evidenceChapterIdx: Int? = null,
+    val evidenceChapterTitle: String? = null,
+)
+
+/**
+ * characterRefDTO names one character.
+ */
+@Serializable
+data class CharacterRefDto(
+    val id: String = "",
+    val name: String = "",
+)
+
 @Serializable
 data class CharacterStageRequestDto(
     /**
@@ -1119,6 +1285,16 @@ data class CharacterizePreviewResponseDto(
      * many sentences it found.
      */
     val lookups: List<String> = emptyList(),
+    /**
+     * LookupExcerpts are the sentences those searches showed the casting
+     * call, each under its search ("Scylla + Greek: ...").
+     */
+    val lookupExcerpts: List<String> = emptyList(),
+    /**
+     * Accent is the accent decided before the casting call, with the
+     * sentence it rests on; absent when the step was off or failed.
+     */
+    val accent: CastAccentDto? = null,
     /**
      * CurrentSummary is the character's stored casting, for comparison.
      */
@@ -1274,7 +1450,8 @@ data class CreateRosterProposalRequestDto(
      */
     val target: String? = null,
     /**
-     * Detail is the alias to remove (remove_alias only).
+     * Detail is the alias to remove or split off (remove_alias and
+     * split_alias only).
      */
     val detail: String? = null,
     val reason: String? = null,
@@ -1379,6 +1556,11 @@ data class DirectionMarkDto(
      */
     val offset: Int = 0,
     val tag: String = "",
+)
+
+@Serializable
+data class DismissVoiceCheckRequestDto(
+    val presetId: String = "",
 )
 
 /**
@@ -1714,6 +1896,32 @@ data class JobsSummaryDto(
 )
 
 /**
+ * kindAccentsDTO is how the characters of one kind are cast: its accents,
+ * the most common first.
+ */
+@Serializable
+data class KindAccentsDto(
+    /**
+     * Key is the word for the kind: a fact's key, or a word the series'
+     * castings use for many characters and other series' don't ("drake").
+     */
+    val key: String = "",
+    /**
+     * Fact is the text of the fact in force for the kind in this series,
+     * "" when it has none; Global says that fact is the one for every
+     * book, not the series' own.
+     */
+    val fact: String? = null,
+    val global: Boolean = false,
+    /**
+     * Members is how many characters are of the kind and cast with a
+     * stated accent - the ones in Accents.
+     */
+    val members: Int = 0,
+    val accents: List<AccentGroupDto> = emptyList(),
+)
+
+/**
  * kindWorkDTO is one kind's entry in jobsSnapshotDTO.WorkLeft.
  */
 @Serializable
@@ -1845,6 +2053,23 @@ data class LightingDto(
 )
 
 @Serializable
+data class ListenRequestDto(
+    /**
+     * PresetID is the voice whose reference clip is asked about: a preset,
+     * or a derived one (a numbered role member's, an age stage's).
+     */
+    val presetId: String = "",
+    /**
+     * Question is asked of the clip as written.
+     */
+    val question: String = "",
+    /**
+     * MaxTokens caps the answer; 0 takes the worker's default.
+     */
+    val maxTokens: Int? = null,
+)
+
+@Serializable
 data class LlmTestResponseDto(
     val text: String = "",
 )
@@ -1890,6 +2115,13 @@ data class MergeCharacterRequestDto(
      * description is no name the target goes by.
      */
     val asRole: Boolean = false,
+    /**
+     * NoAlias merges without making the merged-away name (or its own
+     * aliases) another name for the target - for a name that was never
+     * theirs (a mislabel, someone else's name on their lines), which
+     * attribution would otherwise keep folding into them.
+     */
+    val noAlias: Boolean = false,
 )
 
 @Serializable
@@ -2481,6 +2713,17 @@ data class ReparseSourceResponseDto(
     val changed: List<Int> = emptyList(),
 )
 
+/**
+ * resetFactsResponse is POST .../facts/reset's reply.
+ */
+@Serializable
+data class ResetFactsResponseDto(
+    /**
+     * Removed is how many of the series' facts were removed.
+     */
+    val removed: Int = 0,
+)
+
 @Serializable
 data class ReviewBookSourceRequestDto(
     /**
@@ -2515,7 +2758,8 @@ data class RosterProposalDto(
     val subjectLines: Int = 0,
     val targetLines: Int = 0,
     /**
-     * Detail is the alias to remove (remove_alias).
+     * Detail is the alias to remove (remove_alias) or split off
+     * (split_alias).
      */
     val detail: String = "",
     val reason: String = "",
@@ -2535,6 +2779,35 @@ data class RosterProposalDto(
 @Serializable
 data class RosterReviewResponseDto(
     val proposals: List<RosterProposalDto> = emptyList(),
+)
+
+@Serializable
+data class RuleCharacterNotesRequestDto(
+    /**
+     * IDs are the notes ruled on - several at once, so every goblin the
+     * pass found can be accepted together.
+     */
+    val ids: List<String> = emptyList(),
+    /**
+     * Accept puts them in force; false turns them down (a proposed note)
+     * or removes them (an accepted one) for good.
+     */
+    val accept: Boolean = false,
+    /**
+     * Review puts them back in front of the reader instead, whatever
+     * Accept says: a skipped (or accepted) note is proposed again.
+     */
+    val review: Boolean = false,
+)
+
+@Serializable
+data class RuleCharacterNotesResponseDto(
+    /**
+     * Recast is how many characters were queued to be cast again: those
+     * an accepted kind brought a world fact their casting had not been
+     * shown.
+     */
+    val recast: Int = 0,
 )
 
 /**
@@ -2566,6 +2839,30 @@ data class SearchResultDto(
     val text: String = "",
 )
 
+/**
+ * seriesSpeakerLinesResponse is GET .../speakers/series-lines' reply.
+ */
+@Serializable
+data class SeriesSpeakerLinesResponseDto(
+    /**
+     * Speakers are the series' speakers with at least one line of
+     * dialogue, most lines first.
+     */
+    val speakers: List<SpeakerLinesDto> = emptyList(),
+)
+
+/**
+ * setChapterMatterRequest is PUT .../chapters/{idx}/matter's body.
+ */
+@Serializable
+data class SetChapterMatterRequestDto(
+    /**
+     * Matter is whether the chapter is front or back matter (true) or
+     * story (false).
+     */
+    val matter: Boolean = false,
+)
+
 @Serializable
 data class SetCharacterAliasesRequestDto(
     val aliases: List<String> = emptyList(),
@@ -2574,6 +2871,22 @@ data class SetCharacterAliasesRequestDto(
 @Serializable
 data class SetCharacterInvalidRequestDto(
     val invalid: Boolean = false,
+)
+
+@Serializable
+data class SetCharacterPeopleRequestDto(
+    /**
+     * Race is the kind of being they are ("drake") and Nationality where
+     * they are from or whose they are ("Pallassian"); "" clears one.
+     */
+    val race: String = "",
+    val nationality: String = "",
+    /**
+     * Age is their age in years, as the reader states it; 0 clears it.
+     * Setting one replaces the ages the text gave (they stay listed as
+     * skipped notes).
+     */
+    val age: Int = 0,
 )
 
 @Serializable
@@ -2594,6 +2907,21 @@ data class SetCharacterRoleRequestDto(
 @Serializable
 data class SetCharacterVoiceRequestDto(
     val voicePresetId: String = "",
+)
+
+/**
+ * setKindAccentRequest is POST /api/books/{id}/facts/accents' body.
+ */
+@Serializable
+data class SetKindAccentRequestDto(
+    /**
+     * Key is the kind, as GET .../facts/accents lists it.
+     */
+    val key: String = "",
+    /**
+     * Accent is the accent every character of the kind should have.
+     */
+    val accent: String = "",
 )
 
 @Serializable
@@ -2794,6 +3122,26 @@ data class SpeakerDto(
      */
     val pronouns: String? = null,
     /**
+     * Race is the kind of being this speaker is ("drake") and Nationality
+     * where they are from or whose they are ("Pallassian") - an accepted
+     * character note of each (store.NoteKind, store.NoteNationality), set
+     * here by hand or accepted from fact finding. Their casting is shown
+     * both, with the facts about them. Omitted when not established.
+     */
+    val race: String? = null,
+    val nationality: String? = null,
+    /**
+     * Age is what the text states of their age, from the accepted
+     * character notes (store.NoteAge): "12 as of Chapter 3", several
+     * joined with "; " in the order found. Omitted when none is accepted.
+     */
+    val age: String? = null,
+    /**
+     * AgeYears is the last of those ages, in years - what the Speakers
+     * page sorts by and edits. 0 when none is accepted.
+     */
+    val ageYears: Int? = null,
+    /**
      * Voices is every voice this speaker's lines in this book are spoken
      * in, each with its samples: their own first, then each numbered member
      * of a role (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), then
@@ -2838,6 +3186,15 @@ data class SpeakerEmotionDto(
      */
     val status: String = "",
     val audioUrl: String? = null,
+)
+
+/**
+ * speakerLinesDTO is one speaker's dialogue lines across a series.
+ */
+@Serializable
+data class SpeakerLinesDto(
+    val name: String = "",
+    val lines: Int = 0,
 )
 
 /**
@@ -2909,6 +3266,24 @@ data class SpeakerVoiceDto(
      * vary.
      */
     val emotions: List<SpeakerEmotionDto> = emptyList(),
+)
+
+/**
+ * splitCharacterAliasRequest is POST .../characters/{characterId}/aliases/split's body.
+ */
+@Serializable
+data class SplitCharacterAliasRequestDto(
+    /**
+     * Alias is the one of the character's other names that is really
+     * somebody else.
+     */
+    val alias: String? = null,
+    /**
+     * Aliases is several of them at once, each somebody else and nobody the
+     * same as another: one pass over the character's lines sorts them among
+     * everyone, rather than a pass per name each looking at the same lines.
+     */
+    val aliases: List<String> = emptyList(),
 )
 
 /**
@@ -3104,6 +3479,18 @@ data class TimeJumpDto(
      * and most characters never need one.
      */
     val voices: Int = 0,
+    /**
+     * Proposed marks a jump fact finding found and the reader hasn't ruled
+     * on: nothing is aged across it until it is accepted (POST
+     * .../time-jumps/proposals/{id}/accept, at this chapter and length or
+     * others), and skipping it keeps it from being found again.
+     */
+    val proposed: Boolean = false,
+    /**
+     * Evidence is the sentences a proposed jump rests on, one a line, each
+     * after the title of its chapter.
+     */
+    val evidence: String? = null,
 )
 
 @Serializable
@@ -3185,6 +3572,19 @@ data class UpdateBookmarkRequestDto(
     val note: String = "",
 )
 
+/**
+ * upsertFactResponse is PUT .../facts' reply.
+ */
+@Serializable
+data class UpsertFactResponseDto(
+    val id: String = "",
+    /**
+     * Recast is how many characters were queued to be cast again because
+     * the request accepted a proposed fact about their kind.
+     */
+    val recast: Int = 0,
+)
+
 @Serializable
 data class UpsertLexiconRequestDto(
     val term: String = "",
@@ -3209,7 +3609,74 @@ data class UpsertWorldFactRequestDto(
     val id: String? = null,
     val key: String = "",
     val aliases: List<String> = emptyList(),
+    /**
+     * Fact is required unless Class is set.
+     */
     val fact: String = "",
+    /**
+     * Class says what sort of word Key is (worldFactDTO.Class), "" for
+     * none; saving a fact with it accepts a class proposed for it.
+     */
+    val `class`: WordClass? = null,
+    /**
+     * Effect is the kind's voice effect (worldFactDTO.Effect), "" for
+     * none. Like Class it is saved as sent: leaving it out clears it.
+     */
+    val effect: VoiceEffect? = null,
+)
+
+/**
+ * voiceCheckDTO is one voice as the check heard it.
+ */
+@Serializable
+data class VoiceCheckDto(
+    /**
+     * PresetID names the voice; what POST .../voice-check/dismiss takes.
+     */
+    val presetId: String = "",
+    val characterId: String = "",
+    /**
+     * Speaker is the character's name, as the regenerate route takes it.
+     */
+    val speaker: String = "",
+    /**
+     * StageID and StageAge say which age stage's voice this is; omitted
+     * for the character's own.
+     */
+    val stageId: String? = null,
+    val stageAge: Int? = null,
+    /**
+     * Instruct is the casting the clip was designed from.
+     */
+    val instruct: String = "",
+    val refAudioUrl: String? = null,
+    val cast: VoiceTraitsDto = VoiceTraitsDto(),
+    val heard: VoiceTraitsDto = VoiceTraitsDto(),
+    /**
+     * Mismatches is the traits on which the two clearly disagree.
+     */
+    val mismatches: List<Trait> = emptyList(),
+    val dismissed: Boolean = false,
+    val checkedAt: Long = 0L,
+)
+
+/**
+ * voiceCheckResponse is GET /api/books/{id}/voice-check.
+ */
+@Serializable
+data class VoiceCheckResponseDto(
+    /**
+     * Voices is how many of the roster's voices have a reference clip to
+     * hear, Checked how many of those have been heard as they are now.
+     */
+    val voices: Int = 0,
+    val checked: Int = 0,
+    /**
+     * Findings is the checked voices that disagree with their casting and
+     * haven't been dismissed, most lines first - or, with ?all=1, every
+     * checked voice.
+     */
+    val findings: List<VoiceCheckDto> = emptyList(),
 )
 
 @Serializable
@@ -3365,6 +3832,33 @@ data class VoiceSettingsUpdateDto(
 )
 
 /**
+ * voiceTraitsDTO is what a voice sounds like, or is cast to: each field
+ * omitted when unknown.
+ */
+@Serializable
+data class VoiceTraitsDto(
+    /**
+     * Gender is "man" or "woman".
+     */
+    val gender: String? = null,
+    /**
+     * Age is "child", "teenager", "young adult", "middle-aged" or
+     * "elderly".
+     */
+    val age: String? = null,
+    /**
+     * Pitch is "low", "medium" or "high".
+     */
+    val pitch: String? = null,
+    /**
+     * Accent is the casting's accent by name, or the listener's own words
+     * for what it heard. Shown, never compared: the listener can't tell
+     * regional accents apart.
+     */
+    val accent: String? = null,
+)
+
+/**
  * wordTimingDTO is one element of paragraphDTO.Words, which is passed
  * through as raw JSON from the stored forced alignment rather than
  * decoded; this documents that shape for cmd/apigen. start/end are
@@ -3395,7 +3889,50 @@ data class WorldFactDto(
      * plural of Key needs none.
      */
     val aliases: List<String> = emptyList(),
+    /**
+     * Fact may be empty for a word with a Class: the class is then all
+     * it says. A fact can have both - a race with its lifespan and accent.
+     */
     val fact: String = "",
+    /**
+     * Class: the word is a title ("Prognugator", "Ser"), a role - a job or
+     * class ("Baker") -, a race ("Drake"), a nationality ("Pallassian") or
+     * a place ("Pallass") of this world, so the roster never reads it as
+     * someone's name: "Prognugator" is not short for "Prognugator Tersk",
+     * "Drake Tesy" may be the same person as "Tesy", and a name made only
+     * of roles, races and nationalities ("Drake Trader") is a role.
+     */
+    val `class`: WordClass? = null,
+    /**
+     * ProposedClass is a class the fact-finding pass proposes for a fact
+     * in force that has none, waiting for the reader: accepted by a PUT
+     * with it as class, turned down by .../skip.
+     */
+    val proposedClass: WordClass? = null,
+    /**
+     * DeclinedClass is a proposed class the reader turned down for a fact
+     * in force; .../review proposes it again.
+     */
+    val declinedClass: WordClass? = null,
+    /**
+     * Effect is a voice effect given to every line of a character whose
+     * race is this fact's word, after the line is generated - the buzz of
+     * an insect people, a voice heard through water - which a casting
+     * can't make a voice model produce.
+     */
+    val effect: VoiceEffect? = null,
+    /**
+     * Skipped: a proposed fact the reader turned down - not in force, and
+     * listed only so it can be put back for review (.../review). Only a
+     * series' own fact can be.
+     */
+    val skipped: Boolean = false,
+    /**
+     * UsedBy are, for a word with a class in force or proposed, the
+     * characters of the book's series whose names use it. Only set in a
+     * book's list.
+     */
+    val usedBy: List<String> = emptyList(),
     /**
      * Global: the fact holds in every book, rather than being one
      * series' own.
@@ -3407,4 +3944,25 @@ data class WorldFactDto(
      * book's list.
      */
     val superseded: Boolean = false,
+    /**
+     * Proposed: found by the fact-finding pass and waiting for the reader
+     * - not in force until accepted (PUT with its id) and gone once
+     * skipped. Only a series' own fact can be.
+     */
+    val proposed: Boolean = false,
+    /**
+     * Evidence is the sentence of the book a proposed fact rests on, word
+     * for word, and the Evidence* fields the chapter it is in.
+     */
+    val evidence: String? = null,
+    val evidenceBookId: String? = null,
+    val evidenceBookTitle: String? = null,
+    val evidenceChapterIdx: Int? = null,
+    val evidenceChapterTitle: String? = null,
+    /**
+     * Replaces is, for a proposed fact, the text of the global fact it
+     * would take the place of in this series once accepted - all of it,
+     * an accent rule included, so the reader may want to carry that over.
+     */
+    val replaces: String? = null,
 )

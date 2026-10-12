@@ -82,6 +82,13 @@ func NewIdentityIndex(paragraphs []string, names map[string][]string) *IdentityI
 	return ix
 }
 
+// MentionsWord reports whether text writes name as a whole word, ignoring
+// case.
+func MentionsWord(text, name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	return name != "" && mentions([]string{name}, strings.ToLower(text))
+}
+
 // mentions reports whether lower-cased text mentions any of forms as a
 // whole word.
 func mentions(forms []string, text string) bool {
@@ -377,7 +384,7 @@ func (c *Client) ResolveCastIdentities(ctx context.Context, bookTitle string, su
 	if ix == nil || len(sum.Cast) == 0 {
 		return sum, nil, nil
 	}
-	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases)
+	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases).WithTitles(roster.World)
 	checks := 0
 	ask := func(phrase string, exclude map[string]bool) (string, error) {
 		if checks >= maxIdentityChecks {

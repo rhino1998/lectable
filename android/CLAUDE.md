@@ -269,6 +269,28 @@ compiled-in default in place if nothing answers in time.
   and "Download book" leaves marked chapters out. Also owns the sleep timer
   (`setSleepTimer`/`sleepTimer` - countdown or "end of chapter"), for the
   same survive-backgrounding reason.
+- `playback/SpatialAudio.kt` + `SpatialAudioRenderer.kt` - **speaker
+  positions**, the twin of `../frontend/src/utils/spatialAudio.ts`: each
+  character is heard from a seat left or right of a centred narrator.
+  `paragraphSeat` is the same seating rule (order of first line in the
+  chapter; narration, unattributed lines and a first-person book's
+  narrator - the `bookSetting` topic's `narrator`, fed in by
+  `ReaderViewModel` via `setCenterSpeaker`, so unknown offline - get
+  none). `ParagraphPlayer.mediaItemFor` tags each clip's `MediaItem` with
+  its seat (`ClipSeat`). `SpatialAudioProcessor` is the first processor in
+  `FastSpeedRenderersFactory`'s chain (mono in, stereo out, always active
+  so the setting applies while playing) and `SeatedAudioRenderer` tells it
+  which clip each decoded buffer belongs to, by matching the buffer's
+  timestamp to the streams the renderer was handed - clips are decoded
+  ahead of the one heard, so `onMediaItemTransition` would move a voice
+  late. `SpatialMixer` does the audio: an equal-power pan (`STEREO`), or
+  for `HEADPHONES` a spherical-head model - the far ear later and duller
+  - with narration left unplaced (the web's `hrtf-head`). It has no
+  outer-ear cues, so there is no twin of the web's `hrtf` (narrator in
+  front). Mode and spread are per device
+  (`PlaybackSettingsRepository.spatialMode`/`spatialWidth`), set on the
+  Settings screen. The recap and background music are separate players
+  and unaffected.
 - `playback/BackgroundMusicPlayer.kt` - the Android analogue of
   `../frontend/src/hooks/useBackgroundMusic.ts`: mixes a chapter's own
   generated background-music regions (`GET .../chapters/{idx}/music`, see
@@ -400,7 +422,8 @@ compiled-in default in place if nothing answers in time.
   position sync (`POSITION_SAVE_MIN_INTERVAL_MS`) and injects the
   app-scoped `ParagraphPlayer`.
 - `ui/settings/` - `SettingsScreen` for backend URL, theme, reader font
-  size/family, generation lookahead (paragraphs ahead of playback sent as
+  size/family, speaker positions (mode and spread - see
+  `playback/SpatialAudio.kt`), generation lookahead (paragraphs ahead of playback sent as
   the `lookahead` request's `paragraphCount`, persisted in
   `PlaybackSettingsRepository`; there's no client-side chapter prefetch -
   offline audio only comes from explicit downloads), an offline-storage summary + "Delete all downloads"
@@ -595,6 +618,9 @@ no Robolectric, so a class bound to ExoPlayer is tested through the plain
 functions its decisions live in - put new logic of that kind there rather
 than inline. MockK (test-only) stands in for final collaborators such as
 `LiveStore` and `Context`; DAOs are small in-memory fakes:
+- `playback/SpatialAudio.kt` (`SpatialAudioTest`) - speaker positions:
+  the seating rule, and `SpatialMixer` on generated tones and clicks (pan
+  levels, the far ear's delay and shadow, clamping).
 - `playback/PlaybackQueue.kt` (`PlaybackQueueTest`) - `ParagraphPlayer`'s
   decisions: what playing a paragraph takes (`playAction`: ask for the
   chapter, park, seek, seek within a merge group, load), which clips to

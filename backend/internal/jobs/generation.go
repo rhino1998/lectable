@@ -16,6 +16,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
+	"github.com/rhino1998/lectable/backend/internal/voicefx"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 	"github.com/rhino1998/lectable/backend/internal/wav"
@@ -68,10 +69,19 @@ func (m *Manager) startGenerationTask(ctx context.Context, t *task) chan taskRes
 	}
 	// KindVoiceProvision likewise has no backing paragraph - see
 	// EnqueueVoiceProvision's own doc comment.
-	if t.kind == KindVoiceProvision || t.kind == KindRecapNarration {
+	if t.kind == KindVoiceProvision || t.kind == KindRecapNarration || t.kind == KindVoiceCheck {
 		go func() {
 			presetID, err := t.runProvision(ctx, t.attempt)
 			ch <- taskResult{presetID: presetID, err: err}
+		}()
+		return ch
+	}
+	// KindListenPreview is KindLLMPreview's text-result shape, outside
+	// poolLLM.
+	if t.kind == KindListenPreview {
+		go func() {
+			text, err := t.runPreviewText(ctx)
+			ch <- taskResult{text: text, err: err}
 		}()
 		return ch
 	}
@@ -213,6 +223,31 @@ func silentClip() ([]byte, error) {
 }
 
 func (m *Manager) generate(ctx context.Context, t *task) (ttsworker.Audio, []ttsproto.Word, error) {
+	audio, words, err := m.generateClean(ctx, t)
+	if err != nil {
+		return audio, words, err
+	}
+	audio, err = withVoiceEffect(audio, t.effect)
+	return audio, words, err
+}
+
+// withVoiceEffect puts a generated clip through effect (voicefx.Apply).
+// The clip's length is kept, so its word timings stay true; its latents
+// are dropped, since they no longer decode to these samples. A clip with
+// no audio (a line found on a shared clip) and "" come back as given.
+func withVoiceEffect(audio ttsworker.Audio, effect voicefx.VoiceEffect) (ttsworker.Audio, error) {
+	if voicefx.Tag(effect) == "" || len(audio.WAV) == 0 {
+		return audio, nil
+	}
+	processed, err := voicefx.Apply(effect, audio.WAV)
+	if err != nil {
+		return ttsworker.Audio{}, fmt.Errorf("voice effect %s: %w", effect, err)
+	}
+	return ttsworker.Audio{WAV: processed}, nil
+}
+
+// generateClean is generate before the voice's effect.
+func (m *Manager) generateClean(ctx context.Context, t *task) (ttsworker.Audio, []ttsproto.Word, error) {
 	if unvoicedTask(t) {
 		t.clipKey, t.clipHit = "", false
 		if t.shared {
@@ -452,7 +487,7 @@ func (m *Manager) finishResult(t *task, result taskResult) (final bool, err erro
 		m.MaybeAdvanceChapterMusic(t.bookID, t.chapterID)
 		return true, result.err
 	}
-	if t.kind == KindVoiceProvision || t.kind == KindRecapNarration {
+	if t.kind == KindVoiceProvision || t.kind == KindRecapNarration || t.kind == KindVoiceCheck {
 		if retryEligible(t, result.err) {
 			log.Printf("jobs: %s task %s failed (attempt %d/%d), retrying via queue: %v", t.kind, t.dedupKey(), t.attempt+1, maxTaskAttempts, result.err)
 			return false, result.err
@@ -474,7 +509,7 @@ func (m *Manager) finishResult(t *task, result taskResult) (final bool, err erro
 		}
 		return true, result.err
 	}
-	if t.kind == KindLLMPreview {
+	if t.kind == KindLLMPreview || t.kind == KindListenPreview {
 		// Same retry-before-delivery reasoning as the preview/provision
 		// branches above - RunLLMPreview's caller is blocked on exactly one
 		// outcome.
@@ -917,7 +952,11 @@ func (m *Manager) generateIndependently(t *task) {
 				m.failParagraph(t, p, err)
 				continue
 			}
-			recipe := designRecipe(t.designModel, t.instruct, t.seed, t.language, p.Text, p.Text)
+			if audio, err = voicefx.Apply(t.effect, audio); err != nil {
+				m.failParagraph(t, p, err)
+				continue
+			}
+			recipe := withEffect(designRecipe(t.designModel, t.instruct, t.seed, t.language, p.Text, p.Text), t.effect)
 			m.saveIndependent(t, p, recipe.Key(m.clipTake(t.bookID, t.chapterID, p, nil, "")), audio, nil, nil)
 		}
 		return
@@ -944,7 +983,11 @@ func (m *Manager) generateIndependently(t *task) {
 			m.failParagraph(t, p, err)
 			continue
 		}
-		recipe := m.clipRecipe(cloneModel, t.presetID, "", t.language, t.cloneInstruct, text, p.Text)
+		if audio, err = withVoiceEffect(audio, t.effect); err != nil {
+			m.failParagraph(t, p, err)
+			continue
+		}
+		recipe := withEffect(m.clipRecipe(cloneModel, t.presetID, "", t.language, t.cloneInstruct, text, p.Text), t.effect)
 		m.saveIndependent(t, p, recipe.Key(m.clipTake(t.bookID, t.chapterID, p, nil, cloneModel)), audio.WAV, audio.Latents, words)
 	}
 }

@@ -282,6 +282,21 @@ type TranscribeResponse struct {
 	Text string `json:"text"`
 }
 
+// ListenRequest is POST /listen's body: Question asked about AudioBase64
+// (a WAV clip) of an audio-language model that hears the recording itself
+// - who is speaking and how, not only the words. MaxTokens caps the
+// answer; 0 takes the worker's default. See audioworker.Worker.Listen.
+type ListenRequest struct {
+	AudioBase64 string `json:"audioBase64"`
+	Question    string `json:"question"`
+	MaxTokens   int    `json:"maxTokens,omitempty"`
+}
+
+// ListenResponse is POST /listen's response body.
+type ListenResponse struct {
+	Text string `json:"text"`
+}
+
 // LLMGenerateRequest is POST /llm/generate's body: one independent chat
 // completion (system + user turn in, reply text out) against the worker's
 // embedded GGUF model (internal/llmworker) - the wire-format counterpart of

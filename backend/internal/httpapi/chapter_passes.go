@@ -8,8 +8,8 @@ import (
 	"slices"
 	"sort"
 	"strconv"
-	"strings"
 
+	"github.com/rhino1998/lectable/backend/internal/namekey"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
@@ -36,7 +36,7 @@ func splitInvalidCharacters(existing []store.Character) ([]store.Character, inva
 	valid := make([]store.Character, 0, len(existing))
 	for _, c := range existing {
 		if c.Invalid {
-			inv.folded[strings.ToLower(c.Name)] = true
+			inv.folded[namekey.Fold(c.Name)] = true
 			continue
 		}
 		inv.valid[c.Name] = true
@@ -46,7 +46,7 @@ func splitInvalidCharacters(existing []store.Character) ([]store.Character, inva
 }
 
 func (inv invalidSpeakers) has(name string) bool {
-	return !inv.valid[name] && inv.folded[strings.ToLower(name)]
+	return !inv.valid[name] && inv.folded[namekey.Fold(name)]
 }
 
 // attributionRun is one speaker-attribution pass's unpersisted result -
@@ -467,10 +467,16 @@ func aroundEditsScope(all []store.Paragraph, edited map[int]bool) ([]store.Parag
 // target (nor any invalid or group name): a target still rejected at the
 // widest window lands on "Unknown".
 //
+// With keep, excludeName is a real character whose lines are only being
+// looked over again (handleSplitCharacterAlias: some of them belong to a
+// character just split off from one of their other names). They stay
+// known, and a target the model gives back to them keeps them; a target
+// no speech tag moves is still asked about.
+//
 // Satisfies jobs.ReattributionFunc's shape directly (see
 // jobs.Manager.EnqueueReattribution); it never pauses, so requeue is
 // always nil.
-func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book, ch *store.Chapter, speakerKey, excludeName string, targetIdx map[int]bool) (reattributed int, requeue func(), err error) {
+func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book, ch *store.Chapter, speakerKey, excludeName string, keep bool, targetIdx map[int]bool) (reattributed int, requeue func(), err error) {
 	// A line the reader corrected by hand isn't the model's to move
 	// (store.ParagraphEdit).
 	edited, err := s.Store.EditedParagraphIdx(ch.ID, store.EditSpeaker)
@@ -493,6 +499,21 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	if err != nil {
 		return 0, nil, err
 	}
+	if keep {
+		// A line that has left excludeName since this was queued (an
+		// earlier split's pass, the reader) was settled by whoever moved
+		// it; "nobody better" below would hand it back.
+		still := make(map[int]bool, len(targetIdx))
+		for _, p := range all {
+			if targetIdx[p.Idx] && p.Speaker == excludeName {
+				still[p.Idx] = true
+			}
+		}
+		targetIdx = still
+		if len(targetIdx) == 0 {
+			return 0, nil, nil
+		}
+	}
 
 	scope := store.SeriesScope(book)
 	roster, err := s.Store.ListCharacters(scope)
@@ -505,7 +526,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	knownAliases := make(map[string][]string, len(existing))
 	knownPronouns := make(map[string]string, len(existing))
 	for _, c := range existing {
-		if c.Name == excludeName {
+		if c.Name == excludeName && !keep {
 			continue
 		}
 		known = append(known, c.Name)
@@ -531,9 +552,9 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 		return ok && p.IsQuote && !p.ScareQuote && !p.Unvoiced()
 	}
 	rejected := func(name string) bool {
-		return name == "" || name == excludeName || invalid.has(name) || speakerattr.IsGroupSpeaker(name)
+		return name == "" || (name == excludeName && !keep) || invalid.has(name) || speakerattr.IsGroupSpeaker(name)
 	}
-	resolver := speakerattr.NewSpeakerNameResolver(known, knownAliases)
+	resolver := speakerattr.NewSpeakerNameResolver(known, knownAliases).WithTitles(s.titles(book))
 	// tagFix runs the speech-tag rules over every dialogue line's current
 	// speaker (targets as given, the rest as stored - context for the
 	// continuation rule) and returns what it says about the targets.
@@ -567,7 +588,7 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 	}
 	var retry []int
 	for idx, name := range tagFix(pending) {
-		if rejected(name) {
+		if name == excludeName || rejected(name) {
 			retry = append(retry, idx)
 		} else {
 			speakers[idx] = name
@@ -595,6 +616,8 @@ func (s *Server) reattributeChapterSpeaker(ctx context.Context, book *store.Book
 		for _, idx := range retry {
 			if name, ok := widened[idx]; ok {
 				settled[idx] = name
+			} else if werr == nil && keep {
+				settled[idx] = excludeName // nobody better: it stays theirs
 			} else if werr == nil {
 				settled[idx] = "Unknown" // rejected even at the widest window
 			}

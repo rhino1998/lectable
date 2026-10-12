@@ -133,6 +133,13 @@ Philips Hue lights themselves over the bridge's local v1 API (HTTPS)
 (`frontend/src/lighting`, android `playback/lighting`), configured
 per device. See the `run-ambience` entry in `backend/docs/api.md`.
 
+**Speaker positions** are a client-side playback setting, per device:
+each character is heard from a seat to the left or right of a centred
+narrator, by plain stereo panning or binaurally for headphones. Seats are
+worked out from each chapter's own speakers and applied as the clip
+plays - clips stay mono and the backend knows nothing of it
+(`frontend/src/utils/spatialAudio.ts`, android `playback/SpatialAudio.kt`).
+
 A book can also be **imported from a website** by link instead of an
 epub - a Royal Road fiction, The Wandering Inn (one volume per book,
 as a series), or a creator's Patreon: the backend fetches it chapter by chapter (the book is
@@ -179,16 +186,37 @@ the rest of the series, their lines are voiced as about that age - the
 same casting recipe redesigned from an instruction rewritten for it. A
 book **time jump** ("N years pass before this chapter", or for the whole
 book) makes them for everyone whose age group changes. Both are set by
-hand on the Speakers tab; nothing detects them yet, and whatever does
-must propose them for the reader to accept, not apply them. See "Age stages"
+hand on the Speakers tab; fact finding (below) proposes time jumps it
+finds in the text, and anything that finds jumps or stages must propose
+them for the reader to accept, not apply them. See "Age stages"
 in `backend/docs/speakerattr.md`.
 
 **World facts** are things the reader records about a story's world,
 each filed under the word that brings it up - "kobold: a short-lived
 kind", "dwarf: Scottish accent" - for one series or for every book (the
 Settings page), a series' fact replacing the general one. Casting is shown
-the facts a character's material mentions. Any pass that proposes facts
-must leave them for the reader to accept. See the `/api/facts` entry in
+the facts a character's material mentions. A fact about a kind can also name a **voice effect** - the
+Antinium's insect buzz, the Drowned Folk's underwater gurgle - put on
+every line of a character of that kind after it is generated (signal
+processing, `backend/internal/voicefx`), since no casting makes a voice
+model produce it. A **fact-finding pass**, run
+from a book's Facts tab, searches the series by meaning for how long each
+kind of being lives and how its people speak, and proposes what it finds, each with the sentence it
+rests on; accepting one recasts the characters of that kind. The same tab
+lists how each kind's characters are cast by accent, so one accent can be
+made the kind's and the odd ones out recast. The pass also proposes
+**character notes** - single things the text states of one character,
+their kind of being or their age at a chapter, each with its sentence -
+which, once accepted, are shown to that character's casting beside its
+other material. A fact can also say what sort of word it is filed under - a **title**,
+**role**, **race**, **nationality** or **place** of the world
+("Prognugator", "Baker", "Drake", "Pallassian", "Pallass"), with or
+without fact text: the roster then never reads the word as someone's name,
+and the pass proposes a class for the words character names share. A
+speaker's own race and nationality can be set on the Speakers tab; their
+casting is shown both, with the facts about them.
+Any pass that
+proposes facts must leave them for the reader to accept. See the `/api/facts` entry in
 `backend/docs/api.md` and "World notes" in `backend/docs/speakerattr.md`.
 
 A **roster review** looks over a series' characters for what many
@@ -197,6 +225,14 @@ that is someone else's name, a description never marked as a role - and
 proposes each fix for the reader to accept or skip on the Speakers tab;
 nothing is merged on its own. See the `roster-review` entry in
 `backend/docs/api.md`.
+
+A **voice check**, run from the Speakers tab, has an audio-language
+model (Audio Flamingo, in `ttsworker`) listen to each character's voice -
+their own clip and each age stage's, not the emotion variants - and lists
+the ones that don't sound like their casting (a man cast and a woman
+heard, a child heard as an adult). It is a rough judge and optional:
+nothing is re-rendered unless the reader asks. See the `voice-check`
+entry in `backend/docs/api.md`.
 
 **Search by meaning**: preprocessing also embeds every paragraph (an
 embedding model in `ttsworker`), so a passage can be found by describing

@@ -83,9 +83,18 @@ func (m *Manager) RunVoiceDesignPreview(ctx context.Context, instruct string, fn
 // chapter/paragraph of its own to show, same reason
 // KindSpeakerCharacterization carries one.
 func (m *Manager) EnqueueVoiceProvision(bookID, characterID, mode, label string, fn func(ctx context.Context, attempt int) (string, error)) {
+	m.EnqueueVoiceProvisionAt(TierBackground, bookID, characterID, mode, label, fn)
+}
+
+// EnqueueVoiceProvisionAt is EnqueueVoiceProvision at a caller-chosen
+// tier: TierUrgent for one voice the reader asked to hear rendered again,
+// which at TierBackground sat behind a whole library's preprocessing with
+// nothing to show for the click. Pushed again for a character already
+// queued, it raises that task's priority (see pushTask).
+func (m *Manager) EnqueueVoiceProvisionAt(tier int, bookID, characterID, mode, label string, fn func(ctx context.Context, attempt int) (string, error)) {
 	m.pushTask(&task{
 		kind:         KindVoiceProvision,
-		tier:         TierBackground,
+		tier:         tier,
 		bookID:       bookID,
 		llmKey:       mode + ":" + characterID,
 		label:        label,
@@ -198,6 +207,60 @@ func (m *Manager) RunSFXPreview(ctx context.Context, engine, prompt string, fn f
 	case out := <-resultCh:
 		return out.audio, out.err
 	}
+}
+
+// listenPreviewSeq is sfxPreviewSeq's own counterpart for
+// KindListenPreview.
+var listenPreviewSeq int64
+
+// RunListenPreview runs fn - one question asked of one clip by the
+// worker's audio-language model (ttsworker.Manager.Listen; see
+// httpapi.handleListen, the only caller) - as a KindListenPreview task in
+// poolSFX, blocking the caller until it finishes: RunLLMPreview's shape
+// with RunSFXPreview's pool, so the listener loads in turn with every
+// other audio model instead of beside one. question is the Jobs
+// dashboard's label.
+func (m *Manager) RunListenPreview(ctx context.Context, question string, fn func(ctx context.Context) (string, error)) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	resultCh := make(chan previewTextOutcome, 1)
+	seq := atomic.AddInt64(&listenPreviewSeq, 1)
+	m.pushTask(&task{
+		parent:             parentOf(ctx),
+		kind:               KindListenPreview,
+		tier:               TierUrgent,
+		llmKey:             fmt.Sprintf("%d", seq),
+		label:              fmt.Sprintf("listen preview #%d", seq),
+		instruct:           question,
+		runPreviewText:     fn,
+		previewTextWaiters: []chan previewTextOutcome{resultCh},
+	})
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case out := <-resultCh:
+		return out.text, out.err
+	}
+}
+
+// EnqueueVoiceCheck queues a check of book's roster's voices (the
+// Speakers page's button) and returns at once - at TierUrgent like
+// EnqueueRosterReview, since the reader asked and is waiting on what it
+// finds, and deduped by scope the same way. fn is the work.
+func (m *Manager) EnqueueVoiceCheck(book *store.Book, scope string, fn func(ctx context.Context) error) {
+	m.pushTask(&task{
+		kind:   KindVoiceCheck,
+		tier:   TierUrgent,
+		bookID: book.ID,
+		llmKey: scope,
+		label:  "Voice check",
+		runProvision: func(ctx context.Context, _ int) (string, error) {
+			return "", fn(ctx)
+		},
+		seriesName:  book.SeriesName,
+		seriesIndex: book.SeriesIndex,
+	})
 }
 
 // llmPreviewSeq is sfxPreviewSeq's own counterpart for KindLLMPreview.

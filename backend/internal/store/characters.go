@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/rhino1998/lectable/backend/internal/namekey"
 )
 
 // RecentChapterSpeakers returns every distinct dialogue speaker in the
@@ -75,6 +77,26 @@ func (s *SQLiteStore) ListCharacters(scope string) ([]Character, error) {
 	return out, rows.Err()
 }
 
+// CastingsByScope returns every valid character's casting (Summary), by
+// roster scope - for telling the words one series' castings use from the
+// ones every series' do (httpapi.kindAccents).
+func (s *SQLiteStore) CastingsByScope() (map[string][]string, error) {
+	rows, err := s.db.Query(`SELECT scope, summary FROM characters WHERE invalid = 0 AND summary != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var scope, summary string
+		if err := rows.Scan(&scope, &summary); err != nil {
+			return nil, err
+		}
+		out[scope] = append(out[scope], summary)
+	}
+	return out, rows.Err()
+}
+
 // GetCharacter is a by-id lookup (e.g. httpapi's .../characters/{id}/...
 // routes, which address a character directly rather than by scope+name).
 func (s *SQLiteStore) GetCharacter(id string) (*Character, error) {
@@ -92,11 +114,13 @@ func (s *SQLiteStore) GetCharacter(id string) (*Character, error) {
 
 func (s *SQLiteStore) GetCharacterByName(scope, name string) (*Character, error) {
 	var c Character
-	// Case-insensitive, an exact-case match first: "woman" is "Woman", so
-	// attribution's UpsertCharacter never makes a second row that differs
-	// only in case (Arise had woman/Woman, doctor/Doctor, barmaid/Barmaid).
+	// By name key (namekey.Fold), an exact match first: "woman" is "Woman"
+	// and "Ve'delina" is "Ve’delina", so attribution's UpsertCharacter
+	// never makes a second row that differs only in case or in which
+	// apostrophe it was typed with (Arise had woman/Woman, doctor/Doctor,
+	// barmaid/Barmaid).
 	err := s.db.QueryRow(`SELECT id, scope, name, summary, ref_line, is_role, invalid, aliases, pronouns, created_at FROM characters
-		WHERE scope = ? AND lower(name) = lower(?) ORDER BY name = ? DESC, created_at LIMIT 1`, scope, name, name).
+		WHERE scope = ? AND namekey(name) = namekey(?) ORDER BY name = ? DESC, created_at LIMIT 1`, scope, name, name).
 		Scan(&c.ID, &c.Scope, &c.Name, &c.Summary, &c.RefLine, &c.IsRole, &c.Invalid, &c.Aliases, &c.Pronouns, &c.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -253,6 +277,31 @@ func (s *SQLiteStore) SyncCharacterSummariesFromPreset(presetID, instruct, refTe
 	return nil
 }
 
+// VoicePresetCharacter is one character a voice preset is assigned to.
+type VoicePresetCharacter struct {
+	ID    string
+	Scope string
+}
+
+// VoicePresetCharacters lists the characters presetID is the voice of,
+// under any clone model.
+func (s *SQLiteStore) VoicePresetCharacters(presetID string) ([]VoicePresetCharacter, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT c.id, c.scope FROM characters c JOIN character_voices cv ON cv.character_id = c.id WHERE cv.voice_preset_id = ? ORDER BY c.id`, presetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []VoicePresetCharacter
+	for rows.Next() {
+		var c VoicePresetCharacter
+		if err := rows.Scan(&c.ID, &c.Scope); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // SetCharacterPronouns sets id's pronouns (Character.Pronouns) - "" clears
 // them. Callers normalize first (speakerattr.NormalizePronouns).
 func (s *SQLiteStore) SetCharacterPronouns(id, pronouns string) error {
@@ -309,7 +358,7 @@ func (s *SQLiteStore) DeleteCharacter(id string) error {
 }
 
 // SetCharacterAliases replaces characterID's aliases (Character.Aliases)
-// with aliases - trimmed, with blanks, case-insensitive duplicates, and the
+// with aliases - trimmed, with blanks, duplicates (by namekey.Fold), and the
 // character's own name dropped. Validation against the rest of the roster
 // (an alias that's another character's name) is the caller's job - see
 // httpapi.handleSetCharacterAliases.
@@ -322,13 +371,13 @@ func (s *SQLiteStore) SetCharacterAliases(characterID string, aliases []string) 
 		return fmt.Errorf("character %s not found", characterID)
 	}
 	clean := AliasList{}
-	seen := map[string]bool{strings.ToLower(c.Name): true}
+	seen := map[string]bool{namekey.Fold(c.Name): true}
 	for _, a := range aliases {
 		a = strings.TrimSpace(a)
-		if a == "" || seen[strings.ToLower(a)] {
+		if a == "" || seen[namekey.Fold(a)] {
 			continue
 		}
-		seen[strings.ToLower(a)] = true
+		seen[namekey.Fold(a)] = true
 		clean = append(clean, a)
 	}
 	sort.Strings(clean)
@@ -378,6 +427,19 @@ func (s *SQLiteStore) ReassignCharacterSpeaker(bookID, fromName, toName string) 
 	return err
 }
 
+// NumberSpeakerLines gives every line in bookID attributed to name, and
+// carrying no speaker number yet, the number index
+// (Paragraph.SpeakerIndex) - for a role that was stored with its number
+// in its name ("Drake 8"), just before its lines are folded into the
+// plain role (httpapi.handleMergeCharacter), so they keep their slot.
+func (s *SQLiteStore) NumberSpeakerLines(bookID, name string, index int) error {
+	_, err := s.db.Exec(
+		`UPDATE paragraphs SET speaker_index = ? WHERE speaker = ? AND is_quote AND speaker_index = 0 AND chapter_id IN (SELECT id FROM chapters WHERE book_id = ?)`,
+		index, name, bookID,
+	)
+	return err
+}
+
 // RenameSpeakerRecords re-points bookID's other records of a speaker name
 // at toName, the counterpart of ReassignCharacterSpeaker for everything
 // that holds a name rather than a paragraph: speaker corrections
@@ -419,13 +481,13 @@ func (s *SQLiteStore) RenameSpeakerRecords(bookID, fromName, toName string) erro
 		}
 		changed := false
 		for i := range notes.Cast {
-			if strings.EqualFold(notes.Cast[i].Name, fromName) {
+			if namekey.Equal(notes.Cast[i].Name, fromName) {
 				notes.Cast[i].Name, changed = toName, true
 			}
 		}
 		for i := range notes.Scenes {
 			for j, name := range notes.Scenes[i].Present {
-				if strings.EqualFold(name, fromName) {
+				if namekey.Equal(name, fromName) {
 					notes.Scenes[i].Present[j], changed = toName, true
 				}
 			}
@@ -456,7 +518,7 @@ func (s *SQLiteStore) RenameSpeakerRecords(bookID, fromName, toName string) erro
 		return err
 	default:
 		var setting BookSetting
-		if json.Unmarshal([]byte(rawSetting), &setting) == nil && strings.EqualFold(setting.Narrator, fromName) {
+		if json.Unmarshal([]byte(rawSetting), &setting) == nil && namekey.Equal(setting.Narrator, fromName) {
 			setting.Narrator = toName
 			encoded, err := json.Marshal(setting)
 			if err != nil {

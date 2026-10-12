@@ -49,6 +49,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/rhino1998/lectable/backend/internal/namekey"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
 
@@ -512,7 +513,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 	for name, isRole := range roster.Roles {
 		knownIsRole[name] = isRole
 	}
-	resolver := NewSpeakerNameResolver(knownCharacters, roster.Aliases)
+	resolver := NewSpeakerNameResolver(knownCharacters, roster.Aliases).WithTitles(roster.World)
 	isQuoteByIdx := make(map[int]bool, len(paragraphs))
 	for _, p := range paragraphs {
 		isQuoteByIdx[p.Idx] = p.IsQuote
@@ -531,7 +532,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 			}
 		}
 		pronouns = votes.winners()
-		tagResolver := NewSpeakerNameResolver(known, roster.Aliases).WithFirstPerson(roster.FirstPerson)
+		tagResolver := NewSpeakerNameResolver(known, roster.Aliases).WithTitles(roster.World).WithFirstPerson(roster.FirstPerson)
 		canon, _ = RefineWithSpeechTags(paragraphs, canon, tagResolver)
 		// Established pronouns win over this call's votes, as they do
 		// when the caller stores them.
@@ -556,7 +557,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		// this call saw folded in, so "the older man" would count as a
 		// name and pass through.
 		canon = ResolveCastRefs(canon, roster.Cast)
-		canon = resolveIdentities(canon, NewSpeakerNameResolver(knownCharacters, roster.Aliases), roles)
+		canon = resolveIdentities(canon, NewSpeakerNameResolver(knownCharacters, roster.Aliases).WithTitles(roster.World), roles)
 		for _, name := range canon {
 			if roles[name] {
 				roleNames[name] = true
@@ -574,7 +575,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		// A role label that carries its own number - a chapter's cast lists
 		// "Thug 1" and "Thug 2", and older rosters hold such names - is that
 		// number of the plain label.
-		nameResolver := NewSpeakerNameResolver(knownCharacters, roster.Aliases)
+		nameResolver := NewSpeakerNameResolver(knownCharacters, roster.Aliases).WithTitles(roster.World)
 		for idx, name := range canon {
 			if !roles[name] {
 				continue
@@ -926,7 +927,8 @@ func canonMapFromPool(pool map[string]bool, roles map[string]bool) map[string]st
 }
 
 // caseFoldPool groups names that are identical except for capitalization
-// (e.g. "The attendant"/"the attendant") and maps every one of them to a
+// (e.g. "The attendant"/"the attendant") or for which apostrophe they use
+// ("Ve'delina"/"Ve’delina" - namekey.Fold) and maps every one of them to a
 // single chosen spelling for its group - the "don't distinguish characters
 // by case" enforcement systemPrompt's own "never sensitive to
 // capitalization alone" rule asks for, backstopped here the same
@@ -952,7 +954,7 @@ func caseFoldPool(names []string) map[string]string {
 	byLower := make(map[string][]string, len(sorted))
 	var lowerOrder []string
 	for _, n := range sorted {
-		lower := strings.ToLower(n)
+		lower := namekey.Fold(n)
 		if _, seen := byLower[lower]; !seen {
 			lowerOrder = append(lowerOrder, lower)
 		}
@@ -984,13 +986,13 @@ func startsUpper(s string) bool {
 }
 
 // containsWholeName reports whether short's words appear, in order and
-// contiguously, as whole words somewhere inside long - case-insensitive
+// contiguously, as whole words somewhere inside long - by namekey.Fold
 // (e.g. "Vesna" inside "Captain Vesna Thorne") - so two names merely
 // sharing a run of letters at a non-word-boundary (like "Vesna" inside
 // "Vesnathorpe") don't collapse.
 func containsWholeName(long, short string) bool {
-	lw := strings.Fields(strings.ToLower(long))
-	sw := strings.Fields(strings.ToLower(short))
+	lw := strings.Fields(namekey.Fold(long))
+	sw := strings.Fields(namekey.Fold(short))
 	if len(sw) == 0 || len(sw) > len(lw) {
 		return false
 	}
@@ -1088,6 +1090,10 @@ type Roster struct {
 	// names the "I" without a name ("Protagonist", "Narrator" on a line of
 	// dialogue) becomes them - see firstPersonAnswer.
 	FirstPerson string
+	// World are the story's own titles, races and nationalities
+	// (store.WorldFact.Class): a word of a name that names no one by
+	// itself - see SpeakerNameResolver.WithTitles.
+	World WorldWords
 	// Corrections are the reader's fixes to dialogue speakers in earlier
 	// chapters of the book, in reading order. Each batch lists the few that
 	// involve the characters its own lines are about (relevantCorrections).
@@ -1633,7 +1639,7 @@ Describe only what can be heard. Leave out looks, clothes, eyes, scars, posture,
 
 Gender: "Pronouns:" is authoritative - he/him is male, she/her is female, they/them and it/its take no gender word unless the description states one. With no pronouns, use explicit narration (he said, the woman); otherwise omit gender.
 
-Accent: every character gets exactly one named accent (Scottish, Received Pronunciation, Cockney, Yorkshire, General American, Irish, German...). Decide it in this order, stopping at the first that applies:
+Accent: every character gets exactly one named accent (Scottish, Received Pronunciation, Cockney, Yorkshire, General American, Irish, German...). When the material ends with an "Accent (decided ...)" line, that is their accent: it was worked out from the evidence already, so name exactly it in "instruct", let it show in "refLine", and ignore the order below. Otherwise decide it in this order, stopping at the first that applies:
 - An explicit signal in the material wins over everything below, including the setting notes: a stated origin, a described accent, dialect written into their speech (dinnae, y'all, ja), foreign words they use.
 - "Origin clues" are narration sentences naming them near a nationality, language, or accent word. A nationality they are given ("a Danish archeologist") or a language they speak among their own people or under stress (swearing, praying, whispering in Danish) is an explicit origin signal: cast that country's accent speaking English. A language they merely learned, study, or talk about isn't, and a clue about someone else in the same sentence isn't theirs.
 - In a real-world setting, a name clearly from another country than the story's place (a German name in London) is a signal too, a weaker one.
@@ -1803,6 +1809,8 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 	copied := map[string]bool{}
 	wrongGender, last := false, false
 	searched, found := false, ""
+	var accent *AccentDecision
+	wrongAccent := false
 	result, err := retryParse(func(attempt int) (string, error) {
 		last = attempt == maxGenerateRetries
 		if len(copied) > 0 {
@@ -1828,6 +1836,16 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 			}
 			prompt += found
 		}
+		// Decided once, from the material and what the searches found,
+		// before the co-stars are in view: their accents are not evidence.
+		if !opts.NoAccentStep && accent == nil && attempt == 0 {
+			if accent = c.accentFor(ctx, name, prompt); accent != nil && opts.OnAccent != nil {
+				opts.OnAccent(*accent)
+			}
+		}
+		if accent != nil {
+			prompt += accentSection(*accent)
+		}
 		if len(shown) > 0 {
 			var cast strings.Builder
 			cast.WriteString("\nAlready cast:\n")
@@ -1835,6 +1853,9 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 				fmt.Fprintf(&cast, "- %s: %s\n", cv.Name, oneLine(cv.Instruct))
 			}
 			prompt += cast.String()
+		}
+		if wrongAccent {
+			prompt += fmt.Sprintf("\nReminder: the accent is decided. \"instruct\" must name the %s accent and no other.\n", accent.Accent)
 		}
 		if wrongGender {
 			prompt += fmt.Sprintf("\nReminder: their pronouns are %s. Open with that gender's word (man, woman, boy, girl); material describing anyone else is not this character.\n", pronouns)
@@ -1868,6 +1889,10 @@ func (c *Client) CharacterizeVoice(ctx context.Context, name string, isRole bool
 				return characterization{}, fmt.Errorf("llm named co-star %s in the casting: %q", cv.Name, result.Instruct)
 			}
 		}
+		if !last && accent != nil && !castsAccent(result.Instruct, accent.Accent) {
+			wrongAccent = true
+			return characterization{}, fmt.Errorf("casting doesn't use the decided %s accent: %q", accent.Accent, result.Instruct)
+		}
 		if !last && genderContradicts(result.Instruct, pronouns) {
 			wrongGender = true
 			return characterization{}, fmt.Errorf("casting contradicts pronouns %s: %q", pronouns, result.Instruct)
@@ -1899,6 +1924,12 @@ type CastingOptions struct {
 	// OnLookup, when set, is told each lookup the model made and how many
 	// sentences came back.
 	OnLookup func(terms []string, found int)
+	// NoAccentStep casts without deciding the accent first (decideAccent),
+	// leaving it to the casting call as before - to tell what the step
+	// changes.
+	NoAccentStep bool
+	// OnAccent, when set, is told the accent the step decided.
+	OnAccent func(AccentDecision)
 }
 
 // maxLookups is how many searches the lookup plan may ask for.
@@ -2181,6 +2212,7 @@ func SystemPrompts() []string {
 	return []string{
 		systemPrompt,
 		characterizeSystemPrompt,
+		accentSystemPrompt,
 		emotionDenseSystemPrompt,
 		pronunciationSystemPrompt,
 		scareQuoteSystemPrompt,

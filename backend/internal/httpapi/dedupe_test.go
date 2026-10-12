@@ -68,3 +68,55 @@ func TestDedupeCharacters(t *testing.T) {
 		t.Fatalf("speakers after dedupe = %v", got)
 	}
 }
+
+func TestDedupeCharactersApostropheVariants(t *testing.T) {
+	_, s, _, ts := newTestServer(t)
+	blocks := []store.BlockInput{
+		{Kind: store.BlockText, Text: "“Hi.”", IsQuote: true},
+		{Kind: store.BlockText, Text: "“Hello.”", IsQuote: true},
+	}
+	bookID, _, err := s.CreateBook("Inn", "A", "en", "", "", 0, []store.ChapterInput{{Title: "One", Blocks: blocks}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, _ := s.GetBook(bookID)
+	scope := store.SeriesScope(book)
+	if _, _, err := s.UpsertCharacter(scope, "Ve’delina", false); err != nil {
+		t.Fatal(err)
+	}
+	// The two spellings only coexist in a roster made before the lookup
+	// ignored the apostrophe - rename a second row into the other one.
+	straight, _, err := s.UpsertCharacter(scope, "Placeholder", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenameCharacter(straight.ID, "Ve'delina"); err != nil {
+		t.Fatal(err)
+	}
+	ch, _ := s.GetChapterByIdx(bookID, 0)
+	if err := s.SetParagraphSpeakers(ch.ID, map[int]string{0: "Ve’delina", 1: "Ve'delina"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var resp dedupeResponse
+	if r := doJSON(t, http.MethodPost, ts.URL+"/api/books/"+bookID+"/characters/dedupe", nil, &resp); r.StatusCode != http.StatusOK {
+		t.Fatalf("dedupe: %d", r.StatusCode)
+	}
+	chars, _ := s.ListCharacters(scope)
+	if len(chars) != 1 || chars[0].Name != "Ve’delina" {
+		t.Fatalf("roster after dedupe = %+v\nmerges %+v", chars, resp.Merges)
+	}
+	if len(resp.Merges) != 1 || resp.Merges[0].Reason != "same name, different apostrophe" {
+		t.Fatalf("merges = %+v", resp.Merges)
+	}
+	ps, _ := s.ListParagraphsRaw(ch.ID)
+	for _, p := range ps {
+		if p.Speaker != "Ve’delina" {
+			t.Fatalf("paragraph %d speaker = %q", p.Idx, p.Speaker)
+		}
+	}
+	// And a new line under the other spelling lands on the same row.
+	if c, created, err := s.UpsertCharacter(scope, "ve'delina", false); err != nil || created || c.Name != "Ve’delina" {
+		t.Fatalf("UpsertCharacter = %+v, created %v, err %v", c, created, err)
+	}
+}

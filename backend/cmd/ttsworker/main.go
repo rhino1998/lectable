@@ -180,6 +180,7 @@ func main() {
 	mux.HandleFunc("POST /design", audioWorker.HandleDesign)
 	mux.HandleFunc("POST /align", audioWorker.HandleAlign)
 	mux.HandleFunc("POST /transcribe", audioWorker.HandleTranscribe)
+	mux.HandleFunc("POST /listen", audioWorker.HandleListen)
 	mux.HandleFunc("POST /music", audioWorker.HandleMusic)
 	mux.HandleFunc("POST /yue2", audioWorker.HandleYuE2)
 	mux.HandleFunc("POST /stable-audio-music", audioWorker.HandleStableAudioMusic)

@@ -3,6 +3,7 @@ import { Link, useParams, useSearch } from '@tanstack/react-router'
 import {
   RiDeleteBinLine,
   RiGitMergeLine,
+  RiHeadphoneLine,
   RiRefreshLine,
   RiSearchEyeLine,
   RiUserHeartLine,
@@ -31,14 +32,18 @@ import {
   useDedupeCharacters,
   useRosterReviewRunning,
   useRunRosterReview,
+  useRunVoiceCheck,
+  useVoiceCheckRunning,
   useSpeakers,
   useVoice,
   useVoicePresets,
+  useSeriesSpeakerLines,
 } from '../api/queries'
 import { ApiError } from '../api/client'
 import { withCacheBust } from '../utils/cacheBust'
 import { JobLists } from './JobsPage'
-import { SpeakerRow } from '../components/speakers/SpeakerRow'
+import { LazyRow } from '../components/speakers/LazyRow'
+import { SpeakerPeopleLists, SpeakerRow } from '../components/speakers/SpeakerRow'
 import { ChapterPassTable } from '../components/speakers/ChapterPassTable'
 import { SpeakerSettings } from '../components/speakers/SpeakerSettings'
 import { BookDetailsForm } from '../components/BookDetailsForm'
@@ -48,6 +53,7 @@ import { LexiconPanel } from '../components/speakers/LexiconPanel'
 import { BookFactsPanel } from '../components/speakers/BookFactsPanel'
 import { SettingPanel } from '../components/speakers/SettingPanel'
 import { RosterReviewPanel } from '../components/speakers/RosterReviewPanel'
+import { VoiceCheckPanel } from '../components/speakers/VoiceCheckPanel'
 import { TimeJumpsPanel } from '../components/speakers/TimeJumpsPanel'
 import { sortedRoster } from '../utils/speakerOrder'
 import { BOOK_SETTINGS_TABS, type BookSettingsTab } from '../utils/bookSettingsTabs'
@@ -113,6 +119,30 @@ function BookJobsTab({ bookId, bookTitle }: { bookId: string; bookTitle: string 
 // book's part of the queue). Voice
 // *selection* for the book's own (narrator) voice stays in VoicePanel/the
 // reader.
+// How the Speakers page orders its roster: as first heard (the server's
+// order), by lines of dialogue, by name, or by age (youngest first, those
+// with no age last).
+type RosterSort = 'heard' | 'lines' | 'name' | 'age'
+
+// The roster's view settings, remembered per browser.
+function readRosterPref(key: string): string | null {
+  try {
+    return window.localStorage.getItem(`lectable.roster.${key}`)
+  } catch {
+    return null
+  }
+}
+function writeRosterPref(key: string, value: string) {
+  try {
+    window.localStorage.setItem(`lectable.roster.${key}`, value)
+  } catch {
+    // Private mode: the setting just isn't remembered.
+  }
+}
+
+// The race/nationality filters' value for speakers with none set.
+const NOT_SET = '\u0000not-set'
+
 export function BookSettingsPage() {
   const { bookId } = useParams({ from: '/books/$bookId/settings' })
   const { tab = 'general' } = useSearch({ from: '/books/$bookId/settings' })
@@ -131,6 +161,8 @@ export function BookSettingsPage() {
   const [dedupeNote, setDedupeNote] = useState<string | null>(null)
   const runRosterReview = useRunRosterReview(bookId)
   const rosterReviewRunning = useRosterReviewRunning(bookId)
+  const runVoiceCheck = useRunVoiceCheck(bookId)
+  const voiceCheckRunning = useVoiceCheckRunning(bookId)
   const [togglingRoleId, setTogglingRoleId] = useState<string | null>(null)
   const mergeCharacter = useMergeCharacter(bookId)
   const reattributeSpeaker = useReattributeSpeaker(bookId)
@@ -167,6 +199,22 @@ export function BookSettingsPage() {
   const [autoSplitNote, setAutoSplitNote] = useState<string | null>(null)
   const reattributingNames = useReattributingSpeakers(bookId)
   const [rosterFilter, setRosterFilter] = useState('')
+  // Roster filters by race and nationality: '' is everyone, NOT_SET the
+  // speakers with none.
+  const [raceFilter, setRaceFilter] = useState('')
+  const [nationalityFilter, setNationalityFilter] = useState('')
+  // Whole series: every speaker of the series with their lines across all
+  // of its books; off, only who speaks in this book. Remembered per
+  // browser, like the sort order.
+  const [wholeSeries, setWholeSeries] = useState(() => readRosterPref('series') === '1')
+  const [rosterSort, setRosterSort] = useState<RosterSort>(
+    () => (readRosterPref('sort') as RosterSort | null) ?? 'heard',
+  )
+  const seriesLinesQuery = useSeriesSpeakerLines(bookId, wholeSeries)
+  const seriesLines = useMemo(
+    () => new Map((seriesLinesQuery.data?.speakers ?? []).map((l) => [l.name, l.lines])),
+    [seriesLinesQuery.data],
+  )
   const [generatingVoiceId, setGeneratingVoiceId] = useState<string | null>(null)
   const [generateVoiceError, setGenerateVoiceError] = useState<string | null>(null)
   const [appearancesFor, setAppearancesFor] = useState<string | null>(null)
@@ -189,10 +237,46 @@ export function BookSettingsPage() {
   )
   // Roster search - matches on name only. Filters just what's displayed;
   // merge/reassign targets still come from the full speakers list.
+  // Who a row's lines can be given to instead (minus the row itself).
+  const validNames = useMemo(
+    () => speakers.filter((o) => o.id && !o.invalid).map((o) => o.name),
+    [speakers],
+  )
   const filteredSpeakers = useMemo(() => {
     const q = rosterFilter.trim().toLowerCase()
-    return q === '' ? speakers : speakers.filter((s) => s.name.toLowerCase().includes(q))
-  }, [speakers, rosterFilter])
+    const of = (filter: string, value?: string) =>
+      filter === '' ||
+      (filter === NOT_SET ? !value : (value ?? '').toLowerCase() === filter.toLowerCase())
+    // Lines to count and sort by: across the series in the whole-series
+    // view, in this book otherwise.
+    const lines = (s: Speaker) =>
+      wholeSeries ? (seriesLines.get(s.name) ?? s.paragraphCount) : s.paragraphCount
+    const shown = speakers.filter(
+      (s) =>
+        (wholeSeries || s.paragraphCount > 0 || s.name === 'Narrator') &&
+        (q === '' || s.name.toLowerCase().includes(q)) &&
+        of(raceFilter, s.race) &&
+        of(nationalityFilter, s.nationality),
+    )
+    if (rosterSort === 'lines') return [...shown].sort((a, b) => lines(b) - lines(a))
+    if (rosterSort === 'name') return [...shown].sort((a, b) => a.name.localeCompare(b.name))
+    if (rosterSort === 'age')
+      return [...shown].sort((a, b) => (a.ageYears || Infinity) - (b.ageYears || Infinity))
+    return shown
+  }, [speakers, rosterFilter, raceFilter, nationalityFilter, wholeSeries, rosterSort, seriesLines])
+  // The races and nationalities the roster's speakers have, each with how
+  // many, most first - what the filters offer.
+  const peopleCounts = useMemo(() => {
+    const count = (values: (string | undefined)[]) => {
+      const n = new Map<string, number>()
+      for (const v of values) if (v) n.set(v.toLowerCase(), (n.get(v.toLowerCase()) ?? 0) + 1)
+      return [...n.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    }
+    return {
+      races: count(speakers.map((s) => s.race)),
+      nationalities: count(speakers.map((s) => s.nationality)),
+    }
+  }, [speakers])
 
   // Derived from the shared backend job queue (the live jobs topic), not
   // local mutation state - "Recharacterize all" is fire-and-forget (see
@@ -331,7 +415,7 @@ export function BookSettingsPage() {
     )
   }
 
-  const runMerge = (characterId: string, name: string, targetName: string) => {
+  const runMerge = (characterId: string, name: string, targetName: string, noAlias: boolean) => {
     if (
       !confirm(
         `Merge "${name}" into "${targetName}"? Their lines in this book are reattributed to "${targetName}", and "${name}"'s own voice is removed.`,
@@ -341,7 +425,7 @@ export function BookSettingsPage() {
     }
     setMergeError(null)
     mergeCharacter.mutate(
-      { characterId, targetName },
+      { characterId, targetName, noAlias },
       {
         onSuccess: () => setMergingId(null),
         onError: (err) =>
@@ -362,7 +446,7 @@ export function BookSettingsPage() {
   const runAutoSplit = (name: string) => {
     if (
       !confirm(
-        `Auto Split "${name}"? Every line currently attributed to them in this book will be re-judged and reassigned to whichever real character, Narrator, or Unknown actually speaks it.${name === 'Unknown' ? '' : ` "${name}" will also be marked invalid so it isn't assigned again.`}`,
+        `Auto Split "${name}"? Every line currently attributed to them in ${name === 'Unknown' ? 'this book' : 'every book of the series'} will be re-judged and reassigned to whichever real character, Narrator, or Unknown actually speaks it.${name === 'Unknown' ? '' : ` "${name}" will also be marked invalid so it isn't assigned again.`}`,
       )
     ) {
       return
@@ -609,6 +693,14 @@ export function BookSettingsPage() {
                 </button>
                 <button
                   className="icon-action-button"
+                  onClick={() => runVoiceCheck.mutate()}
+                  disabled={runVoiceCheck.isPending || voiceCheckRunning}
+                  title="Check the voices — an audio model listens to each character's voice, and each of their ages, and lists below the ones that don't sound like their casting (a man cast and a woman heard, a child heard as an adult). It is a rough judge: nothing is re-rendered unless you ask"
+                >
+                  <RiHeadphoneLine className={voiceCheckRunning ? 'spin' : undefined} />
+                </button>
+                <button
+                  className="icon-action-button"
                   onClick={runDeleteSpeakerData}
                   disabled={deleteSpeakerData.isPending}
                   title="Delete all speaker data for this book"
@@ -619,6 +711,7 @@ export function BookSettingsPage() {
             )}
           </div>
           <RosterReviewPanel bookId={bookId} />
+          <VoiceCheckPanel bookId={bookId} />
           <TimeJumpsPanel bookId={bookId} />
           {speakersQuery.isLoading && <p>Loading…</p>}
           {speakersQuery.isError && <p className="error-text">Could not load speakers.</p>}
@@ -639,68 +732,145 @@ export function BookSettingsPage() {
           {autoSplitNote && <p className="muted">{autoSplitNote}</p>}
           {generateVoiceError && <p className="error-text">{generateVoiceError}</p>}
           {speakers.length > 0 && (
-            <input
-              className="speakers-roster-search"
-              type="search"
-              placeholder="Search speakers…"
-              value={rosterFilter}
-              onChange={(e) => setRosterFilter(e.target.value)}
-            />
+            <div className="speakers-roster-filters">
+              <input
+                className="speakers-roster-search"
+                type="search"
+                placeholder="Search speakers…"
+                value={rosterFilter}
+                onChange={(e) => setRosterFilter(e.target.value)}
+              />
+              <label className="muted">
+                Race{' '}
+                <select value={raceFilter} onChange={(e) => setRaceFilter(e.target.value)}>
+                  <option value="">Any</option>
+                  <option value={NOT_SET}>Not set</option>
+                  {peopleCounts.races.map(([v, n]) => (
+                    <option key={v} value={v}>
+                      {v} ({n})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="muted">
+                Nationality{' '}
+                <select
+                  value={nationalityFilter}
+                  onChange={(e) => setNationalityFilter(e.target.value)}
+                >
+                  <option value="">Any</option>
+                  <option value={NOT_SET}>Not set</option>
+                  {peopleCounts.nationalities.map(([v, n]) => (
+                    <option key={v} value={v}>
+                      {v} ({n})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="muted">
+                Sort{' '}
+                <select
+                  value={rosterSort}
+                  onChange={(e) => {
+                    setRosterSort(e.target.value as RosterSort)
+                    writeRosterPref('sort', e.target.value)
+                  }}
+                >
+                  <option value="heard">First heard</option>
+                  <option value="lines">Most lines</option>
+                  <option value="name">Name</option>
+                  <option value="age">Age</option>
+                </select>
+              </label>
+              <label
+                className="checkbox-label muted"
+                title="Show every speaker of the series, counting and sorting by their lines across all of its books. Off, only who speaks in this book"
+              >
+                <input
+                  type="checkbox"
+                  checked={wholeSeries}
+                  onChange={(e) => {
+                    setWholeSeries(e.target.checked)
+                    writeRosterPref('series', e.target.checked ? '1' : '0')
+                  }}
+                />
+                Whole series
+              </label>
+            </div>
           )}
           {speakers.length > 0 && filteredSpeakers.length === 0 && (
             <p className="muted">No matches</p>
           )}
+          <SpeakerPeopleLists bookId={bookId} />
           <ul className="speaker-list">
-            {filteredSpeakers.map((s) => {
-              // "Someone other than this character" - shared by the
-              // whole-character merge panel and per-line reassignment in
-              // this row's own appearances list.
-              const otherTargets = [
-                'Narrator',
-                ...speakers.filter((o) => o.id && o.id !== s.id && !o.invalid).map((o) => o.name),
-              ]
-              return (
-                <SpeakerRow
-                  key={s.id || s.name}
-                  bookId={bookId}
-                  speaker={
-                    s.refAudioUrl
-                      ? { ...s, refAudioUrl: withCacheBust(s.refAudioUrl, audioVersion[s.id]) }
-                      : s
-                  }
-                  builtins={builtins}
-                  customs={customs}
-                  bookVoiceName={bookVoiceName}
-                  narratorPresetId={voiceQuery.data?.presetId}
-                  bookCloneModel={effectiveCloneModel}
-                  onCharacterize={() => s.id && runCharacterize(s.id)}
-                  characterizing={characterizingIds.has(s.id) || characterizingNames.has(s.name)}
-                  onGenerateVoice={() => s.id && runGenerateVoice(s.id)}
-                  generatingVoice={generatingVoiceId === s.id}
-                  onDelete={() => s.id && runDeleteCharacter(s.id, s.name)}
-                  deleting={deletingCharacterId === s.id}
-                  onToggleInvalid={() => s.id && runToggleInvalid(s.id, !s.invalid)}
-                  togglingInvalid={togglingInvalidId === s.id}
-                  onToggleRole={() => s.id && runToggleRole(s.id, !s.role)}
-                  togglingRole={togglingRoleId === s.id}
-                  mergeTargets={otherTargets}
-                  onMerge={(targetName) => s.id && runMerge(s.id, s.name, targetName)}
-                  merging={mergingId === s.id}
-                  onToggleMerge={() => setMergingId((cur) => (cur === s.id ? null : s.id))}
-                  onAutoSplit={() => runAutoSplit(s.name)}
-                  autoSplitting={reattributingNames.has(s.name)}
-                  customizing={customizingId === s.id && s.id !== ''}
-                  onToggleCustomize={() => setCustomizingId((cur) => (cur === s.id ? null : s.id))}
-                  expanded={appearancesFor === s.id && s.id !== ''}
-                  onToggleAppearances={() =>
-                    setAppearancesFor((cur) => (cur === s.id ? null : s.id))
-                  }
-                  appearances={appearancesQuery.data}
-                  appearancesLoading={appearancesQuery.isLoading}
-                  reassignTargets={otherTargets}
-                />
-              )
-            })}
+            {filteredSpeakers.map((s, i) => (
+              // Only the rows near the screen are rendered (LazyRow): a
+              // series roster is hundreds of speakers, each with its own
+              // controls and voice samples.
+              <LazyRow
+                key={s.id || s.name}
+                initiallyNear={i < 12}
+                estimatedHeight={170}
+                pinned={
+                  s.id !== '' &&
+                  (mergingId === s.id || customizingId === s.id || appearancesFor === s.id)
+                }
+              >
+                {() => {
+                  // "Someone other than this character" - shared by the
+                  // whole-character merge panel and per-line reassignment
+                  // in this row's own appearances list.
+                  const otherTargets = ['Narrator', ...validNames.filter((n) => n !== s.name)]
+                  return (
+                    <SpeakerRow
+                      bookId={bookId}
+                      seriesLines={wholeSeries ? seriesLines.get(s.name) : undefined}
+                      speaker={
+                        s.refAudioUrl
+                          ? { ...s, refAudioUrl: withCacheBust(s.refAudioUrl, audioVersion[s.id]) }
+                          : s
+                      }
+                      builtins={builtins}
+                      customs={customs}
+                      bookVoiceName={bookVoiceName}
+                      narratorPresetId={voiceQuery.data?.presetId}
+                      bookCloneModel={effectiveCloneModel}
+                      onCharacterize={() => s.id && runCharacterize(s.id)}
+                      characterizing={
+                        characterizingIds.has(s.id) || characterizingNames.has(s.name)
+                      }
+                      onGenerateVoice={() => s.id && runGenerateVoice(s.id)}
+                      generatingVoice={generatingVoiceId === s.id}
+                      onDelete={() => s.id && runDeleteCharacter(s.id, s.name)}
+                      deleting={deletingCharacterId === s.id}
+                      onToggleInvalid={() => s.id && runToggleInvalid(s.id, !s.invalid)}
+                      togglingInvalid={togglingInvalidId === s.id}
+                      onToggleRole={() => s.id && runToggleRole(s.id, !s.role)}
+                      togglingRole={togglingRoleId === s.id}
+                      mergeTargets={otherTargets}
+                      onMerge={(targetName, noAlias) =>
+                        s.id && runMerge(s.id, s.name, targetName, noAlias)
+                      }
+                      merging={mergingId === s.id}
+                      onToggleMerge={() => setMergingId((cur) => (cur === s.id ? null : s.id))}
+                      onAutoSplit={() => runAutoSplit(s.name)}
+                      autoSplitting={reattributingNames.has(s.name)}
+                      customizing={customizingId === s.id && s.id !== ''}
+                      onToggleCustomize={() =>
+                        setCustomizingId((cur) => (cur === s.id ? null : s.id))
+                      }
+                      expanded={appearancesFor === s.id && s.id !== ''}
+                      onToggleAppearances={() =>
+                        setAppearancesFor((cur) => (cur === s.id ? null : s.id))
+                      }
+                      appearances={appearancesQuery.data}
+                      appearancesLoading={appearancesQuery.isLoading}
+                      reassignTargets={otherTargets}
+                    />
+                  )
+                }}
+              </LazyRow>
+            ))}
           </ul>
         </section>
       )}

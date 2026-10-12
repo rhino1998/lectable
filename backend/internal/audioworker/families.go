@@ -373,7 +373,8 @@ var higgsDecodeBatch = envIntOr("LECTABLE_AUDIOCPP_HIGGS_DECODE_BATCH", 8)
 // higgsFrameBudgetMultiplier is higgs_audio_tts.decode_frame_budget_
 // multiplier: a chunk stops (failing "...before EOC", which generateClone's
 // bisection then recovers from) once it has decoded this many times the
-// frames its reference voice's own pace predicts for the text, floored at
+// frames its reference voice's own pace predicts for the text (a digit
+// counting as 8 characters, since numbers are spoken long), floored at
 // 250 frames (10s) inside audio.cpp. audio.cpp's own default (4.0) never
 // fired in practice - every one of ~570 logged runaways ran the full
 // max_tokens (1024 frames, ~10s of GPU) first, since 4x the pace of any
@@ -1149,6 +1150,17 @@ var alignerModelPath = envOr(
 var transcriberModelPath = envOr(
 	"LECTABLE_TRANSCRIBER_MODEL_PATH",
 	modelPath("Parakeet-TDT-0.6B-v3-GGUF/parakeet-tdt-0.6b-v3-q8_0.gguf"),
+)
+
+// listenerModelPath is the "listener" auxEngine's model, behind POST
+// /listen (listen.go): Audio Flamingo Next, which answers a question about
+// a clip in text. Measured 2026-10-11 on a 7900 XTX, Q8: ~8.9 GB of
+// weights, ~0.5 s an answer once loaded. NVIDIA OneWay Noncommercial
+// license. Not installed by default - a call fails until the file is
+// there (audio-cpp/Audio-Flamingo-GGUF on Hugging Face).
+var listenerModelPath = envOr(
+	"LECTABLE_AUDIOCPP_LISTENER_MODEL_PATH",
+	modelPath("Audio-Flamingo-GGUF/audio-flamingo-next-q8_0.gguf"),
 )
 
 // backendName picks which of audio.cpp's own GPU backends to run on -

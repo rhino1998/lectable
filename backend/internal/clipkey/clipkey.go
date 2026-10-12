@@ -51,6 +51,9 @@ type Recipe struct {
 	// against. It differs from Text wherever pronunciation or a table
 	// heading changed what is spoken, and the timings travel with the clip.
 	AlignText string
+	// Effect is the voice effect the clip is put through once generated,
+	// as voicefx.Tag names it (the effect and its version); "" for none.
+	Effect string
 }
 
 // Key is the clip key for r's take'th reading (see TakeAt).
@@ -71,6 +74,12 @@ func (r Recipe) sum(take int) string {
 	for _, f := range []string{r.CloneModel, r.Reference, r.Language, r.CloneInstruct, r.Text, r.AlignText} {
 		writeInt(len(f))
 		h.Write([]byte(f))
+	}
+	// Only a clip with an effect hashes it, so every other key stays what
+	// it was before there were effects.
+	if r.Effect != "" {
+		writeInt(len(r.Effect))
+		h.Write([]byte(r.Effect))
 	}
 	writeInt(take)
 	return hex.EncodeToString(h.Sum(nil)[:16])

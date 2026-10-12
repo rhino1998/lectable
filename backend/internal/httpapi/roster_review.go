@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rhino1998/lectable/backend/internal/namekey"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
@@ -42,7 +43,8 @@ type rosterProposalDTO struct {
 	// across the roster's books.
 	SubjectLines int `json:"subjectLines"`
 	TargetLines  int `json:"targetLines"`
-	// Detail is the alias to remove (remove_alias).
+	// Detail is the alias to remove (remove_alias) or split off
+	// (split_alias).
 	Detail string `json:"detail"`
 	Reason string `json:"reason"`
 	// Evidence is the passages from the book that show it.
@@ -65,7 +67,8 @@ type createRosterProposalRequest struct {
 	Subject string        `json:"subject"`
 	// Target is the character to merge Subject into (merge only).
 	Target string `json:"target,omitempty"`
-	// Detail is the alias to remove (remove_alias only).
+	// Detail is the alias to remove or split off (remove_alias and
+	// split_alias only).
 	Detail   string   `json:"detail,omitempty"`
 	Reason   string   `json:"reason,omitempty"`
 	Evidence []string `json:"evidence,omitempty"`
@@ -83,13 +86,14 @@ func rosterPairKey(a, b string) string {
 	return "pair:" + a + ":" + b
 }
 
-// rosterFixKey is a rule fix's dedupe key: one proposal per alias, and one
-// each per character for its role and its validity.
+// rosterFixKey is a rule fix's dedupe key: one proposal per alias (removing
+// it or splitting it off), and one each per character for its role and its
+// validity.
 func rosterFixKey(kind rosterFixKind, subjectID, targetID, detail string) string {
 	switch kind {
 	case speakerattr.RosterMerge:
 		return rosterPairKey(subjectID, targetID)
-	case speakerattr.RosterRemoveAlias:
+	case speakerattr.RosterRemoveAlias, speakerattr.RosterSplitAlias:
 		return "alias:" + subjectID + ":" + strings.ToLower(strings.TrimSpace(detail))
 	case speakerattr.RosterMarkRole:
 		return "role:" + subjectID
@@ -130,9 +134,12 @@ func rosterEntries(chars []store.Character, lines map[string]int) []speakerattr.
 // maxRosterPairsPerRun pairs of names that may be one person and propose a
 // merge for each whose second name the book never writes
 // (speakerattr.RosterPair.UnwrittenName) or that the text shows to be one
-// (speakerattr.Client.JudgeSamePerson). A pair shown to be
+// (speakerattr.Client.JudgeSamePerson; with a semantic index, names the
+// series uses alike need less shown - rosterUsage). A pair shown to be
 // two people is ruled out - and the alias one has of the other proposed
-// for removal; a pair the passages don't settle is ruled out too.
+// for removal; a pair the passages don't settle is ruled out too, unless
+// it may yet be settled by how its names are used (rosterUsage.alike's
+// outdone).
 func (s *Server) ReviewRoster(ctx context.Context, book *store.Book) error {
 	scope := store.SeriesScope(book)
 	books, err := s.booksInScope(book)
@@ -148,6 +155,8 @@ func (s *Server) ReviewRoster(ctx context.Context, book *store.Book) error {
 		return err
 	}
 	entries := rosterEntries(chars, lines)
+	// The world's own titles ("Prognugator"), read like the fixed ones.
+	titles := s.titles(book)
 	existing, err := s.Store.ListRosterProposals(scope)
 	if err != nil {
 		return err
@@ -176,7 +185,7 @@ func (s *Server) ReviewRoster(ctx context.Context, book *store.Book) error {
 	for _, c := range chars {
 		// Not a rank ("Baron" into "Baron Sanguis"), nor what someone is
 		// the something of ("Issa" into "Priest of Issa").
-		if t := shortNameTarget(c, chars); t != nil && !speakerattr.IsBareTitle(c.Name) && !strings.Contains(strings.ToLower(t.Name), " of ") {
+		if t := shortNameTarget(c, chars, titles); t != nil && !speakerattr.IsBareTitle(c.Name, titles) && !strings.Contains(strings.ToLower(t.Name), " of ") {
 			if err := insertFix(speakerattr.RosterFix{Kind: speakerattr.RosterMerge, Subject: byID[c.ID], Target: byID[t.ID],
 				Reason: fmt.Sprintf("%q is in no other character's name", c.Name)}); err != nil {
 				return err
@@ -184,8 +193,9 @@ func (s *Server) ReviewRoster(ctx context.Context, book *store.Book) error {
 		}
 	}
 
+	allPairs := speakerattr.RosterPairs(entries, titles)
 	var pairs []speakerattr.RosterPair
-	for _, p := range speakerattr.RosterPairs(entries) {
+	for _, p := range allPairs {
 		if known[rosterPairKey(p.A.ID, p.B.ID)] {
 			continue
 		}
@@ -193,11 +203,13 @@ func (s *Server) ReviewRoster(ctx context.Context, book *store.Book) error {
 			break
 		}
 	}
+	usage := s.newRosterUsage(allPairs, pairs)
 
 	// One pass over the text, a book at a time (a long series doesn't fit
 	// comfortably in memory all at once): how each would-be kind word is
-	// written, and a few passages for each pair.
-	kinds := speakerattr.NewWordCaseCounts(speakerattr.RosterKindCandidates(entries))
+	// written, a few passages for each pair, and how the paragraphs
+	// writing each of a pair's names read (rosterUsage).
+	kinds := speakerattr.NewWordCaseCounts(speakerattr.RosterKindCandidates(entries, titles))
 	passages := make([]speakerattr.PairPassages, len(pairs))
 	for _, b := range books {
 		if err := ctx.Err(); err != nil {
@@ -214,11 +226,21 @@ func (s *Server) ReviewRoster(ctx context.Context, book *store.Book) error {
 		}
 		ix := speakerattr.NewIdentityIndex(texts, nil)
 		for i, p := range pairs {
-			passages[i] = passages[i].Append(ix.PairPassages(p.Entries()))
+			ea, eb := p.Entries()
+			found := ix.PairMentions(ea, eb)
+			passages[i] = passages[i].Append(ix.Passages(found, ea, eb))
+			usage.add(b.ID, all, p, found)
 		}
+		usage.addBook(b.ID, all, ix)
+	}
+	// outdone pairs read alike but less so than a rival pairing: left
+	// unsettled, they are asked about again once the roster has changed.
+	outdone := make([]bool, len(pairs))
+	for i, p := range pairs {
+		passages[i].Alike, outdone[i] = usage.alike(scope, p)
 	}
 
-	for _, fix := range speakerattr.RosterRuleFixes(entries, kinds) {
+	for _, fix := range speakerattr.RosterRuleFixes(entries, kinds, titles) {
 		if err := insertFix(fix); err != nil {
 			return err
 		}
@@ -256,6 +278,17 @@ func (s *Server) ReviewRoster(ctx context.Context, book *store.Book) error {
 		switch verdict {
 		case speakerattr.VerdictSame:
 			row.Status, row.Reason, row.Evidence = store.RosterPending, "the text uses both names for one person", []string{evidence}
+			if passages[i].Alike {
+				row.Reason = "the book uses both names the same way, for one person"
+				if evidence == "" {
+					// The model quoted nothing that is in the text: show
+					// each name as the book writes it.
+					row.Evidence = slices.Concat(firstOf(passages[i].OnlyA), firstOf(passages[i].OnlyB))
+					if len(row.Evidence) < 2 {
+						row.Evidence = firstOf(passages[i].Both)
+					}
+				}
+			}
 		case speakerattr.VerdictDifferent:
 			row.Reason, row.Evidence = "the text shows two people", []string{evidence}
 			if p.Alias != "" {
@@ -264,15 +297,20 @@ func (s *Server) ReviewRoster(ctx context.Context, book *store.Book) error {
 					other = p.B
 				}
 				if _, err := s.Store.InsertRosterProposal(store.RosterProposal{
-					Scope: scope, Kind: string(speakerattr.RosterRemoveAlias), SubjectID: p.AliasHolder.ID, Subject: p.AliasHolder.Name,
+					// The text shows the two apart, so lines of the one may
+					// sit under the other: split, not only remove.
+					Scope: scope, Kind: string(speakerattr.RosterSplitAlias), SubjectID: p.AliasHolder.ID, Subject: p.AliasHolder.Name,
 					TargetID: other.ID, Target: other.Name, Detail: p.Alias, Reason: other.Name + " is another character",
 					Evidence: []string{evidence}, Source: store.RosterFromLLM,
-					DedupeKey: rosterFixKey(speakerattr.RosterRemoveAlias, p.AliasHolder.ID, "", p.Alias),
+					DedupeKey: rosterFixKey(speakerattr.RosterSplitAlias, p.AliasHolder.ID, "", p.Alias),
 				}); err != nil {
 					return err
 				}
 			}
 		default:
+			if outdone[i] {
+				continue
+			}
 			if row.Reason == "" {
 				row.Reason = "the passages don't settle it"
 			}
@@ -282,6 +320,11 @@ func (s *Server) ReviewRoster(ctx context.Context, book *store.Book) error {
 		}
 	}
 	return nil
+}
+
+// firstOf is the first of passages, if there is one.
+func firstOf(passages []string) []string {
+	return passages[:min(len(passages), 1)]
 }
 
 func judgePair(ctx context.Context, c *speakerattr.Client, title string, p speakerattr.RosterPair, found speakerattr.PairPassages) (speakerattr.SamePersonVerdict, string, error) {
@@ -301,8 +344,8 @@ func rosterProposalApplies(p store.RosterProposal, byID map[string]store.Charact
 	case speakerattr.RosterMerge:
 		target, ok := byID[p.TargetID]
 		return ok && !target.Invalid && target.ID != subject.ID
-	case speakerattr.RosterRemoveAlias:
-		return slices.ContainsFunc([]string(subject.Aliases), func(a string) bool { return strings.EqualFold(a, p.Detail) })
+	case speakerattr.RosterRemoveAlias, speakerattr.RosterSplitAlias:
+		return slices.ContainsFunc([]string(subject.Aliases), func(a string) bool { return namekey.Equal(a, p.Detail) })
 	case speakerattr.RosterMarkRole:
 		return !subject.IsRole
 	case speakerattr.RosterInvalidate:
@@ -408,12 +451,12 @@ func rosterCharacter(chars []store.Character, name string) *store.Character {
 		return nil
 	}
 	for i := range chars {
-		if !chars[i].Invalid && strings.EqualFold(chars[i].Name, name) {
+		if !chars[i].Invalid && namekey.Equal(chars[i].Name, name) {
 			return &chars[i]
 		}
 	}
 	for i := range chars {
-		if !chars[i].Invalid && slices.ContainsFunc([]string(chars[i].Aliases), func(a string) bool { return strings.EqualFold(a, name) }) {
+		if !chars[i].Invalid && slices.ContainsFunc([]string(chars[i].Aliases), func(a string) bool { return namekey.Equal(a, name) }) {
 			return &chars[i]
 		}
 	}
@@ -458,7 +501,7 @@ func (s *Server) handleCreateRosterProposal(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		p.TargetID, p.Target = target.ID, target.Name
-	case speakerattr.RosterRemoveAlias:
+	case speakerattr.RosterRemoveAlias, speakerattr.RosterSplitAlias:
 		p.Detail = strings.TrimSpace(req.Detail)
 	case speakerattr.RosterMarkRole, speakerattr.RosterInvalidate:
 	default:
@@ -509,14 +552,20 @@ func (s *Server) pendingRosterProposal(w http.ResponseWriter, r *http.Request) (
 	return book, p, true
 }
 
-// applyRosterProposal makes the change p proposes.
-func (s *Server) applyRosterProposal(book *store.Book, p store.RosterProposal, byID map[string]store.Character) error {
+// applyRosterProposal makes the change p proposes. A merge keeps the
+// merged-away name as the target's alias unless noAlias; an alias is split
+// off (splitCharacterAliases) rather than only removed when split.
+func (s *Server) applyRosterProposal(book *store.Book, p store.RosterProposal, byID map[string]store.Character, noAlias, split bool) error {
 	subject := byID[p.SubjectID]
 	switch speakerattr.RosterFixKind(p.Kind) {
 	case speakerattr.RosterMerge:
-		return s.mergeCharacterInto(book, subject, byID[p.TargetID], !subject.IsRole)
-	case speakerattr.RosterRemoveAlias:
-		kept := slices.DeleteFunc(slices.Clone([]string(subject.Aliases)), func(a string) bool { return strings.EqualFold(a, p.Detail) })
+		return s.mergeCharacterInto(book, subject, byID[p.TargetID], !subject.IsRole && !noAlias)
+	case speakerattr.RosterRemoveAlias, speakerattr.RosterSplitAlias:
+		if split {
+			_, err := s.splitCharacterAliases(book, &subject, []string{p.Detail})
+			return err
+		}
+		kept := slices.DeleteFunc(slices.Clone([]string(subject.Aliases)), func(a string) bool { return namekey.Equal(a, p.Detail) })
 		return s.Store.SetCharacterAliases(subject.ID, kept)
 	case speakerattr.RosterMarkRole:
 		return s.Store.SetCharacterRole(subject.ID, true)
@@ -529,8 +578,12 @@ func (s *Server) applyRosterProposal(book *store.Book, p store.RosterProposal, b
 // handleAcceptRosterProposal serves POST
 // /api/books/{id}/roster-review/proposals/{proposalId}/accept: makes the
 // proposed change. A merge moves the character's lines across the whole
-// series, keeps its name as the other's alias and deletes its voice - it
-// can't be undone. 409 when the proposal was already decided, or no longer
+// series, keeps its name as the other's alias (not with ?alias=0, for a
+// name that was never theirs) and deletes its voice - it can't be undone.
+// An alias is split off - made a character of its own, the subject's lines
+// re-judged for theirs (handleSplitCharacterAlias) - for a split_alias
+// proposal, or a remove_alias one with ?split=1; ?split=0 only removes it.
+// 409 when the proposal was already decided, or no longer
 // applies to the roster.
 func (s *Server) handleAcceptRosterProposal(w http.ResponseWriter, r *http.Request) {
 	book, p, ok := s.pendingRosterProposal(w, r)
@@ -550,8 +603,12 @@ func (s *Server) handleAcceptRosterProposal(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusConflict, "the roster has changed and this no longer applies")
 		return
 	}
-	if err := s.applyRosterProposal(book, *p, byID); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+	split := speakerattr.RosterFixKind(p.Kind) == speakerattr.RosterSplitAlias
+	if q := r.URL.Query().Get("split"); q != "" {
+		split = q == "1"
+	}
+	if err := s.applyRosterProposal(book, *p, byID, r.URL.Query().Get("alias") == "0", split); err != nil {
+		writeBuildError(w, err)
 		return
 	}
 	if err := s.Store.SetRosterProposalStatus(p.ID, store.RosterAccepted); err != nil {

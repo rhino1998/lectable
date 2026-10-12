@@ -171,15 +171,18 @@ func (s *Server) summaryRoster(book *store.Book, ch *store.Chapter) (speakerattr
 
 // withFirstPerson sets r.FirstPerson from book's setting (its first-person
 // narrator), resolved onto r's names so "Steve" matches an existing Steve,
-// and makes sure every batch lists them. r unchanged for a third-person
-// book or one with no setting yet.
+// and makes sure every batch lists them - FirstPerson is left empty for a
+// third-person book or one with no setting yet. Every roster a pass reads
+// comes through here, so it is also where r gets the world's own titles
+// (s.titles).
 func (s *Server) withFirstPerson(r speakerattr.Roster, book *store.Book) speakerattr.Roster {
+	r.World = s.titles(book)
 	st, err := s.Store.GetBookSetting(book.ID)
 	if err != nil || st == nil || st.Setting.Narrator == "" {
 		return r
 	}
 	name := st.Setting.Narrator
-	if c, ok := speakerattr.NewSpeakerNameResolver(r.Names, r.Aliases).Resolve(name); ok {
+	if c, ok := speakerattr.NewSpeakerNameResolver(r.Names, r.Aliases).WithTitles(r.World).Resolve(name); ok {
 		name = c
 	}
 	r.FirstPerson = name

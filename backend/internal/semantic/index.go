@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"math"
 	"strings"
+	"sync"
 
 	_ "github.com/mattn/go-sqlite3" // the "sqlite3" driver
 )
@@ -236,6 +237,21 @@ type bookVectors struct {
 	ids      []string
 	chapters []string
 	data     []int8
+
+	rowsOnce sync.Once
+	rows     map[string]int
+}
+
+// row is where paragraph id's vector is, when it has one.
+func (bv *bookVectors) row(id string) (int, bool) {
+	bv.rowsOnce.Do(func() {
+		bv.rows = make(map[string]int, len(bv.ids))
+		for i, id := range bv.ids {
+			bv.rows[id] = i
+		}
+	})
+	i, ok := bv.rows[id]
+	return i, ok
 }
 
 // load reads bookID's vectors.

@@ -12,6 +12,8 @@ import com.lectable.app.data.settings.DEFAULT_LOOKAHEAD_PARAGRAPHS
 import com.lectable.app.data.settings.DEFAULT_SPEED_RAMP_SECONDS
 import com.lectable.app.data.settings.LightingSettings
 import com.lectable.app.data.settings.LightingSettingsRepository
+import com.lectable.app.playback.DEFAULT_SPATIAL_WIDTH
+import com.lectable.app.playback.SpatialMode
 import com.lectable.app.playback.lighting.DiscoveredBridge
 import com.lectable.app.playback.lighting.HUE_LINK_BUTTON_NOT_PRESSED
 import com.lectable.app.playback.lighting.HueBridgeClient
@@ -223,6 +225,20 @@ class SettingsViewModel @Inject constructor(
 
     fun setSpeedRampSeconds(seconds: Float) {
         viewModelScope.launch { playbackSettingsRepository.setSpeedRampSeconds(seconds) }
+    }
+
+    val spatialMode: StateFlow<SpatialMode> = playbackSettingsRepository.spatialMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SpatialMode.OFF)
+
+    fun setSpatialMode(mode: SpatialMode) {
+        viewModelScope.launch { playbackSettingsRepository.setSpatialMode(mode) }
+    }
+
+    val spatialWidth: StateFlow<Float> = playbackSettingsRepository.spatialWidth
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DEFAULT_SPATIAL_WIDTH)
+
+    fun setSpatialWidth(width: Float) {
+        viewModelScope.launch { playbackSettingsRepository.setSpatialWidth(width) }
     }
 
     fun setTheme(theme: ThemePreference) {

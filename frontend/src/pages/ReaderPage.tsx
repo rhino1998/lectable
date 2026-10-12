@@ -3,6 +3,7 @@ import { useParams } from '@tanstack/react-router'
 import {
   useBook,
   useBookmarks,
+  useBookSetting,
   useChapterMusicRange,
   useChapterNotesRange,
   useChapterRange,
@@ -18,6 +19,7 @@ import {
 import { usePlayback } from '../hooks/usePlayback'
 import { useBackgroundMusic } from '../hooks/useBackgroundMusic'
 import { useMusicVolume } from '../hooks/useMusicVolume'
+import { useSpatialSettings } from '../hooks/useSpatialSettings'
 import { useLighting } from '../hooks/useLighting'
 import { useLightingState } from '../lighting/controller'
 import { useInView } from '../hooks/useInView'
@@ -85,6 +87,7 @@ export function ReaderPage() {
   const typography = useReaderTypography()
 
   const bookmarksQuery = useBookmarks(bookId)
+  const settingQuery = useBookSetting(bookId)
   const createBookmark = useCreateBookmark(bookId)
   const deleteBookmark = useDeleteBookmark(bookId)
   const bookmarkByKey = useMemo(() => {
@@ -304,6 +307,7 @@ export function ReaderPage() {
     [updatePosition, noteOwnSave],
   )
 
+  const [spatial, setSpatial] = useSpatialSettings()
   const playback = usePlayback({
     chapters,
     totalChapters,
@@ -314,6 +318,8 @@ export function ReaderPage() {
     onPosition: handlePosition,
     onNeedChapter: loadThrough,
     nextChapter,
+    spatial,
+    centerSpeaker: settingQuery.data?.setting?.narrator,
   })
   // What the player bar and shortcuts drive - see recapTransport.
   const barPlayback = useMemo(
@@ -864,6 +870,8 @@ export function ReaderPage() {
         musicEnabled={!!bookQuery.data?.musicEnabled}
         musicVolume={musicVolume}
         onMusicVolumeChange={setMusicVolume}
+        spatial={spatial}
+        onSpatialChange={setSpatial}
       />
 
       <ParagraphContextMenu

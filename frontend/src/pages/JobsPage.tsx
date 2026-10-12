@@ -45,6 +45,9 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   book_setting: 'Book Setting',
   book_matter: 'Front & Back Matter',
   roster_review: 'Roster Review',
+  fact_finding: 'Fact Finding',
+  voice_check: 'Voice Check',
+  listen_preview: 'Listen Preview',
   recap: 'Recap Text',
   recap_narration: 'Recap Narration',
   // The phases of a book's own "Preprocess" run (see LibraryPage's

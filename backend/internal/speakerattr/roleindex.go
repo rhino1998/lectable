@@ -9,8 +9,10 @@ import (
 
 // MaxRoleIndex is the highest speaker number kept on a role line. A role's
 // numbers are voice slots reused from one conversation to the next, not
-// identities, so a handful covers any scene; a larger number is a model
-// slip and is dropped.
+// identities, so a handful covers any scene; a larger number written as a
+// figure takes one of those slots again ("Adventurer 7" is slot 1). Left
+// alone it became a role of its own: The Wandering Inn had "Adventurer 7"
+// and "Adventurer 8" on its roster beside "Adventurer" numbered 1 to 6.
 const MaxRoleIndex = 6
 
 var (
@@ -26,9 +28,9 @@ var (
 // SplitRoleIndex takes the speaker number off a numbered role answer -
 // "Guard 2", "Guard #2", "Guard Two", "Second Guard", "the second guard" -
 // returning the answer without it ("Guard", "the guard") and the number.
-// A "[role]" marker anywhere in answer is kept. index is 0, and label is
-// answer unchanged, when there is no number or it is outside
-// 1..MaxRoleIndex.
+// A "[role]" marker anywhere in answer is kept. A figure above
+// MaxRoleIndex wraps round into 1..MaxRoleIndex. index is 0, and label is
+// answer unchanged, when there is no number or it is 0.
 //
 // It only parses; a caller decides whether the answer is a role at all
 // ("Unit 7" may be someone's name). A trailing "One" is left alone - "the
@@ -54,7 +56,10 @@ func SplitRoleIndex(answer string) (label string, index int) {
 		}
 	}
 	rest = strings.TrimSpace(rest)
-	if n < 1 || n > MaxRoleIndex || rest == "" {
+	if n > MaxRoleIndex {
+		n = (n-1)%MaxRoleIndex + 1
+	}
+	if n < 1 || rest == "" {
 		return answer, 0
 	}
 	if lower := strings.ToLower(rest); lower == "the" || lower == "a" {

@@ -834,6 +834,10 @@ func registerAuxEngines() map[string]*auxEngine {
 		{key: "higgs_codec", family: "higgs_audio_tts", modelPath: cloneFamilies["audiocpp-higgs"].modelPath, task: "codec", poolSize: 1},
 		{key: "breeze_codec", family: "breeze_tts", modelPath: cloneFamilies["audiocpp-breeze"].modelPath, task: "codec", poolSize: 1},
 		{key: "pocket_codec", family: "pocket_tts", modelPath: cloneFamilies["audiocpp-pocket"].modelPath, task: "codec", poolSize: 1},
+		// Audio Flamingo, answering questions about a clip (listen.go) -
+		// text out rather than audio, but the same one-resident-family
+		// rules as the generators above.
+		{key: "listener", family: "audio_flamingo", modelPath: listenerModelPath, task: "asr", poolSize: 1},
 	}
 	out := make(map[string]*auxEngine, len(specs))
 	for _, e := range specs {

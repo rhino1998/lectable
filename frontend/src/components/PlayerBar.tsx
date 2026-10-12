@@ -17,11 +17,13 @@ import {
   RiPlayFill,
   RiRefreshLine,
   RiSkipForwardMiniLine,
+  RiSpeedUpLine,
   RiUser3Line,
   RiUserHeartLine,
 } from 'react-icons/ri'
 import type { PlaybackController } from '../hooks/usePlayback'
 import type { ReaderFontFamily } from '../hooks/useReaderTypography'
+import type { SpatialSettings } from '../utils/spatialAudio'
 import { ANNOTATION_LABELS } from '../api/types'
 import type { AnnotationKind, ChapterDetail, ChapterSummary, Speaker } from '../api/types'
 import { DIRECTION_TAG_CATEGORY_LABELS, type DirectionTagCategory } from '../utils/directionTags'
@@ -29,6 +31,7 @@ import { VoicePanel } from './VoicePanel'
 import { ReaderTypographyPanel } from './ReaderTypographyPanel'
 import { LightingPanel } from './LightingPanel'
 import { MusicPanel } from './MusicPanel'
+import { PlaybackPanel } from './PlaybackPanel'
 import { useLightingState } from '../lighting/controller'
 import { BookSearch } from './BookSearch'
 import { BookmarksPanel } from './BookmarksPanel'
@@ -42,8 +45,6 @@ import {
   useRegenerateCharacterVoices,
 } from '../api/queries'
 import { ApiError } from '../api/client'
-
-const RATES = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 8, 10]
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -87,6 +88,8 @@ export function PlayerBar({
   musicEnabled,
   musicVolume,
   onMusicVolumeChange,
+  spatial,
+  onSpatialChange,
 }: {
   bookId: string
   chapter: ChapterDetail | undefined
@@ -123,6 +126,9 @@ export function PlayerBar({
   musicEnabled: boolean
   musicVolume: number
   onMusicVolumeChange: (volume: number) => void
+  // This device's speaker positions (useSpatialSettings) - see PlaybackPanel.
+  spatial: SpatialSettings
+  onSpatialChange: (next: SpatialSettings) => void
 }) {
   const [voiceOpen, setVoiceOpen] = useState(false)
   const voiceButtonRef = useRef<HTMLButtonElement>(null)
@@ -136,6 +142,15 @@ export function PlayerBar({
     [typographyButtonRef, typographyPopoverRef],
     () => setTypographyOpen(false),
     typographyOpen,
+  )
+
+  const [playbackOpen, setPlaybackOpen] = useState(false)
+  const playbackButtonRef = useRef<HTMLButtonElement>(null)
+  const playbackPopoverRef = useRef<HTMLDivElement>(null)
+  useClickOutside(
+    [playbackButtonRef, playbackPopoverRef],
+    () => setPlaybackOpen(false),
+    playbackOpen,
   )
 
   const [musicOpen, setMusicOpen] = useState(false)
@@ -378,6 +393,17 @@ export function PlayerBar({
             fontFamily={readerFontFamily}
             onFontSizeChange={onReaderFontSizeChange}
             onFontFamilyChange={onReaderFontFamilyChange}
+          />
+        </div>
+      )}
+
+      {playbackOpen && (
+        <div className="bottom-popover" ref={playbackPopoverRef}>
+          <PlaybackPanel
+            playbackRate={playback.playbackRate}
+            onPlaybackRateChange={playback.setPlaybackRate}
+            spatial={spatial}
+            onSpatialChange={onSpatialChange}
           />
         </div>
       )}
@@ -646,20 +672,6 @@ export function PlayerBar({
             </span>
           </div>
         </div>
-
-        <label className="player-speed">
-          Speed
-          <select
-            value={playback.playbackRate}
-            onChange={(e) => playback.setPlaybackRate(Number(e.target.value))}
-          >
-            {RATES.map((r) => (
-              <option key={r} value={r}>
-                {r}×
-              </option>
-            ))}
-          </select>
-        </label>
       </div>
 
       <div className="player-bar-row player-bar-row-meta">
@@ -695,6 +707,18 @@ export function PlayerBar({
           title="Reader text size and font"
         >
           <RiFontSize /> Text size
+        </button>
+
+        <button
+          ref={playbackButtonRef}
+          className={
+            'text-button-icon' +
+            (playbackOpen || spatial.mode !== 'off' ? ' text-button-icon-active' : '')
+          }
+          onClick={() => setPlaybackOpen((v) => !v)}
+          title="Playback: narration speed and where each speaker is heard from"
+        >
+          <RiSpeedUpLine /> {playback.playbackRate}×
         </button>
 
         <button

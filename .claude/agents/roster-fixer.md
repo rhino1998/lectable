@@ -29,6 +29,11 @@ A proposal is one of:
   isn't (it's a different character, or not a name at all). Aliases
   matter: attribution folds any line answered with an alias into its
   holder.
+- `split_alias` - `detail` is listed as another name for `subject` but is
+  a different person *whose lines sit under the subject*: accepting it
+  removes the alias, makes `detail` a character of its own, and has the
+  subject's lines re-judged in the chapters that write the name. Prefer it
+  to `remove_alias` when the text shows that person speaking.
 - `mark_role` - `subject` is a kind of person several people in the book
   are ("Guard", "Gnome"), not one individual.
 - `invalidate` - `subject` names nobody ("Someone else", a group, markup).

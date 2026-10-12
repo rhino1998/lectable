@@ -65,6 +65,12 @@ object LiveTopics {
         LiveTopic("rosterReview", mapOf("bookId" to bookId), serializer<RosterReviewResponseDto>())
 
     /**
+     * buildVoiceCheck is the voiceCheck live topic's value.
+     */
+    fun voiceCheck(bookId: String): LiveTopic<VoiceCheckResponseDto> =
+        LiveTopic("voiceCheck", mapOf("bookId" to bookId), serializer<VoiceCheckResponseDto>())
+
+    /**
      * buildBookSetting is the bookSetting live topic's value and GET
      * .../setting's reply.
      */
@@ -88,12 +94,22 @@ object LiveTopics {
 
     /**
      * buildBookFacts lists the facts bookID's series has of its own
-     * (store.SeriesScope), then the global ones, each marked Superseded when
+     * (store.SeriesScope) - those in force, those Proposed and those the
+     * reader Skipped - then the global ones, each marked Superseded when
      * a series fact shares a word with it - what store.BookWorldFacts leaves
      * out for this book.
      */
     fun bookFacts(bookId: String): LiveTopic<List<WorldFactDto>> =
         LiveTopic("bookFacts", mapOf("bookId" to bookId), serializer<List<WorldFactDto>>())
+
+    /**
+     * buildCharacterNotes lists the notes about the characters of a book's
+     * series - the ones waiting for review, the ones accepted and the ones
+     * skipped - kinds before ages, then by value and name, so the notes that
+     * say the same thing sit together.
+     */
+    fun characterNotes(bookId: String): LiveTopic<List<CharacterNoteDto>> =
+        LiveTopic("characterNotes", mapOf("bookId" to bookId), serializer<List<CharacterNoteDto>>())
 
     /**
      * buildLexiconSuggestions offers the words of the series roster's names

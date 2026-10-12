@@ -1086,6 +1086,19 @@ label {
   cursor: pointer;
   font-size: inherit;
 }
+/* A speaker's race / nationality, beside their pronouns. */
+.speaker-people-input {
+  font: inherit;
+  width: 9rem;
+  padding: 0.1rem 0.2rem;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+}
+.speaker-age-input {
+  width: 4.5rem;
+}
 .speaker-aliases-input {
   flex: 1 1 16rem;
   min-width: 0;
@@ -1542,6 +1555,20 @@ label {
   border-radius: 0;
   background: none;
   color: var(--text);
+}
+/* The roster's search, filters, sort and series toggle, on one line. */
+.speakers-roster-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+}
+.speakers-roster-filters .speakers-roster-search {
+  width: auto;
+  flex: 0 1 14rem;
+  margin-bottom: 0;
 }
 .speakers-roster-search:focus {
   outline: none;
@@ -3124,13 +3151,6 @@ label {
   gap: 0.2rem;
 }
 
-.player-speed {
-  flex-direction: row;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.8rem;
-}
-
 /* Export page (per-book export settings and built exports) */
 
 .export-page section {
@@ -3260,6 +3280,41 @@ label {
   font-variant-numeric: tabular-nums;
 }
 .music-panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8em;
+}
+
+/* PlayerBar's "Playback" popover (PlaybackPanel). */
+.playback-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.playback-panel-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  white-space: nowrap;
+}
+.playback-panel-row select {
+  min-width: 0;
+  max-width: 14rem;
+}
+.playback-panel-row input {
+  flex: 1;
+  min-width: 0;
+}
+.playback-panel-value {
+  min-width: 4ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.playback-panel-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3535,6 +3590,10 @@ label {
   outline: none;
   border-bottom-color: var(--accent);
 }
+/* The fact form's word-class selector, on a line of its own. */
+.lexicon-form .fact-form-class {
+  flex-basis: 100%;
+}
 .lexicon-table {
   border-collapse: collapse;
   font-size: 0.9rem;
@@ -3724,4 +3783,28 @@ label {
 /* A global fact a book's series has replaced (BookFactsPanel). */
 .fact-superseded td:nth-child(-n + 2) {
   opacity: 0.55;
+}
+/* A proposed fact's wording, editable before it is accepted (ProposedFacts). */
+.fact-proposal-text {
+  flex: 1;
+  min-width: 12rem;
+}
+.lexicon-panel .roster-review-list {
+  margin-top: 0.75rem;
+}
+/* One accent a kind's characters are cast with, and who (KindAccents). */
+.character-notes-accepted {
+  list-style: none;
+  margin: 0.25rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.25rem;
+}
+
+.kind-accent-group {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
 }

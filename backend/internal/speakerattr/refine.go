@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/rhino1998/lectable/backend/internal/namekey"
 )
 
 // This file holds the deterministic, no-LLM half of attribution: cleaning
@@ -211,7 +213,7 @@ func startsLower(s string) bool {
 // SpeakerNameResolver maps a name as written in narration ("Nic",
 // "Albert") to a known character's canonical name ("Jagged Nic", "Bert").
 type SpeakerNameResolver struct {
-	exact map[string]string // lower-cased full name or alias -> canonical
+	exact map[string]string // folded (namekey.Fold) full name or alias -> canonical
 	token map[string]string // lower-cased single word -> canonical, "" if ambiguous
 	// firstPerson is a first-person book's narrator: an "I said" tag
 	// credits them (see WithFirstPerson). "" for none.
@@ -235,6 +237,30 @@ func (r *SpeakerNameResolver) WithFirstPerson(name string) *SpeakerNameResolver 
 	}
 	out := *r
 	out.firstPerson = name
+	return &out
+}
+
+// WithTitles returns a resolver that also never resolves a character from
+// one of titles alone (the story's own, beside titleWords): with only
+// "Prognugator Dekass" on the roster, "the Prognugator said" is still
+// whichever Prognugator the scene has. A full name or alias resolves as
+// before.
+func (r *SpeakerNameResolver) WithTitles(titles WorldWords) *SpeakerNameResolver {
+	if r == nil || len(titles) == 0 {
+		return r
+	}
+	out := *r
+	out.token = make(map[string]string, len(r.token))
+	for w, canonical := range r.token {
+		out.token[w] = canonical
+	}
+	// A title of several words ("Wall Lord") takes each of its words out:
+	// neither names its one holder.
+	for title := range titles {
+		for _, w := range strings.Fields(title) {
+			delete(out.token, w)
+		}
+	}
 	return &out
 }
 
@@ -265,7 +291,7 @@ func NewSpeakerNameResolver(names []string, aliases map[string][]string) *Speake
 		if form == "" {
 			return
 		}
-		lower := strings.ToLower(form)
+		lower := namekey.Fold(form)
 		if prev, ok := r.exact[lower]; ok && prev != canonical {
 			r.exact[lower] = "" // two characters answer to this exact form
 		} else if !ok {
@@ -301,8 +327,7 @@ func (r *SpeakerNameResolver) Resolve(written string) (string, bool) {
 	if r == nil {
 		return "", false
 	}
-	lower := strings.ToLower(strings.TrimSpace(written))
-	lower = strings.TrimSuffix(strings.TrimSuffix(lower, "’s"), "'s")
+	lower := strings.TrimSuffix(namekey.Fold(strings.TrimSpace(written)), "'s")
 	if c, ok := r.exact[lower]; ok {
 		return c, c != ""
 	}
@@ -331,7 +356,7 @@ func (r *SpeakerNameResolver) Canonical(name string) string {
 	if r == nil || isSentinel(name) {
 		return name
 	}
-	if c, ok := r.exact[strings.ToLower(strings.TrimSpace(name))]; ok && c != "" {
+	if c, ok := r.exact[namekey.Fold(strings.TrimSpace(name))]; ok && c != "" {
 		return c
 	}
 	return name

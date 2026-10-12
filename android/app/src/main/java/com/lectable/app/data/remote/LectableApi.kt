@@ -305,6 +305,20 @@ interface LectableApi {
     ): ReimportChapterResponseDto
 
     /**
+     * handleSetChapterMatter serves PUT /api/books/{id}/chapters/{idx}/matter:
+     * the reader marking a chapter as front or back matter, or as story after
+     * all - kept whatever the book's matter pass says later. Nothing generated
+     * is deleted either way; a chapter made story again is narrated and
+     * preprocessed with the rest the next time those run.
+     */
+    @PUT("api/books/{id}/chapters/{idx}/matter")
+    suspend fun setChapterMatter(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+        @Body body: SetChapterMatterRequestDto,
+    ): Unit
+
+    /**
      * handleMoveChapter moves one chapter to another place in its book
      * (`{"to": idx}`); the chapters between shift by one. The chapter itself -
      * text, speakers, audio - is untouched. 409 as handleInsertChapters.
@@ -668,6 +682,29 @@ interface LectableApi {
         @Body body: RenameChapterRequestDto,
     ): Unit
 
+    @GET("api/books/{id}/character-notes")
+    suspend fun listCharacterNotes(
+        @Path("id") id: String,
+    ): List<CharacterNoteDto>
+
+    /**
+     * handleRuleCharacterNotes serves POST
+     * /api/books/{id}/character-notes/rule: accepts or turns down notes about
+     * the series' characters. Accepting that someone is of a kind recasts
+     * them when a world fact in force is about that kind and nothing else of
+     * theirs - name, alias, their casting's opening, an earlier note - had
+     * brought it to their casting already, and turns down the other kinds
+     * proposed or accepted for them (they stay listed as skipped); an age
+     * changes nothing by itself
+     * (casting and time jumps read it from then on). Notes that aren't this
+     * series' are passed over.
+     */
+    @POST("api/books/{id}/character-notes/rule")
+    suspend fun ruleCharacterNotes(
+        @Path("id") id: String,
+        @Body body: RuleCharacterNotesRequestDto,
+    ): RuleCharacterNotesResponseDto
+
     @GET("api/books/{id}/characters")
     suspend fun listCharacterNames(
         @Path("id") id: String,
@@ -698,7 +735,7 @@ interface LectableApi {
      * handleDedupeCharacters serves POST /api/books/{id}/characters/dedupe - the
      * Speakers page's "merge duplicate names" action (see dedupeCharacters),
      * replying with every merge it made. Attribution already avoids making new
-     * duplicates (case-insensitive lookup, descriptions to roles, first names
+     * duplicates (lookup by name key, descriptions to roles, first names
      * folded into full ones as they appear); this cleans up a roster built
      * before that, or across chapters attributed out of order.
      */
@@ -798,6 +835,31 @@ interface LectableApi {
     ): AliasesResponseDto
 
     /**
+     * handleSplitCharacterAlias makes one of a character's aliases (or
+     * several, each their own person) a character of its own - for a name
+     * that was merged or folded into the wrong person. The alias comes off
+     * the character (so attribution stops
+     * folding it back), a character of that name is created if the series has
+     * none, and the lines that may be theirs are looked over again: in every
+     * chapter of the series whose text writes the alias, the character's lines
+     * are re-judged among them (and anyone else) by the same per-chapter
+     * reattribution Auto Split runs, one pipeline_auto_split row per book.
+     * Lines the reader set by hand stay, as does every line in a chapter that
+     * never writes the alias.
+     *
+     * Answers 202 with the chapters queued - 0 when no chapter writes the
+     * alias, or when the LLM isn't configured (the roster change is still
+     * made). 400 for a name that isn't one of the character's aliases; 409
+     * when the series has that name as a character marked not a speaker.
+     */
+    @POST("api/books/{id}/characters/{characterId}/aliases/split")
+    suspend fun splitCharacterAlias(
+        @Path("id") id: String,
+        @Path("characterId") characterId: String,
+        @Body body: SplitCharacterAliasRequestDto,
+    ): QueuedResponseDto
+
+    /**
      * handleCharacterAppearances lists every paragraph a character speaks,
      * across every book in their series (see store.SeriesScope) - backing a
      * "where does this character show up" view. bookID in the path is just
@@ -855,14 +917,18 @@ interface LectableApi {
      * (castCharacter) and returns the casting without storing it, so a change
      * to the prompts or the retrieval can be judged against the stored casting
      * without discarding anyone's voice or audio. ?temp= sets the casting
-     * call's sampling temperature and ?lookup=0 casts without the
-     * book lookups.
+     * call's sampling temperature, ?lookup=0 casts without the book lookups,
+     * ?meaning=0 keeps the lookups but without their excerpts found by
+     * meaning, and ?accent=1 or 0 turns the accent step on or off for this
+     * call (default castAccentStep).
      */
     @POST("api/books/{id}/characters/{characterId}/characterize/preview")
     suspend fun previewCharacterization(
         @Path("id") id: String,
         @Path("characterId") characterId: String,
         @Query("lookup") lookup: String? = null,
+        @Query("meaning") meaning: String? = null,
+        @Query("accent") accent: String? = null,
         @Query("notes") notes: String? = null,
         @Query("temp") temp: String? = null,
     ): CharacterizePreviewResponseDto
@@ -947,6 +1013,22 @@ interface LectableApi {
         @Path("id") id: String,
         @Path("characterId") characterId: String,
         @Body body: RenameCharacterRequestDto,
+    ): Unit
+
+    /**
+     * handleSetCharacterPeople serves PUT
+     * /api/books/{id}/characters/{characterId}/people: sets one character's
+     * race, nationality and age by hand - each the one accepted character note
+     * of its kind (store.SetCharacterNoteValue), replacing whatever fact finding
+     * proposed or the reader accepted before. Their casting is shown both,
+     * and the world facts filed under those words. Like pronouns, it doesn't
+     * re-characterize on its own - the Speakers page's "Regenerate" does.
+     */
+    @PUT("api/books/{id}/characters/{characterId}/people")
+    suspend fun setCharacterPeople(
+        @Path("id") id: String,
+        @Path("characterId") characterId: String,
+        @Body body: SetCharacterPeopleRequestDto,
     ): Unit
 
     /**
@@ -1091,7 +1173,35 @@ interface LectableApi {
     suspend fun upsertBookFact(
         @Path("id") id: String,
         @Body body: UpsertWorldFactRequestDto,
-    ): IdResponseDto
+    ): UpsertFactResponseDto
+
+    /**
+     * handleKindAccents serves GET /api/books/{id}/facts/accents - see
+     * kindAccents. Not a live topic: it reads every casting of the roster.
+     */
+    @GET("api/books/{id}/facts/accents")
+    suspend fun kindAccents(
+        @Path("id") id: String,
+    ): List<KindAccentsDto>
+
+    /**
+     * handleSetKindAccent serves POST /api/books/{id}/facts/accents: records
+     * accent as the kind's accent in the series' own fact for it, and recasts
+     * the characters of the kind cast with another. The fact keeps what the
+     * one in force said - the general fact's text and words carried over
+     * when the series had none of its own, since a series' fact replaces the
+     * general one whole - with the accent as a last sentence that overrides
+     * whatever it says of accents (a baseline fact's "the same accent as the
+     * rest of the cast" sits in one sentence with the kind's voice, so
+     * nothing is cut out); the reader can tidy it on the Facts tab. A proposed fact
+     * for the kind is accepted by this, as worded. Replies with the fact's id
+     * and how many characters were queued.
+     */
+    @POST("api/books/{id}/facts/accents")
+    suspend fun setKindAccent(
+        @Path("id") id: String,
+        @Body body: SetKindAccentRequestDto,
+    ): UpsertFactResponseDto
 
     /**
      * handleFactsAffected lists the characterized characters of the book's
@@ -1105,11 +1215,62 @@ interface LectableApi {
     ): List<AffectedCharacterDto>
 
     /**
+     * handleFindBookFacts serves POST /api/books/{id}/facts/find: queues a
+     * search of the book's series for world facts. What it finds arrives on
+     * the bookFacts topic as proposed facts.
+     */
+    @POST("api/books/{id}/facts/find")
+    suspend fun findBookFacts(
+        @Path("id") id: String,
+    ): QueuedResponseDto
+
+    /**
+     * handleResetBookFacts serves POST /api/books/{id}/facts/reset: undoes
+     * fact finding for the book's series (store.ResetFoundWorldFacts) - every
+     * fact a pass proposed is removed, accepted and skipped ones included, and
+     * classes proposed or declined are forgotten - so the next run proposes
+     * everything again. Facts the reader wrote stay. Nobody is recast, and
+     * nothing a roster review already changed is undone.
+     */
+    @POST("api/books/{id}/facts/reset")
+    suspend fun resetBookFacts(
+        @Path("id") id: String,
+    ): ResetFactsResponseDto
+
+    /**
      * handleDeleteBookFact removes one of the series' own facts; a global
      * fact's id is left alone.
      */
     @DELETE("api/books/{id}/facts/{factId}")
     suspend fun deleteBookFact(
+        @Path("id") id: String,
+        @Path("factId") factId: String,
+    ): Unit
+
+    /**
+     * handleReviewBookFact serves POST /api/books/{id}/facts/{factId}/review:
+     * puts a fact the reader turned down back in front of them
+     * (store.ReviewWorldFact) - a skipped fact is proposed again, and a fact
+     * in force whose proposed class was declined has it proposed again. 409
+     * when the fact has nothing turned down.
+     */
+    @POST("api/books/{id}/facts/{factId}/review")
+    suspend fun reviewBookFact(
+        @Path("id") id: String,
+        @Path("factId") factId: String,
+    ): Unit
+
+    /**
+     * handleSkipBookFact serves POST /api/books/{id}/facts/{factId}/skip:
+     * turns a proposed fact down for good - it is kept, out of sight, so the
+     * same kind isn't proposed again. (Accepting one is PUT .../facts with its
+     * id, edited or not.) 404 when the series has no such fact, 409 for one
+     * that isn't waiting. For a fact in force whose word has a class proposed
+     * (proposedClass), it is that class that is turned down for good; the
+     * fact stays.
+     */
+    @POST("api/books/{id}/facts/{factId}/skip")
+    suspend fun skipBookFact(
         @Path("id") id: String,
         @Path("factId") factId: String,
     ): Unit
@@ -1250,6 +1411,18 @@ interface LectableApi {
         @Path("id") id: String,
         @Query("chapters") chapters: String? = null,
     ): BookManifestDto
+
+    /**
+     * handleDetectBookMatter serves POST /api/books/{id}/matter/detect: queues
+     * the book's matter pass now (a jobs.KindBookMatter task at urgent
+     * priority), for any book - one from a website included - replacing what
+     * an earlier run marked but nothing the reader set. The book live topic
+     * carries the result.
+     */
+    @POST("api/books/{id}/matter/detect")
+    suspend fun detectBookMatter(
+        @Path("id") id: String,
+    ): QueuedResponseDto
 
     /**
      * handleListParagraphEdits serves GET /api/books/{id}/paragraph-edits
@@ -1428,14 +1601,20 @@ interface LectableApi {
      * handleAcceptRosterProposal serves POST
      * /api/books/{id}/roster-review/proposals/{proposalId}/accept: makes the
      * proposed change. A merge moves the character's lines across the whole
-     * series, keeps its name as the other's alias and deletes its voice - it
-     * can't be undone. 409 when the proposal was already decided, or no longer
+     * series, keeps its name as the other's alias (not with ?alias=0, for a
+     * name that was never theirs) and deletes its voice - it can't be undone.
+     * An alias is split off - made a character of its own, the subject's lines
+     * re-judged for theirs (handleSplitCharacterAlias) - for a split_alias
+     * proposal, or a remove_alias one with ?split=1; ?split=0 only removes it.
+     * 409 when the proposal was already decided, or no longer
      * applies to the roster.
      */
     @POST("api/books/{id}/roster-review/proposals/{proposalId}/accept")
     suspend fun acceptRosterProposal(
         @Path("id") id: String,
         @Path("proposalId") proposalId: String,
+        @Query("split") split: String? = null,
+        @Query("alias") alias: String? = null,
     ): Unit
 
     /**
@@ -1638,8 +1817,9 @@ interface LectableApi {
      * character attribution's own accidental character row, or the "Unknown"
      * sentinel itself, e.g. after a reader manually renamed/deleted the wrong
      * speaker upstream - it re-judges every one of that speaker's own
-     * paragraphs in this book (chapter by chapter, one KindSpeakerReattribution
-     * task per chapter, all grouped under one pipeline_auto_split task - see
+     * paragraphs in every book of the series (in this book only, for
+     * "Unknown"), chapter by chapter - one KindSpeakerReattribution
+     * task per chapter, grouped under one pipeline_auto_split task a book - see
      * jobs.Manager.EnqueueBulk/RunReattribution) and
      * redistributes them to whichever real character/Narrator/Unknown they
      * actually belong to, using the exact same chapter-wide LLM pass
@@ -1667,6 +1847,18 @@ interface LectableApi {
         @Path("id") id: String,
         @Body body: ReattributeSpeakerRequestDto,
     ): QueuedResponseDto
+
+    /**
+     * handleSeriesSpeakerLines serves GET /api/books/{id}/speakers/series-lines:
+     * how many lines of dialogue each speaker has across every book of the
+     * book's series - what the Speakers page's whole-series view counts and
+     * sorts by (the speakers topic counts one book's). Not a live topic: it
+     * reads every book of the series.
+     */
+    @GET("api/books/{id}/speakers/series-lines")
+    suspend fun seriesSpeakerLines(
+        @Path("id") id: String,
+    ): SeriesSpeakerLinesResponseDto
 
     /**
      * handleRegenerateVariant re-renders the emotion variant speaker's lines in
@@ -1703,6 +1895,32 @@ interface LectableApi {
     ): QueuedResponseDto
 
     /**
+     * handleAcceptTimeJumpProposal serves POST
+     * /api/books/{id}/time-jumps/proposals/{proposalId}/accept: makes the
+     * jump a proposal found, at the chapter and length in the body - the
+     * reader's, which need not be the proposal's (the pass tends to place a
+     * jump a chapter late) - exactly as POST .../time-jumps does.
+     */
+    @POST("api/books/{id}/time-jumps/proposals/{proposalId}/accept")
+    suspend fun acceptTimeJumpProposal(
+        @Path("id") id: String,
+        @Path("proposalId") proposalId: String,
+        @Body body: TimeJumpRequestDto,
+    ): QueuedResponseDto
+
+    /**
+     * handleSkipTimeJumpProposal serves POST
+     * /api/books/{id}/time-jumps/proposals/{proposalId}/skip: turns a
+     * proposed jump down for good - kept, out of sight, so fact finding
+     * doesn't propose one near it again.
+     */
+    @POST("api/books/{id}/time-jumps/proposals/{proposalId}/skip")
+    suspend fun skipTimeJumpProposal(
+        @Path("id") id: String,
+        @Path("proposalId") proposalId: String,
+    ): Unit
+
+    /**
      * handleDeleteTimeJump removes a time jump and the stages made for it;
      * those lines go back to the voice they had before it.
      */
@@ -1734,6 +1952,36 @@ interface LectableApi {
         @Path("id") id: String,
         @Body body: VoiceSettingsUpdateDto,
     ): VoiceSettingsDto
+
+    /**
+     * handleGetVoiceCheck serves GET /api/books/{id}/voice-check - see
+     * docs/api.md.
+     */
+    @GET("api/books/{id}/voice-check")
+    suspend fun getVoiceCheck(
+        @Path("id") id: String,
+        @Query("all") all: String? = null,
+    ): VoiceCheckResponseDto
+
+    /**
+     * handleDismissVoiceCheck serves POST /api/books/{id}/voice-check/dismiss:
+     * the reader says a flagged voice is fine as it is.
+     */
+    @POST("api/books/{id}/voice-check/dismiss")
+    suspend fun dismissVoiceCheck(
+        @Path("id") id: String,
+        @Body body: DismissVoiceCheckRequestDto,
+    ): Unit
+
+    /**
+     * handleRunVoiceCheck serves POST /api/books/{id}/voice-check/run: queues
+     * a check of the book's roster's voices. The voiceCheck live topic carries
+     * what it finds.
+     */
+    @POST("api/books/{id}/voice-check/run")
+    suspend fun runVoiceCheck(
+        @Path("id") id: String,
+    ): QueuedResponseDto
 
     /**
      * handleGetClip serves a shared narration clip by its content key. A
@@ -1770,7 +2018,7 @@ interface LectableApi {
     @PUT("api/facts")
     suspend fun upsertGlobalFact(
         @Body body: UpsertWorldFactRequestDto,
-    ): IdResponseDto
+    ): UpsertFactResponseDto
 
     @DELETE("api/facts/{factId}")
     suspend fun deleteGlobalFact(
@@ -2246,6 +2494,18 @@ interface LectableApi {
 
     @GET("api/voices/languages")
     suspend fun voiceLanguages(): LanguagesResponseDto
+
+    /**
+     * handleListen serves POST /api/voices/listen: one question asked of one
+     * voice's reference clip by the worker's audio-language model - the voice
+     * check's building block, for trying a question out. Run as a
+     * jobs.KindListenPreview task, so the listener takes its turn on the GPU
+     * like any other audio model.
+     */
+    @POST("api/voices/listen")
+    suspend fun listen(
+        @Body body: ListenRequestDto,
+    ): LlmTestResponseDto
 
     @GET("api/voices/presets")
     suspend fun voicePresets(): VoicePresetsDto

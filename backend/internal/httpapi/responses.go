@@ -102,8 +102,26 @@ type characterizePreviewResponse struct {
 	// Lookups are the book searches the casting call made, each with how
 	// many sentences it found.
 	Lookups []string `json:"lookups"`
+	// LookupExcerpts are the sentences those searches showed the casting
+	// call, each under its search ("Scylla + Greek: ...").
+	LookupExcerpts []string `json:"lookupExcerpts"`
+	// Accent is the accent decided before the casting call, with the
+	// sentence it rests on; absent when the step was off or failed.
+	Accent *castAccentDTO `json:"accent,omitempty"`
 	// CurrentSummary is the character's stored casting, for comparison.
 	CurrentSummary string `json:"currentSummary"`
+}
+
+// castAccentDTO is the accent a casting was held to
+// (speakerattr.AccentDecision).
+type castAccentDTO struct {
+	Accent string `json:"accent"`
+	// Evidence is the sentence it rests on ("none" for the setting's),
+	// Whose who the model read that sentence as being about, and Basis the
+	// rule that decided it ("origin", "idiom", "setting", ...).
+	Evidence string `json:"evidence"`
+	Whose    string `json:"whose"`
+	Basis    string `json:"basis"`
 }
 
 type generateVoiceResponse struct {

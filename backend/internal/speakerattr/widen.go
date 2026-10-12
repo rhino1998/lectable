@@ -47,7 +47,7 @@ const maxWidenWindowChars = 20000
 // already accepted.
 func (c *Client) AttributeWithWideningContext(ctx context.Context, bookTitle, chapterTitle string, roster Roster, all []ParagraphInput, targets []int, reject func(speaker string) bool) (out map[int]string, roleNames map[string]bool, err error) {
 	knownCharacters := roster.Names
-	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases).WithFirstPerson(roster.FirstPerson)
+	resolver := NewSpeakerNameResolver(roster.Names, roster.Aliases).WithTitles(roster.World).WithFirstPerson(roster.FirstPerson)
 	out = make(map[int]string, len(targets))
 	roleNames = map[string]bool{}
 

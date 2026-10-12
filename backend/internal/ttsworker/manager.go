@@ -764,6 +764,26 @@ func (m *Manager) Transcribe(ctx context.Context, audio []byte) (string, error) 
 	return out.Text, err
 }
 
+// Listen asks question about audio (a WAV clip) of the worker's
+// audio-language model and returns its answer - see
+// audioworker.Worker.Listen. The model is a heavy one that evicts every
+// other audio model to load, so callers go through the job queue's audio
+// pool rather than calling this beside generation.
+func (m *Manager) Listen(ctx context.Context, audio []byte, question string, maxTokens int) (string, error) {
+	m.restartGate.RLock()
+	defer m.restartGate.RUnlock()
+	jobID := m.beginJob()
+	defer m.endJob(jobID)
+
+	var out ttsproto.ListenResponse
+	err := m.do(ctx, http.MethodPost, "/listen", ttsproto.ListenRequest{
+		AudioBase64: base64.StdEncoding.EncodeToString(audio),
+		Question:    question,
+		MaxTokens:   maxTokens,
+	}, &out)
+	return out.Text, err
+}
+
 // LLMGenerate runs one independent chat completion (system + user turn in,
 // reply text out) against ttsworker's own embedded GGUF model
 // (internal/llmworker, hosted in the same worker process as the TTS clone

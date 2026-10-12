@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/rhino1998/lectable/backend/internal/namekey"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
@@ -122,10 +123,11 @@ func (s *Server) renameSpeakerEverywhere(books []store.Book, from, to string) er
 // shortNameTarget is the one other character whose multi-word name
 // contains short as a whole word ("Lars" -> "Lars Machmüller"), or nil
 // when none or several do (two Lars' - ambiguous) or short is a title word
-// ("Lord") or too short to mean anything.
-func shortNameTarget(short store.Character, chars []store.Character) *store.Character {
+// ("Lord", or one of titles, the world's own: "Prognugator" is not short
+// for "Prognugator Tersk") or too short to mean anything.
+func shortNameTarget(short store.Character, chars []store.Character, titles speakerattr.WorldWords) *store.Character {
 	name := strings.TrimSpace(short.Name)
-	if short.IsRole || short.Invalid || strings.Contains(name, " ") || len([]rune(name)) < 3 || speakerattr.IsTitleWord(name) {
+	if short.IsRole || short.Invalid || strings.Contains(name, " ") || len([]rune(name)) < 3 || titles.Has(name) {
 		return nil
 	}
 	var found *store.Character
@@ -135,7 +137,7 @@ func shortNameTarget(short store.Character, chars []store.Character) *store.Char
 			continue
 		}
 		words := strings.Fields(c.Name)
-		if len(words) < 2 || !slices.ContainsFunc(words, func(w string) bool { return strings.EqualFold(strings.Trim(w, ".,"), name) }) {
+		if len(words) < 2 || !slices.ContainsFunc(words, func(w string) bool { return namekey.Equal(strings.Trim(w, ".,"), name) }) {
 			continue
 		}
 		if found != nil {
@@ -159,8 +161,9 @@ func (s *Server) absorbShortNames(book *store.Book, full store.Character) {
 	if err != nil {
 		return
 	}
+	titles := s.titles(book)
 	for _, c := range chars {
-		if t := shortNameTarget(c, chars); t != nil && t.ID == full.ID {
+		if t := shortNameTarget(c, chars, titles); t != nil && t.ID == full.ID {
 			if err := s.mergeCharacterInto(book, c, full, true); err != nil {
 				log.Printf("httpapi: fold %q into %q: %v", c.Name, full.Name, err)
 			} else {
@@ -173,7 +176,8 @@ func (s *Server) absorbShortNames(book *store.Book, full store.Character) {
 // dedupeCharacters merges book's series roster's duplicate names, in order:
 //  1. a first-person placeholder ("Protagonist", "Main character") into
 //     the book's first-person narrator (its setting's Narrator);
-//  2. case variants ("woman"/"Woman") into one - preferring a valid,
+//  2. case and apostrophe variants ("woman"/"Woman", "Ve'delina"/
+//     "Ve’delina" - namekey.Fold) into one - preferring a valid,
 //     capitalized, older row;
 //  3. a description without an article ("bearded man", "Older man",
 //     "doctor") into its role label (speakerattr.RoleLabel), made a role;
@@ -214,7 +218,7 @@ func (s *Server) dedupeCharacters(book *store.Book) ([]characterMergeDTO, error)
 		}
 	}
 
-	// 2. Case variants.
+	// 2. Case and apostrophe variants.
 	chars, err := load()
 	if err != nil {
 		return merges, err
@@ -222,7 +226,7 @@ func (s *Server) dedupeCharacters(book *store.Book) ([]characterMergeDTO, error)
 	groups := map[string][]store.Character{}
 	var order []string
 	for _, c := range chars {
-		k := strings.ToLower(c.Name)
+		k := namekey.Fold(c.Name)
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}
@@ -250,7 +254,11 @@ func (s *Server) dedupeCharacters(book *store.Book) ([]characterMergeDTO, error)
 			return int(a.CreatedAt - b.CreatedAt)
 		})
 		for _, c := range g[1:] {
-			if err := merge(c, g[0], false, "same name, different case"); err != nil {
+			reason := "same name, different apostrophe"
+			if strings.EqualFold(c.Name, g[0].Name) {
+				reason = "same name, different case"
+			}
+			if err := merge(c, g[0], false, reason); err != nil {
 				return merges, err
 			}
 		}
@@ -299,8 +307,9 @@ func (s *Server) dedupeCharacters(book *store.Book) ([]characterMergeDTO, error)
 	if chars, err = load(); err != nil {
 		return merges, err
 	}
+	titles := s.titles(book)
 	for _, c := range chars {
-		if t := shortNameTarget(c, chars); t != nil {
+		if t := shortNameTarget(c, chars, titles); t != nil {
 			if err := merge(c, *t, true, "first name of a full name"); err != nil {
 				return merges, err
 			}
@@ -319,7 +328,7 @@ func startsUpperRune(s string) bool {
 // handleDedupeCharacters serves POST /api/books/{id}/characters/dedupe - the
 // Speakers page's "merge duplicate names" action (see dedupeCharacters),
 // replying with every merge it made. Attribution already avoids making new
-// duplicates (case-insensitive lookup, descriptions to roles, first names
+// duplicates (lookup by name key, descriptions to roles, first names
 // folded into full ones as they appear); this cleans up a roster built
 // before that, or across chapters attributed out of order.
 func (s *Server) handleDedupeCharacters(w http.ResponseWriter, r *http.Request) {

@@ -48,6 +48,19 @@ func TestSummarizeChapterNothingToSay(t *testing.T) {
 	if err != nil || sum.Summary != "" || len(sum.Scenes) != 0 || len(sum.Cast) != 0 {
 		t.Fatalf("one-line chapter = %+v, %v", sum, err)
 	}
+	// A contents page: long in all, but only a list of titles.
+	var contents []ParagraphInput
+	for i := 0; i < 85; i++ {
+		contents = append(contents, ParagraphInput{Idx: i, Text: fmt.Sprintf("Chapter %d: Inciting Incident", i)})
+	}
+	if sum, err := c.SummarizeChapter(context.Background(), "Industrial Strength Magic", "Contents", nil, Roster{}, contents); err != nil || sum.Summary != "" {
+		t.Fatalf("contents page = %+v, %v", sum, err)
+	}
+	// The same lines with dialogue among them are a scene.
+	contents[40] = ParagraphInput{Idx: 40, Text: "“Go.”", IsQuote: true}
+	if _, err := c.SummarizeChapter(context.Background(), "Industrial Strength Magic", "One", nil, Roster{}, contents); err == nil {
+		t.Fatal("an empty summary of short lines with dialogue should fail")
+	}
 	long := []ParagraphInput{{Idx: 0, Text: strings.Repeat("Bert and Sid argue. ", 20)}}
 	if _, err := c.SummarizeChapter(context.Background(), "Black Ops", "One", nil, Roster{}, long); err == nil {
 		t.Fatal("an empty summary of a real chapter should fail")

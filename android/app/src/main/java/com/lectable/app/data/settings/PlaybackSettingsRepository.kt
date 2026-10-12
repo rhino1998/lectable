@@ -6,6 +6,9 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.lectable.app.playback.DEFAULT_SPATIAL_WIDTH
+import com.lectable.app.playback.MAX_SPATIAL_WIDTH
+import com.lectable.app.playback.SpatialMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.UUID
 import javax.inject.Inject
@@ -20,6 +23,8 @@ private val LOOKAHEAD_PARAGRAPHS_KEY = intPreferencesKey("lookahead_paragraphs")
 private val MUSIC_VOLUME_KEY = floatPreferencesKey("music_volume")
 private val SPEED_RAMP_SECONDS_KEY = floatPreferencesKey("speed_ramp_seconds")
 private val CLIENT_ID_KEY = stringPreferencesKey("client_id")
+private val SPATIAL_MODE_KEY = stringPreferencesKey("spatial_mode")
+private val SPATIAL_WIDTH_KEY = floatPreferencesKey("spatial_width")
 
 /** How gradually a playback-speed change takes effect while narration is playing: the seconds
  *  it takes to move 0.5x toward the new speed (so 1x to 3x at the default takes 4s). 0 applies
@@ -86,6 +91,23 @@ class PlaybackSettingsRepository @Inject constructor(
 
     suspend fun setSpeedRampSeconds(seconds: Float) {
         context.playbackDataStore.edit { prefs -> prefs[SPEED_RAMP_SECONDS_KEY] = seconds.coerceIn(0f, MAX_SPEED_RAMP_SECONDS) }
+    }
+
+    /** Speaker positions - see [com.lectable.app.playback.SpatialMode]. Per device, since
+     *  whether they suit depends on what it plays through. */
+    val spatialMode: Flow<SpatialMode> = context.playbackDataStore.data.map { prefs -> SpatialMode.fromKey(prefs[SPATIAL_MODE_KEY]) }
+
+    suspend fun setSpatialMode(mode: SpatialMode) {
+        context.playbackDataStore.edit { prefs -> prefs[SPATIAL_MODE_KEY] = mode.key }
+    }
+
+    /** How far apart the seats are, 0..[MAX_SPATIAL_WIDTH]. */
+    val spatialWidth: Flow<Float> = context.playbackDataStore.data.map { prefs ->
+        (prefs[SPATIAL_WIDTH_KEY] ?: DEFAULT_SPATIAL_WIDTH).coerceIn(0f, MAX_SPATIAL_WIDTH)
+    }
+
+    suspend fun setSpatialWidth(width: Float) {
+        context.playbackDataStore.edit { prefs -> prefs[SPATIAL_WIDTH_KEY] = width.coerceIn(0f, MAX_SPATIAL_WIDTH) }
     }
 
     val musicVolume: Flow<Float> = context.playbackDataStore.data.map { prefs ->

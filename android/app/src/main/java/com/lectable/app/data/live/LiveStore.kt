@@ -5,6 +5,7 @@ import com.lectable.app.data.remote.LiveTopic
 import com.lectable.app.data.remote.LiveTopics
 import com.lectable.app.data.remote.LiveResult
 import com.lectable.app.data.remote.dto.BookDetailDto
+import com.lectable.app.data.remote.dto.BookSettingResponseDto
 import com.lectable.app.data.remote.dto.BookSummaryDto
 import com.lectable.app.data.remote.dto.BookmarkDto
 import com.lectable.app.data.remote.dto.CharacterNameDto
@@ -109,6 +110,8 @@ class LiveStore @Inject constructor(
     fun book(bookId: String): StateFlow<LiveResult<BookDetailDto>> = topic(LiveTopics.book(bookId))
 
     fun voice(bookId: String): StateFlow<LiveResult<VoiceSettingsDto>> = topic(LiveTopics.voice(bookId))
+
+    fun bookSetting(bookId: String): StateFlow<LiveResult<BookSettingResponseDto>> = topic(LiveTopics.bookSetting(bookId))
 
     fun speakers(bookId: String): StateFlow<LiveResult<List<SpeakerDto>>> = topic(LiveTopics.speakers(bookId))
 

@@ -40,6 +40,12 @@ export const BULK_SCOPES = ['rest', 'all'] as const
 export type BulkScope = (typeof BULK_SCOPES)[number]
 
 /**
+ * CharacterNoteKind is what a CharacterNote says about its character.
+ */
+export const CHARACTER_NOTE_KINDS = ['kind', 'nationality', 'age'] as const
+export type CharacterNoteKind = (typeof CHARACTER_NOTE_KINDS)[number]
+
+/**
  * CharacterVoiceMode is store.Book.CharacterVoiceMode's own type - one of
  * four mutually exclusive settings for whether/how a character's own
  * narration voice can override the book's:
@@ -106,7 +112,7 @@ export type ResetPass = (typeof RESET_PASSES)[number]
 /**
  * RosterFixKind is a change to a roster a review can propose.
  */
-export const ROSTER_FIX_KINDS = ['merge', 'remove_alias', 'mark_role', 'invalidate'] as const
+export const ROSTER_FIX_KINDS = ['merge', 'remove_alias', 'split_alias', 'mark_role', 'invalidate'] as const
 export type RosterFixKind = (typeof ROSTER_FIX_KINDS)[number]
 
 /**
@@ -134,6 +140,25 @@ export type SFXEngine = (typeof SFX_ENGINES)[number]
  */
 export const SFX_PLANNINGS = ['off', 'melody', 'full'] as const
 export type SFXPlanning = (typeof SFX_PLANNINGS)[number]
+
+/**
+ * Trait names a field of Traits, as Mismatches reports it.
+ */
+export const TRAITS = ['gender', 'age', 'pitch'] as const
+export type Trait = (typeof TRAITS)[number]
+
+/**
+ * VoiceEffect names one of the effects ("" for none).
+ */
+export const VOICE_EFFECTS = ['insectoid', 'underwater'] as const
+export type VoiceEffect = (typeof VOICE_EFFECTS)[number]
+
+/**
+ * WordClass is what sort of word a WorldFact is filed under, for the
+ * roster rules.
+ */
+export const WORD_CLASSES = ['title', 'role', 'race', 'nationality', 'place'] as const
+export type WordClass = (typeof WORD_CLASSES)[number]
 
 // ---- Catalog ----
 
@@ -219,6 +244,18 @@ export const DEFAULT_DESIGN_MODEL: DesignModel = 'breeze_tts'
 export const DEFAULT_CHARACTER_VOICE_MODE: CharacterVoiceMode = 'narrator'
 
 // ---- Types ----
+
+/**
+ * accentGroupDTO is the characters of one kind cast with one accent.
+ */
+export interface AccentGroup {
+  /**
+   * Accent is the accent's name as speakerattr.CastingAccent reads it
+   * from a casting ("General American", "Cockney").
+   */
+  accent: string
+  characters: CharacterRef[]
+}
 
 export interface AddBookSourceRequest {
   /**
@@ -633,6 +670,22 @@ export interface CanceledCountResponse {
   canceled: number
 }
 
+/**
+ * castAccentDTO is the accent a casting was held to
+ * (speakerattr.AccentDecision).
+ */
+export interface CastAccent {
+  accent: string
+  /**
+   * Evidence is the sentence it rests on ("none" for the setting's),
+   * Whose who the model read that sentence as being about, and Basis the
+   * rule that decided it ("origin", "idiom", "setting", ...).
+   */
+  evidence: string
+  whose: string
+  basis: string
+}
+
 export interface CastMember {
   name: string
   role: boolean
@@ -643,6 +696,11 @@ export interface CastMember {
 export interface ChapterDetail {
   idx: number
   title: string
+  /**
+   * Matter is chapterSummaryDTO.Matter, here for the players: each holds
+   * the chapters it has loaded, not the book's list.
+   */
+  matter: boolean
   generating: boolean
   paragraphs: Paragraph[]
   content: ContentItem[]
@@ -709,6 +767,15 @@ export interface ChapterSummary {
    */
   passes: Passes
   /**
+   * Matter marks front or back matter (a title page, the copyright page,
+   * "About the Author") rather than story: playback steps over the
+   * chapter, and background narration, the passes and reading progress
+   * leave it out. Set by the book's matter pass or by the reader (PUT
+   * .../chapters/{idx}/matter); a reader who opens one can still have it
+   * read.
+   */
+  matter: boolean
+  /**
    * Music* are this chapter's background-music regions: how many were
    * scored, and how many of those have a ready clip / failed. All 0 for
    * a chapter that isn't scored.
@@ -746,6 +813,51 @@ export interface CharacterName {
   invalid: boolean
 }
 
+/**
+ * characterNoteDTO is one entry of a character's dossier
+ * (store.CharacterNote): a single thing the text states about them, with
+ * the sentence it rests on.
+ */
+export interface CharacterNote {
+  id: string
+  characterId: string
+  characterName: string
+  /**
+   * Kind says what Value is: the kind of being they are ("goblin"), or
+   * their age in years at the evidence's chapter ("12").
+   */
+  kind: CharacterNoteKind
+  value: string
+  /**
+   * Proposed marks a note fact finding found and the reader hasn't ruled
+   * on; casting is shown accepted notes only.
+   */
+  proposed?: boolean
+  /**
+   * Skipped marks a note the reader turned down: not shown to casting,
+   * and listed only so it can be put back for review (rule with
+   * review).
+   */
+  skipped?: boolean
+  /**
+   * Evidence is the sentence of the book the note rests on, word for
+   * word, and the Evidence* fields the chapter it is in.
+   */
+  evidence?: string
+  evidenceBookId?: string
+  evidenceBookTitle?: string
+  evidenceChapterIdx?: number | null
+  evidenceChapterTitle?: string
+}
+
+/**
+ * characterRefDTO names one character.
+ */
+export interface CharacterRef {
+  id: string
+  name: string
+}
+
 export interface CharacterStageRequest {
   /**
    * ChapterIdx is the chapter of this book the stage starts at. Ignored
@@ -775,6 +887,16 @@ export interface CharacterizePreviewResponse {
    * many sentences it found.
    */
   lookups: string[]
+  /**
+   * LookupExcerpts are the sentences those searches showed the casting
+   * call, each under its search ("Scylla + Greek: ...").
+   */
+  lookupExcerpts: string[]
+  /**
+   * Accent is the accent decided before the casting call, with the
+   * sentence it rests on; absent when the step was off or failed.
+   */
+  accent?: CastAccent | null
   /**
    * CurrentSummary is the character's stored casting, for comparison.
    */
@@ -894,7 +1016,8 @@ export interface CreateRosterProposalRequest {
    */
   target?: string
   /**
-   * Detail is the alias to remove (remove_alias only).
+   * Detail is the alias to remove or split off (remove_alias and
+   * split_alias only).
    */
   detail?: string
   reason?: string
@@ -994,6 +1117,10 @@ export interface DirectionMark {
    */
   offset: number
   tag: string
+}
+
+export interface DismissVoiceCheckRequest {
+  presetId: string
 }
 
 /**
@@ -1310,6 +1437,31 @@ export interface JobsSummary {
 }
 
 /**
+ * kindAccentsDTO is how the characters of one kind are cast: its accents,
+ * the most common first.
+ */
+export interface KindAccents {
+  /**
+   * Key is the word for the kind: a fact's key, or a word the series'
+   * castings use for many characters and other series' don't ("drake").
+   */
+  key: string
+  /**
+   * Fact is the text of the fact in force for the kind in this series,
+   * "" when it has none; Global says that fact is the one for every
+   * book, not the series' own.
+   */
+  fact?: string
+  global?: boolean
+  /**
+   * Members is how many characters are of the kind and cast with a
+   * stated accent - the ones in Accents.
+   */
+  members: number
+  accents: AccentGroup[]
+}
+
+/**
  * kindWorkDTO is one kind's entry in jobsSnapshotDTO.WorkLeft.
  */
 export interface KindWork {
@@ -1434,6 +1586,22 @@ export interface Lighting {
   effect: LightEffect
 }
 
+export interface ListenRequest {
+  /**
+   * PresetID is the voice whose reference clip is asked about: a preset,
+   * or a derived one (a numbered role member's, an age stage's).
+   */
+  presetId: string
+  /**
+   * Question is asked of the clip as written.
+   */
+  question: string
+  /**
+   * MaxTokens caps the answer; 0 takes the worker's default.
+   */
+  maxTokens?: number
+}
+
 export interface LlmTestResponse {
   text: string
 }
@@ -1476,6 +1644,13 @@ export interface MergeCharacterRequest {
    * description is no name the target goes by.
    */
   asRole?: boolean
+  /**
+   * NoAlias merges without making the merged-away name (or its own
+   * aliases) another name for the target - for a name that was never
+   * theirs (a mislabel, someone else's name on their lines), which
+   * attribution would otherwise keep folding into them.
+   */
+  noAlias?: boolean
 }
 
 export interface MoveChapterRequest {
@@ -2045,6 +2220,16 @@ export interface ReparseSourceResponse {
   changed: number[]
 }
 
+/**
+ * resetFactsResponse is POST .../facts/reset's reply.
+ */
+export interface ResetFactsResponse {
+  /**
+   * Removed is how many of the series' facts were removed.
+   */
+  removed: number
+}
+
 export interface ReviewBookSourceRequest {
   /**
    * Import and Skip are ids of entries waiting for review
@@ -2077,7 +2262,8 @@ export interface RosterProposal {
   subjectLines: number
   targetLines: number
   /**
-   * Detail is the alias to remove (remove_alias).
+   * Detail is the alias to remove (remove_alias) or split off
+   * (split_alias).
    */
   detail: string
   reason: string
@@ -2096,6 +2282,33 @@ export interface RosterProposal {
  */
 export interface RosterReviewResponse {
   proposals: RosterProposal[]
+}
+
+export interface RuleCharacterNotesRequest {
+  /**
+   * IDs are the notes ruled on - several at once, so every goblin the
+   * pass found can be accepted together.
+   */
+  ids: string[]
+  /**
+   * Accept puts them in force; false turns them down (a proposed note)
+   * or removes them (an accepted one) for good.
+   */
+  accept: boolean
+  /**
+   * Review puts them back in front of the reader instead, whatever
+   * Accept says: a skipped (or accepted) note is proposed again.
+   */
+  review?: boolean
+}
+
+export interface RuleCharacterNotesResponse {
+  /**
+   * Recast is how many characters were queued to be cast again: those
+   * an accepted kind brought a world fact their casting had not been
+   * shown.
+   */
+  recast: number
 }
 
 /**
@@ -2124,12 +2337,49 @@ export interface SearchResult {
   text: string
 }
 
+/**
+ * seriesSpeakerLinesResponse is GET .../speakers/series-lines' reply.
+ */
+export interface SeriesSpeakerLinesResponse {
+  /**
+   * Speakers are the series' speakers with at least one line of
+   * dialogue, most lines first.
+   */
+  speakers: SpeakerLines[]
+}
+
+/**
+ * setChapterMatterRequest is PUT .../chapters/{idx}/matter's body.
+ */
+export interface SetChapterMatterRequest {
+  /**
+   * Matter is whether the chapter is front or back matter (true) or
+   * story (false).
+   */
+  matter: boolean
+}
+
 export interface SetCharacterAliasesRequest {
   aliases: string[]
 }
 
 export interface SetCharacterInvalidRequest {
   invalid: boolean
+}
+
+export interface SetCharacterPeopleRequest {
+  /**
+   * Race is the kind of being they are ("drake") and Nationality where
+   * they are from or whose they are ("Pallassian"); "" clears one.
+   */
+  race: string
+  nationality: string
+  /**
+   * Age is their age in years, as the reader states it; 0 clears it.
+   * Setting one replaces the ages the text gave (they stay listed as
+   * skipped notes).
+   */
+  age: number
 }
 
 export interface SetCharacterPronounsRequest {
@@ -2147,6 +2397,20 @@ export interface SetCharacterRoleRequest {
 
 export interface SetCharacterVoiceRequest {
   voicePresetId: string
+}
+
+/**
+ * setKindAccentRequest is POST /api/books/{id}/facts/accents' body.
+ */
+export interface SetKindAccentRequest {
+  /**
+   * Key is the kind, as GET .../facts/accents lists it.
+   */
+  key: string
+  /**
+   * Accent is the accent every character of the kind should have.
+   */
+  accent: string
 }
 
 export interface SetParagraphEmotionRequest {
@@ -2337,6 +2601,26 @@ export interface Speaker {
    */
   pronouns?: string
   /**
+   * Race is the kind of being this speaker is ("drake") and Nationality
+   * where they are from or whose they are ("Pallassian") - an accepted
+   * character note of each (store.NoteKind, store.NoteNationality), set
+   * here by hand or accepted from fact finding. Their casting is shown
+   * both, with the facts about them. Omitted when not established.
+   */
+  race?: string
+  nationality?: string
+  /**
+   * Age is what the text states of their age, from the accepted
+   * character notes (store.NoteAge): "12 as of Chapter 3", several
+   * joined with "; " in the order found. Omitted when none is accepted.
+   */
+  age?: string
+  /**
+   * AgeYears is the last of those ages, in years - what the Speakers
+   * page sorts by and edits. 0 when none is accepted.
+   */
+  ageYears?: number
+  /**
    * Voices is every voice this speaker's lines in this book are spoken
    * in, each with its samples: their own first, then each numbered member
    * of a role (store.Paragraph.SpeakerIndex - "Guard 1", "Guard 2"), then
@@ -2379,6 +2663,14 @@ export interface SpeakerEmotion {
    */
   status: 'ready' | 'pending' | 'failed'
   audioUrl?: string
+}
+
+/**
+ * speakerLinesDTO is one speaker's dialogue lines across a series.
+ */
+export interface SpeakerLines {
+  name: string
+  lines: number
 }
 
 /**
@@ -2448,6 +2740,23 @@ export interface SpeakerVoice {
    * vary.
    */
   emotions?: SpeakerEmotion[]
+}
+
+/**
+ * splitCharacterAliasRequest is POST .../characters/{characterId}/aliases/split's body.
+ */
+export interface SplitCharacterAliasRequest {
+  /**
+   * Alias is the one of the character's other names that is really
+   * somebody else.
+   */
+  alias?: string
+  /**
+   * Aliases is several of them at once, each somebody else and nobody the
+   * same as another: one pass over the character's lines sorts them among
+   * everyone, rather than a pass per name each looking at the same lines.
+   */
+  aliases?: string[]
 }
 
 /**
@@ -2634,6 +2943,18 @@ export interface TimeJump {
    * and most characters never need one.
    */
   voices: number
+  /**
+   * Proposed marks a jump fact finding found and the reader hasn't ruled
+   * on: nothing is aged across it until it is accepted (POST
+   * .../time-jumps/proposals/{id}/accept, at this chapter and length or
+   * others), and skipping it keeps it from being found again.
+   */
+  proposed?: boolean
+  /**
+   * Evidence is the sentences a proposed jump rests on, one a line, each
+   * after the title of its chapter.
+   */
+  evidence?: string
 }
 
 export interface TimeJumpRequest {
@@ -2710,6 +3031,18 @@ export interface UpdateBookmarkRequest {
   note: string
 }
 
+/**
+ * upsertFactResponse is PUT .../facts' reply.
+ */
+export interface UpsertFactResponse {
+  id: string
+  /**
+   * Recast is how many characters were queued to be cast again because
+   * the request accepted a proposed fact about their kind.
+   */
+  recast: number
+}
+
 export interface UpsertLexiconRequest {
   term: string
   replacement: string
@@ -2732,7 +3065,72 @@ export interface UpsertWorldFactRequest {
   id?: string
   key: string
   aliases: string[]
+  /**
+   * Fact is required unless Class is set.
+   */
   fact: string
+  /**
+   * Class says what sort of word Key is (worldFactDTO.Class), "" for
+   * none; saving a fact with it accepts a class proposed for it.
+   */
+  class?: WordClass
+  /**
+   * Effect is the kind's voice effect (worldFactDTO.Effect), "" for
+   * none. Like Class it is saved as sent: leaving it out clears it.
+   */
+  effect?: VoiceEffect
+}
+
+/**
+ * voiceCheckDTO is one voice as the check heard it.
+ */
+export interface VoiceCheck {
+  /**
+   * PresetID names the voice; what POST .../voice-check/dismiss takes.
+   */
+  presetId: string
+  characterId: string
+  /**
+   * Speaker is the character's name, as the regenerate route takes it.
+   */
+  speaker: string
+  /**
+   * StageID and StageAge say which age stage's voice this is; omitted
+   * for the character's own.
+   */
+  stageId?: string
+  stageAge?: number
+  /**
+   * Instruct is the casting the clip was designed from.
+   */
+  instruct: string
+  refAudioUrl?: string
+  cast: VoiceTraits
+  heard: VoiceTraits
+  /**
+   * Mismatches is the traits on which the two clearly disagree.
+   */
+  mismatches: Trait[]
+  dismissed?: boolean
+  checkedAt: number
+}
+
+/**
+ * voiceCheckResponse is GET /api/books/{id}/voice-check.
+ */
+export interface VoiceCheckResponse {
+  /**
+   * Voices is how many of the roster's voices have a reference clip to
+   * hear, Checked how many of those have been heard as they are now.
+   */
+  voices: number
+  checked: number
+  /**
+   * Findings is the checked voices that disagree with their casting and
+   * haven't been dismissed, most lines first - or, with ?all=1, every
+   * checked voice.
+   */
+  findings: VoiceCheck[]
 }
 
 export interface VoicePreset {
@@ -2830,6 +3228,32 @@ export interface VoiceSettingsUpdate {
 }
 
 /**
+ * voiceTraitsDTO is what a voice sounds like, or is cast to: each field
+ * omitted when unknown.
+ */
+export interface VoiceTraits {
+  /**
+   * Gender is "man" or "woman".
+   */
+  gender?: string
+  /**
+   * Age is "child", "teenager", "young adult", "middle-aged" or
+   * "elderly".
+   */
+  age?: string
+  /**
+   * Pitch is "low", "medium" or "high".
+   */
+  pitch?: string
+  /**
+   * Accent is the casting's accent by name, or the listener's own words
+   * for what it heard. Shown, never compared: the listener can't tell
+   * regional accents apart.
+   */
+  accent?: string
+}
+
+/**
  * wordTimingDTO is one element of paragraphDTO.Words, which is passed
  * through as raw JSON from the stored forced alignment rather than
  * decoded; this documents that shape for cmd/apigen. start/end are
@@ -2858,7 +3282,50 @@ export interface WorldFact {
    * plural of Key needs none.
    */
   aliases: string[]
+  /**
+   * Fact may be empty for a word with a Class: the class is then all
+   * it says. A fact can have both - a race with its lifespan and accent.
+   */
   fact: string
+  /**
+   * Class: the word is a title ("Prognugator", "Ser"), a role - a job or
+   * class ("Baker") -, a race ("Drake"), a nationality ("Pallassian") or
+   * a place ("Pallass") of this world, so the roster never reads it as
+   * someone's name: "Prognugator" is not short for "Prognugator Tersk",
+   * "Drake Tesy" may be the same person as "Tesy", and a name made only
+   * of roles, races and nationalities ("Drake Trader") is a role.
+   */
+  class?: WordClass
+  /**
+   * ProposedClass is a class the fact-finding pass proposes for a fact
+   * in force that has none, waiting for the reader: accepted by a PUT
+   * with it as class, turned down by .../skip.
+   */
+  proposedClass?: WordClass
+  /**
+   * DeclinedClass is a proposed class the reader turned down for a fact
+   * in force; .../review proposes it again.
+   */
+  declinedClass?: WordClass
+  /**
+   * Effect is a voice effect given to every line of a character whose
+   * race is this fact's word, after the line is generated - the buzz of
+   * an insect people, a voice heard through water - which a casting
+   * can't make a voice model produce.
+   */
+  effect?: VoiceEffect
+  /**
+   * Skipped: a proposed fact the reader turned down - not in force, and
+   * listed only so it can be put back for review (.../review). Only a
+   * series' own fact can be.
+   */
+  skipped?: boolean
+  /**
+   * UsedBy are, for a word with a class in force or proposed, the
+   * characters of the book's series whose names use it. Only set in a
+   * book's list.
+   */
+  usedBy?: string[]
   /**
    * Global: the fact holds in every book, rather than being one
    * series' own.
@@ -2870,6 +3337,27 @@ export interface WorldFact {
    * book's list.
    */
   superseded?: boolean
+  /**
+   * Proposed: found by the fact-finding pass and waiting for the reader
+   * - not in force until accepted (PUT with its id) and gone once
+   * skipped. Only a series' own fact can be.
+   */
+  proposed?: boolean
+  /**
+   * Evidence is the sentence of the book a proposed fact rests on, word
+   * for word, and the Evidence* fields the chapter it is in.
+   */
+  evidence?: string
+  evidenceBookId?: string
+  evidenceBookTitle?: string
+  evidenceChapterIdx?: number | null
+  evidenceChapterTitle?: string
+  /**
+   * Replaces is, for a proposed fact, the text of the global fact it
+   * would take the place of in this series once accepted - all of it,
+   * an accent rule included, so the reader may want to carry that over.
+   */
+  replaces?: string
 }
 
 // ---- Live topics ----
@@ -2902,6 +3390,10 @@ export interface LiveTopics {
    */
   rosterReview: { params: { bookId: string }; data: RosterReviewResponse }
   /**
+   * buildVoiceCheck is the voiceCheck live topic's value.
+   */
+  voiceCheck: { params: { bookId: string }; data: VoiceCheckResponse }
+  /**
    * buildBookSetting is the bookSetting live topic's value and GET
    * .../setting's reply.
    */
@@ -2919,11 +3411,19 @@ export interface LiveTopics {
   lexicon: { params: { bookId: string }; data: LexiconEntry[] }
   /**
    * buildBookFacts lists the facts bookID's series has of its own
-   * (store.SeriesScope), then the global ones, each marked Superseded when
+   * (store.SeriesScope) - those in force, those Proposed and those the
+   * reader Skipped - then the global ones, each marked Superseded when
    * a series fact shares a word with it - what store.BookWorldFacts leaves
    * out for this book.
    */
   bookFacts: { params: { bookId: string }; data: WorldFact[] }
+  /**
+   * buildCharacterNotes lists the notes about the characters of a book's
+   * series - the ones waiting for review, the ones accepted and the ones
+   * skipped - kinds before ages, then by value and name, so the notes that
+   * say the same thing sit together.
+   */
+  characterNotes: { params: { bookId: string }; data: CharacterNote[] }
   /**
    * buildLexiconSuggestions offers the words of the series roster's names
    * and aliases that have no rule yet, unusual spellings first, then by how
@@ -3271,6 +3771,20 @@ export interface Routes {
     query: Record<never, never>
     body: FormData
     response: ReimportChapterResponse
+    errorCode: never
+  }
+  /**
+   * handleSetChapterMatter serves PUT /api/books/{id}/chapters/{idx}/matter:
+   * the reader marking a chapter as front or back matter, or as story after
+   * all - kept whatever the book's matter pass says later. Nothing generated
+   * is deleted either way; a chapter made story again is narrated and
+   * preprocessed with the rest the next time those run.
+   */
+  'PUT /api/books/{id}/chapters/{idx}/matter': {
+    path: { id: string; idx: number }
+    query: Record<never, never>
+    body: SetChapterMatterRequest
+    response: void
     errorCode: never
   }
   /**
@@ -3635,6 +4149,32 @@ export interface Routes {
     response: void
     errorCode: never
   }
+  'GET /api/books/{id}/character-notes': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: CharacterNote[]
+    errorCode: never
+  }
+  /**
+   * handleRuleCharacterNotes serves POST
+   * /api/books/{id}/character-notes/rule: accepts or turns down notes about
+   * the series' characters. Accepting that someone is of a kind recasts
+   * them when a world fact in force is about that kind and nothing else of
+   * theirs - name, alias, their casting's opening, an earlier note - had
+   * brought it to their casting already, and turns down the other kinds
+   * proposed or accepted for them (they stay listed as skipped); an age
+   * changes nothing by itself
+   * (casting and time jumps read it from then on). Notes that aren't this
+   * series' are passed over.
+   */
+  'POST /api/books/{id}/character-notes/rule': {
+    path: { id: string }
+    query: Record<never, never>
+    body: RuleCharacterNotesRequest
+    response: RuleCharacterNotesResponse
+    errorCode: never
+  }
   'GET /api/books/{id}/characters': {
     path: { id: string }
     query: Record<never, never>
@@ -3668,7 +4208,7 @@ export interface Routes {
    * handleDedupeCharacters serves POST /api/books/{id}/characters/dedupe - the
    * Speakers page's "merge duplicate names" action (see dedupeCharacters),
    * replying with every merge it made. Attribution already avoids making new
-   * duplicates (case-insensitive lookup, descriptions to roles, first names
+   * duplicates (lookup by name key, descriptions to roles, first names
    * folded into full ones as they appear); this cleans up a roster built
    * before that, or across chapters attributed out of order.
    */
@@ -3773,6 +4313,31 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleSplitCharacterAlias makes one of a character's aliases (or
+   * several, each their own person) a character of its own - for a name
+   * that was merged or folded into the wrong person. The alias comes off
+   * the character (so attribution stops
+   * folding it back), a character of that name is created if the series has
+   * none, and the lines that may be theirs are looked over again: in every
+   * chapter of the series whose text writes the alias, the character's lines
+   * are re-judged among them (and anyone else) by the same per-chapter
+   * reattribution Auto Split runs, one pipeline_auto_split row per book.
+   * Lines the reader set by hand stay, as does every line in a chapter that
+   * never writes the alias.
+   *
+   * Answers 202 with the chapters queued - 0 when no chapter writes the
+   * alias, or when the LLM isn't configured (the roster change is still
+   * made). 400 for a name that isn't one of the character's aliases; 409
+   * when the series has that name as a character marked not a speaker.
+   */
+  'POST /api/books/{id}/characters/{characterId}/aliases/split': {
+    path: { id: string; characterId: string }
+    query: Record<never, never>
+    body: SplitCharacterAliasRequest
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
    * handleCharacterAppearances lists every paragraph a character speaks,
    * across every book in their series (see store.SeriesScope) - backing a
    * "where does this character show up" view. bookID in the path is just
@@ -3832,12 +4397,14 @@ export interface Routes {
    * (castCharacter) and returns the casting without storing it, so a change
    * to the prompts or the retrieval can be judged against the stored casting
    * without discarding anyone's voice or audio. ?temp= sets the casting
-   * call's sampling temperature and ?lookup=0 casts without the
-   * book lookups.
+   * call's sampling temperature, ?lookup=0 casts without the book lookups,
+   * ?meaning=0 keeps the lookups but without their excerpts found by
+   * meaning, and ?accent=1 or 0 turns the accent step on or off for this
+   * call (default castAccentStep).
    */
   'POST /api/books/{id}/characters/{characterId}/characterize/preview': {
     path: { id: string; characterId: string }
-    query: { lookup?: string | number | boolean; notes?: string | number | boolean; temp?: string | number | boolean }
+    query: { lookup?: string | number | boolean; meaning?: string | number | boolean; accent?: string | number | boolean; notes?: string | number | boolean; temp?: string | number | boolean }
     body: never
     response: CharacterizePreviewResponse
     errorCode: never
@@ -3922,6 +4489,22 @@ export interface Routes {
     path: { id: string; characterId: string }
     query: Record<never, never>
     body: RenameCharacterRequest
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleSetCharacterPeople serves PUT
+   * /api/books/{id}/characters/{characterId}/people: sets one character's
+   * race, nationality and age by hand - each the one accepted character note
+   * of its kind (store.SetCharacterNoteValue), replacing whatever fact finding
+   * proposed or the reader accepted before. Their casting is shown both,
+   * and the world facts filed under those words. Like pronouns, it doesn't
+   * re-characterize on its own - the Speakers page's "Regenerate" does.
+   */
+  'PUT /api/books/{id}/characters/{characterId}/people': {
+    path: { id: string; characterId: string }
+    query: Record<never, never>
+    body: SetCharacterPeopleRequest
     response: void
     errorCode: never
   }
@@ -4073,7 +4656,38 @@ export interface Routes {
     path: { id: string }
     query: Record<never, never>
     body: UpsertWorldFactRequest
-    response: IdResponse
+    response: UpsertFactResponse
+    errorCode: never
+  }
+  /**
+   * handleKindAccents serves GET /api/books/{id}/facts/accents - see
+   * kindAccents. Not a live topic: it reads every casting of the roster.
+   */
+  'GET /api/books/{id}/facts/accents': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: KindAccents[]
+    errorCode: never
+  }
+  /**
+   * handleSetKindAccent serves POST /api/books/{id}/facts/accents: records
+   * accent as the kind's accent in the series' own fact for it, and recasts
+   * the characters of the kind cast with another. The fact keeps what the
+   * one in force said - the general fact's text and words carried over
+   * when the series had none of its own, since a series' fact replaces the
+   * general one whole - with the accent as a last sentence that overrides
+   * whatever it says of accents (a baseline fact's "the same accent as the
+   * rest of the cast" sits in one sentence with the kind's voice, so
+   * nothing is cut out); the reader can tidy it on the Facts tab. A proposed fact
+   * for the kind is accepted by this, as worded. Replies with the fact's id
+   * and how many characters were queued.
+   */
+  'POST /api/books/{id}/facts/accents': {
+    path: { id: string }
+    query: Record<never, never>
+    body: SetKindAccentRequest
+    response: UpsertFactResponse
     errorCode: never
   }
   /**
@@ -4090,10 +4704,67 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleFindBookFacts serves POST /api/books/{id}/facts/find: queues a
+   * search of the book's series for world facts. What it finds arrives on
+   * the bookFacts topic as proposed facts.
+   */
+  'POST /api/books/{id}/facts/find': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleResetBookFacts serves POST /api/books/{id}/facts/reset: undoes
+   * fact finding for the book's series (store.ResetFoundWorldFacts) - every
+   * fact a pass proposed is removed, accepted and skipped ones included, and
+   * classes proposed or declined are forgotten - so the next run proposes
+   * everything again. Facts the reader wrote stay. Nobody is recast, and
+   * nothing a roster review already changed is undone.
+   */
+  'POST /api/books/{id}/facts/reset': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: ResetFactsResponse
+    errorCode: never
+  }
+  /**
    * handleDeleteBookFact removes one of the series' own facts; a global
    * fact's id is left alone.
    */
   'DELETE /api/books/{id}/facts/{factId}': {
+    path: { id: string; factId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleReviewBookFact serves POST /api/books/{id}/facts/{factId}/review:
+   * puts a fact the reader turned down back in front of them
+   * (store.ReviewWorldFact) - a skipped fact is proposed again, and a fact
+   * in force whose proposed class was declined has it proposed again. 409
+   * when the fact has nothing turned down.
+   */
+  'POST /api/books/{id}/facts/{factId}/review': {
+    path: { id: string; factId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleSkipBookFact serves POST /api/books/{id}/facts/{factId}/skip:
+   * turns a proposed fact down for good - it is kept, out of sight, so the
+   * same kind isn't proposed again. (Accepting one is PUT .../facts with its
+   * id, edited or not.) 404 when the series has no such fact, 409 for one
+   * that isn't waiting. For a fact in force whose word has a class proposed
+   * (proposedClass), it is that class that is turned down for good; the
+   * fact stays.
+   */
+  'POST /api/books/{id}/facts/{factId}/skip': {
     path: { id: string; factId: string }
     query: Record<never, never>
     body: never
@@ -4250,6 +4921,20 @@ export interface Routes {
     query: { chapters?: string | number | boolean }
     body: never
     response: BookManifest
+    errorCode: never
+  }
+  /**
+   * handleDetectBookMatter serves POST /api/books/{id}/matter/detect: queues
+   * the book's matter pass now (a jobs.KindBookMatter task at urgent
+   * priority), for any book - one from a website included - replacing what
+   * an earlier run marked but nothing the reader set. The book live topic
+   * carries the result.
+   */
+  'POST /api/books/{id}/matter/detect': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
     errorCode: never
   }
   /**
@@ -4444,13 +5129,17 @@ export interface Routes {
    * handleAcceptRosterProposal serves POST
    * /api/books/{id}/roster-review/proposals/{proposalId}/accept: makes the
    * proposed change. A merge moves the character's lines across the whole
-   * series, keeps its name as the other's alias and deletes its voice - it
-   * can't be undone. 409 when the proposal was already decided, or no longer
+   * series, keeps its name as the other's alias (not with ?alias=0, for a
+   * name that was never theirs) and deletes its voice - it can't be undone.
+   * An alias is split off - made a character of its own, the subject's lines
+   * re-judged for theirs (handleSplitCharacterAlias) - for a split_alias
+   * proposal, or a remove_alias one with ?split=1; ?split=0 only removes it.
+   * 409 when the proposal was already decided, or no longer
    * applies to the roster.
    */
   'POST /api/books/{id}/roster-review/proposals/{proposalId}/accept': {
     path: { id: string; proposalId: string }
-    query: Record<never, never>
+    query: { split?: string | number | boolean; alias?: string | number | boolean }
     body: never
     response: void
     errorCode: never
@@ -4674,8 +5363,9 @@ export interface Routes {
    * character attribution's own accidental character row, or the "Unknown"
    * sentinel itself, e.g. after a reader manually renamed/deleted the wrong
    * speaker upstream - it re-judges every one of that speaker's own
-   * paragraphs in this book (chapter by chapter, one KindSpeakerReattribution
-   * task per chapter, all grouped under one pipeline_auto_split task - see
+   * paragraphs in every book of the series (in this book only, for
+   * "Unknown"), chapter by chapter - one KindSpeakerReattribution
+   * task per chapter, grouped under one pipeline_auto_split task a book - see
    * jobs.Manager.EnqueueBulk/RunReattribution) and
    * redistributes them to whichever real character/Narrator/Unknown they
    * actually belong to, using the exact same chapter-wide LLM pass
@@ -4703,6 +5393,20 @@ export interface Routes {
     query: Record<never, never>
     body: ReattributeSpeakerRequest
     response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleSeriesSpeakerLines serves GET /api/books/{id}/speakers/series-lines:
+   * how many lines of dialogue each speaker has across every book of the
+   * book's series - what the Speakers page's whole-series view counts and
+   * sorts by (the speakers topic counts one book's). Not a live topic: it
+   * reads every book of the series.
+   */
+  'GET /api/books/{id}/speakers/series-lines': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: SeriesSpeakerLinesResponse
     errorCode: never
   }
   /**
@@ -4744,6 +5448,33 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleAcceptTimeJumpProposal serves POST
+   * /api/books/{id}/time-jumps/proposals/{proposalId}/accept: makes the
+   * jump a proposal found, at the chapter and length in the body - the
+   * reader's, which need not be the proposal's (the pass tends to place a
+   * jump a chapter late) - exactly as POST .../time-jumps does.
+   */
+  'POST /api/books/{id}/time-jumps/proposals/{proposalId}/accept': {
+    path: { id: string; proposalId: string }
+    query: Record<never, never>
+    body: TimeJumpRequest
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleSkipTimeJumpProposal serves POST
+   * /api/books/{id}/time-jumps/proposals/{proposalId}/skip: turns a
+   * proposed jump down for good - kept, out of sight, so fact finding
+   * doesn't propose one near it again.
+   */
+  'POST /api/books/{id}/time-jumps/proposals/{proposalId}/skip': {
+    path: { id: string; proposalId: string }
+    query: Record<never, never>
+    body: never
+    response: void
+    errorCode: never
+  }
+  /**
    * handleDeleteTimeJump removes a time jump and the stages made for it;
    * those lines go back to the voice they had before it.
    */
@@ -4779,6 +5510,40 @@ export interface Routes {
     query: Record<never, never>
     body: VoiceSettingsUpdate
     response: VoiceSettings
+    errorCode: never
+  }
+  /**
+   * handleGetVoiceCheck serves GET /api/books/{id}/voice-check - see
+   * docs/api.md.
+   */
+  'GET /api/books/{id}/voice-check': {
+    path: { id: string }
+    query: { all?: string | number | boolean }
+    body: never
+    response: VoiceCheckResponse
+    errorCode: never
+  }
+  /**
+   * handleDismissVoiceCheck serves POST /api/books/{id}/voice-check/dismiss:
+   * the reader says a flagged voice is fine as it is.
+   */
+  'POST /api/books/{id}/voice-check/dismiss': {
+    path: { id: string }
+    query: Record<never, never>
+    body: DismissVoiceCheckRequest
+    response: void
+    errorCode: never
+  }
+  /**
+   * handleRunVoiceCheck serves POST /api/books/{id}/voice-check/run: queues
+   * a check of the book's roster's voices. The voiceCheck live topic carries
+   * what it finds.
+   */
+  'POST /api/books/{id}/voice-check/run': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: QueuedResponse
     errorCode: never
   }
   /**
@@ -4822,7 +5587,7 @@ export interface Routes {
     path: Record<never, never>
     query: Record<never, never>
     body: UpsertWorldFactRequest
-    response: IdResponse
+    response: UpsertFactResponse
     errorCode: never
   }
   'DELETE /api/facts/{factId}': {
@@ -5394,6 +6159,20 @@ export interface Routes {
     response: LanguagesResponse
     errorCode: never
   }
+  /**
+   * handleListen serves POST /api/voices/listen: one question asked of one
+   * voice's reference clip by the worker's audio-language model - the voice
+   * check's building block, for trying a question out. Run as a
+   * jobs.KindListenPreview task, so the listener takes its turn on the GPU
+   * like any other audio model.
+   */
+  'POST /api/voices/listen': {
+    path: Record<never, never>
+    query: Record<never, never>
+    body: ListenRequest
+    response: LlmTestResponse
+    errorCode: never
+  }
   'GET /api/voices/presets': {
     path: Record<never, never>
     query: Record<never, never>
@@ -5496,6 +6275,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/generate': 'json',
   'POST /api/books/{id}/chapters/{idx}/generate-music': 'json',
   'POST /api/books/{id}/chapters/{idx}/match-epub': 'json',
+  'PUT /api/books/{id}/chapters/{idx}/matter': 'none',
   'POST /api/books/{id}/chapters/{idx}/move': 'none',
   'GET /api/books/{id}/chapters/{idx}/music': 'json',
   'GET /api/books/{id}/chapters/{idx}/notes': 'json',
@@ -5515,6 +6295,8 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/chapters/{idx}/summarize': 'json',
   'POST /api/books/{id}/chapters/{idx}/tag-directions': 'json',
   'PUT /api/books/{id}/chapters/{idx}/title': 'none',
+  'GET /api/books/{id}/character-notes': 'json',
+  'POST /api/books/{id}/character-notes/rule': 'json',
   'GET /api/books/{id}/characters': 'json',
   'POST /api/books/{id}/characters/characterize': 'json',
   'POST /api/books/{id}/characters/dedupe': 'json',
@@ -5522,6 +6304,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'POST /api/books/{id}/characters/regenerate-voice': 'json',
   'DELETE /api/books/{id}/characters/{characterId}': 'none',
   'PUT /api/books/{id}/characters/{characterId}/aliases': 'json',
+  'POST /api/books/{id}/characters/{characterId}/aliases/split': 'json',
   'GET /api/books/{id}/characters/{characterId}/appearances': 'json',
   'POST /api/books/{id}/characters/{characterId}/characterize': 'json',
   'POST /api/books/{id}/characters/{characterId}/characterize/preview': 'json',
@@ -5529,6 +6312,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'PUT /api/books/{id}/characters/{characterId}/invalid': 'none',
   'POST /api/books/{id}/characters/{characterId}/merge': 'none',
   'PUT /api/books/{id}/characters/{characterId}/name': 'none',
+  'PUT /api/books/{id}/characters/{characterId}/people': 'none',
   'PUT /api/books/{id}/characters/{characterId}/pronouns': 'json',
   'PUT /api/books/{id}/characters/{characterId}/role': 'none',
   'POST /api/books/{id}/characters/{characterId}/stages': 'json',
@@ -5542,8 +6326,14 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/exports/{exportId}/file': 'binary',
   'GET /api/books/{id}/facts': 'json',
   'PUT /api/books/{id}/facts': 'json',
+  'GET /api/books/{id}/facts/accents': 'json',
+  'POST /api/books/{id}/facts/accents': 'json',
   'GET /api/books/{id}/facts/affected': 'json',
+  'POST /api/books/{id}/facts/find': 'json',
+  'POST /api/books/{id}/facts/reset': 'json',
   'DELETE /api/books/{id}/facts/{factId}': 'none',
+  'POST /api/books/{id}/facts/{factId}/review': 'none',
+  'POST /api/books/{id}/facts/{factId}/skip': 'none',
   'POST /api/books/{id}/generate': 'json',
   'POST /api/books/{id}/generate-remaining': 'json',
   'DELETE /api/books/{id}/jobs': 'json',
@@ -5555,6 +6345,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'DELETE /api/books/{id}/lexicon/{entryId}': 'none',
   'POST /api/books/{id}/lookahead': 'json',
   'GET /api/books/{id}/manifest': 'json',
+  'POST /api/books/{id}/matter/detect': 'json',
   'GET /api/books/{id}/paragraph-edits': 'json',
   'GET /api/books/{id}/position': 'json',
   'PUT /api/books/{id}/position': 'none',
@@ -5584,13 +6375,19 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/speakers': 'json',
   'DELETE /api/books/{id}/speakers': 'none',
   'POST /api/books/{id}/speakers/reattribute': 'json',
+  'GET /api/books/{id}/speakers/series-lines': 'json',
   'POST /api/books/{id}/speakers/variants/regenerate': 'json',
   'GET /api/books/{id}/time-jumps': 'json',
   'POST /api/books/{id}/time-jumps': 'json',
+  'POST /api/books/{id}/time-jumps/proposals/{proposalId}/accept': 'json',
+  'POST /api/books/{id}/time-jumps/proposals/{proposalId}/skip': 'none',
   'DELETE /api/books/{id}/time-jumps/{jumpId}': 'none',
   'PUT /api/books/{id}/title': 'none',
   'GET /api/books/{id}/voice': 'json',
   'PUT /api/books/{id}/voice': 'json',
+  'GET /api/books/{id}/voice-check': 'json',
+  'POST /api/books/{id}/voice-check/dismiss': 'none',
+  'POST /api/books/{id}/voice-check/run': 'json',
   'GET /api/clips/{key}': 'binary',
   'POST /api/epub/chapters': 'json',
   'GET /api/facts': 'json',
@@ -5635,6 +6432,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'PUT /api/voices/default': 'json',
   'POST /api/voices/design-test': 'binary',
   'GET /api/voices/languages': 'json',
+  'POST /api/voices/listen': 'json',
   'GET /api/voices/presets': 'json',
   'GET /api/voices/presets/{id}/audio': 'binary',
   'POST /api/voices/presets/{id}/regenerate': 'json',

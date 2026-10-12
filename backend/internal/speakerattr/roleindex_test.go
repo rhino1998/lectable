@@ -30,7 +30,8 @@ func TestSplitRoleIndex(t *testing.T) {
 		{"Scale Guard 2", "Scale Guard", 2},
 		{"Guard", "Guard", 0},
 		{"Guard [role]", "Guard [role]", 0},
-		{"Guard 12", "Guard 12", 0}, // out of range: left alone
+		{"Guard 7", "Guard", 1}, // past the last slot: round again
+		{"Guard 12", "Guard", 6},
 		{"Guard 0", "Guard 0", 0},
 		{"the second", "the second", 0},
 		{"Second", "Second", 0},

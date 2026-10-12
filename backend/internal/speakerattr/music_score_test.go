@@ -55,6 +55,24 @@ func TestScoreMusicSharesDescriptionAcrossSplitsAndCutsOnNewScene(t *testing.T) 
 	}
 }
 
+func TestScoreMusicDescribesASummarySceneOnce(t *testing.T) {
+	ps := plainParagraphs(60)
+	notes := &ChapterSummary{Scenes: []Scene{{StartIdx: 0}, {StartIdx: 40}}}
+	llm := &scriptedMusicLLM{}
+	out, _, err := NewClient(Config{}, llm).ScoreMusic(context.Background(), "B", "C", nil, notes, ps, nil)
+	if err != nil {
+		t.Fatalf("ScoreMusic() err=%v", err)
+	}
+	if len(out) != 6 {
+		t.Fatalf("ScoreMusic() = %d regions, want 6", len(out))
+	}
+	// One call for the scene at 0 (four regions long) and one for the
+	// scene at 40.
+	if llm.describes != 2 {
+		t.Fatalf("describe calls = %d, want 2", llm.describes)
+	}
+}
+
 // sameAmbienceLLM answers every describe call after the first with
 // "ambience": "same".
 type sameAmbienceLLM struct{ calls int }

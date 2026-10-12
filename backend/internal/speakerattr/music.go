@@ -92,8 +92,7 @@ func mergeShortRegions(regions []musicBoundary) []musicBoundary {
 // deterministically splits it. mergeShortRegions' minRegionParagraphs is
 // the floor this is the ceiling for: one unbroken scene can run a whole
 // chapter, and a region is one music clip, sized to its narration. The
-// splits are length-only - up to musicDescribeGroupRegions of them share
-// one description.
+// splits are length-only - they share their scene's one description.
 const maxRegionParagraphs = 10
 
 // splitLongRegions deterministically inserts a "continuation" boundary
@@ -514,15 +513,20 @@ func buildAmbiencePrompt(raw string) string {
 	return "TrackType: SFX, ambience field recording, " + strings.TrimRight(raw, ". ") + ", continuous seamless background atmosphere, no music"
 }
 
-// musicDescribeGroupRegions is how many regions one describeMusicRegion
-// call may cover: a tone region plus the splitLongRegions chunks right
-// after it, which are the same scene and so share
-// its description instead of costing a call each. Measured before this on
-// Spire's Spite: describe calls were ~70% of scoring time, and most
-// regions were such chunks. Capped rather than unlimited so a very long
-// single-tone stretch still gets re-described now and then (and one
-// describe prompt stays a bounded ~30 paragraphs).
-const musicDescribeGroupRegions = 3
+// musicDescribeTextRegions is how many regions' text one
+// describeMusicRegion call is written from: a scene is described once,
+// however long it runs, from its opening regions - the scene's first region
+// plus the splitLongRegions chunks right after it - and every later chunk
+// of it takes that description without a call. Describe calls were ~70% of
+// the pass's model time. Until 2026-10-12 a scene was described again every
+// three regions; measured then on 30 chapters (cmd/ambprobe), those repeat
+// calls were 42% of all describe calls and changed the scene, ambience,
+// genres or instruments in 16% of cases, against 61% for a call at a scene's
+// start. What a long scene gives up is its mood label and tempo moving as it
+// goes. The text shown stays capped so one prompt is a bounded ~30
+// paragraphs. A chapter with no summary scenes has nothing saying where a
+// scene ends, and is still described every three regions.
+const musicDescribeTextRegions = 3
 
 // ScoreMusic scores chapterTitle's paragraphs into background-music regions
 // (see MusicRegionResult): sceneBoundaries places where each region starts,
@@ -530,7 +534,7 @@ const musicDescribeGroupRegions = 3
 // call; then describeMusicRegion writes each region's mood label, music
 // prompt and ambience prompt from its own paragraph span - one call per
 // region (a length-only split shares its region's call -
-// musicDescribeGroupRegions) - and decides whether it opens a new scene, a
+// musicDescribeTextRegions) - and decides whether it opens a new scene, a
 // "cut". Describe calls run strictly in region order, each shown the
 // previous region's description (musicDescribeContext) so palettes carry
 // through continuations and an unchanged setting keeps an identical
@@ -548,6 +552,7 @@ func (c *Client) ScoreMusic(ctx context.Context, bookTitle, chapterTitle string,
 		return nil, nil, nil
 	}
 	boundaries := sceneBoundaries(notes, paragraphs)
+	scenes := notes != nil && len(notes.Scenes) > 0
 
 	lastIdx := paragraphs[len(paragraphs)-1].Idx
 	regionEnd := func(i int) int {
@@ -564,13 +569,15 @@ func (c *Client) ScoreMusic(ctx context.Context, bookTitle, chapterTitle string,
 			remaining = paragraphsFromIdx(paragraphs, b.StartIdx)
 			return out, remaining, nil
 		}
-		// One description covers this region plus the length-only splits
-		// right after it (see musicDescribeGroupRegions).
+		// One description covers this region and every length-only split
+		// after it, written from the first musicDescribeTextRegions of them.
+		// With no summary scenes the whole chapter is such a run of splits,
+		// so it is described again every musicDescribeTextRegions regions.
 		n := 1
-		for i+n < len(boundaries) && boundaries[i+n].split && n < musicDescribeGroupRegions {
+		for i+n < len(boundaries) && boundaries[i+n].split && (scenes || n < musicDescribeTextRegions) {
 			n++
 		}
-		span := paragraphsInIdxRange(paragraphs, b.StartIdx, regionEnd(i+n-1))
+		span := paragraphsInIdxRange(paragraphs, b.StartIdx, regionEnd(i+min(n, musicDescribeTextRegions)-1))
 		if len(span) == 0 {
 			i += n
 			continue

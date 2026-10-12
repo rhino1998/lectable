@@ -8,6 +8,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
+	"github.com/rhino1998/lectable/backend/internal/voicefx"
 )
 
 // Kind identifies what sort of work a task represents. The job system
@@ -270,6 +271,24 @@ const (
 	// call per pair of names that may be one person. Keyed by roster
 	// scope, so two books of a series share one run.
 	KindRosterReview Kind = "roster_review"
+	// KindFactFinding looks through one series (or lone book) for facts
+	// about its world - how long a kind of being lives - and stores what
+	// it finds as pending world facts for the reader to accept or skip
+	// (httpapi.FindFacts): a search by meaning, then a few LLM calls.
+	// Keyed by roster scope, like KindRosterReview.
+	KindFactFinding Kind = "fact_finding"
+	// KindVoiceCheck listens to one roster's voices - each character's
+	// reference clip, and each age stage's - with the worker's
+	// audio-language model and stores what it heard beside what the
+	// casting asks for (httpapi.CheckVoices). poolSFX: the listener is one
+	// of the worker's aux engines, resident alone like Stable Audio.
+	// KindVoiceProvision's shape; keyed by roster scope like
+	// KindRosterReview.
+	KindVoiceCheck Kind = "voice_check"
+	// KindListenPreview is one question asked of one clip
+	// (RunListenPreview, POST /api/listen) - KindLLMPreview's shape, a text
+	// result, in poolSFX with the listener's other work.
+	KindListenPreview Kind = "listen_preview"
 	// KindRecapNarration speaks that recap in the book's narrator voice
 	// (RunRecapNarration) - KindVoiceProvision's shape, in poolGeneration.
 	KindRecapNarration Kind = "recap_narration"
@@ -474,6 +493,9 @@ type task struct {
 	// with its own instructOption (breeze_tts - see audioworker.
 	// cloneFamily.instructOption), silently ignored otherwise.
 	cloneInstruct string
+	// effect is the voice effect the generated clip is put through
+	// (narration.ResolvedVoice.Effect), "" for none.
+	effect voicefx.VoiceEffect
 
 	// KindSpeakerAttribution/KindSpeakerCharacterization only (the two LLM
 	// kinds - see poolFor): the actual call (httpapi supplies this, since
@@ -674,6 +696,12 @@ func (t *task) dedupKey() string {
 		return "recap:" + t.llmKey
 	case KindRosterReview:
 		return "roster_review:" + t.llmKey
+	case KindFactFinding:
+		return "fact_finding:" + t.llmKey
+	case KindVoiceCheck:
+		return "voice_check:" + t.llmKey
+	case KindListenPreview:
+		return "listen_preview:" + t.llmKey
 	case KindRecapNarration:
 		return "recap_narration:" + t.llmKey
 	default:
@@ -739,6 +767,8 @@ var kindCompare = map[Kind]func(a, b *task, priority int) int{
 	KindBookMatter:              comparePosition,
 	KindRecap:                   comparePosition,
 	KindRosterReview:            comparePosition,
+	KindFactFinding:             comparePosition,
+	KindVoiceCheck:              comparePosition,
 }
 
 // lessTask breaks a tie between two tasks of equal effective priority:

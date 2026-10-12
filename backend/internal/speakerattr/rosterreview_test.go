@@ -35,7 +35,7 @@ func TestRosterPairs(t *testing.T) {
 		entry("b", "Baron", 36, "Joshua"), entry("j", "Joshua", 12), // a bare title holds no one's name
 		entry("f", "Flux", 475, "Intaglio"), entry("i", "Intaglio", 20),
 		he, she, role, entry("gc", "Guard Captain", 5),
-	}))
+	}, nil))
 	want := []string{"Centurion Primus Restun <- Primus Restun", "Flux <- Intaglio", "Baron Sanguis <- Sanguis"}
 	if strings.Join(got, "; ") != strings.Join(want, "; ") {
 		t.Errorf("pairs:\n got %v\nwant %v", got, want)
@@ -59,7 +59,7 @@ func TestRosterRuleFixes(t *testing.T) {
 		entry("markup", "Elder [role]", 3), entry("elder", "Elder", 30),
 		entry("baron", "Baron", 36, "Joshua"), entry("joshua", "Joshua", 12),
 		he, she,
-	}, kinds)
+	}, kinds, nil)
 	var got []string
 	for _, f := range fixes {
 		line := string(f.Kind) + " " + f.Subject.Name
@@ -138,5 +138,66 @@ func TestJudgeSamePersonNeedsEvidenceNamingBoth(t *testing.T) {
 		if err != nil || got != tc.want {
 			t.Errorf("%s: got %q (%v), want %q", tc.reply, got, err, tc.want)
 		}
+	}
+}
+
+func TestPairMentionsAndSharesName(t *testing.T) {
+	ix := NewIdentityIndex([]string{
+		"Doctor Zheng knelt in the stream.",
+		"“Dr. Zheng, are you enjoying the tour?”",
+		"Doctor Zheng waved at Dr. Zheng's reflection.",
+		"Zee laughed.",
+	}, nil)
+	a, b := entry("a", "Doctor Zheng", 18), entry("b", "Dr. Zheng", 4, "Zee")
+	m := ix.PairMentions(a, b)
+	if len(m.Both) != 1 || len(m.OnlyA) != 1 || len(m.OnlyB) != 2 {
+		t.Errorf("mentions = %+v", m)
+	}
+	// "Zee" is b's alias: that paragraph names b, but isn't how the book
+	// uses the name "Dr. Zheng".
+	if len(m.NameA) != 1 || m.NameA[0] != 0 || len(m.NameB) != 1 || m.NameB[0] != 1 || m.WrittenA != 2 || m.WrittenB != 2 {
+		t.Errorf("name paragraphs = %v / %v, written %d / %d", m.NameA, m.NameB, m.WrittenA, m.WrittenB)
+	}
+
+	names := func(es []RosterEntry) string {
+		var out []string
+		for _, e := range es {
+			out = append(out, e.Name)
+		}
+		return strings.Join(out, ", ")
+	}
+	spellings := RosterPair{A: a, B: b}
+	if !spellings.SharesName() || names(spellings.Shorter()) != "Doctor Zheng, Dr. Zheng" {
+		t.Errorf("two spellings: SharesName %v, Shorter %q", spellings.SharesName(), names(spellings.Shorter()))
+	}
+	full := RosterPair{A: entry("c", "Hans Chotek", 50), B: entry("d", "Chotek", 9)}
+	if !full.SharesName() || names(full.Shorter()) != "Chotek" {
+		t.Errorf("a surname: SharesName %v, Shorter %q", full.SharesName(), names(full.Shorter()))
+	}
+	alias := RosterPair{A: entry("e", "Darakin", 777, "Othair"), B: entry("f", "Othair", 90), Alias: "Othair"}
+	if alias.SharesName() {
+		t.Error("an alias pair doesn't share its names")
+	}
+}
+
+func TestJudgeSamePersonNamesUsedAlike(t *testing.T) {
+	a, b := entry("a", "Doctor Zheng", 18), entry("b", "Dr. Zheng", 4)
+	found := PairPassages{
+		OnlyA: []string{"One of the scientists, a Doctor Zheng, wandered onto the bridge."},
+		OnlyB: []string{"Dr. Zheng, the biologist, was kneeling in the stream."},
+	}
+	reply := verdictLLM{`{"evidence": "Dr. Zheng, the biologist, was kneeling", "verdict": "same"}`}
+	c := NewClient(Config{}, reply)
+	if got, _, err := c.JudgeSamePerson(context.Background(), "Book", a, b, found); err != nil || got != VerdictUnclear {
+		t.Errorf("no passage names both: got %q (%v), want unclear", got, err)
+	}
+	found.Alike = true
+	if got, evidence, err := c.JudgeSamePerson(context.Background(), "Book", a, b, found); err != nil || got != VerdictSame || evidence == "" {
+		t.Errorf("names used alike: got %q, %q (%v), want same with its evidence", got, evidence, err)
+	}
+	made := NewClient(Config{}, verdictLLM{`{"evidence": "words that are nowhere in the passages", "verdict": "same"}`})
+	// The model's "same" still stands, with nothing quoted for it.
+	if got, evidence, _ := made.JudgeSamePerson(context.Background(), "Book", a, b, found); got != VerdictSame || evidence != "" {
+		t.Errorf("made-up evidence: got %q, %q; want same with no evidence", got, evidence)
 	}
 }

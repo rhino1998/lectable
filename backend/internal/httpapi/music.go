@@ -280,15 +280,17 @@ func (s *Server) ambienceChapter(ctx context.Context, book *store.Book, ch *stor
 // call: the same describe call's output (identical mood/prompt/ambience -
 // the length-only splits speakerattr.ScoreMusic hands one description) and
 // not a cut. Such a group is lit by one DescribeLighting call over its
-// whole span, capped at lightingGroupRegions.
+// first lightingTextRegions regions.
 func musicRegionsShareLighting(a, b store.MusicRegion) bool {
 	return b.Transition != store.MusicTransitionCut && a.Mood == b.Mood && a.Prompt == b.Prompt && a.Ambience == b.Ambience
 }
 
-// lightingGroupRegions caps one lighting call's span, like
-// speakerattr's musicDescribeGroupRegions (which already caps how many
-// regions share a description, so this rarely binds).
-const lightingGroupRegions = 3
+// lightingTextRegions is how many regions' text one lighting call is
+// written from, like speakerattr's musicDescribeTextRegions: a group shares
+// one cue however long it runs. Until 2026-10-12 a group was lit again
+// every three regions, which kept the lighting calls at one per three
+// regions when scenes came to be described once each.
+const lightingTextRegions = 3
 
 // lightChapter is the ambience pass's lighting sub-pass: one
 // speakerattr.Client.DescribeLighting call per described region group, in
@@ -325,7 +327,7 @@ func (s *Server) lightChapter(ctx context.Context, book *store.Book, ch *store.C
 	prevMood := ""
 	for i := 0; i < len(regions); {
 		n := 1
-		for i+n < len(regions) && n < lightingGroupRegions && musicRegionsShareLighting(regions[i], regions[i+n]) {
+		for i+n < len(regions) && musicRegionsShareLighting(regions[i], regions[i+n]) {
 			n++
 		}
 		group := regions[i : i+n]
@@ -341,7 +343,7 @@ func (s *Server) lightChapter(ctx context.Context, book *store.Book, ch *store.C
 		}
 		var span []speakerattr.ParagraphInput
 		for _, p := range paragraphs {
-			if p.Idx >= group[0].StartIdx && p.Idx <= group[len(group)-1].EndIdx {
+			if p.Idx >= group[0].StartIdx && p.Idx <= group[min(len(group), lightingTextRegions)-1].EndIdx {
 				span = append(span, p)
 			}
 		}

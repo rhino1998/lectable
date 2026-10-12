@@ -42,9 +42,21 @@ type Store interface {
 	CreateTimeJump(bookID, chapterID string, years int) (jump *TimeJump, created bool, err error)
 	DeleteTimeJump(id string) error
 	TimeJumpStageCounts(bookID string) (map[string]int, error)
+	ProposeTimeJump(bookID, chapterID string, years int, evidence string) (bool, error)
+	ListTimeJumpProposals(bookID string) ([]TimeJumpProposal, error)
+	GetTimeJumpProposal(id string) (*TimeJumpProposal, error)
+	SetTimeJumpProposalStatus(id string, status ProposalStatus) error
+	ProposeCharacterNote(n CharacterNote) (bool, error)
+	ListCharacterNotes(scope string) ([]CharacterNote, error)
+	CharacterNotes(characterID string) ([]CharacterNote, error)
+	GetCharacterNote(id string) (*CharacterNote, error)
+	SetCharacterNoteValue(characterID string, kind CharacterNoteKind, value string) error
+	SkipOtherCharacterNotes(keep CharacterNote) error
+	SetCharacterNoteStatus(id string, status ProposalStatus) error
 	SpeakersInChapters(bookID string, fromIdx, toIdx int) ([]string, error)
 	DeleteCharacterStage(id string) error
 	NextCharacterStageTake(id string) error
+	CastingsByScope() (map[string][]string, error)
 	ChapterIdxByID(bookID string) (map[string]int, error)
 	BookNeedsMatterPass(bookID string) (bool, error)
 	BooksNeedingMatterPass() ([]string, error)
@@ -117,6 +129,9 @@ type Store interface {
 	InsertRosterProposal(p RosterProposal) (inserted bool, err error)
 	ListRosterProposals(scope string) ([]RosterProposal, error)
 	SetRosterProposalStatus(id string, status RosterProposalStatus) error
+	UpsertVoiceCheck(c VoiceCheck) error
+	ListVoiceChecks(scope string) ([]VoiceCheck, error)
+	DismissVoiceCheck(scope, presetID string) (bool, error)
 	GetBookSetting(bookID string) (*StoredBookSetting, error)
 	GetChapterNotes(chapterID string) (*ChapterNotes, error)
 	GetParagraph(id string) (*Paragraph, error)
@@ -151,6 +166,8 @@ type Store interface {
 	QuotesForBooks(bookIDs []string, characterName string, limit int) ([]QuoteContext, error)
 	ReadyAudioCountsBySpeaker(bookID string) (map[string]map[string]int, error)
 	ReassignCharacterSpeaker(bookID, fromName, toName string) error
+	NumberSpeakerLines(bookID, name string, index int) error
+	VoicePresetCharacters(presetID string) ([]VoicePresetCharacter, error)
 	RecentChapterSpeakers(bookID string, chapterIdx, n int) ([]string, error)
 	ReplaceChapterContent(chapterID, title string, blocks []BlockInput) (oldImages, newImages []CreatedImage, err error)
 	ResetAllChapterMusicAudioForBook(bookID string) error
@@ -221,6 +238,12 @@ type Store interface {
 	UpsertBookmark(paragraphID, note string) (string, error)
 	UpsertLexiconEntry(scope string, e pronounce.LexiconEntry) (entry LexiconEntry, previous *LexiconEntry, err error)
 	UpsertWorldFact(scope string, f WorldFact) (*WorldFact, error)
+	ProposeWorldFact(scope string, f WorldFact) (bool, error)
+	ProposeWorldFactClass(scope, id string, class WordClass) (bool, error)
+	DeclineWorldFactClass(scope, id string) (bool, error)
+	ResetFoundWorldFacts(scope string) (int, error)
+	ReviewWorldFact(scope, id string) (bool, error)
+	SetWorldFactStatus(scope, id string, status WorldFactStatus) (bool, error)
 	UpsertCharacter(scope, name string, isRole bool) (character Character, created bool, err error)
 	VoicePresetGroups() (map[string]string, error)
 	VoicePresetIDsForCharacter(characterID string) ([]string, error)

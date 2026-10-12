@@ -100,6 +100,7 @@ func TestKey(t *testing.T) {
 		"clone instruct": func(r *Recipe) { r.CloneInstruct = "gruff" },
 		"text":           func(r *Recipe) { r.Text = "Fritz sed." },
 		"align text":     func(r *Recipe) { r.AlignText = "Fritz  said." },
+		"effect":         func(r *Recipe) { r.Effect = "insectoid/1" },
 	} {
 		r := base
 		edit(&r)

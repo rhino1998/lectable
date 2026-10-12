@@ -101,10 +101,12 @@ func withDeps(base []string, extra ...string) []string {
 //	lexicon        {bookId}               GET /api/books/{id}/lexicon
 //	bookSetting    {bookId}               GET /api/books/{id}/setting
 //	rosterReview   {bookId}               GET /api/books/{id}/roster-review
+//	voiceCheck     {bookId}               GET /api/books/{id}/voice-check
 //	bookRecap      {bookId}               GET /api/books/{id}/recap
 //	chapterNotes   {bookId, chapterIdx}   GET /api/books/{id}/chapters/{idx}/notes
 //	lexiconSuggestions {bookId}           GET /api/books/{id}/lexicon/suggestions
 //	bookFacts      {bookId}               GET /api/books/{id}/facts
+//	characterNotes {bookId}               GET /api/books/{id}/character-notes
 //	bookExports    {bookId}               GET /api/books/{id}/exports
 //	jobs                                  GET /api/jobs
 //	jobsQueue
@@ -134,22 +136,26 @@ func (s *Server) registerLiveTopics(h *live.Hub) {
 	// DepJobs too: an emotion variant finishing rendering (a
 	// KindVoiceProvision task) changes a row's Emotions status without any
 	// DB write of its own.
-	h.Register("speakers", bookTopic("speakers", withDeps(narrationDeps, DepJobs), 2*time.Second, s.buildSpeakers))
+	h.Register("speakers", bookTopic("speakers", withDeps(narrationDeps, DepJobs, DBDep("character_notes")), 2*time.Second, s.buildSpeakers))
 	h.Register("characterAppearances", characterTopic("characterAppearances", narrationDeps, 2*time.Second, s.buildCharacterAppearances))
 	h.Register("bookmarks", bookTopic("bookmarks", dbDeps("bookmarks", "books", "chapters", "paragraphs"), 0, s.buildBookmarks))
 	// Match counts scan the book's paragraphs, hence the interval.
 	// Names only, for reassign pickers - cheap next to "speakers".
 	h.Register("characters", bookTopic("characters", dbDeps("characters", "books"), 0, s.buildCharacterNames))
-	h.Register("timeJumps", bookTopic("timeJumps", dbDeps("book_time_jumps", "character_stages", "chapters"), time.Second, s.buildTimeJumps))
+	h.Register("timeJumps", bookTopic("timeJumps", dbDeps("book_time_jumps", "time_jump_proposals", "character_stages", "chapters"), time.Second, s.buildTimeJumps))
 	h.Register("chapterNotes", chapterTopic("chapterNotes", dbDeps("chapter_summaries", "chapters"), 0, s.buildChapterNotes))
 	// Line counts aren't a dependency: they only order the list.
 	h.Register("rosterReview", bookTopic("rosterReview", dbDeps("roster_proposals", "characters", "books"), 2*time.Second, s.buildRosterReview))
+	// voice_presets/character_stages: rendering a voice afresh rewrites
+	// one, and the clip heard is no longer the voice's.
+	h.Register("voiceCheck", bookTopic("voiceCheck", dbDeps("voice_checks", "characters", "character_voices", "character_stages", "voice_presets", "books"), 2*time.Second, s.buildVoiceCheck))
 	h.Register("bookSetting", bookTopic("bookSetting", dbDeps("book_settings"), 0, s.buildBookSetting))
 	// books/voice_presets: a changed narrator voice leaves the clip stale.
 	// DepJobs: "preparing" is the recap job being queued or running.
 	h.Register("bookRecap", bookTopic("bookRecap", withDeps(dbDeps("book_recaps", "books", "voice_presets"), DepJobs), 0, s.buildBookRecap))
 	h.Register("lexicon", bookTopic("lexicon", dbDeps("pronunciation_lexicon", "books", "paragraphs"), 2*time.Second, s.buildLexicon))
-	h.Register("bookFacts", bookTopic("bookFacts", dbDeps("world_facts", "books"), 0, s.buildBookFacts))
+	h.Register("bookFacts", bookTopic("bookFacts", dbDeps("world_facts", "books", "characters"), 0, s.buildBookFacts))
+	h.Register("characterNotes", bookTopic("characterNotes", dbDeps("character_notes", "characters", "books", "chapters"), 0, s.buildCharacterNotes))
 	h.Register("lexiconSuggestions", bookTopic("lexiconSuggestions", dbDeps("pronunciation_lexicon", "characters", "books", "paragraphs"), 2*time.Second, s.buildLexiconSuggestions))
 	// Staleness is a whole-book fingerprint query, so this is rate-limited
 	// like the other whole-book topics; a build's progress still lands

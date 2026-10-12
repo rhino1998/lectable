@@ -369,7 +369,10 @@ var kindPool = map[Kind]poolKey{
 	KindBookMatter:              poolLLM,
 	KindRecap:                   poolLLM,
 	KindRosterReview:            poolLLM,
+	KindFactFinding:             poolLLM,
 	KindRecapNarration:          poolGeneration,
+	KindVoiceCheck:              poolSFX,
+	KindListenPreview:           poolSFX,
 }
 
 // poolFor reports which slot pool kind draws from - see kindPool.
@@ -911,7 +914,7 @@ func isExplicitPreview(c sched.Task) bool {
 		return false
 	}
 	switch t.kind {
-	case KindLLMPreview, KindVoiceDesignPreview, KindSFXPreview:
+	case KindLLMPreview, KindVoiceDesignPreview, KindSFXPreview, KindListenPreview:
 		return true
 	}
 	return false

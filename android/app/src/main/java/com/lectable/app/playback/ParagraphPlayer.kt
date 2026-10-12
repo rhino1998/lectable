@@ -162,6 +162,9 @@ class ParagraphPlayer @Inject constructor(
     // downloaded chapter is only used for playback if it matches this exactly, since changing
     // voice invalidates cached audio the same way it does server-side (see root CLAUDE.md).
     private var voiceKey: String? = null
+    // A first-person book's narrator (the book's setting profile), given no seat of their own
+    // by [paragraphSeat], like narration. "" until known, and for any other book.
+    private var centerSpeaker = ""
 
     var onNeedChapter: ((Int) -> Unit)? = null
     var onPositionUpdate: ((chapterIdx: Int, paragraphIdx: Int, seconds: Double) -> Unit)? = null
@@ -258,6 +261,13 @@ class ParagraphPlayer @Inject constructor(
         scope.launch {
             playbackSettingsRepository.speedRampSeconds.collect { speedRampSeconds = it }
         }
+        // Speaker positions (see SpatialAudio.kt) - read by the audio thread as it mixes.
+        scope.launch {
+            playbackSettingsRepository.spatialMode.collect { renderersFactory.spatial.mode = it }
+        }
+        scope.launch {
+            playbackSettingsRepository.spatialWidth.collect { renderersFactory.spatial.width = it }
+        }
     }
 
     /** Call once the book's own detail loads - the notification/lock-screen media control
@@ -272,12 +282,19 @@ class ParagraphPlayer @Inject constructor(
             player.stop()
             player.clearMediaItems()
             clearChapters()
+            centerSpeaker = ""
             _state.update { it.copy(chapterIdx = -1, paragraphIdx = -1, positionSeconds = 0.0) }
         }
         this.bookId = bookId
         _bookTitle.value = title
         bookAuthor = author
         coverArtUri = mediaUrlResolver.resolve(coverUrl)?.let(Uri::parse)
+    }
+
+    /** Call whenever the book's first-person narrator is known or changes - see
+     *  [centerSpeaker]. Clips already queued keep the seat they were given. */
+    fun setCenterSpeaker(name: String) {
+        centerSpeaker = name
     }
 
     /** Call whenever the book's current voice is known or changes - see [voiceKey]. */
@@ -520,6 +537,9 @@ class ParagraphPlayer @Inject constructor(
         return MediaItem.Builder()
             .setUri(uri)
             .setMediaId(clipMediaId(chapterIdx, paragraphIdx, audioUrl))
+            // Where this clip's speaker is heard from - read by SeatedAudioRenderer. A merge
+            // group's shared clip is seated as its first paragraph.
+            .setTag(ClipSeat(paragraphSeat(chapter, paragraphIdx, centerSpeaker)))
             // Book title/author/cover, not the current chapter or paragraph text - that's
             // what identifies *what's playing* on a lock-screen/notification media control,
             // same as any audiobook app (chapter is more like a "track position" within it).

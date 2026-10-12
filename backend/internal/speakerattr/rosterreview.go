@@ -41,6 +41,10 @@ const (
 	RosterMerge RosterFixKind = "merge"
 	// RosterRemoveAlias drops Detail from Subject's aliases.
 	RosterRemoveAlias RosterFixKind = "remove_alias"
+	// RosterSplitAlias drops Detail from Subject's aliases and makes it a
+	// character of its own, Subject's lines looked over again for the ones
+	// that are theirs: someone else folded into Subject under that name.
+	RosterSplitAlias RosterFixKind = "split_alias"
 	// RosterMarkRole makes Subject a role label - a kind of person.
 	RosterMarkRole RosterFixKind = "mark_role"
 	// RosterInvalidate marks Subject as no one's name, so attribution
@@ -72,6 +76,9 @@ type RosterPair struct {
 	Alias string
 	// AliasHolder is whichever of A and B has Alias.
 	AliasHolder RosterEntry
+	// titles are the world's own titles the pair was made with
+	// (RosterPairs), which its names' distinctive words leave out.
+	titles WorldWords
 }
 
 // Entries is the pair as it should be searched for and shown: A and B, the
@@ -94,6 +101,29 @@ func (p RosterPair) Entries() (a, b RosterEntry) {
 	return strip(p.A), strip(p.B)
 }
 
+// SharesName reports whether the pair was made by its names - one's
+// distinctive words all among the other's ("Zheng", "Doctor Zheng") -
+// rather than by an alias.
+func (p RosterPair) SharesName() bool {
+	wa, wb := rosterNameWords(p.A.Name, p.titles), rosterNameWords(p.B.Name, p.titles)
+	return p.Alias == "" && len(wa) > 0 && len(wb) > 0 && (subsetOf(wa, wb) || subsetOf(wb, wa))
+}
+
+// Shorter returns the entries of a SharesName pair whose name could be
+// short for the other's: the one whose words are all among the other's,
+// or both when they have the same words ("Dr. Zheng", "Doctor Zheng").
+func (p RosterPair) Shorter() []RosterEntry {
+	wa, wb := rosterNameWords(p.A.Name, p.titles), rosterNameWords(p.B.Name, p.titles)
+	var out []RosterEntry
+	if subsetOf(wa, wb) {
+		out = append(out, p.A)
+	}
+	if subsetOf(wb, wa) {
+		out = append(out, p.B)
+	}
+	return out
+}
+
 // rosterRankWords are ranks and offices beyond titleWords that two
 // different people can share ("Centurion Hennen", "Centurion Brina"), so
 // they don't make a pair on their own.
@@ -107,15 +137,20 @@ var rosterRankWords = map[string]bool{
 	"of": true, "and": true, "von": true, "van": true, "de": true, "man": true, "woman": true, "leader": true,
 }
 
-// rosterNameWords is name's distinctive words, lower-cased: no titles,
-// ranks, numbers or words under three letters.
-func rosterNameWords(name string) []string {
+// rosterNameWords is name's distinctive words, lower-cased: no titles
+// (titles' own beside the fixed ones, a title of several words - "Wall
+// Lord" - taken out whole), ranks, numbers or words under three letters.
+func rosterNameWords(name string, titles WorldWords) []string {
 	var out []string
-	for _, w := range strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
+	words := strings.FieldsFunc(strings.ToLower(name), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '\'' && r != '’'
-	}) {
+	})
+	if rest, found := titles.withoutPhrases(strings.Join(words, " "), nil); found {
+		words = strings.Fields(rest)
+	}
+	for _, w := range words {
 		w = strings.TrimSuffix(strings.TrimSuffix(w, "'s"), "’s")
-		if len([]rune(w)) < 3 || titleWords[w] || rosterRankWords[w] || strings.IndexFunc(w, unicode.IsDigit) >= 0 {
+		if len([]rune(w)) < 3 || titles.rank(w) || strings.IndexFunc(w, unicode.IsDigit) >= 0 {
 			continue
 		}
 		out = append(out, w)
@@ -139,9 +174,9 @@ func namedByAnother(name string) bool {
 }
 
 // IsBareTitle reports whether name is only titles and ranks ("Baron",
-// "Centurion Primus") - something several people can be called, so never
-// one person's first name.
-func IsBareTitle(name string) bool { return len(rosterNameWords(name)) == 0 }
+// "Centurion Primus", or one of titles) - something several people can be
+// called, so never one person's first name.
+func IsBareTitle(name string, titles WorldWords) bool { return len(rosterNameWords(name, titles)) == 0 }
 
 // subsetOf reports whether every word of a is in b.
 func subsetOf(a, b []string) bool {
@@ -191,8 +226,11 @@ const maxSharedWordEntries = 4
 //
 // Entries whose pronouns differ are never paired, nor is a bare title
 // ("Baron") with the character whose name it has as an alias
-// (RosterRuleFixes proposes removing the alias in both cases).
-func RosterPairs(entries []RosterEntry) []RosterPair {
+// (RosterRuleFixes proposes removing the alias in both cases). titles are
+// the world's own, dropped from a name like the fixed ones: with
+// "Prognugator" among them, "Prognugator Tersk" and "Tersk" are a pair and
+// "Prognugator Tersk" and "Prognugator Dekass" aren't.
+func RosterPairs(entries []RosterEntry, titles WorldWords) []RosterPair {
 	type key [2]string
 	seen := map[key]bool{}
 	var out []RosterPair
@@ -209,7 +247,7 @@ func RosterPairs(entries []RosterEntry) []RosterPair {
 		}
 		seen[k] = true
 		keep, other := keepFirst(a, b)
-		out = append(out, RosterPair{A: keep, B: other, Alias: alias, AliasHolder: holder})
+		out = append(out, RosterPair{A: keep, B: other, Alias: alias, AliasHolder: holder, titles: titles})
 	}
 
 	byName := map[string]RosterEntry{}
@@ -220,7 +258,7 @@ func RosterPairs(entries []RosterEntry) []RosterPair {
 	for _, e := range entries {
 		for _, a := range e.Aliases {
 			la := strings.ToLower(strings.TrimSpace(a))
-			if other, ok := byName[la]; ok && other.ID != e.ID && len(rosterNameWords(e.Name)) > 0 {
+			if other, ok := byName[la]; ok && other.ID != e.ID && len(rosterNameWords(e.Name, titles)) > 0 {
 				add(e, other, a, e)
 			}
 			aliasHolders[la] = append(aliasHolders[la], e)
@@ -238,7 +276,7 @@ func RosterPairs(entries []RosterEntry) []RosterPair {
 		if e.IsRole || namedByAnother(e.Name) {
 			continue
 		}
-		ws := rosterNameWords(e.Name)
+		ws := rosterNameWords(e.Name, titles)
 		words[e.ID] = ws
 		for _, w := range ws {
 			byWord[w] = append(byWord[w], e)
@@ -283,17 +321,17 @@ var rosterNobody = map[string]bool{
 // isKindCandidate reports whether e could be a kind word that swallowed
 // several people: one word, not a role or a rank, with minBucketAliases
 // aliases or more.
-func isKindCandidate(e RosterEntry) bool {
+func isKindCandidate(e RosterEntry, titles WorldWords) bool {
 	lower := strings.ToLower(strings.TrimSpace(e.Name))
-	return !e.IsRole && len(strings.Fields(lower)) == 1 && len(e.Aliases) >= minBucketAliases && !titleWords[lower] && !rosterRankWords[lower]
+	return !e.IsRole && len(strings.Fields(lower)) == 1 && len(e.Aliases) >= minBucketAliases && !titles.rank(lower)
 }
 
 // RosterKindCandidates is the names RosterRuleFixes needs counted in the
 // text (WordCaseCounts) to tell a kind word from a name.
-func RosterKindCandidates(entries []RosterEntry) []string {
+func RosterKindCandidates(entries []RosterEntry, titles WorldWords) []string {
 	var out []string
 	for _, e := range entries {
-		if isKindCandidate(e) {
+		if isKindCandidate(e, titles) {
 			out = append(out, e.Name)
 		}
 	}
@@ -351,6 +389,8 @@ func (c WordCaseCounts) MostlyLower(word string) bool {
 //   - a name carrying the attribution prompt's own markup ("Elder [role]")
 //     is merged into the entry with the name itself, or invalidated when
 //     there is none;
+//   - a role named with a number ("Adventurer 7") beside the role itself
+//     is merged into it;
 //   - a single word the book mostly writes in lower case ("Gnome",
 //     "Dwarf" - kinds, RosterKindCandidates counted over the text; nil
 //     skips this), not a role or rank, holding several aliases, is a label
@@ -358,12 +398,33 @@ func (c WordCaseCounts) MostlyLower(word string) bool {
 //     removed and it becomes a role;
 //   - an alias that is the name of another entry is removed when the two
 //     have different pronouns, or when the entry holding it is a bare title
-//     ("Baron", also called "Joshua").
-func RosterRuleFixes(entries []RosterEntry, kinds WordCaseCounts) []RosterFix {
+//     ("Baron", also called "Joshua") - which also loses an alias that is
+//     another entry's name without its titles ("Prognugator", also called
+//     "Tersk", beside "Prognugator Tersk").
+//
+// titles are the world's own words (WorldWords): its titles are read like
+// the fixed ones, and a name made only of its roles, races and
+// nationalities ("Drake", "Pallassian Gnoll", "Drake Trader") is marked a role and loses its aliases.
+func RosterRuleFixes(entries []RosterEntry, kinds WordCaseCounts, titles WorldWords) []RosterFix {
 	var out []RosterFix
 	byName := map[string]RosterEntry{}
+	// byWords is the one entry with each set of distinctive words: who a
+	// bare title's alias "Tersk" is, when no entry is named just that.
+	byWords := map[string]RosterEntry{}
 	for _, e := range entries {
 		byName[strings.ToLower(e.Name)] = e
+	}
+	for _, e := range entries {
+		if e.IsRole || namedByAnother(e.Name) {
+			continue
+		}
+		if ws := strings.Join(rosterNameWords(e.Name, titles), " "); ws != "" {
+			if _, taken := byWords[ws]; taken {
+				byWords[ws] = RosterEntry{} // two entries: not one person's
+			} else {
+				byWords[ws] = e
+			}
+		}
 	}
 	for _, e := range entries {
 		name := strings.TrimSpace(e.Name)
@@ -380,20 +441,37 @@ func RosterRuleFixes(entries []RosterEntry, kinds WordCaseCounts) []RosterFix {
 			}
 			continue
 		}
+		// A role that kept a number in its name ("Adventurer 7") beside the
+		// role itself: the number is a voice slot of that role, not a role.
+		if label, n := SplitRoleIndex(name); n > 0 && e.IsRole {
+			if other, ok := byName[strings.ToLower(label)]; ok && other.ID != e.ID && other.IsRole {
+				out = append(out, RosterFix{Kind: RosterMerge, Subject: e, Target: other, Reason: fmt.Sprintf("a numbered %s, not a role of its own", strings.ToLower(other.Name))})
+				continue
+			}
+		}
 		bucket := false
 		if !e.IsRole {
 			switch {
+			case titles.IsPeopleDescription(name):
+				// Any alias at all: a people has no other name.
+				out = append(out, RosterFix{Kind: RosterMarkRole, Subject: e, Reason: "a role, race or nationality of this world, not a name"})
+				bucket = len(e.Aliases) > 0
 			case DescriptorWithoutArticle(name):
 				out = append(out, RosterFix{Kind: RosterMarkRole, Subject: e, Reason: "a description, not a name"})
 				bucket = len(e.Aliases) >= minBucketAliases
-			case isKindCandidate(e) && kinds.MostlyLower(name):
+			case isKindCandidate(e, titles) && kinds.MostlyLower(name):
 				out = append(out, RosterFix{Kind: RosterMarkRole, Subject: e, Reason: fmt.Sprintf("the book writes %q as an ordinary word, and it goes by %d other names", strings.ToLower(name), len(e.Aliases))})
 				bucket = true
 			}
 		}
+		bareTitle := len(rosterNameWords(name, titles)) == 0
 		for _, a := range e.Aliases {
 			other, collides := byName[strings.ToLower(strings.TrimSpace(a))]
 			collides = collides && other.ID != e.ID
+			if !collides && bareTitle {
+				other, collides = byWords[strings.Join(rosterNameWords(a, titles), " ")]
+				collides = collides && other.ID != "" && other.ID != e.ID
+			}
 			switch {
 			case bucket:
 				fix := RosterFix{Kind: RosterRemoveAlias, Subject: e, Detail: a, Reason: "a label for a kind of person holding one person's name"}
@@ -401,7 +479,7 @@ func RosterRuleFixes(entries []RosterEntry, kinds WordCaseCounts) []RosterFix {
 					fix.Target = other
 				}
 				out = append(out, fix)
-			case collides && len(rosterNameWords(name)) == 0:
+			case collides && bareTitle:
 				out = append(out, RosterFix{Kind: RosterRemoveAlias, Subject: e, Target: other, Detail: a,
 					Reason: fmt.Sprintf("%s is another character, and %q is a title several people can hold", other.Name, name)})
 			case collides && pronounsDiffer(e, other):
@@ -428,6 +506,13 @@ type PairPassages struct {
 	// NameA/NameB count the paragraphs writing each entry's own name (not
 	// an alias) other than as part of the other's.
 	NameA, NameB int
+	// Alike says the book uses the two names the same way - the paragraphs
+	// writing one read like the paragraphs writing the other, which
+	// httpapi.ReviewRoster measures with their embeddings. JudgeSamePerson
+	// then takes the model's "same" without a passage naming both: two
+	// spellings of one name ("Dr. Zheng", "Doctor Zheng") never share a
+	// paragraph.
+	Alike bool
 }
 
 // Empty reports whether nothing names both, or nothing names each.
@@ -446,7 +531,7 @@ func (p PairPassages) Append(q PairPassages) PairPassages {
 		a = append(a, b...)
 		return a[:min(len(a), pairPassagesEach)]
 	}
-	return PairPassages{Both: join(p.Both, q.Both), OnlyA: join(p.OnlyA, q.OnlyA), OnlyB: join(p.OnlyB, q.OnlyB), NameA: p.NameA + q.NameA, NameB: p.NameB + q.NameB}
+	return PairPassages{Both: join(p.Both, q.Both), OnlyA: join(p.OnlyA, q.OnlyA), OnlyB: join(p.OnlyB, q.OnlyB), NameA: p.NameA + q.NameA, NameB: p.NameB + q.NameB, Alike: p.Alike || q.Alike}
 }
 
 // rosterForms is an entry's name, then its aliases of three letters or
@@ -493,36 +578,61 @@ func spread(hits []int, n int) []int {
 	return out
 }
 
-// PairPassages finds the book's paragraphs naming a and b (by name or
-// alias, as whole words): up to pairPassagesEach naming both, and as many
-// naming only a and only b, each cut to pairPassageChars around the name. A
-// name that contains the other's ("Centurion Primus Restun", "Primus
-// Restun") counts only as itself.
-func (ix *IdentityIndex) PairPassages(a, b RosterEntry) PairPassages {
+// PairMentions is where a book names the two entries of a pair, as
+// indexes into the paragraphs its IdentityIndex was made from.
+type PairMentions struct {
+	// Both name the two in one paragraph, OnlyA and OnlyB one of them, by
+	// name or alias.
+	Both, OnlyA, OnlyB []int
+	// NameA/NameB are the paragraphs writing one's own name (not an alias)
+	// and no form of the other's: how the book uses that name.
+	NameA, NameB []int
+	// WrittenA/WrittenB count the paragraphs writing each one's own name
+	// at all, other than as part of the other's.
+	WrittenA, WrittenB int
+}
+
+// PairMentions finds the book's paragraphs naming a and b (by name or
+// alias, as whole words). A name that contains the other's ("Centurion
+// Primus Restun", "Primus Restun") counts only as itself.
+func (ix *IdentityIndex) PairMentions(a, b RosterEntry) PairMentions {
 	aForms, bForms := rosterForms(a), rosterForms(b)
 	if len(aForms) == 0 || len(bForms) == 0 {
-		return PairPassages{}
+		return PairMentions{}
 	}
-	var both, onlyA, onlyB []int
-	var nameA, nameB int
+	var m PairMentions
 	for i, t := range ix.lower {
 		tA, tB := withoutForms(t, aForms, bForms), withoutForms(t, bForms, aForms)
 		hasA, hasB := mentions(aForms, tA), mentions(bForms, tB)
 		if hasA && mentions(aForms[:1], tA) {
-			nameA++
+			m.WrittenA++
+			if !hasB {
+				m.NameA = append(m.NameA, i)
+			}
 		}
 		if hasB && mentions(bForms[:1], tB) {
-			nameB++
+			m.WrittenB++
+			if !hasA {
+				m.NameB = append(m.NameB, i)
+			}
 		}
 		switch {
 		case hasA && hasB:
-			both = append(both, i)
+			m.Both = append(m.Both, i)
 		case hasA:
-			onlyA = append(onlyA, i)
+			m.OnlyA = append(m.OnlyA, i)
 		case hasB:
-			onlyB = append(onlyB, i)
+			m.OnlyB = append(m.OnlyB, i)
 		}
 	}
+	return m
+}
+
+// Passages picks what to show of m, a's and b's mentions in this book: up
+// to pairPassagesEach paragraphs naming both, and as many naming only a
+// and only b, each cut to pairPassageChars around the name.
+func (ix *IdentityIndex) Passages(m PairMentions, a, b RosterEntry) PairPassages {
+	aForms, bForms := rosterForms(a), rosterForms(b)
 	cut := func(hits []int, forms []string) []string {
 		var out []string
 		for _, i := range spread(hits, pairPassagesEach) {
@@ -537,7 +647,13 @@ func (ix *IdentityIndex) PairPassages(a, b RosterEntry) PairPassages {
 		}
 		return out
 	}
-	return PairPassages{Both: cut(both, append(aForms, bForms...)), OnlyA: cut(onlyA, aForms), OnlyB: cut(onlyB, bForms), NameA: nameA, NameB: nameB}
+	return PairPassages{Both: cut(m.Both, append(aForms, bForms...)), OnlyA: cut(m.OnlyA, aForms), OnlyB: cut(m.OnlyB, bForms), NameA: m.WrittenA, NameB: m.WrittenB}
+}
+
+// PairPassages is Passages of PairMentions: the book's passages for a and
+// b.
+func (ix *IdentityIndex) PairPassages(a, b RosterEntry) PairPassages {
+	return ix.Passages(ix.PairMentions(a, b), a, b)
 }
 
 // UnwrittenName is the fix for a pair that shares its words when the book
@@ -549,7 +665,7 @@ func (ix *IdentityIndex) PairPassages(a, b RosterEntry) PairPassages {
 // ("Legionnaire Daralen", "Primus Daralen") - two names the text spells
 // some other way say nothing about each other.
 func (p RosterPair) UnwrittenName(found PairPassages) (RosterFix, bool) {
-	wa, wb := rosterNameWords(p.A.Name), rosterNameWords(p.B.Name)
+	wa, wb := rosterNameWords(p.A.Name, p.titles), rosterNameWords(p.B.Name, p.titles)
 	switch {
 	case p.Alias != "" || found.NameA > 0 && found.NameB > 0:
 		return RosterFix{}, false
@@ -610,8 +726,11 @@ func describeEntry(e RosterEntry) string {
 // VerdictSame and VerdictDifferent come back only with evidence found word
 // for word in a passage (returned with it) - and VerdictSame only when
 // that passage names both: shown "I am Othair, my lord" the model called
-// Othair, a butler, the same as the god Darakin. Anything else is
-// VerdictUnclear.
+// Othair, a butler, the same as the god Darakin. When the book uses the
+// two names alike (PairPassages.Alike) a passage naming either will do,
+// and VerdictSame stands without one too, its evidence then empty: the
+// model mostly answers such a pair with words from two passages run
+// together, or its reasons. Anything else is VerdictUnclear.
 func (c *Client) JudgeSamePerson(ctx context.Context, bookTitle string, a, b RosterEntry, passages PairPassages) (SamePersonVerdict, string, error) {
 	all := passages.All()
 	if len(all) == 0 {
@@ -649,12 +768,15 @@ func (c *Client) JudgeSamePerson(ctx context.Context, bookTitle string, a, b Ros
 			continue
 		}
 		lower := strings.ToLower(s)
-		if verdict == VerdictDifferent || mentions(rosterForms(a), lower) && mentions(rosterForms(b), lower) {
+		if verdict == VerdictDifferent || passages.Alike || mentions(rosterForms(a), lower) && mentions(rosterForms(b), lower) {
 			backed = true
 			break
 		}
 	}
 	if !backed {
+		if verdict == VerdictSame && passages.Alike {
+			return VerdictSame, "", nil
+		}
 		return VerdictUnclear, "", nil
 	}
 	return verdict, strings.TrimSpace(raw.Evidence), nil

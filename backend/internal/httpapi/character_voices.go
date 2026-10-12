@@ -16,6 +16,7 @@ import (
 
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
+	"github.com/rhino1998/lectable/backend/internal/jobs"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
@@ -61,6 +62,12 @@ type casting struct {
 	// lookups are the searches the casting call made, each with how many
 	// sentences it found ("Scylla + Greek: 3").
 	lookups []string
+	// excerpts are what those searches showed the casting call, each
+	// under its search ("Scylla + Greek: ...").
+	excerpts []string
+	// accent is the accent decided before the casting call and what it
+	// rests on (speakerattr.AccentDecision), nil when none was.
+	accent *speakerattr.AccentDecision
 }
 
 // Lookup result sizes.
@@ -108,7 +115,7 @@ const (
 // The words are also searched for by meaning (semanticExcerpts), which
 // finds what says the same thing in other words; those excerpts follow
 // the exact ones.
-func (s *Server) lookupExcerpts(ctx context.Context, bookIDs, names, terms []string) ([]string, error) {
+func (s *Server) lookupExcerpts(ctx context.Context, bookIDs, names, terms []string, byMeaning bool) ([]string, error) {
 	named := false
 	for _, t := range terms {
 		for _, n := range names {
@@ -160,6 +167,9 @@ func (s *Server) lookupExcerpts(ctx context.Context, bookIDs, names, terms []str
 		for i := range out {
 			out[i] = kept[i*len(kept)/lookupResults]
 		}
+	}
+	if !byMeaning {
+		return out, nil
 	}
 	return append(out, s.semanticExcerpts(ctx, bookIDs, names, terms, kept)...), nil
 }
@@ -255,6 +265,14 @@ func (s *Server) semanticExcerpts(ctx context.Context, bookIDs, names, terms, ha
 type castOptions struct {
 	// temp overrides the casting call's sampling temperature.
 	temp *float32
+	// noMeaning leaves the lookups their exact-word search alone, without
+	// the excerpts found by meaning (semanticExcerpts) - to tell what
+	// those change.
+	noMeaning bool
+	// accent overrides whether the accent is decided before the casting
+	// call (speakerattr.CastingOptions.NoAccentStep): nil is the server's
+	// default, castAccentStep.
+	accent *bool
 	// noLookup casts from the gathered material alone, without letting
 	// the model search the book first (speakerattr.CastingOptions.Lookup).
 	noLookup bool
@@ -314,11 +332,20 @@ func (s *Server) castCharacter(ctx context.Context, book *store.Book, char store
 		}
 	}
 
-	castingOpts := speakerattr.CastingOptions{Temp: opts.temp}
-	var lookups []string
+	var accent *speakerattr.AccentDecision
+	castingOpts := speakerattr.CastingOptions{
+		Temp:         opts.temp,
+		NoAccentStep: !opts.accentStep(),
+		OnAccent:     func(d speakerattr.AccentDecision) { accent = &d },
+	}
+	var lookups, excerpts []string
 	if !opts.noLookup {
 		castingOpts.Lookup = func(ctx context.Context, terms []string) ([]string, error) {
-			return s.lookupExcerpts(ctx, bookIDs, names, terms)
+			found, err := s.lookupExcerpts(ctx, bookIDs, names, terms, !opts.noMeaning)
+			for _, f := range found {
+				excerpts = append(excerpts, strings.Join(terms, " + ")+": "+f)
+			}
+			return found, err
 		}
 		castingOpts.OnLookup = func(terms []string, found int) {
 			lookups = append(lookups, fmt.Sprintf("%s: %d", strings.Join(terms, " + "), found))
@@ -328,7 +355,7 @@ func (s *Server) castCharacter(ctx context.Context, book *store.Book, char store
 	if err != nil {
 		return casting{}, fmt.Errorf("characterize: %w", err)
 	}
-	return casting{instruct: instruct, refLine: refLine, lookups: lookups}, nil
+	return casting{instruct: instruct, refLine: refLine, lookups: lookups, excerpts: excerpts, accent: accent}, nil
 }
 
 // describedEvidence gathers the part of char's casting material that is
@@ -391,7 +418,44 @@ func (s *Server) worldNotes(book *store.Book, char store.Character, evidence spe
 	texts = append(texts, evidence.Traits...)
 	texts = append(texts, evidence.VoiceClues...)
 	texts = append(texts, evidence.Origins...)
-	return speakerattr.MatchWorldNotes(notes, texts...), nil
+	// What the reader accepted or set of them - their race, nationality,
+	// age - brings its facts with it and is a line of its own.
+	ownTexts, lines := s.characterNoteLines(char)
+	return append(speakerattr.MatchWorldNotes(notes, append(texts, ownTexts...)...), lines...), nil
+}
+
+// characterNoteLines is char's accepted notes (store.CharacterNote) for a
+// casting's "World notes": the words that bring a world fact up (their
+// race, their nationality) and one line a note, with the sentence it
+// rests on when the text gave one.
+func (s *Server) characterNoteLines(char store.Character) (texts, lines []string) {
+	own, err := s.Store.CharacterNotes(char.ID)
+	if err != nil {
+		log.Printf("httpapi: notes for %q's casting: %v", char.Name, err)
+	}
+	said := func(n store.CharacterNote) string {
+		if n.Evidence == "" {
+			return ""
+		}
+		return fmt.Sprintf(" - the text says %q", n.Evidence)
+	}
+	for _, n := range own {
+		switch n.Kind {
+		case store.NoteKind:
+			texts = append(texts, n.Value)
+			lines = append(lines, fmt.Sprintf("%s's kind: %s%s", char.Name, n.Value, said(n)))
+		case store.NoteNationality:
+			texts = append(texts, n.Value)
+			lines = append(lines, fmt.Sprintf("%s's nationality: %s%s", char.Name, n.Value, said(n)))
+		case store.NoteAge:
+			where := ""
+			if ch, err := s.Store.GetChapterByID(n.ChapterID); err == nil && ch != nil {
+				where = fmt.Sprintf(" as of %q", strings.TrimSpace(ch.Title))
+			}
+			lines = append(lines, fmt.Sprintf("%s's age: %s years old%s%s", char.Name, n.Value, where, said(n)))
+		}
+	}
+	return texts, lines
 }
 
 // castingWorldNotes returns the world facts in force for book that a
@@ -408,7 +472,11 @@ func (s *Server) castingWorldNotes(book *store.Book, char store.Character, casti
 	for i, f := range facts {
 		notes[i] = speakerattr.WorldNote{Key: f.Key, Aliases: f.Aliases, Fact: f.Fact}
 	}
-	return speakerattr.MatchWorldNotes(notes, append(append([]string{char.Name}, char.Aliases...), casting)...)
+	texts := append(append([]string{char.Name}, char.Aliases...), casting)
+	// The character's own accepted notes: a kind brings that kind's fact
+	// with it, and each note is a line of its own, with its sentence.
+	ownTexts, lines := s.characterNoteLines(char)
+	return append(speakerattr.MatchWorldNotes(notes, append(texts, ownTexts...)...), lines...)
 }
 
 // maxOriginClues is how many origin clues characterization is shown.
@@ -1094,8 +1162,10 @@ func (s *Server) handleCharacterizeSpeaker(w http.ResponseWriter, r *http.Reques
 // (castCharacter) and returns the casting without storing it, so a change
 // to the prompts or the retrieval can be judged against the stored casting
 // without discarding anyone's voice or audio. ?temp= sets the casting
-// call's sampling temperature and ?lookup=0 casts without the
-// book lookups.
+// call's sampling temperature, ?lookup=0 casts without the book lookups,
+// ?meaning=0 keeps the lookups but without their excerpts found by
+// meaning, and ?accent=1 or 0 turns the accent step on or off for this
+// call (default castAccentStep).
 func (s *Server) handlePreviewCharacterization(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
 		writeError(w, http.StatusServiceUnavailable, "speaker characterization is not configured (set LECTABLE_SPEAKER_LLM_MODEL_PATH)")
@@ -1123,7 +1193,11 @@ func (s *Server) handlePreviewCharacterization(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	opts := castOptions{noLookup: r.URL.Query().Get("lookup") == "0"}
+	opts := castOptions{noLookup: r.URL.Query().Get("lookup") == "0", noMeaning: r.URL.Query().Get("meaning") == "0"}
+	if v := r.URL.Query().Get("accent"); v == "0" || v == "1" {
+		on := v == "1"
+		opts.accent = &on
+	}
 	for _, n := range strings.Split(r.URL.Query().Get("notes"), "\n") {
 		if n = strings.TrimSpace(n); n != "" {
 			opts.notes = append(opts.notes, n)
@@ -1151,6 +1225,8 @@ func (s *Server) handlePreviewCharacterization(w http.ResponseWriter, r *http.Re
 		Summary:        cast.instruct,
 		RefLine:        cast.refLine,
 		Lookups:        cast.lookups,
+		LookupExcerpts: cast.excerpts,
+		Accent:         accentDTO(cast.accent),
 		CurrentSummary: char.Summary,
 	})
 }
@@ -1412,7 +1488,7 @@ func (s *Server) handleVariantAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
-	serveVoiceClip(w, r, path)
+	s.serveCharacterVoiceClip(w, r, path, presetID)
 }
 
 // handleRoleVariantAudio serves the reference clip of a role voice's
@@ -1431,7 +1507,7 @@ func (s *Server) handleRoleVariantAudio(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
-	serveVoiceClip(w, r, path)
+	s.serveCharacterVoiceClip(w, r, path, presetID)
 }
 
 type regenerateVariantRequest struct {
@@ -1501,8 +1577,15 @@ func (s *Server) regenerateNeutral(w http.ResponseWriter, book *store.Book, spea
 		return
 	}
 	c := *char
-	s.Jobs.EnqueueVoiceProvision(book.ID, c.ID, "regenerate", c.Name, func(ctx context.Context, attempt int) (string, error) {
-		return s.regenerateCharacterVoice(ctx, book.ID, c, cloneModel, attempt)
+	// One voice, asked for by the reader, who is waiting to hear it.
+	s.Jobs.EnqueueVoiceProvisionAt(jobs.TierUrgent, book.ID, c.ID, "regenerate", c.Name, func(ctx context.Context, attempt int) (string, error) {
+		presetID, err := s.regenerateCharacterVoice(ctx, book.ID, c, cloneModel, attempt)
+		// The new clip is a file: tell the voice check its finding is of
+		// the old one.
+		if err == nil && s.Live != nil {
+			s.Live.Invalidate(dbDeps("voice_checks")...)
+		}
+		return presetID, err
 	})
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
 }
@@ -1618,4 +1701,23 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 		DesignModel:     voice.DesignModel,
 	}, req.Emotion)
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
+}
+
+func accentDTO(d *speakerattr.AccentDecision) *castAccentDTO {
+	if d == nil {
+		return nil
+	}
+	return &castAccentDTO{Accent: d.Accent, Evidence: d.Evidence, Whose: d.Whose, Basis: d.Basis}
+}
+
+// castAccentStep is whether castings decide the accent in a call of its
+// own before the casting call (speakerattr's accent step). On unless
+// LECTABLE_CAST_ACCENT_STEP=false; a preview can ask for it either way.
+var castAccentStep = os.Getenv("LECTABLE_CAST_ACCENT_STEP") != "false"
+
+func (o castOptions) accentStep() bool {
+	if o.accent != nil {
+		return *o.accent
+	}
+	return castAccentStep
 }

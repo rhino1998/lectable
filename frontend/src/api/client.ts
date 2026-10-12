@@ -8,6 +8,7 @@ import {
   type CreateExportRequest,
   type CustomVoicePresetInput,
   type UpsertLexiconRequest,
+  type SetKindAccentRequest,
   type UpsertWorldFactRequest,
   type ErrorCode,
   type GenerateSFXRequest,
@@ -611,6 +612,17 @@ export const api = {
       body: { aliases },
     }),
 
+  // Makes some of a character's aliases characters of their own, for
+  // names folded into the wrong person: the aliases come off, and their
+  // lines in the chapters that write any of them are re-judged among
+  // everyone in one pass (an Auto Split job per book). Resolves to how
+  // many chapters were queued.
+  splitCharacterAliases: (bookId: string, characterId: string, aliases: string[]) =>
+    call('POST /api/books/{id}/characters/{characterId}/aliases/split', {
+      path: { id: bookId, characterId },
+      body: { aliases },
+    }),
+
   // Sets (or, with '', clears) one character's pronouns - see
   // Speaker.pronouns. Attribution lists them in its known-characters
   // prompt and characterization takes them as its gender signal; changing
@@ -621,6 +633,24 @@ export const api = {
       body: { pronouns },
     }),
 
+  // Each speaker's lines of dialogue across every book of the series.
+  seriesSpeakerLines: (bookId: string) =>
+    call('GET /api/books/{id}/speakers/series-lines', { path: { id: bookId } }),
+
+  // Sets a speaker's race, nationality and age by hand ("" or 0 clears one) - see
+  // backend handleSetCharacterPeople.
+  setCharacterPeople: (
+    bookId: string,
+    characterId: string,
+    race: string,
+    nationality: string,
+    age: number,
+  ) =>
+    call('PUT /api/books/{id}/characters/{characterId}/people', {
+      path: { id: bookId, characterId },
+      body: { race, nationality, age },
+    }),
+
   // Records that `years` pass in the story before one of this book's
   // chapters (0: the whole book is set that long after the one before it
   // in its series) and ages the cast across it in the background: each
@@ -629,6 +659,29 @@ export const api = {
   // about; 409 when that chapter already has a jump.
   createTimeJump: (bookId: string, chapterIdx: number, years: number) =>
     call('POST /api/books/{id}/time-jumps', { path: { id: bookId }, body: { chapterIdx, years } }),
+
+  // Makes the jump fact finding proposed, at the chapter and length the
+  // reader settled on (which need not be the proposal's).
+  acceptTimeJumpProposal: (bookId: string, proposalId: string, chapterIdx: number, years: number) =>
+    call('POST /api/books/{id}/time-jumps/proposals/{proposalId}/accept', {
+      path: { id: bookId, proposalId },
+      body: { chapterIdx, years },
+    }),
+
+  // Turns a proposed time jump down for good.
+  skipTimeJumpProposal: (bookId: string, proposalId: string) =>
+    call('POST /api/books/{id}/time-jumps/proposals/{proposalId}/skip', {
+      path: { id: bookId, proposalId },
+    }),
+
+  // Accepts, turns down or removes notes about the series' characters, or
+  // (review) puts skipped ones back for review - see backend
+  // httpapi/dossier_api.go.
+  ruleCharacterNotes: (bookId: string, ids: string[], accept: boolean, review = false) =>
+    call('POST /api/books/{id}/character-notes/rule', {
+      path: { id: bookId },
+      body: { ids, accept, review },
+    }),
 
   // Removes a time jump and the older voices it made.
   deleteTimeJump: (bookId: string, jumpId: string) =>
@@ -681,11 +734,12 @@ export const api = {
   // Folds one character into another (or into "Narrator") - this book's
   // own paragraphs attributed to them are reattributed to targetName
   // instead of blanked, and their own identity/voice/presets are deleted
-  // for their whole series scope - see httpapi.handleMergeCharacter.
-  mergeCharacter: (bookId: string, characterId: string, targetName: string) =>
+  // for their whole series scope - see httpapi.handleMergeCharacter. The
+  // merged-away name becomes another name for the target unless noAlias.
+  mergeCharacter: (bookId: string, characterId: string, targetName: string, noAlias = false) =>
     call('POST /api/books/{id}/characters/{characterId}/merge', {
       path: { id: bookId, characterId },
-      body: { targetName },
+      body: { targetName, noAlias },
     }),
 
   // "Auto Split": for a speaker believed not to be a real, distinct
@@ -804,10 +858,30 @@ export const api = {
   runRosterReview: (bookId: string) =>
     call('POST /api/books/{id}/roster-review/run', { path: { id: bookId } }),
 
-  // Applies one proposed roster fix. A merge can't be undone.
-  acceptRosterProposal: (bookId: string, proposalId: string) =>
+  // Queues a check of the book's roster's voices (a voice_check job): an
+  // audio model listens to each character's reference clip and the ones
+  // that don't sound like their casting arrive on the voiceCheck topic -
+  // see backend httpapi/voice_check.go.
+  runVoiceCheck: (bookId: string) =>
+    call('POST /api/books/{id}/voice-check/run', { path: { id: bookId } }),
+
+  // Says a flagged voice is fine as it is; it isn't listed again unless
+  // its clip is rendered afresh and heard wrong again.
+  dismissVoiceCheck: (bookId: string, presetId: string) =>
+    call('POST /api/books/{id}/voice-check/dismiss', { path: { id: bookId }, body: { presetId } }),
+
+  // Applies one proposed roster fix. A merge can't be undone; with
+  // noAlias it doesn't keep the merged name as another name for the target.
+  // split says whether an alias proposal also splits the name off as a
+  // character (api.splitCharacterAliases) - left out, the proposal's kind
+  // decides.
+  acceptRosterProposal: (bookId: string, proposalId: string, noAlias = false, split?: boolean) =>
     call('POST /api/books/{id}/roster-review/proposals/{proposalId}/accept', {
       path: { id: bookId, proposalId },
+      query: {
+        ...(noAlias ? { alias: '0' } : {}),
+        ...(split === undefined ? {} : { split: split ? '1' : '0' }),
+      },
     }),
 
   // Declines one proposed roster fix; it isn't proposed again.
@@ -871,6 +945,38 @@ export const api = {
 
   deleteBookFact: (bookId: string, factId: string) =>
     call('DELETE /api/books/{id}/facts/{factId}', { path: { id: bookId, factId } }),
+
+  // Queues a search of the book's series for world facts (a fact_finding
+  // job); what it finds arrives on the bookFacts topic as proposed facts -
+  // see backend httpapi/fact_finding.go.
+  findBookFacts: (bookId: string) =>
+    call('POST /api/books/{id}/facts/find', { path: { id: bookId } }),
+
+  // How the characters of each kind in the book's series are cast, by
+  // accent - see backend httpapi/kind_accents.go.
+  kindAccents: (bookId: string) =>
+    call('GET /api/books/{id}/facts/accents', { path: { id: bookId } }),
+
+  // Records one accent as a kind's and recasts its characters cast
+  // otherwise.
+  setKindAccent: (bookId: string, body: SetKindAccentRequest) =>
+    call('POST /api/books/{id}/facts/accents', { path: { id: bookId }, body }),
+
+  // Undoes fact finding for the book's series: removes every fact a pass
+  // proposed (accepted and skipped ones too) and forgets proposed or
+  // declined classes; the reader's own facts stay.
+  resetBookFacts: (bookId: string) =>
+    call('POST /api/books/{id}/facts/reset', { path: { id: bookId } }),
+
+  // Puts a fact the reader skipped, or a class they declined for one,
+  // back for review.
+  reviewBookFact: (bookId: string, factId: string) =>
+    call('POST /api/books/{id}/facts/{factId}/review', { path: { id: bookId, factId } }),
+
+  // Turns a proposed fact down for good. Accepting one is upsertBookFact
+  // with its id.
+  skipBookFact: (bookId: string, factId: string) =>
+    call('POST /api/books/{id}/facts/{factId}/skip', { path: { id: bookId, factId } }),
 
   deleteLexiconEntry: (bookId: string, entryId: string) =>
     call('DELETE /api/books/{id}/lexicon/{entryId}', { path: { id: bookId, entryId } }),

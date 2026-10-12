@@ -324,6 +324,22 @@ func (m *Manager) EnqueueRosterReview(book *store.Book, scope string, fn func(ct
 	})
 }
 
+// EnqueueFactFinding queues a search of book's series for world facts
+// (the Facts tab's button) and returns at once - at TierUrgent like
+// EnqueueRosterReview, and deduped by scope the same way.
+func (m *Manager) EnqueueFactFinding(book *store.Book, scope string, fn func(ctx context.Context) error) {
+	m.pushTask(&task{
+		kind:        KindFactFinding,
+		tier:        TierUrgent,
+		bookID:      book.ID,
+		llmKey:      scope,
+		label:       "Fact finding",
+		runLLM:      func(ctx context.Context) (int, func(), error) { return 0, nil, fn(ctx) },
+		seriesName:  book.SeriesName,
+		seriesIndex: book.SeriesIndex,
+	})
+}
+
 // referenceClipDependency returns t's own "ensure reference clip" task -
 // this package's third dependency kind, creating one the first time some
 // paragraph discovers its own resolved preset has no cached reference

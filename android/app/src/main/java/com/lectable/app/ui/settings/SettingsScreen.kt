@@ -60,6 +60,8 @@ import com.lectable.app.data.settings.MAX_SPEED_RAMP_SECONDS
 import com.lectable.app.data.settings.SPEED_RAMP_SECONDS_STEP
 import com.lectable.app.data.settings.MIN_LOOKAHEAD_PARAGRAPHS
 import com.lectable.app.data.settings.ReaderFontFamily
+import com.lectable.app.playback.MAX_SPATIAL_WIDTH
+import com.lectable.app.playback.SpatialMode
 import com.lectable.app.data.settings.MAX_FONT_SIZE_SP
 import com.lectable.app.data.settings.MIN_FONT_SIZE_SP
 import com.lectable.app.data.settings.ThemePreference
@@ -85,6 +87,8 @@ fun SettingsScreen(
     val fontFamily by viewModel.fontFamily.collectAsState()
     val lookaheadParagraphs by viewModel.lookaheadParagraphs.collectAsState()
     val speedRampSeconds by viewModel.speedRampSeconds.collectAsState()
+    val spatialMode by viewModel.spatialMode.collectAsState()
+    val spatialWidth by viewModel.spatialWidth.collectAsState()
     val discoveredServers by viewModel.discoveredServers.collectAsState()
     val sourceCheckEveryHours by viewModel.sourceCheckEveryHours.collectAsState()
 
@@ -232,6 +236,35 @@ fun SettingsScreen(
                 steps = (MAX_SPEED_RAMP_SECONDS / SPEED_RAMP_SECONDS_STEP).roundToInt() - 1,
                 startLabel = "Off",
                 endLabel = "${MAX_SPEED_RAMP_SECONDS.roundToInt()}s",
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            val spreadPercent = (spatialWidth / MAX_SPATIAL_WIDTH * 100).roundToInt()
+            Text("Speaker positions", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "Characters speak from either side of the narrator. Headphones places them around you " +
+                    "and keeps the narrator inside your head.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                SpatialMode.entries.forEachIndexed { index, mode ->
+                    SegmentedButton(
+                        selected = spatialMode == mode,
+                        onClick = { viewModel.setSpatialMode(mode) },
+                        shape = SegmentedButtonDefaults.itemShape(index = index, count = SpatialMode.entries.size),
+                    ) {
+                        Text(mode.label)
+                    }
+                }
+            }
+            Text("Spread ($spreadPercent%)", style = MaterialTheme.typography.bodyMedium)
+            CleanSlider(
+                value = spreadPercent.toFloat(),
+                onValueChange = { viewModel.setSpatialWidth(it.roundToInt() / 100f * MAX_SPATIAL_WIDTH) },
+                valueRange = 0f..100f,
+                steps = 19,
+                startLabel = "Centre",
+                endLabel = "Wide",
                 modifier = Modifier.fillMaxWidth(),
             )
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 )
@@ -256,6 +257,36 @@ func (w *Worker) HandleTranscribe(rw http.ResponseWriter, r *http.Request) {
 	}
 	rw.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(rw).Encode(ttsproto.TranscribeResponse{Text: text})
+}
+
+// HandleListen serves POST /listen.
+func (w *Worker) HandleListen(rw http.ResponseWriter, r *http.Request) {
+	var req ttsproto.ListenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid request body: %w", err))
+		return
+	}
+	if strings.TrimSpace(req.Question) == "" {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("question is required"))
+		return
+	}
+	raw, err := base64.StdEncoding.DecodeString(req.AudioBase64)
+	if err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid audioBase64: %w", err))
+		return
+	}
+	clip, err := decodeWav(raw)
+	if err != nil {
+		writeError(rw, http.StatusBadRequest, fmt.Errorf("invalid wav: %w", err))
+		return
+	}
+
+	text, err := w.Listen(clip.Samples, clip.SampleRate, clip.Channels, req.Question, req.MaxTokens)
+	if err != nil {
+		writeError(rw, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(rw, ttsproto.ListenResponse{Text: text})
 }
 
 // HandleAlign serves POST /align.

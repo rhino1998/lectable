@@ -16,6 +16,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/audiopath"
 	"github.com/rhino1998/lectable/backend/internal/deliverytags"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
+	"github.com/rhino1998/lectable/backend/internal/namekey"
 	"github.com/rhino1998/lectable/backend/internal/narration"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
@@ -993,7 +994,7 @@ func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Reques
 		}
 		if req.New {
 			for _, c := range roster {
-				kept := slices.DeleteFunc(slices.Clone([]string(c.Aliases)), func(a string) bool { return strings.EqualFold(a, speaker) })
+				kept := slices.DeleteFunc(slices.Clone([]string(c.Aliases)), func(a string) bool { return namekey.Equal(a, speaker) })
 				if len(kept) == len(c.Aliases) {
 					continue
 				}

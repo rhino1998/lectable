@@ -18,6 +18,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
+	"github.com/rhino1998/lectable/backend/internal/voicefx"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
 	"github.com/rhino1998/lectable/backend/internal/voices"
 )
@@ -129,14 +130,14 @@ func (m *Manager) taskClipKey(t *task, lexicon []pronounce.LexiconEntry, emotion
 	}
 	if t.kind == KindVoiceDesign {
 		text := mergedGenerationText(members, "", lexicon)
-		return designRecipe(t.designModel, t.instruct, t.seed, t.language, text, alignText).Key(t.take)
+		return withEffect(designRecipe(t.designModel, t.instruct, t.seed, t.language, text, alignText), t.effect).Key(t.take)
 	}
 	cloneModel := t.cloneModel
 	if cloneModel == "" {
 		cloneModel = voices.DefaultCloneModel
 	}
 	text := mergedGenerationText(members, cloneModel, lexicon)
-	return m.clipRecipe(cloneModel, t.presetID, emotion, t.language, t.cloneInstruct, text, alignText).Key(t.take)
+	return withEffect(m.clipRecipe(cloneModel, t.presetID, emotion, t.language, t.cloneInstruct, text, alignText), t.effect).Key(t.take)
 }
 
 // resolveAtEnqueue puts t's paragraphs on their clip without queueing t at
@@ -232,13 +233,19 @@ func designRecipe(designModel, instruct string, seed int, language, text, alignT
 // designed from its instruction when it has no preset.
 func (m *Manager) voiceRecipe(v narration.ResolvedVoice, emotion, text, alignText string) clipkey.Recipe {
 	if v.PresetID == "" {
-		return designRecipe(v.DesignModel, v.Instruct, v.Seed, v.Language, text, alignText)
+		return withEffect(designRecipe(v.DesignModel, v.Instruct, v.Seed, v.Language, text, alignText), v.Effect)
 	}
 	cloneModel := v.CloneModel
 	if cloneModel == "" {
 		cloneModel = voices.DefaultCloneModel
 	}
-	return m.clipRecipe(cloneModel, v.PresetID, emotion, v.Language, v.CloneInstruct, text, alignText)
+	return withEffect(m.clipRecipe(cloneModel, v.PresetID, emotion, v.Language, v.CloneInstruct, text, alignText), v.Effect)
+}
+
+// withEffect is r for a clip put through effect once generated.
+func withEffect(r clipkey.Recipe, effect voicefx.VoiceEffect) clipkey.Recipe {
+	r.Effect = voicefx.Tag(effect)
+	return r
 }
 
 // silenceRecipe is an unvoiced line's recipe: its silence is shared by

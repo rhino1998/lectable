@@ -488,6 +488,24 @@ with Scylla's Greek accent and Fritz's aristocratic one in every run. Not
 fully repeatable: Sid still came out once with the gruff voice she puts
 on.
 
+**The accent step** (2026-10-11, `accent.go`, `Client.decideAccent`): the
+accent is decided in a call of its own before the casting call, from the
+same material plus what the lookups found, and the casting is held to it
+(`accentSection`; a casting in another accent is retried with a reminder,
+`castsAccent`). The reply must quote the one sentence the accent rests on
+and say whose it is before naming the accent; one resting on a sentence
+about someone else is refused, and a step that fails casts without a
+decided accent. Why: asked for everything at once, the casting call did
+not hold to its accent rules - shown "Ingrid, a Danish archeologist" it
+cast her British in 4 of 6 runs, and Scylla ("the insane Greek woman")
+British in 6 of 6. With the step, over 10 characters x 3 runs: Ingrid
+Danish 3/3, Scylla Greek 3/3, Jonas Southern 3/3 (was 3 of 6), and every
+casting used the decided accent. Still wrong 1 run in 3: Miryam, whose
+"there was Miryam's Italian accent" is a stranger's accent she had
+described, read as her own. Age group still varies between runs.
+`LECTABLE_CAST_ACCENT_STEP=false` turns the step off; the preview route's
+`accent=0`/`1` does it for one call and returns what was decided.
+
 **Lookups** (2026-10-04, `Client.lookupSection`; every characterization
 runs them, `.../characterize/preview?lookup=0` / `casteval.py --no-lookup`
 cast without): the model searches the book for what the
@@ -640,8 +658,27 @@ so pairs need the text read.
   that show it. "Same" stands only when those words are in a passage that
   names both: shown "I am Othair, my lord" the model called Othair, a
   butler, the same as the god Darakin whose alias he was. "Different" on
-  an alias pair proposes removing the alias; anything else is stored
+  an alias pair proposes splitting the alias off (`split_alias`: removed,
+  made a character, the holder's lines re-judged for theirs); anything else is stored
   `ruled_out`.
+- *Names used alike* (2026-10-11, `httpapi/roster_usage.go`, needs the
+  semantic index): for a pair made by its names (`RosterPair.SharesName`,
+  not an alias pair), the embeddings of the paragraphs writing only the
+  one name are compared with those writing only the other
+  (`semantic.Alike`: cosine of the two mean vectors, each less the
+  series' mean). At `rosterAlikeMin` (0.6) or more, with 3+ paragraphs a
+  name, the model's "same" stands without a passage naming both - two
+  spellings of a name ("Dr. Zheng", "Doctor Zheng") never share a
+  paragraph, and the model answers many such pairs with two passages run
+  together or with its reasons, which the word-for-word check threw out.
+  The proposal then shows a passage for each name. A name that could be
+  short for several entries counts only toward the one it reads closest
+  to ("Sanguis": Baron Sanguis 0.70, his son Prince Sanguis 0.61;
+  "Zodiac": Lord Zodiac 0.84, his daughter Alicia Zodiac 0.61) unless
+  those entries read alike themselves; a pair that loses that way is left
+  unsettled, not ruled out, and asked about again next run. Not used for
+  alias pairs: names sharing no word read 0.04 to 0.43 alike whether one
+  person (Oracan/Eto 0.16) or two.
 
 Measured on a copy of Underverse (530 characters, 12 books;
 `cmd/rosterreview`, the live worker shared with a running queue): 3s
@@ -661,6 +698,21 @@ moot). Not found: anything needing more than six passages or knowledge of
 the plot - what the Claude subagent (`.claude/agents/roster-fixer.md`)
 files through `POST .../roster-review/proposals`. Its prompt is not in
 `SystemPrompts`.
+
+Names used alike, measured 2026-10-11 on a library backup from before any
+merge (Underverse, Arise, Expeditionary Force, The Legend of William Oh;
+`cmd/rosterreview -embeddings`, one run each with and without the index,
+the same model): pairs the reader had gone on to merge read 0.46 to 0.91
+alike (under 0.5 only a first name and its full name, which the rules
+propose), different people sharing a rank or surname up to 0.68 with
+most under 0.5 ("Mark Wyrd"/"Frederick Wyrd" the 0.68 - never a pair,
+each has a word the other lacks), people sharing nothing under 0.35. The
+model's merges went from 14 to 20, all 20 right on reading, and four more
+pairs were left for the next run instead of ruled out; ruled-out pairs
+fell from 53 to 43. Still missed: pairs the model itself calls unclear or
+different ("Zodiac"/"Lord Zodiac" reads 0.84 and the model says two
+people), and names written in fewer than three embedded paragraphs ("Lt
+Charles"). Loading a 19-book series' vectors cold adds ~30s to a run.
 
 **Front and back matter** (2026-10-11; `matter.go`, `Client.FindMatter`,
 `httpapi/matter.go`): one call per book over its chapter list - each
@@ -751,9 +803,9 @@ the prompt ranks above its genre defaults.
   tab.
 - Not done: facts in the age-stage calls (`ageByCastingSystemPrompt` still
   says a non-human never changes), the summary/ambience prompts, an anchor
-  chapter so the recap can't read a fact from ahead of the reader, and
-  proposing facts automatically - which must wait for the reader to
-  accept, like roster review.
+  chapter so the recap can't read a fact from ahead of the reader.
+  (Since done: the age-stage calls read facts, and facts are proposed -
+  "Fact finding" below.)
 - *Baseline facts* (migration 00026, an upsert; 28 of them): the
   genre-standard voices the casting prompt lists (dwarf - Scottish, elf -
   RP, orc/goblin - Cockney, giant/troll, dragon/demon, fairy,
@@ -768,6 +820,229 @@ the prompt ranks above its genre defaults.
   "king", "construct") bring their fact up for characters who aren't one;
   the prompt's "only if the material establishes the character as one" is
   what holds that back, and hasn't been measured.
+
+**World words** (2026-10-12; `speakerattr/titles.go`, `wordclass.go`,
+`store.WorldFact.Class`, `Server.titles`): a world fact can say what sort
+of word it is filed under - a **title** ("Prognugator"), a **role** (a job
+or class: "Baker"), a **race** ("Drake"), a **nationality** ("Pallassian")
+or a **place** ("Pallass") - for a series or for every book, with or
+without fact text (a race keeps its lifespan and accent in the same fact).
+The roster rules read these beside their fixed lists (`titleWords`,
+`rosterRankWords`), which only know English titles.
+- *Why*: The Wandering Inn had a character "Prognugator" (he/him) holding
+  Tersk, Wrymvr and Xrn as aliases, beside "Prognugator Tersk",
+  "Prognugator Dekass" and "Prognugator Xrn" (she/her). To the rules
+  "Prognugator" was a first name: `shortNameTarget` folds it into the one
+  full name that has it while there is only one, and no review rule could
+  call it a title. Races did the same ("Drake Trader", "Drake Tesy").
+- *What any class changes*: `shortNameTarget` never merges the word into a
+  name that has it (attribution's `absorbShortNames`, dedupe's rule 4, the
+  review's first-name proposals); `rosterNameWords` drops it, so
+  "Prognugator Tersk" pairs with "Tersk" and not with "Prognugator
+  Dekass", and the bare word is `IsBareTitle`; `RosterRuleFixes` proposes
+  removing a bare title's alias that is another entry's name - now also
+  when it is that name without its titles ("Tersk" for "Prognugator
+  Tersk", only when one entry has those words);
+  `SpeakerNameResolver.WithTitles` stops the word alone resolving to the
+  one name that has it.
+- *Roles, races and nationalities* also make a description: a name made
+  only of them (`WorldWords.IsPeopleDescription`: "Drake", "Pallassian
+  Gnoll", "Drake Trader", "One of the Gnolls") is proposed as a role and
+  loses its aliases. A title among the words doesn't count ("Gnoll
+  Chieftain" may be one person), nor does a place.
+- Nothing is changed in a roster when a class is saved: the next review
+  proposes the fixes.
+- *A speaker's own race and nationality* (2026-10-12): set on the
+  Speakers tab, or accepted from fact finding's character notes (kind
+  only; no pass proposes a nationality for a character yet). They are
+  character notes, so casting reads them through
+  `Server.characterNoteLines` - which the first casting (`worldNotes`) now
+  calls too; before, only the age-stage rewrites were shown a character's
+  accepted notes, and a recast after accepting a kind never saw it. Not
+  measured: what the extra lines do to a casting.
+- *Not done*: `RoleLabel` still decides "the prognugator" (lower case) is a
+  role and "The Prognugator" a name from the fixed `uniqueTitles` alone;
+  the baseline global kinds (dwarf, elf, ...) carry no class.
+- *Several words* ("Wall Lord", "Staff Sergeant", "Drowned Folk"): an
+  entry of `WorldWords` can be a phrase, taken out of a name whole
+  (`withoutPhrases`, a plain plural too) before its words are read - so
+  "Wall Lord Ilvriss" pairs with "Ilvriss" while "Wall" alone stays an
+  ordinary word. `WordCandidates` proposes a phrase of two or three
+  capitalized words that leads two or more names going on differently
+  (not "Lady Magnolia", which leads only "Lady Magnolia Reinhart"), and
+  then doesn't count those names toward its single words. On the live
+  rosters (2026-10-12, candidates only, not classed): The Wandering Inn -
+  Wall Lord (8 names), Watch Captain, Wall Lady, Chief Warrior, Goblin
+  Lord, High Mage, Grand Magus, and "King Itorin" (one man under two
+  entries, left to the model to call a name); Expeditionary Force - Staff
+  Sergeant (13), Gunnery Sergeant, Fleet Captain.
+- *Peoples and places of several words*: a phrase is also a candidate
+  when several entries use it anywhere and one of them is a role or a
+  description ("Drowned Folk" of "Drowned Folk Captain" and "One of the
+  Drowned Folk" - "Magnolia Reinhart" is in two entries too, but both are
+  names), or when it is all that follows "of"/"from" in even one name
+  ("King of the Blighted Lands"); a single word after "of" needs one name
+  as well ("Healer of Tenbault"). The series' own unclassed facts are
+  asked about whatever the roster says ("drowned folk", "half-elf").
+  The Wandering Inn then gives 314 candidates, 32 of them phrases (House
+  Tellis, Gaarh Marsh, Thirsting Veil, Five Winds, Loquea Dree, Wild
+  Wastes Gnolls...) and 42 single words after "of". Not classed by the
+  model yet: several are a nationality and a race together ("Ekhtouch
+  Gnolls", "Redfang Warriors"), which add nothing once both words are
+  classed.
+- *Finding them* (`Server.findWorldWords`, in the fact-finding run):
+  `WordCandidates` takes each capitalized word that two or more entries'
+  names use (roles included, a plural as its singular); `TitleUses` keeps
+  the ones the text writes after an article, possessive or preposition of
+  place ("the Prognugator", "his Drakes", "in Pallass") in at least
+  `MinTitleUses` (5) paragraphs, with three sample sentences;
+  `Client.ClassifyWords` (25 words a call, each with five names and its
+  sentences) answers title / role / race / nationality / place / name /
+  other. A new word becomes a pending fact with its class; a word the
+  series has a fact in force for gets the class proposed on that fact
+  (`ClassProposed`), since the kind facts fact finding already made
+  (drake, gnoll, antinium) are the races. A word skipped as one class may
+  be proposed as another.
+- *Measured* (2026-10-12, The Wandering Inn, read-only over the live
+  library with the live model; 775k paragraphs, ~2,000 entries): 258
+  candidate words, 230 used 5+ times, 137 classed in 2m10s (10 calls) -
+  17 titles (Chieftain, Ser, Dame, Emir, Archmage, Magus, Prognugator,
+  Guildmaster...), 68 roles (Mage, Guardsman, Witch, Soldier, Baker...),
+  30 races (Gnoll, Drake, Garuda, Dullahan, Antinium, Selphid...), 9
+  nationalities (Silverfang, Redfang, Pallassian, Ekhtouch...), 13 places
+  (Izril, Pallass, Ailendamus, Khelt...). The 93 left out are family and
+  first names (Shivertail, Reinhart, Tekshia) and ordinary words. Wrong
+  ones seen: "Wall", "City", "Street", "Guild" as places, "Eater", "Crow"
+  as races, plurals of fixed titles ("Lords", "Guards" - since dropped
+  from the candidates). Before the role class existed the same words came
+  back as 83 titles; splitting "held and addressed by" from "what someone
+  does" is what made the title list usable. Not measured: the same on
+  another series, or how many of the pairs and role proposals a review
+  then makes are right.
+- *By rule, without a model* (`findTitlesByRule`): titles only -
+  `TitleCandidates` (a word leading two or more proper names),
+  `MinTitleUses`, and `NamedHolders` dropping holders whose next word the
+  text mostly writes in lower case ("Drake Trader"). On The Wandering Inn
+  nearly 30 words passed, a few not titles (Drake, Pallassian);
+  Expeditionary Force gave Specialist, Commodore, Ensign, Klasta, Minister
+  and Cadet and no first names ("a Margaret" three times is why the
+  threshold is 5).
+
+**Fact finding** (2026-10-11; `speakerattr/factfinding.go`,
+`httpapi/fact_finding.go`, a `jobs.KindFactFinding` task started from a
+book's Facts tab): proposes world facts from a series' own text, each
+stored `pending` with the sentence it rests on until the reader accepts
+or skips it. Two sorts of fact (`FactSorts`, each its own search phrases
+and prompts): how long a kind of being lives and how it ages - what
+casting and age stages need to read an age - and how a whole people
+speaks. A kind with both gets one fact holding both sentences, a quote
+each. The steps and measurements below are the lifespan sort's; speech
+has its own entry after them.
+- *How*: (1) each of the sort's three fixed phrases (`FactSort.Queries`) is searched
+  by meaning across the series (`semantic.Service.Search`), the 40
+  closest paragraphs each; (2) `FindFacts` reads them 30 at a
+  time and names kinds, each with a quote; (3) per kind,
+  `SettleFact` reads the passages that named it plus the 8
+  closest to "How long do <kind>s live?" and writes one fact or none.
+  Go checks every quote against the passages shown (`QuotedIn`), drops
+  what is no kind (`FactKind`: humans, "unknown species", a description
+  of more than three words), and skips a kind the series already has a
+  fact for.
+- *Measured* (2026-10-11, the Python prototype of exactly this, 13
+  series, each 50-90% embedded at the time): 64 facts kept; read against
+  their quotes about 4 in 5 are sound, and three spot-checked against
+  the surrounding text held ("Kobolds only live to fifteen or so"; orcs
+  "usually reach adulthood in two or three years"; "Seventeen years is
+  considered near death for us"). 10-25s a series, 4-14 calls. Step 3
+  dropped 27 of 91 named kinds and merged repeats (four elf facts in The
+  Primal Hunter). Cat's Cradle proposed nothing. On The Legend of
+  William Oh one phrase ranked all six known statements in the top 35 of
+  46,430 paragraphs, including two that a word search for lifespan
+  wording (the retrieval tried first: "lifespan", "only live to",
+  "long-lived") missed - "Fae don't really age, we just grow bigger".
+- *Typical wrong proposals*: the oldest individual's age given as the
+  kind's lifespan; a fact about ageing that isn't a lifespan; one fact
+  filed under a neighbouring kind too. Progression stories state
+  lifespan by rank ("a C-grade can live up to one hundred thousand
+  years") - true, but casting only brings up a fact whose word a
+  character's material uses.
+- *Speech sort* (`SpeechFacts`; prototype over 10 series, 2026-10-11):
+  18 facts kept, about 7 sound - "the Drakes elongated their 's' and 'l'
+  sounds" (The Wandering Inn), "The Dread had a stilted way of speaking"
+  (Unbound), a Drowned Folk voice "a deep, bubbling growl ... as did much
+  of the Drowned Folk", "the heavy Othersider accent harsh to the ear"
+  (12 Miles Below). The rest: one member's voice given to the kind
+  ("Another Gnoll spoke, voice a growl"; "the giant ... deep words with a
+  heavy accent"), or nothing a voice can perform (a language that is
+  mostly scent). One or two proposals a series, so it is kept and left to
+  the reader. No series named a real-world accent for a people, so the
+  accent a monocultural people shares is still the reader's to write.
+- *Tried and left out - culture in general*: asked for a people's culture
+  and way of life (7 series, ~50 notes), most of what came back was true
+  and of no use to a voice ("Minotaurs do throw themselves into what
+  they do with a passion"), and whether a people is one culture or
+  several came back wrong (faeries whose "accents seem to vary" marked
+  as shared).
+- *What castings already do* (tallied 2026-10-11): kinds with a baseline
+  fact are uniform (6 of 6 Unbound dwarves Scottish, 12 of 12 Primal
+  Hunter elves RP); a story's own peoples get the book's main accent with
+  stragglers (Wandering Inn drakes: 36 General American, 4 British, 1
+  RP; gnolls 12/3/1). The Facts tab's "Accents by kind" lists that
+  spread and lets the reader pick one accent as the kind's fact, which
+  recasts only the outliers (`httpapi/kind_accents.go`; the
+  `facts/accents` entry in `docs/api.md`). Whether casting then follows
+  the fact's accent sentence has not been measured.
+- *Accepting recasts*: the characters whose name, alias or casting's
+  opening sentence uses the fact's word (`recastForFact`) - not everyone
+  whose evidence mentions the kind.
+- Not done: running it unasked (a preprocessing phase), waiting for a
+  series to finish embedding (it reads whatever is indexed - a run
+  during embedding found five facts once and six the next time), a
+  second proposal for a kind already accepted or skipped (one fact a
+  key: the speech sort can't add to an accepted lifespan fact), Android.
+
+**Time jumps and character notes** (2026-10-11): the same "Find facts"
+run (`httpapi.findStory`, `httpapi/dossier.go`) then reads the series'
+text once (`sweepSeries`) for two more things, each proposed for the
+reader like a fact. Their passes, prompts and first measurements are in
+the header comments of `speakerattr/timegaps.go` and
+`speakerattr/dossier.go`; in short:
+- *Where time passes* -> time-jump proposals (`store.TimeJumpProposal`,
+  table `time_jump_proposals`, migration 00029; listed with the book's
+  time jumps as `proposed`). Paragraphs with a phrase of elapsed time
+  (`TimePhrase`, exact) plus the closest by meaning; `FindTimeGaps` keeps
+  the statements that story time has gone by; runs of them in nearby
+  chapters (`timeGapRuns`) are each put to `PlaceTimeJump` with the
+  chapter summaries around their start. A run near a jump the book has or
+  the reader skipped, or one that only looks back no further than an
+  earlier jump reaches, is not proposed (`explained`). On William Oh the
+  hand-set jump (5 years before chapter 201) was found as "5 years before
+  chapter 202" - a chapter late, so accepting takes the reader's chapter
+  and years, not the proposal's. Unbound (1,096 chapters): none proposed.
+- *A character's dossier* -> notes (`store.CharacterNote`, table
+  `character_notes`): one stated thing each, with its sentence - their
+  **kind** ("goblin") or their **age** at a chapter. This is the second
+  dossier; why it differs from the removed one is in
+  `speakerattr/dossier.go`. Kinds come from how the text names someone
+  beside a kind ("Kikri, the Elf", `KindMentions`), with `NameKinds`
+  choosing which words are kinds and `VerifyKinds` naming whom each
+  sentence is about; ages from an exact search for age phrases
+  (`AgePhrase`), `FindAges`, then `SettleAges` a character at a time and
+  a never-younger rule. Live runs: Unbound 21 kinds, 17 right (wrong:
+  a kind that belongs to the other person in the sentence, a list) and 5
+  ages, 4 right; William Oh 3 kinds, 3 right, and 5 ages, 5 right.
+- *What an accepted note does*: `castingWorldNotes` adds it to the World
+  notes of that character's casting and age-stage calls as a line of its
+  own ("Jason's age: 12 years old as of "Chapter 3" - the text says
+  ..."), and an accepted kind counts as the character being of that kind
+  wherever that is asked (`acceptedKinds`: the facts shown to their
+  casting, who a fact's acceptance recasts, the accents list). Accepting
+  a kind recasts the character only when a fact in force now reaches them
+  that did not before. A pending or skipped note does nothing.
+- Not done: a jump's ageing does not yet read "12 at chapter 3" as an
+  exact starting age in code (the model is shown the line and left to use
+  it - unmeasured); notes are not found during characterization, only by
+  this run; a merged character's notes are dropped with it; Android.
 
 **Age stages** (2026-10-10; `store.CharacterStage`, `narration/stages.go`,
 `httpapi/stages.go`): a character who grows up or grows old over a book
@@ -841,8 +1116,10 @@ character's own voice as always.
   2026-10-10): when time jumps or stages are found automatically they
   wait for the reader to accept or skip, the way roster review's
   proposals do - a wrong one re-voices half a book.
-- *Not done yet*: stages and jumps are set by hand (Speakers tab, web
-  only). Finding them is two missing pieces - an approximate age per character (castings
+- *Finding them* (2026-10-11): fact finding proposes time jumps and
+  stated ages - "Time jumps and character notes" above. Stages themselves
+  are still only made by hand or by an accepted jump. What this note said
+  before that existed: finding them is two missing pieces - an approximate age per character (castings
   carry only a group word: 8 of ~5,300 named characters have a number),
   and where time passes: the summary pass cuts scenes at a time jump but
   records only time of day, and a gap is often never announced (Will's

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   RiDeleteBinLine,
   RiEqualizerLine,
@@ -12,6 +12,9 @@ import {
 import {
   useRenameCharacter,
   useSetCharacterAliases,
+  useSplitCharacterAliases,
+  useBookFacts,
+  useSetCharacterPeople,
   useSetCharacterPronouns,
 } from '../../api/queries'
 import { ApiError } from '../../api/client'
@@ -45,6 +48,7 @@ export function SpeakerRow({
   onToggleMerge,
   onAutoSplit,
   autoSplitting,
+  seriesLines,
   customizing,
   onToggleCustomize,
   expanded,
@@ -77,7 +81,7 @@ export function SpeakerRow({
   onToggleRole: () => void
   togglingRole: boolean
   mergeTargets: string[]
-  onMerge: (targetName: string) => void
+  onMerge: (targetName: string, noAlias: boolean) => void
   merging: boolean
   onToggleMerge: () => void
   // "Auto Split" - unlike every other action here, available for the
@@ -85,6 +89,9 @@ export function SpeakerRow({
   // wired up outside the isNarrator-gated block the rest of these share.
   onAutoSplit: () => void
   autoSplitting: boolean
+  // Their lines of dialogue across the whole series, in the whole-series
+  // view (undefined otherwise, or when they have none).
+  seriesLines?: number
   customizing: boolean
   onToggleCustomize: () => void
   expanded: boolean
@@ -100,11 +107,14 @@ export function SpeakerRow({
   // both the Narrator row and any unregistered speaker name) - just never
   // for the literal Narrator sentinel itself, and never for an empty row
   // with nothing to split.
-  const canAutoSplit = speaker.name !== 'Narrator' && speaker.paragraphCount > 0
+  // A real character is split across the whole series, so the button is
+  // there even when none of their lines are in this book.
+  const canAutoSplit =
+    speaker.name !== 'Narrator' && (speaker.paragraphCount > 0 || speaker.id !== '')
 
   return (
     <>
-      <li className="speaker-row">
+      <div className="speaker-row">
         <div className="speaker-row-main">
           <span>
             {isNarrator ? (
@@ -131,6 +141,7 @@ export function SpeakerRow({
           </span>
           <span className="muted">
             {speaker.readyCount}/{speaker.paragraphCount} generated
+            {seriesLines !== undefined && ` · ${seriesLines} in the series`}
           </span>
         </div>
 
@@ -140,10 +151,20 @@ export function SpeakerRow({
               bookId={bookId}
               characterId={speaker.id}
               pronouns={speaker.pronouns ?? ''}
-            />
+            >
+              <SpeakerPeople
+                bookId={bookId}
+                characterId={speaker.id}
+                race={speaker.race ?? ''}
+                nationality={speaker.nationality ?? ''}
+                age={speaker.ageYears ?? 0}
+                ageNote={speaker.age ?? ''}
+              />
+            </SpeakerPronouns>
             <SpeakerAliases
               bookId={bookId}
               characterId={speaker.id}
+              name={speaker.name}
               aliases={speaker.aliases ?? []}
             />
           </>
@@ -264,7 +285,7 @@ export function SpeakerRow({
                   title={
                     autoSplitting
                       ? 'Auto Split in progress…'
-                      : "Auto Split — this character isn't a real, distinct individual: re-judge and reassign every line currently attributed to them to whichever real character, Narrator, or Unknown actually speaks it"
+                      : "Auto Split — this character isn't a real, distinct individual: re-judge and reassign every line attributed to them, in every book of the series, to whichever real character, Narrator, or Unknown actually speaks it"
                   }
                 >
                   <RiScissorsCutLine className={autoSplitting ? 'spin' : undefined} />
@@ -318,7 +339,12 @@ export function SpeakerRow({
         </div>
 
         {merging && (
-          <MergeCharacterPanel targets={mergeTargets} onMerge={onMerge} onCancel={onToggleMerge} />
+          <MergeCharacterPanel
+            name={speaker.name}
+            targets={mergeTargets}
+            onMerge={onMerge}
+            onCancel={onToggleMerge}
+          />
         )}
 
         {customizing && (
@@ -346,7 +372,7 @@ export function SpeakerRow({
             ))}
           </div>
         )}
-      </li>
+      </div>
     </>
   )
 }
@@ -424,19 +450,57 @@ function SpeakerName({
 
 // Other names a character goes by (Speaker.aliases), shown under their
 // name with an inline comma-separated editor. The speakers list is live,
-// so a save shows up without any local state beyond the draft.
+// so a save shows up without any local state beyond the draft. "Split
+// off" is for names that are really somebody else (api.splitCharacterAliases):
+// pick which, and each becomes a character of its own.
 function SpeakerAliases({
   bookId,
   characterId,
+  name,
   aliases,
 }: {
   bookId: string
   characterId: string
+  name: string
   aliases: string[]
 }) {
   const setAliases = useSetCharacterAliases(bookId)
+  const splitAlias = useSplitCharacterAliases(bookId)
   const [draft, setDraft] = useState<string | null>(null)
+  const [splitting, setSplitting] = useState(false)
+  const [picked, setPicked] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+
+  const split = () => {
+    // In the order they are listed, whatever order they were ticked in.
+    const chosen = aliases.filter((a) => picked.includes(a))
+    if (chosen.length === 0) return
+    const quoted = chosen.map((a) => `"${a}"`).join(', ')
+    const question =
+      chosen.length === 1
+        ? `Make ${quoted} a character of their own, apart from ${name}? ${name}'s lines in the chapters that mention ${quoted} are looked over again and moved where they belong.`
+        : `Make ${quoted} ${chosen.length} characters of their own, apart from ${name} and from each other? ${name}'s lines in the chapters that mention any of them are looked over again and moved where they belong.`
+    if (!confirm(question)) return
+    setError(null)
+    setNotice(null)
+    splitAlias.mutate(
+      { characterId, aliases: chosen },
+      {
+        onSuccess: ({ queued }) => {
+          setSplitting(false)
+          setPicked([])
+          const list = chosen.join(', ')
+          setNotice(
+            queued > 0
+              ? `Split off ${list} - checking ${queued} chapter${queued === 1 ? '' : 's'} for their lines`
+              : `Split off ${list} - no lines to move`,
+          )
+        },
+        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not split'),
+      },
+    )
+  }
 
   const save = () => {
     if (draft === null) return
@@ -479,6 +543,48 @@ function SpeakerAliases({
       </div>
     )
   }
+  if (splitting && aliases.length > 0) {
+    return (
+      <div className="speaker-aliases muted">
+        <span>
+          {aliases.length > 1 ? 'Which names are someone else?' : 'Is this name someone else?'}
+        </span>
+        {aliases.map((alias) => (
+          <label key={alias}>
+            <input
+              type="checkbox"
+              checked={picked.includes(alias)}
+              disabled={splitAlias.isPending}
+              onChange={(e) =>
+                setPicked((prev) =>
+                  e.target.checked ? [...prev, alias] : prev.filter((a) => a !== alias),
+                )
+              }
+            />{' '}
+            {alias}
+          </label>
+        ))}
+        <button
+          onClick={split}
+          disabled={splitAlias.isPending || !aliases.some((a) => picked.includes(a))}
+          title="Each name ticked becomes a separate character"
+        >
+          Split off
+        </button>
+        <button
+          className="link-button"
+          onClick={() => {
+            setSplitting(false)
+            setPicked([])
+          }}
+          disabled={splitAlias.isPending}
+        >
+          Cancel
+        </button>
+        {error && <p className="error-text">{error}</p>}
+      </div>
+    )
+  }
   return (
     <div className="speaker-aliases muted">
       {aliases.length > 0 ? <span>Also called {aliases.join(', ')}</span> : null}
@@ -489,6 +595,20 @@ function SpeakerAliases({
       >
         {aliases.length > 0 ? 'Edit' : 'Add other names'}
       </button>
+      {aliases.length > 0 && (
+        <button
+          className="link-button"
+          onClick={() => {
+            setError(null)
+            setNotice(null)
+            setSplitting(true)
+          }}
+          title="One of these names is a different person - make them a character of their own and move their lines"
+        >
+          Split off
+        </button>
+      )}
+      {notice && <span>{notice}</span>}
     </div>
   )
 }
@@ -502,10 +622,14 @@ function SpeakerPronouns({
   bookId,
   characterId,
   pronouns,
+  children,
 }: {
   bookId: string
   characterId: string
   pronouns: string
+  // More of the speaker's settings, on the same line after the pronouns
+  // (SpeakerPeople).
+  children?: ReactNode
 }) {
   const setPronouns = useSetCharacterPronouns(bookId)
   const [error, setError] = useState<string | null>(null)
@@ -535,9 +659,118 @@ function SpeakerPronouns({
             </option>
           ))}
         </select>
-      </label>
+      </label>{' '}
+      {children}
       {error && <p className="error-text">{error}</p>}
     </div>
+  )
+}
+
+// The races and nationalities the book's facts name, as the suggestions
+// SpeakerPeople's inputs offer - rendered once for the whole roster.
+export function SpeakerPeopleLists({ bookId }: { bookId: string }) {
+  const facts = useBookFacts(bookId).data ?? []
+  const keys = (c: 'race' | 'nationality') =>
+    facts.filter((f) => f.class === c && !f.proposed && !f.skipped).map((f) => f.key)
+  return (
+    <>
+      <datalist id={`people-races-${bookId}`}>
+        {keys('race').map((k) => (
+          <option key={k} value={k} />
+        ))}
+      </datalist>
+      <datalist id={`people-nationalities-${bookId}`}>
+        {keys('nationality').map((k) => (
+          <option key={k} value={k} />
+        ))}
+      </datalist>
+    </>
+  )
+}
+
+// A character's race, nationality and age (Speaker.race, Speaker.nationality,
+// Speaker.ageYears) -
+// proposed by fact finding as character notes, or set here. Their casting
+// is shown both, with the facts filed under those words (a race's
+// lifespan and accent, how a people speaks), so a change only reaches the
+// voice after "Regenerate". Saved on Enter or on leaving the field.
+function SpeakerPeople({
+  bookId,
+  characterId,
+  race,
+  nationality,
+  age,
+  ageNote,
+}: {
+  bookId: string
+  characterId: string
+  race: string
+  nationality: string
+  // Their age in years (0 for none) and what the notes say of it ("12 as
+  // of Chapter 3").
+  age: number
+  ageNote: string
+}) {
+  const setPeople = useSetCharacterPeople(bookId)
+  const [draft, setDraft] = useState<{ race?: string; nationality?: string; age?: string }>({})
+  const [error, setError] = useState<string | null>(null)
+  const save = () => {
+    const next = {
+      race: (draft.race ?? race).trim(),
+      nationality: (draft.nationality ?? nationality).trim(),
+      age: draft.age === undefined ? age : Math.max(0, Math.floor(Number(draft.age) || 0)),
+    }
+    if (next.race === race && next.nationality === nationality && next.age === age)
+      return setDraft({})
+    setError(null)
+    setPeople.mutate(
+      { characterId, ...next },
+      {
+        onSuccess: () => setDraft({}),
+        onError: (err) => setError(err instanceof ApiError ? err.message : 'Could not save that'),
+      },
+    )
+  }
+  const field = (key: 'race' | 'nationality', label: string, list: string, value: string) => (
+    <label>
+      {label}{' '}
+      <input
+        className="speaker-people-input"
+        list={list}
+        value={draft[key] ?? value}
+        placeholder="Not set"
+        disabled={setPeople.isPending}
+        title="Shown to the casting of this speaker's voice, with the facts about it - Regenerate the voice to apply a change"
+        onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+        onBlur={save}
+        onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+      />
+    </label>
+  )
+  return (
+    <>
+      {field('race', 'Race', `people-races-${bookId}`, race)}{' '}
+      {field('nationality', 'Nationality', `people-nationalities-${bookId}`, nationality)}{' '}
+      <label>
+        Age{' '}
+        <input
+          className="speaker-people-input speaker-age-input"
+          type="number"
+          min={0}
+          value={draft.age ?? (age > 0 ? String(age) : '')}
+          placeholder="Not set"
+          disabled={setPeople.isPending}
+          title={
+            (ageNote ? `The notes say: ${ageNote}. ` : '') +
+            'Their age in years, shown to the casting of their voice - Regenerate the voice to apply a change. Setting it replaces the ages found in the text (they stay under Skipped on the Facts tab)'
+          }
+          onChange={(e) => setDraft({ ...draft, age: e.target.value })}
+          onBlur={save}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+        />
+      </label>
+      {error && <span className="error-text"> {error}</span>}
+    </>
   )
 }
 
@@ -546,15 +779,20 @@ function SpeakerPronouns({
 // character's name (see BookSettingsPage's own mergeTargets computation,
 // which already excludes the row being merged).
 function MergeCharacterPanel({
+  name,
   targets,
   onMerge,
   onCancel,
 }: {
+  name: string
   targets: string[]
-  onMerge: (targetName: string) => void
+  onMerge: (targetName: string, noAlias: boolean) => void
   onCancel: () => void
 }) {
   const [target, setTarget] = useState(targets[0] ?? 'Narrator')
+  const [keepAlias, setKeepAlias] = useState(true)
+  // Narrator and Unknown are nobody's names to add to.
+  const aliasApplies = target !== 'Narrator' && target !== 'Unknown'
 
   return (
     <div className="speaker-merge-panel">
@@ -568,8 +806,21 @@ function MergeCharacterPanel({
           ))}
         </select>
       </label>
+      {aliasApplies && (
+        <label title="Off for a name that was never theirs - attribution folds any line answered with another name into the character">
+          <input
+            type="checkbox"
+            checked={keepAlias}
+            onChange={(e) => setKeepAlias(e.target.checked)}
+          />{' '}
+          Keep {name} as another name for them
+        </label>
+      )}
       <div className="voice-panel-actions">
-        <button className="primary-button" onClick={() => onMerge(target)}>
+        <button
+          className="primary-button"
+          onClick={() => onMerge(target, aliasApplies && !keepAlias)}
+        >
           Merge
         </button>
         <button className="text-button" onClick={onCancel}>
