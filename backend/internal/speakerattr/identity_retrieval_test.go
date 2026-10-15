@@ -3,6 +3,7 @@ package speakerattr
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -28,6 +29,22 @@ func TestFindIdentityEvidence(t *testing.T) {
 	if ev := FindIdentityEvidence(book, "the ferrywoman", names, nil); len(ev.Candidates) != 0 {
 		t.Fatalf("no hits should find nothing, got %v", ev)
 	}
+}
+
+// httpapi shares one index per book across concurrent summary tasks; the
+// frequency cache once crashed the server with "concurrent map writes".
+func TestIdentityIndexConcurrent(t *testing.T) {
+	book := []string{"Fritz met the storm guard sergeant, Louisa.", "Bert waved.", "Louisa nodded."}
+	ix := NewIdentityIndex(book, map[string][]string{"Fritz": nil, "Bert": nil, "Sergeant Louisa": {"Louisa"}})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			if ev := ix.FindIdentityEvidence("storm guard sergeant", nil); len(ev.Candidates) == 0 {
+				t.Error("no candidates")
+			}
+		})
+	}
+	wg.Wait()
 }
 
 type identityLLM struct{ reply string }

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 )
@@ -58,7 +59,11 @@ type IdentityIndex struct {
 	paragraphs []string
 	lower      []string
 	names      map[string][]string // name -> lower-cased forms (name + aliases)
-	freq       map[string]int
+
+	// freq caches frequency's counts. An index is shared by every task on
+	// its book (httpapi caches one per book), so freqMu guards it.
+	freqMu sync.Mutex
+	freq   map[string]int
 }
 
 // NewIdentityIndex prepares paragraphs (a whole book, in order) and names
@@ -130,19 +135,23 @@ func wordBoundary(text string, i int) bool {
 }
 
 func (ix *IdentityIndex) frequency(name string) int {
-	if ix.freq == nil {
-		ix.freq = map[string]int{}
-	}
-	if n, ok := ix.freq[name]; ok {
+	ix.freqMu.Lock()
+	n, ok := ix.freq[name]
+	ix.freqMu.Unlock()
+	if ok {
 		return n
 	}
-	n := 0
 	for _, t := range ix.lower {
 		if mentions(ix.names[name], t) {
 			n++
 		}
 	}
+	ix.freqMu.Lock()
+	if ix.freq == nil {
+		ix.freq = map[string]int{}
+	}
 	ix.freq[name] = n
+	ix.freqMu.Unlock()
 	return n
 }
 
