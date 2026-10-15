@@ -151,6 +151,24 @@ object CharacterVoiceModes {
 }
 
 /**
+ * Delivery is how a clone model takes a line's delivery as text.
+ *
+ *
+ * Values: see [Deliveries].
+ */
+typealias Delivery = String
+
+/**
+ * [Delivery]'s wire values, in declaration order.
+ */
+object Deliveries {
+    const val PLAIN: Delivery = "plain"
+    const val HIGGS_PAUSES: Delivery = "higgs-pauses"
+    const val DIRECTED: Delivery = "directed"
+    val VALUES: List<Delivery> = listOf(PLAIN, HIGGS_PAUSES, DIRECTED)
+}
+
+/**
  * errorCode is a machine-readable error reason a client can branch on
  * (errorResponse.Code).
  *
@@ -224,6 +242,25 @@ object JobTiers {
     const val NORMAL: JobTier = "normal"
     const val BACKGROUND: JobTier = "background"
     val VALUES: List<JobTier> = listOf(URGENT, LOOKAHEAD, NORMAL, BACKGROUND)
+}
+
+/**
+ * libraryGenerateScope is the ?scope= query param of POST
+ * /api/library/generate: "remaining" covers each book from its saved
+ * reading position on, "all" each book from its beginning.
+ *
+ *
+ * Values: see [LibraryGenerateScopes].
+ */
+typealias LibraryGenerateScope = String
+
+/**
+ * [LibraryGenerateScope]'s wire values, in declaration order.
+ */
+object LibraryGenerateScopes {
+    const val REMAINING: LibraryGenerateScope = "remaining"
+    const val ALL: LibraryGenerateScope = "all"
+    val VALUES: List<LibraryGenerateScope> = listOf(REMAINING, ALL)
 }
 
 /**
@@ -329,7 +366,9 @@ object RosterFixKinds {
     const val SPLIT_ALIAS: RosterFixKind = "split_alias"
     const val MARK_ROLE: RosterFixKind = "mark_role"
     const val INVALIDATE: RosterFixKind = "invalidate"
-    val VALUES: List<RosterFixKind> = listOf(MERGE, REMOVE_ALIAS, SPLIT_ALIAS, MARK_ROLE, INVALIDATE)
+    const val RENAME_ROLE: RosterFixKind = "rename_role"
+    const val RENAME: RosterFixKind = "rename"
+    val VALUES: List<RosterFixKind> = listOf(MERGE, REMOVE_ALIAS, SPLIT_ALIAS, MARK_ROLE, INVALIDATE, RENAME_ROLE, RENAME)
 }
 
 /**
@@ -472,10 +511,11 @@ object ApiCatalog {
      */
     val CLONE_MODELS: List<CloneModelInfoDto> = listOf(
         CloneModelInfoDto(id = "audiocpp-qwen3-0.6b", label = "Qwen3-TTS (audio.cpp)", defaultTemperature = 0.9),
-        CloneModelInfoDto(id = "audiocpp-higgs-4b", label = "Higgs Audio v3 TTS 4B (audio.cpp)", defaultTemperature = 0.8),
+        CloneModelInfoDto(id = "audiocpp-higgs-4b", label = "Higgs Audio v3 TTS 4B (audio.cpp)", defaultTemperature = 0.8, delivery = "higgs-pauses"),
         CloneModelInfoDto(id = "audiocpp-breeze-tts", label = "BreezeTTS 2 (audio.cpp)", defaultTemperature = 0.9),
         CloneModelInfoDto(id = "audiocpp-omnivoice", label = "OmniVoice (audio.cpp)"),
         CloneModelInfoDto(id = "audiocpp-pocket-100m", label = "PocketTTS 100M, English (audio.cpp)", defaultTemperature = 0.7),
+        CloneModelInfoDto(id = "audiocpp-drama3", label = "Fish Audio Drama 3 (audio.cpp)", defaultTemperature = 0.7, delivery = "directed"),
         CloneModelInfoDto(id = "audiocpp-moss-local", label = "MOSS-TTS-Local v1.5 (audio.cpp)", defaultTemperature = 1.7),
         CloneModelInfoDto(id = "audiocpp-moss-nano", label = "MOSS-TTS-Nano 100M (audio.cpp)", defaultTemperature = 1.7),
         CloneModelInfoDto(id = "audiocpp-zipvoice", label = "ZipVoice-Distill, English/Chinese (audio.cpp)"),
@@ -505,19 +545,19 @@ object ApiCatalog {
      * The fixed emotion set a dialogue line can carry (Paragraph.emotion; "" is neutral), in display order - backend emotions.All.
      */
     val EMOTIONS: List<EmotionInfoDto> = listOf(
-        EmotionInfoDto(id = "warm", label = "Warm"),
-        EmotionInfoDto(id = "excited", label = "Excited"),
-        EmotionInfoDto(id = "teasing", label = "Teasing"),
-        EmotionInfoDto(id = "sad", label = "Sad"),
-        EmotionInfoDto(id = "pleading", label = "Pleading"),
-        EmotionInfoDto(id = "angry", label = "Angry"),
-        EmotionInfoDto(id = "afraid", label = "Afraid"),
-        EmotionInfoDto(id = "nervous", label = "Nervous"),
-        EmotionInfoDto(id = "cold", label = "Cold"),
-        EmotionInfoDto(id = "whisper", label = "Whisper"),
-        EmotionInfoDto(id = "shout", label = "Shout"),
-        EmotionInfoDto(id = "weary", label = "Weary"),
-        EmotionInfoDto(id = "pained", label = "Pained"),
+        EmotionInfoDto(id = "warm", label = "Warm", direction = "warm and fond, a smile in the voice"),
+        EmotionInfoDto(id = "excited", label = "Excited", direction = "excited and breathless, voice lifting"),
+        EmotionInfoDto(id = "teasing", label = "Teasing", direction = "playful and teasing, a little smug"),
+        EmotionInfoDto(id = "sad", label = "Sad", direction = "sad and quiet, close to tears"),
+        EmotionInfoDto(id = "pleading", label = "Pleading", direction = "pleading, desperate and urgent"),
+        EmotionInfoDto(id = "angry", label = "Angry", direction = "angry, voice raised and tight"),
+        EmotionInfoDto(id = "afraid", label = "Afraid", direction = "frightened, voice trembling"),
+        EmotionInfoDto(id = "nervous", label = "Nervous", direction = "nervous and hesitant"),
+        EmotionInfoDto(id = "cold", label = "Cold", direction = "cold and contemptuous, flat and controlled"),
+        EmotionInfoDto(id = "whisper", label = "Whisper", direction = "whispering, hushed"),
+        EmotionInfoDto(id = "shout", label = "Shout", direction = "shouting, at full volume"),
+        EmotionInfoDto(id = "weary", label = "Weary", direction = "weary and exhausted, slow"),
+        EmotionInfoDto(id = "pained", label = "Pained", direction = "in pain, strained, through gritted teeth"),
     )
 
     /**
@@ -1355,6 +1395,11 @@ data class CloneModelInfoDto(
      * such knob - flow/diffusion models, OmniVoice).
      */
     val defaultTemperature: Double? = null,
+    /**
+     * Delivery is what the model reads of a line's delivery beyond its
+     * words ("" is DeliveryPlain) - see CloneDelivery.
+     */
+    val delivery: Delivery? = null,
 )
 
 /**
@@ -1451,7 +1496,8 @@ data class CreateRosterProposalRequestDto(
     val target: String? = null,
     /**
      * Detail is the alias to remove or split off (remove_alias and
-     * split_alias only).
+     * split_alias), or the new name (rename, and rename_role - renamed and
+     * marked a role).
      */
     val detail: String? = null,
     val reason: String? = null,
@@ -1577,6 +1623,13 @@ data class EmotionInfoDto(
      * Label is the human-readable name shown in the UI.
      */
     val label: String = "",
+    /**
+     * Direction is the label as a style for a clone model that takes
+     * direction as text (internal/direction, voices.DeliveryDirected): what
+     * a labeled line without a direction of its own is read with, and the
+     * preset the reader's direction editor offers.
+     */
+    val direction: String = "",
 )
 
 @Serializable
@@ -2052,6 +2105,41 @@ data class LightingDto(
     val effect: LightEffect = "",
 )
 
+/**
+ * lineDirectionDTO is one line's direction as the annotations view draws it:
+ * the style as a parenthetical before the line, point tags as pills at
+ * their place, spans as styling on their words. Offsets are runes into
+ * Text, like directionMarkDTO.Offset.
+ */
+@Serializable
+data class LineDirectionDto(
+    /**
+     * Style is the phrase for the whole line, "" for none.
+     */
+    val style: String? = null,
+    /**
+     * StyleFromLabel marks a style that is the emotion label's
+     * (emotions.Emotion.Direction) because the line has no direction of
+     * its own.
+     */
+    val styleFromLabel: Boolean = false,
+    /**
+     * Marks are point tags ("sighs"), each before rune Offset.
+     */
+    val marks: List<DirectionMarkDto> = emptyList(),
+    /**
+     * Spans are scoped tags ("whisper") over runes [Start, End).
+     */
+    val spans: List<LineDirectionSpanDto> = emptyList(),
+)
+
+@Serializable
+data class LineDirectionSpanDto(
+    val start: Int = 0,
+    val end: Int = 0,
+    val tag: String = "",
+)
+
 @Serializable
 data class ListenRequestDto(
     /**
@@ -2256,6 +2344,21 @@ data class ParagraphDto(
      */
     val directionMarks: List<DirectionMarkDto> = emptyList(),
     /**
+     * Delivery is how the line is directed under a clone model that takes
+     * direction as text (store.Paragraph.EffectiveDirection), structured for
+     * the annotations view to draw - omitted under any other model and for
+     * an undirected line. DirectionMarks carries the same as the inserts the
+     * generation text gets.
+     */
+    val delivery: LineDirectionDto? = null,
+    /**
+     * Direction is the line's own speech direction written into its text
+     * ("[tired] Fine. [sighs] Go.", internal/direction.Direction.Annotate) -
+     * what the reader's direction editor starts from. Omitted when the
+     * line has none of its own (a label's fallback style isn't one).
+     */
+    val direction: String? = null,
+    /**
      * PronunciationMarks is every resolved pronunciation substitution
      * active on this paragraph (e.g. "Dr." -> "Doctor"), each pinned to
      * the word it replaces (see pronunciationMarkDTO.Offset) so the
@@ -2371,6 +2474,16 @@ data class PassesDto(
      * represents that combination just fine.
      */
     val direction: Boolean = false,
+    /**
+     * Delivery is set once the direction pass's second stage - free-form
+     * directions for the lines its labels (or nearby delivery verbs) pick
+     * out, internal/speakerattr.Client.DirectLines - has covered the whole
+     * chapter. Only run under a clone model that takes direction as text
+     * (voices.DeliveryDirected); Direction's contract otherwise. A chapter
+     * labeled under another model has Direction without Delivery, so moving
+     * the book to a directed model runs just this stage.
+     */
+    val delivery: Boolean = false,
     /**
      * Pronunciation is set once pronunciation resolution
      * (internal/speakerattr.Client.ResolvePronunciation, a
@@ -2725,6 +2838,62 @@ data class ResetFactsResponseDto(
 )
 
 @Serializable
+data class RestoreSpeakerLineDto(
+    val chapterIdx: Int = 0,
+    val paragraphIdx: Int = 0,
+    val from: String = "",
+    val to: String = "",
+)
+
+/**
+ * restoreSpeakersRequest lists lines to set back, each only if it still has
+ * From (a later change since, by a reader or a pass, wins).
+ */
+@Serializable
+data class RestoreSpeakersRequestDto(
+    val lines: List<RestoreSpeakerLineDto> = emptyList(),
+)
+
+/**
+ * restoreSpeakersResponse counts what POST .../speakers/restore did.
+ */
+@Serializable
+data class RestoreSpeakersResponseDto(
+    val restored: Int = 0,
+    val skipped: Int = 0,
+)
+
+/**
+ * retagResponse is what POST .../speakers/retag changed: how many
+ * attributed chapters it looked at, how many it left to an attribution run
+ * still queued for them, and how many lines moved, by the rule that moved
+ * them (speakerattr.TagChange.Reason).
+ */
+@Serializable
+data class RetagResponseDto(
+    val chapters: Int = 0,
+    val skipped: Int = 0,
+    /**
+     * Reviewed counts chapters left alone as part of a hand-corrected
+     * stretch.
+     */
+    val reviewed: Int = 0,
+    val changed: Int = 0,
+    /**
+     * Tag is a named speech tag ("…,” Bert said"), Beat an action beat
+     * ("“…” Elijah nodded."), Continuation an untagged quote continuing its
+     * paragraph's speaker, ContinuedSpeech a paragraph continuing the last
+     * one's unclosed speech, ThirdPerson a first-person narrator's "he said"
+     * line made Unknown.
+     */
+    val tag: Int = 0,
+    val beat: Int = 0,
+    val continuation: Int = 0,
+    val continuedSpeech: Int = 0,
+    val thirdPerson: Int = 0,
+)
+
+@Serializable
 data class ReviewBookSourceRequestDto(
     /**
      * Import and Skip are ids of entries waiting for review
@@ -2759,7 +2928,7 @@ data class RosterProposalDto(
     val targetLines: Int = 0,
     /**
      * Detail is the alias to remove (remove_alias) or split off
-     * (split_alias).
+     * (split_alias), or the subject's new name (rename, rename_role).
      */
     val detail: String = "",
     val reason: String = "",
@@ -2925,6 +3094,16 @@ data class SetKindAccentRequestDto(
 )
 
 @Serializable
+data class SetParagraphDirectionRequestDto(
+    /**
+     * Direction is the line with its direction written into it, as
+     * paragraphDTO.Direction shows it ("[tired] Fine. [sighs] Go."); ""
+     * clears it.
+     */
+    val direction: String = "",
+)
+
+@Serializable
 data class SetParagraphEmotionRequestDto(
     val emotion: String = "",
 )
@@ -2962,6 +3141,15 @@ data class SetParagraphSpeakerRequestDto(
      * off whoever holds it as one.
      */
     val new: Boolean = false,
+    /**
+     * Index is the line's speaker number (store.Paragraph.SpeakerIndex),
+     * telling apart unnamed people of one role in a scene: "Guard" with
+     * Index 2 is "Guard 2", read in the role's second voice. 0 is no
+     * number; above 0 only a role's line takes one (1 to
+     * store.MaxSpeakerIndex). Left out, a line keeping its speaker keeps
+     * its number and a line changing speaker loses it.
+     */
+    val index: Int? = null,
 )
 
 /**
@@ -3181,8 +3369,11 @@ data class SpeakerEmotionDto(
     /**
      * Status is "ready" (variant rendered - AudioURL plays it),
      * "pending" (not rendered yet: it renders lazily the first time one of
-     * these lines generates), or "failed" (couldn't be rendered; these
-     * lines clone from the base clip instead).
+     * these lines generates), "failed" (couldn't be rendered; these
+     * lines clone from the base clip instead), or "directed" (the book's
+     * clone model takes direction as text - voices.DeliveryDirected - so no
+     * variant is used or rendered: these lines clone from the base clip
+     * with their direction in the text).
      */
     val status: String = "",
     val audioUrl: String? = null,

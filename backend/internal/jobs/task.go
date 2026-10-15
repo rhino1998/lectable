@@ -5,10 +5,12 @@ import (
 	"context"
 	"time"
 
+	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/voicefx"
+	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
 // Kind identifies what sort of work a task represents. The job system
@@ -843,7 +845,19 @@ func (t *task) refKey() string {
 	if len(t.mergeParagraphs) > 1 {
 		return t.presetID
 	}
-	return t.presetID + ":" + t.paragraph.EffectiveEmotion()
+	return t.presetID + ":" + t.variantEmotion()
+}
+
+// variantEmotion is the emotion whose reference-clip variant t's line
+// clones from: its effective emotion, except under a clone model that
+// takes direction as text (voices.DeliveryDirected), where every line
+// clones from the base clip and the emotion travels in the text instead
+// (store.Paragraph.EffectiveDirection).
+func (t *task) variantEmotion() string {
+	if voices.Directed(t.cloneModel) {
+		return emotions.Neutral
+	}
+	return t.paragraph.EffectiveEmotion()
 }
 
 type taskResult struct {

@@ -30,6 +30,7 @@ fun DownloadedChapter.mergedWith(chapter: ChapterDetailDto, json: Json): Downloa
             label = p.label,
             table = p.table,
             directionMarks = p.directionMarks,
+            delivery = p.delivery,
             pronunciationMarks = p.pronunciationMarks,
             isQuote = p.isQuote,
             scareQuote = p.scareQuote,

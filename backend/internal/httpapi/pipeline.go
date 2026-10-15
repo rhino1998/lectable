@@ -239,8 +239,10 @@ const libraryPreprocessSeries = 4
 // series, oldest first, each taking a series' place. One job-queue row (a
 // jobs.BulkGroup, Kind "pipeline_library_preprocess", on the first book),
 // promoted and cancelled like a series run's; asking again while one is
-// queued or running joins it. A book whose passes are all done costs one
-// look at its chapters. 202 with the number of books, 0 for an empty
+// queued or running joins it. The run reads the library again whenever it
+// runs out of books (libraryLaneFeed), so a book added since it started -
+// and asked for by joining it - is taken in too. A book whose passes are
+// all done costs one look at its chapters. 202 with the number of books, 0 for an empty
 // library.
 func (s *Server) handlePreprocessLibrary(w http.ResponseWriter, r *http.Request) {
 	if s.Speaker == nil {
@@ -264,32 +266,71 @@ func (s *Server) handlePreprocessLibrary(w http.ResponseWriter, r *http.Request)
 		Label: label,
 		Tier:  jobs.TierBackground,
 	}, func(ctx context.Context, tier func() int) error {
-		// Lanes are handed out in order, so the first
-		// libraryPreprocessSeries start first and each next one starts
-		// as one of those finishes.
-		next := make(chan []string)
+		feed := newLibraryLaneFeed(books)
 		errs := make([]error, min(libraryPreprocessSeries, len(lanes)))
 		var wg sync.WaitGroup
 		for i := range errs {
 			wg.Go(func() {
-				for ids := range next {
-					if errs[i] != nil {
-						continue
+				for ctx.Err() == nil {
+					ids, series, ok := feed.take(s.Store.ListBooks)
+					if !ok {
+						return
 					}
-					errs[i] = s.preprocessBooksInOrder(ctx, tier, label, ids, func(*store.Book) bool { return true })
+					err := s.preprocessBooksInOrder(ctx, tier, label, ids, func(*store.Book) bool { return true })
+					feed.done(series)
+					if err != nil {
+						errs[i] = err
+						return
+					}
 				}
 			})
 		}
-		for _, ids := range lanes {
-			next <- ids
-		}
-		close(next)
 		wg.Wait()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		return errors.Join(errs...)
 	})
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(books)})
+}
+
+// libraryGenerateScope is the ?scope= query param of POST
+// /api/library/generate: "remaining" covers each book from its saved
+// reading position on, "all" each book from its beginning.
+type libraryGenerateScope string
+
+const (
+	libraryGenerateRemaining libraryGenerateScope = "remaining"
+	libraryGenerateAll       libraryGenerateScope = "all"
+)
+
+// handleGenerateLibrary queues background narration for every book in the
+// library, one book at a time: ?scope=remaining (the default) is
+// handleGenerateRemaining for each - from its saved reading position to
+// its end, so a book nobody has opened is generated whole - and scope=all
+// is handleGenerateBook for each. Books go in the whole-library preprocess
+// order (libraryPreprocessOrder): series by name, each in series order,
+// then the books in no series, oldest first. One job-queue row (a
+// jobs.BulkGroup, Kind "pipeline_library_generate_remaining" or
+// "pipeline_library_generate", on the first book - see
+// jobs.Manager.EnqueueLibraryGenerate); asking again while one of either
+// scope is queued or running joins it. Audio a book already has is left
+// alone. 202 with the number of books, 0 for an empty library.
+func (s *Server) handleGenerateLibrary(w http.ResponseWriter, r *http.Request) {
+	scope := libraryGenerateScope(r.URL.Query().Get("scope"))
+	if scope == "" {
+		scope = libraryGenerateRemaining
+	}
+	if scope != libraryGenerateRemaining && scope != libraryGenerateAll {
+		writeError(w, http.StatusBadRequest, "scope must be \"remaining\" or \"all\"")
+		return
+	}
+	books, err := s.Store.ListBooks()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.Jobs.EnqueueLibraryGenerate(slices.Concat(libraryPreprocessOrder(books)...), scope == libraryGenerateRemaining)
 	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: len(books)})
 }
 
@@ -364,6 +405,76 @@ func libraryPreprocessOrder(books []store.Book) [][]string {
 		lanes = append(lanes, []string{b.ID})
 	}
 	return lanes
+}
+
+// libraryLaneFeed hands a whole-library preprocessing run's lanes
+// (libraryPreprocessOrder) to its workers in order. Once every lane has
+// been handed out it reads the library again and adds lanes for the books
+// added since, so asking for the run again while it is going - which
+// joins it - takes in books uploaded after it started. A series' lane is
+// never handed out while another lane of the same series is still
+// running, so a series' books still run one at a time against the roster
+// the earlier ones left; the worker running that series picks it up next.
+type libraryLaneFeed struct {
+	mu      sync.Mutex
+	pending [][]string
+	series  map[string]string // book id -> series name, every book seen
+	busy    map[string]bool   // series with a lane running
+}
+
+func newLibraryLaneFeed(books []store.Book) *libraryLaneFeed {
+	f := &libraryLaneFeed{series: map[string]string{}, busy: map[string]bool{}}
+	f.add(books)
+	return f
+}
+
+// add queues lanes for the books in books not seen before.
+func (f *libraryLaneFeed) add(books []store.Book) {
+	var fresh []store.Book
+	for _, b := range books {
+		if _, seen := f.series[b.ID]; !seen {
+			f.series[b.ID] = b.SeriesName
+			fresh = append(fresh, b)
+		}
+	}
+	if len(fresh) > 0 {
+		f.pending = append(f.pending, libraryPreprocessOrder(fresh)...)
+	}
+}
+
+// take returns the next lane to run and its series ("" for a book in no
+// series), reading the library again (list) when no lane is left. ok is
+// false when there is nothing this worker can start now.
+func (f *libraryLaneFeed) take(list func() ([]store.Book, error)) (ids []string, series string, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.pending) == 0 {
+		books, err := list()
+		if err != nil {
+			log.Printf("httpapi: preprocess library: list books: %v", err)
+			return nil, "", false
+		}
+		f.add(books)
+	}
+	for i, lane := range f.pending {
+		series := f.series[lane[0]]
+		if series != "" && f.busy[series] {
+			continue
+		}
+		f.pending = slices.Delete(f.pending, i, i+1)
+		if series != "" {
+			f.busy[series] = true
+		}
+		return lane, series, true
+	}
+	return nil, "", false
+}
+
+// done marks series' lane finished.
+func (f *libraryLaneFeed) done(series string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.busy, series)
 }
 
 func btoi(b bool) int {
@@ -686,19 +797,19 @@ func (s *Server) speakingCharacters(book *store.Book, characters []store.Charact
 // pass), so a chapter this condition sees
 // as not-yet-directed genuinely still isn't, regardless of what any other
 // phase did to it in the meantime, running concurrently or not.
-// Skipped entirely for a non-Higgs book: directChapter no-ops for any
-// other clone model, so there'd be nothing to tag (pronunciation
-// resolution, which does apply, is its own phase -
-// preprocessPronunciationPhase). Same fan-out/join/best-effort shape as
+// Skipped for a book on a clone model that is neither Higgs nor directed
+// (voices.DeliveryDirected - whose chapters also need the pass's second
+// stage, Passes.Delivery). Pronunciation resolution is its own phase -
+// preprocessPronunciationPhase. Same fan-out/join/best-effort shape as
 // the other phases.
 func (s *Server) preprocessDirectionPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
 	return func(ctx context.Context, tier func() int) error {
-		if narration.BookCloneModel(book) != voices.HiggsCloneModel {
+		if narration.BookCloneModel(book) != voices.HiggsCloneModel && !bookDirected(book) {
 			return nil
 		}
 		var wg sync.WaitGroup
 		for _, cs := range chapters {
-			if cs.Passes.Direction {
+			if cs.Passes.Direction && (cs.Passes.Delivery || !bookDirected(book)) {
 				continue
 			}
 			ch := cs.Chapter

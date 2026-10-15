@@ -44,6 +44,15 @@ export function annotationTitle(p: Paragraph): string {
   if (p.emotion) {
     base += ` · ${emotionLabel(p.emotion)}`
   }
+  if (p.delivery) {
+    // A directed line: its style and tags, readably.
+    const parts = [
+      p.delivery.style && `(${p.delivery.style})`,
+      ...(p.delivery.marks ?? []).map((m) => `[${m.tag}]`),
+      ...(p.delivery.spans ?? []).map((s) => `<${s.tag}>`),
+    ].filter(Boolean)
+    return parts.length > 0 ? `${base} · ${parts.join(' ')}` : base
+  }
   const tags = p.directionMarks ?? []
   return tags.length > 0
     ? `${base} · ${tags.map((m) => formatDirectionTag(m.tag)).join(', ')}`

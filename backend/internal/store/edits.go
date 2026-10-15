@@ -13,6 +13,9 @@ const (
 	EditSpeaker    = "speaker"
 	EditEmotion    = "emotion"
 	EditScareQuote = "scare_quote"
+	// EditDirection values are a line's direction written into its text
+	// (direction.Direction.Annotate), "" for none.
+	EditDirection = "direction"
 )
 
 // ParagraphEdit is one reader correction of a machine-labeled paragraph

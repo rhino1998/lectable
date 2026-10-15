@@ -824,7 +824,7 @@ func (m *Manager) adoptChapter(book *store.Book, ch *store.Chapter, voiceOf map[
 			key = silenceRecipe(p.Text).Key(0)
 		default:
 			emotion := ""
-			if e, known := emotions.Get(p.EffectiveEmotion()); known && v.PresetID != "" && voicerefs.VariantExists(m.dataDir, v.PresetID, e.ID) {
+			if e, known := emotions.Get(p.EffectiveEmotion()); known && v.PresetID != "" && !voices.Directed(textModel) && voicerefs.VariantExists(m.dataDir, v.PresetID, e.ID) {
 				emotion = e.ID
 			}
 			recipe := m.voiceRecipe(v, emotion, p.ResolveGenerationText(textModel, lexicon), p.Text)

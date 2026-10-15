@@ -13,6 +13,7 @@ import {
   type ErrorCode,
   type GenerateSFXRequest,
   type JobTier,
+  type LibraryGenerateScope,
   type Position,
   type ResetPass,
   type Routes,
@@ -325,6 +326,22 @@ export const api = {
       body: { emotion },
     }),
 
+  // Overrides one dialogue line's free-form direction, for a clone model
+  // that takes direction as text: the line written back with its direction
+  // ("[tired] Fine. [sighs] Go."), '' to clear - see
+  // httpapi.handleSetParagraphDirection. 400 when it changes the line's
+  // words or breaks a tag.
+  setParagraphDirection: (
+    bookId: string,
+    chapterIdx: number,
+    paragraphIdx: number,
+    direction: string,
+  ) =>
+    call('PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/direction', {
+      path: { id: bookId, idx: chapterIdx, pidx: paragraphIdx },
+      body: { direction },
+    }),
+
   // Re-renders the emotion variant `speaker`'s lines clone from, resetting
   // this book's audio for their lines in that emotion - see
   // httpapi.handleRegenerateVariant. Fire-and-forget; the speakers topic
@@ -548,6 +565,12 @@ export const api = {
   // book itself.
   generateRemaining: (bookId: string) =>
     call('POST /api/books/{id}/generate-remaining', { path: { id: bookId } }),
+
+  // generateRemaining ("remaining") or generateBook ("all") for every book in
+  // the library, one book at a time, as one Jobs row - see
+  // httpapi.handleGenerateLibrary.
+  generateLibrary: (scope: LibraryGenerateScope) =>
+    call('POST /api/library/generate', { query: { scope } }),
 
   // One whole-book Speakers-page action, queued server-side as a single
   // cancelable Jobs row ("pipeline_bulk_<action>") wrapping every

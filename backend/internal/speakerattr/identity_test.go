@@ -22,6 +22,10 @@ func TestRoleLabel(t *testing.T) {
 		"the old king":                                        "King",
 		"The burly man":                                       "Man",
 		"the elderly woman":                                   "Woman",
+		"One of the [Knights]":                                "Knight",
+		"One of the [Witches]":                                "Witch",
+		"One of the Dwarves":                                  "Dwarf",
+		"One of the [Slaves]":                                 "Slave",
 	} {
 		if got, _, ok := RoleLabel(in); !ok || got != want {
 			t.Errorf("RoleLabel(%q) = %q, %v; want %q", in, got, ok, want)

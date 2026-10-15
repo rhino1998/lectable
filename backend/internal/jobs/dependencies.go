@@ -12,6 +12,7 @@ import (
 	"github.com/rhino1998/lectable/backend/internal/sched"
 	"github.com/rhino1998/lectable/backend/internal/store"
 	"github.com/rhino1998/lectable/backend/internal/voicerefs"
+	"github.com/rhino1998/lectable/backend/internal/voices"
 )
 
 // depTask finishes a lazily-created dependency task: the scheduler only
@@ -129,8 +130,17 @@ func (m *Manager) speechDirectionDependency(t *task) []sched.Need {
 	}
 	book := m.lookupBook(t.bookID)
 	ch := m.lookupChapter(chapterID)
-	if book == nil || ch == nil || ch.Passes.Direction || !book.SpeechDirection {
+	if book == nil || ch == nil || !book.SpeechDirection {
 		return joinOnly(key)
+	}
+	if ch.Passes.Direction {
+		// Under a clone model that takes direction as text, the pass's
+		// second stage (Passes.Delivery) writes the lines' directions;
+		// a chapter labeled under another model runs just that.
+		if ch.Passes.Delivery || !voices.Directed(t.cloneModel) {
+			return joinOnly(key)
+		}
+		return []sched.Need{{Key: key, New: m.depTask(m.newPassTask(KindSpeechDirection, book, ch, t.tier))}}
 	}
 	if needs, ok := m.windowDependency(KindSpeechDirection, m.directWindow, t, book, ch); ok {
 		return needs
@@ -394,7 +404,7 @@ func (m *Manager) variantClipDependency(t *task) []sched.Need {
 	if t.presetID == "" || len(t.mergeParagraphs) > 1 {
 		return nil
 	}
-	emotion := t.paragraph.EffectiveEmotion()
+	emotion := t.variantEmotion()
 	if emotion == emotions.Neutral {
 		return nil
 	}
@@ -550,7 +560,8 @@ func (m *Manager) runProvisionTask(ctx context.Context, t *task) error {
 	}
 }
 
-// attributionOrderDependency makes chapter t.chapterIdx-1 of the same
+// attributionOrderDependency makes the story chapter before t.chapterIdx
+// (skipping chapters marked as front or back matter) of the same
 // book's own speaker attribution (KindSpeakerAttribution) a hard dependency
 // of t's own. httpapi.attributeChapter reads its "already known characters"
 // list live from the store at call-start (Store.ListCharacters), so if two
@@ -566,8 +577,7 @@ func (m *Manager) runProvisionTask(ctx context.Context, t *task) error {
 // name problem canonicalizeSpeakerNames already exists to patch up, since
 // there's no equivalent patch for a within-book split.
 //
-// Skipped for a book's own first chapter (chapterIdx 0 - nothing to wait
-// on) and once the previous chapter's own store.Passes.Attribution is
+// Skipped for a book's own first story chapter (nothing to wait on) and once the previous chapter's own store.Passes.Attribution is
 // already true (already done, same finished-state check
 // characterizationDependency/referenceClipDependency/speechDirectionDependency
 // use). Otherwise returns that chapter's own currently queued/in-flight
@@ -582,12 +592,23 @@ func (m *Manager) attributionOrderDependency(t *task) []sched.Need {
 	if m.store == nil {
 		return nil
 	}
+	// Front and back matter is never attributed (nor read for a roster),
+	// so the chapter to wait on is the nearest story chapter before t's -
+	// waiting on the matter itself queued attribution, and the summaries
+	// it waits on, for every title page and copyright notice ahead of it.
+	var prevCh *store.Chapter
 	prevIdx := t.chapterIdx - 1
-	if prevIdx < 0 {
-		return nil
+	for ; prevIdx >= 0; prevIdx-- {
+		ch, err := m.store.GetChapterByIdx(t.bookID, prevIdx)
+		if err != nil || ch == nil {
+			return nil
+		}
+		if !ch.Matter {
+			prevCh = ch
+			break
+		}
 	}
-	prevCh, err := m.store.GetChapterByIdx(t.bookID, prevIdx)
-	if err != nil || prevCh == nil {
+	if prevCh == nil {
 		return nil
 	}
 	key := "attr:" + prevCh.ID

@@ -4,6 +4,7 @@ import androidx.room.ColumnInfo
 import androidx.room.Entity
 import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.DirectionMarkDto
+import com.lectable.app.data.remote.dto.LineDirectionDto
 import com.lectable.app.data.remote.dto.ParagraphDto
 import com.lectable.app.data.remote.dto.PronunciationMarkDto
 import com.lectable.app.data.remote.dto.TableDto
@@ -60,6 +61,8 @@ data class OfflineParagraph(
     // Mirrors ParagraphDto.table: where the paragraph sits in a table from the book.
     val table: TableDto? = null,
     val directionMarks: List<DirectionMarkDto> = emptyList(),
+    // Mirrors ParagraphDto.delivery: a directed line's style, point tags and spans.
+    val delivery: LineDirectionDto? = null,
     val pronunciationMarks: List<PronunciationMarkDto> = emptyList(),
     val isQuote: Boolean = false,
     val scareQuote: Boolean = false,

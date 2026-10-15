@@ -253,6 +253,9 @@ building/running `ttsworker` does, since both now link into that binary.
   over several paragraphs leaves each one's “ unclosed by convention, and
   those used to read as narration (58 paragraphs of Arise: Reclaimer, in
   the narrator's voice); a stray straight `"` still doesn't (inch marks).
+  A `”` at the start of the text or after a space, with a word right
+  after it, opens a quote too (`rightQuoteOpens`): some books set every
+  quote mark as `”` (The Primal Hunter, 5,687 paragraphs read as narration).
   Books imported before that keep their rows - `PUT .../paragraphs/{pidx}/quote`
   flags one by hand. Every segment after the first
   in a source paragraph is flagged `Block.Inline` - a display hint meaning
@@ -580,6 +583,13 @@ building/running `ttsworker` does, since both now link into that binary.
   by-name lookup (the SQL function `namekey()`), attribution's name
   canonicalization and resolver, dedupe and the alias checks all use it;
   compare character names with it rather than `strings.EqualFold`.
+- `internal/direction/` — leaf package for a dialogue line's free-form
+  speech direction, for a clone model that takes it as text
+  (`voices.DeliveryDirected`, Fish Drama 3): a style, point tags and
+  scoped tags anchored by rune offsets into the line (`paragraphs.direction`),
+  `Parse` (an annotated line from the LLM or the reader, refused if its words
+  changed), `Annotate`, and `Insertions` (written into the generation text
+  around substitutions). See "Free-form direction" in `docs/speakerattr.md`.
 - `internal/emotions/` — leaf package holding the fixed emotion set
   (`All`: id, label, LLM description, BreezeTTS instruction, variant
   reference line) shared by `speakerattr`, `store`, `voicerefs`, `jobs`

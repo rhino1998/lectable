@@ -86,6 +86,10 @@ type Server struct {
 	// importPreviews holds links looked over and not yet imported
 	// (preview id -> *importPreview) - see source_preview.go.
 	importPreviews sync.Map
+	// firstPersonBooks caches, per book id, whether its speech tags are
+	// told in the first person (speakerattr.TaggedInFirstPerson) - see
+	// withFirstPerson.
+	firstPersonBooks sync.Map
 
 	// provisionLocks is a keyed mutex (characterID -> *sync.Mutex) used by
 	// lockCharacterProvision to serialize provisionCharacterVoice per
@@ -270,6 +274,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/scare-quote", s.handleSetParagraphScareQuote)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote", s.handleSetParagraphQuote)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion", s.handleSetParagraphEmotion)
+	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/direction", s.handleSetParagraphDirection)
 	mux.HandleFunc("PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/sfx-prompt", s.handleSetParagraphSFXPrompt)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/generate-sfx", s.handleGenerateParagraphSFX)
 	mux.HandleFunc("POST /api/books/{id}/chapters/{idx}/attribute-speakers", s.handleAttributeSpeakers)
@@ -293,6 +298,7 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("POST /api/books/{id}/preprocess-series", s.handlePreprocessSeries)
 	mux.HandleFunc("POST /api/library/preprocess", s.handlePreprocessLibrary)
 	mux.HandleFunc("POST /api/library/embed", s.handleEmbedLibrary)
+	mux.HandleFunc("POST /api/library/generate", s.handleGenerateLibrary)
 	mux.HandleFunc("POST /api/books/{id}/bulk/{action}", s.handleBulkAction)
 	mux.HandleFunc("POST /api/books/{id}/reset/{pass}", s.handleResetPass)
 	mux.HandleFunc("DELETE /api/books/{id}/chapters/{idx}/audio", s.handleDeleteChapterAudio)
@@ -308,6 +314,8 @@ func NewRouter(s *Server) http.Handler {
 	mux.HandleFunc("GET /api/books/{id}/speakers", s.handleListSpeakers)
 	mux.HandleFunc("DELETE /api/books/{id}/speakers", s.handleDeleteBookSpeakerData)
 	mux.HandleFunc("POST /api/books/{id}/speakers/reattribute", s.handleReattributeSpeaker)
+	mux.HandleFunc("POST /api/books/{id}/speakers/retag", s.handleRetagSpeakers)
+	mux.HandleFunc("POST /api/books/{id}/speakers/restore", s.handleRestoreSpeakers)
 	mux.HandleFunc("GET /api/books/{id}/speakers/series-lines", s.handleSeriesSpeakerLines)
 	mux.HandleFunc("POST /api/books/{id}/speakers/variants/regenerate", s.handleRegenerateVariant)
 	mux.HandleFunc("GET /api/voices/variants/{presetId}/{emotion}/audio", s.handleVariantAudio)

@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 
+	"github.com/rhino1998/lectable/backend/internal/direction"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 )
 
@@ -178,6 +179,7 @@ type Store interface {
 	SearchParagraphs(bookID, query string, limit int) ([]SearchResult, error)
 	SetChapterAttributed(chapterID string) error
 	SetChapterDirected(chapterID string) error
+	SetChapterDelivered(chapterID string) error
 	SetChapterAmbienceScored(chapterID string) error
 	SetChapterLit(chapterID string) error
 	SetChapterPronounced(chapterID string) error
@@ -202,6 +204,7 @@ type Store interface {
 	SetMusicRegionGenerating(id string) error
 	SetMusicRegionReady(id string, durationSeconds float64) error
 	SetParagraphEmotions(chapterID string, byIdx map[int]string) error
+	SetParagraphDirections(chapterID string, byIdx map[int]direction.Direction) error
 	SetParagraphError(id, voiceID, message string) error
 	SetParagraphGenerating(id, voiceID string) error
 	SetParagraphPronunciation(chapterID string, byIdx map[int][]pronounce.Substitution) error
@@ -215,6 +218,7 @@ type Store interface {
 	SetParagraphScareQuotes(chapterID string, byIdx map[int]bool) error
 	SetParagraphQuote(chapterID string, idx int, quote bool) (bool, error)
 	SetParagraphSpeaker(paragraphID, speaker string) error
+	SetParagraphSpeakerIndexed(paragraphID, speaker string, index int) error
 	RecordParagraphEdit(paragraphID, field, before, after string) error
 	ParagraphEdits(bookID, field string) ([]ParagraphEdit, error)
 	EditedParagraphIdx(chapterID, field string) (map[int]bool, error)

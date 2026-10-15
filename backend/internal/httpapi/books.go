@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -893,13 +894,28 @@ func (s *Server) buildBooks() ([]bookSummaryDTO, error) {
 		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	preprocessing := s.Jobs.PipelinesRunning()
-	out := make([]bookSummaryDTO, 0, len(books))
-	for _, b := range books {
-		dto, _, err := s.buildBookSummaryWith(b, preprocessing[b.ID])
-		if err != nil {
-			return nil, httpError(http.StatusInternalServerError, err.Error())
-		}
-		out = append(out, dto)
+	// A few books at a time: each summary the store hasn't cached (all of
+	// them after a restart) is a whole-book read of 100-400ms, and reads
+	// don't wait on each other. Half the cores, leaving read connections
+	// for everything else.
+	out := make([]bookSummaryDTO, len(books))
+	errs := make([]error, len(books))
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for range min(len(books), max(2, runtime.NumCPU()/2)) {
+		wg.Go(func() {
+			for i := range next {
+				out[i], _, errs[i] = s.buildBookSummaryWith(books[i], preprocessing[books[i].ID])
+			}
+		})
+	}
+	for i := range books {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		return nil, httpError(http.StatusInternalServerError, err.Error())
 	}
 	return out, nil
 }

@@ -226,3 +226,124 @@ func TestRosterReviewNamesUsedAlike(t *testing.T) {
 		}
 	}
 }
+
+// TestRosterReviewRenames: "One of the Fraerlings" with no role to go into
+// is proposed as the role "Fraerling", and "[Wizard]" as "Wizard";
+// accepting each renames it series-wide (lines and all), the first made a
+// role too.
+func TestRosterReviewRenames(t *testing.T) {
+	srv, s, _, ts := newTestServer(t)
+	srv.Speaker = speakerattr.NewClient(speakerattr.Config{}, &samePersonLLM{})
+	book := rosterTestBook(t, s,
+		[2]string{"One of the Fraerlings", "“Run!”"},
+		[2]string{"[Wizard]", "“Fireball.”"},
+	)
+	url := ts.URL + "/api/books/" + book.ID + "/roster-review"
+	if err := srv.ReviewRoster(context.Background(), book); err != nil {
+		t.Fatal(err)
+	}
+	got := pendingProposals(t, url)
+	renameRole, rename := got["rename_role One of the Fraerlings"], got["rename [Wizard]"]
+	if renameRole.Detail != "Fraerling" || rename.Detail != "Wizard" {
+		t.Fatalf("proposals = %v", got)
+	}
+	for _, p := range []rosterProposalDTO{renameRole, rename} {
+		if resp := doJSON(t, http.MethodPost, url+"/proposals/"+p.ID+"/accept", nil, nil); resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("accept %s: %d", p.Kind, resp.StatusCode)
+		}
+	}
+	scope := store.SeriesScope(book)
+	fraerling, _ := s.GetCharacterByName(scope, "Fraerling")
+	wizard, _ := s.GetCharacterByName(scope, "Wizard")
+	counts, _ := s.SpeakerLineCounts(book.ID)
+	if fraerling == nil || !fraerling.IsRole || counts["Fraerling"] != 1 {
+		t.Errorf("after rename_role: %+v, lines %v", fraerling, counts)
+	}
+	if wizard == nil || wizard.IsRole || counts["Wizard"] != 1 {
+		t.Errorf("after rename: %+v, lines %v", wizard, counts)
+	}
+	if left := pendingProposals(t, url); len(left) != 0 {
+		t.Errorf("still pending: %v", left)
+	}
+}
+
+// TestRecordCastAliasesGuards: the summary's identity check never files a
+// name under a kind of person, nor puts back an alias the reader took off
+// in a roster review; an ordinary alias is still recorded.
+func TestRecordCastAliasesGuards(t *testing.T) {
+	srv, s, _, _ := newTestServer(t)
+	book := rosterTestBook(t, s,
+		[2]string{"Erin Solstice", "“Hello.”"},
+		[2]string{"Gnoll", "“Hi.”"},
+		[2]string{"One of the Drakes", "“Hey.”"},
+	)
+	scope := store.SeriesScope(book)
+	gnoll, _ := s.GetCharacterByName(scope, "Gnoll")
+	if err := s.SetCharacterRole(gnoll.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	erin, _ := s.GetCharacterByName(scope, "Erin Solstice")
+	if _, err := s.InsertRosterProposal(store.RosterProposal{
+		ID: store.NewID(), Scope: scope, Kind: string(speakerattr.RosterRemoveAlias), SubjectID: erin.ID, Subject: erin.Name,
+		Detail: "Eurise", Source: store.RosterFromAgent, Status: store.RosterAccepted, DedupeKey: "alias:" + erin.ID + ":eurise",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.recordCastAliases(book, []speakerattr.CastAlias{
+		{Character: "Gnoll", Alias: "Poinr"},
+		{Character: "One of the Drakes", Alias: "Ridbnell"},
+		{Character: "Erin Solstice", Alias: "Eurise"},
+		{Character: "Erin Solstice", Alias: "The Innkeeper"},
+	})
+	for name, want := range map[string]int{"Gnoll": 0, "One of the Drakes": 0, "Erin Solstice": 1} {
+		c, _ := s.GetCharacterByName(scope, name)
+		if len(c.Aliases) != want {
+			t.Errorf("%s aliases = %v, want %d", name, c.Aliases, want)
+		}
+	}
+}
+
+// TestMergeIntoRoleKeepsPeopleOff: a mislabeled entry holding people's
+// names ("Shamans", also called Fituna and Pulsg) merged into a role
+// gives the role its name only - on a role, attribution would fold the
+// people's lines into it.
+func TestMergeIntoRoleKeepsPeopleOff(t *testing.T) {
+	srv, s, _, _ := newTestServer(t)
+	book := rosterTestBook(t, s,
+		[2]string{"Shamans", "“Need fire.”"},
+		[2]string{"Shaman", "“Fire.”"},
+		[2]string{"Tessa", "“Hm.”"},
+		[2]string{"Shriekblade", "“Move.”"},
+	)
+	scope := store.SeriesScope(book)
+	from, _ := s.GetCharacterByName(scope, "Shamans")
+	if err := s.SetCharacterAliases(from.ID, []string{"Fituna", "Pulsg"}); err != nil {
+		t.Fatal(err)
+	}
+	role, _ := s.GetCharacterByName(scope, "Shaman")
+	if err := s.SetCharacterRole(role.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	from, _ = s.GetCharacterByName(scope, "Shamans")
+	role, _ = s.GetCharacterByName(scope, "Shaman")
+	if err := srv.mergeCharacterInto(book, *from, *role, true); err != nil {
+		t.Fatal(err)
+	}
+	if role, _ = s.GetCharacterByName(scope, "Shaman"); strings.Join(role.Aliases, ",") != "Shamans" {
+		t.Errorf("role aliases after merge = %v, want only Shamans", role.Aliases)
+	}
+
+	// A person merged into a person brings everything it was called.
+	other, _ := s.GetCharacterByName(scope, "Shriekblade")
+	if err := s.SetCharacterAliases(other.ID, []string{"Adventurer Shriekblade"}); err != nil {
+		t.Fatal(err)
+	}
+	other, _ = s.GetCharacterByName(scope, "Shriekblade")
+	tessa, _ := s.GetCharacterByName(scope, "Tessa")
+	if err := srv.mergeCharacterInto(book, *other, *tessa, true); err != nil {
+		t.Fatal(err)
+	}
+	if tessa, _ = s.GetCharacterByName(scope, "Tessa"); len(tessa.Aliases) != 2 {
+		t.Errorf("person aliases after merge = %v, want 2", tessa.Aliases)
+	}
+}

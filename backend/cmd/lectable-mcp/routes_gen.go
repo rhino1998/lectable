@@ -189,6 +189,13 @@ var apiRoutes = []apiRoute{
 	},
 	{
 		Method: "PUT",
+		Path:   "/api/books/{id}/chapters/{idx}/paragraphs/{pidx}/direction",
+		Name:   "setParagraphDirection",
+		Doc:    "handleSetParagraphDirection is a reader's override of one dialogue\nline's free-form direction - handleSetParagraphEmotion's counterpart for\na clone model that takes direction as text. The body is the line with\ndirection written in, read by the same parser the pass uses\n(direction.Parse): 400 when it changes the line's words or breaks a\ntag. Recorded as a store.EditDirection, so the pass leaves the line\nalone after. Invalidates and re-enqueues the line's audio when its\neffective direction changed under the book's clone model.",
+		Body:   "{ direction: string }",
+	},
+	{
+		Method: "PUT",
 		Path:   "/api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion",
 		Name:   "setParagraphEmotion",
 		Doc:    "handleSetParagraphEmotion is a reader's manual override of one dialogue\nline's emotion (an internal/emotions id, or \"\" for neutral) - the\nannotations view's right-click menu. Like handleSetParagraphScareQuote,\nit invalidates and immediately re-enqueues the line's audio when its\neffective emotion actually changes, since that picks a different\nreference clip (lazily rendering the variant first - see\njobs.Manager.variantClipDependency). 400 for narration or an unknown\nemotion.",
@@ -234,8 +241,8 @@ var apiRoutes = []apiRoute{
 		Method: "PUT",
 		Path:   "/api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker",
 		Name:   "setParagraphSpeaker",
-		Doc:    "handleSetParagraphSpeaker corrects one paragraph's speaker attribution\ndirectly, addressed the same way handleRegenerateParagraph is (book +\nchapter idx + paragraph idx) - the Speakers page's per-character\n\"appearances\" list uses this to fix one individually misattributed line\n(a model mistake, or a line that's actually someone else's) without\ntouching any other paragraph currently sharing that same (wrong)\nspeaker, unlike handleMergeCharacter's whole-character reassignment\n(Store.ReassignCharacterSpeaker). \"\" and \"Narrator\" are equivalent (see\nstore's own paragraphs.speaker column comment) and both normalize to the\n\"\" stored value handleMergeCharacter's own Narrator case already uses. A\nnon-empty, non-Narrator name is registered as a real character first if\nit wasn't one already (UpsertCharacter is idempotent), same as\nhandleMergeCharacter, so reassigning to a brand-new name here works\nexactly like discovering it via attribution. Refuses to attribute a\nnon-Narrator speaker to a paragraph that isn't actually quoted dialogue\n(IsQuote) - the same invariant httpapi.attributeChapter enforces\n(narration *about* a character isn't them speaking), still worth\nguarding here even though every paragraph reachable through an\n\"appearances\" list already passed it once at attribution time.\n\nWith \"new\" the name is a person of their own - for a line attribution\ngave to someone else because it took two people for one. The name isn't\nresolved through aliases, and since a conflated character usually holds\nit as one (\"Bert\", also called \"Albert\"), it is removed from every\ncharacter's aliases, so later attribution stops folding it back; a\ncharacter of that name marked invalid is made valid again. 400 without\na name (\"\", Narrator, Unknown).",
-		Body:   "{ speaker: string; new?: boolean }",
+		Doc:    "handleSetParagraphSpeaker corrects one paragraph's speaker attribution\ndirectly, addressed the same way handleRegenerateParagraph is (book +\nchapter idx + paragraph idx) - the Speakers page's per-character\n\"appearances\" list uses this to fix one individually misattributed line\n(a model mistake, or a line that's actually someone else's) without\ntouching any other paragraph currently sharing that same (wrong)\nspeaker, unlike handleMergeCharacter's whole-character reassignment\n(Store.ReassignCharacterSpeaker). \"\" and \"Narrator\" are equivalent (see\nstore's own paragraphs.speaker column comment) and both normalize to the\n\"\" stored value handleMergeCharacter's own Narrator case already uses. A\nnon-empty, non-Narrator name is registered as a real character first if\nit wasn't one already (UpsertCharacter is idempotent), same as\nhandleMergeCharacter, so reassigning to a brand-new name here works\nexactly like discovering it via attribution. Refuses to attribute a\nnon-Narrator speaker to a paragraph that isn't actually quoted dialogue\n(IsQuote) - the same invariant httpapi.attributeChapter enforces\n(narration *about* a character isn't them speaking), still worth\nguarding here even though every paragraph reachable through an\n\"appearances\" list already passed it once at attribution time.\n\nWith \"new\" the name is a person of their own - for a line attribution\ngave to someone else because it took two people for one. The name isn't\nresolved through aliases, and since a conflated character usually holds\nit as one (\"Bert\", also called \"Albert\"), it is removed from every\ncharacter's aliases, so later attribution stops folding it back; a\ncharacter of that name marked invalid is made valid again. 400 without\na name (\"\", Narrator, Unknown).\n\n\"index\" numbers a role's line (\"Guard 2\" - see setParagraphSpeakerRequest.\nIndex); 400 for a number out of range or on a speaker that isn't a role.\nA numbered line's edit is recorded in attribution's own answer form\n(\"Guard 2\"), so changing only the number is a correction too.",
+		Body:   "{ speaker: string; new?: boolean; index?: number }",
 	},
 	{
 		Method:   "POST",
@@ -740,7 +747,7 @@ var apiRoutes = []apiRoute{
 		Path:     "/api/books/{id}/roster-review/proposals",
 		Name:     "createRosterProposal",
 		Doc:      "handleCreateRosterProposal serves POST\n/api/books/{id}/roster-review/proposals: files a proposal from outside\nthe review pass, pending like any other. 400 for one that names no\ncharacter of the roster or wouldn't change anything; 409 when the same\nfix was already proposed (whatever became of it).",
-		Body:     "{ kind: 'merge' | 'remove_alias' | 'split_alias' | 'mark_role' | 'invalidate'; subject: string; target?: string; detail?: string; reason?: string; evidence?: string[] }",
+		Body:     "{ kind: 'merge' | 'remove_alias' | 'split_alias' | 'mark_role' | 'invalidate' | 'rename_role' | 'rename'; subject: string; target?: string; detail?: string; reason?: string; evidence?: string[] }",
 		Response: "IdResponse",
 	},
 	{
@@ -820,7 +827,7 @@ var apiRoutes = []apiRoute{
 		Method:   "POST",
 		Path:     "/api/books/{id}/source/sync",
 		Name:     "syncBookSource",
-		Doc:      "handleSyncBookSource checks a book's source for chapters it doesn't have\nand appends them, as a job-queue task (joining a check already queued or\nrunning - see startSourceSync).\n409 for a book that wasn't imported from a website.",
+		Doc:      "handleSyncBookSource checks a book's source for chapters it doesn't have\nand appends them, as a job-queue task (joining a check already queued or\nrunning - see startSourceSync), and checks with it every other book\nlisted on the same page (samePageBooks). 202 with how many checks it\nqueued.\n409 for a book that wasn't imported from a website.",
 		Response: "QueuedResponse",
 	},
 	{
@@ -865,6 +872,21 @@ var apiRoutes = []apiRoute{
 		Doc:      "handleReattributeSpeaker is the \"Auto Split\" button's entry point: for a\nspeaker believed not to be a real, distinct individual - a false-positive\ncharacter attribution's own accidental character row, or the \"Unknown\"\nsentinel itself, e.g. after a reader manually renamed/deleted the wrong\nspeaker upstream - it re-judges every one of that speaker's own\nparagraphs in every book of the series (in this book only, for\n\"Unknown\"), chapter by chapter - one KindSpeakerReattribution\ntask per chapter, grouped under one pipeline_auto_split task a book - see\njobs.Manager.EnqueueBulk/RunReattribution) and\nredistributes them to whichever real character/Narrator/Unknown they\nactually belong to, using the exact same chapter-wide LLM pass\nattribution itself already runs (reattributeChapterSpeaker reuses\nspeakerattr.Client.AttributeChapter directly - no second prompt), just\nwith req.Name withheld from \"Known characters\" and never accepted back\nas a result for one of its own paragraphs (see reattributeChapterSpeaker's\nown doc comment).\n\nA real character (not Unknown) is marked invalid (store.Character.\nInvalid) before anything is queued, so the name isn't recreated or\nreassigned by this or any later attribution pass.\n\nDeliberately does NOT delete the character's own identity/voice\nafterward, even if this run ends up reattributing every one of their\nparagraphs - unlike handleDeleteCharacter/handleMergeCharacter, which are\none synchronous action that knows the outcome immediately, this fans out\ninto several fire-and-forget background tasks with no single moment\n\"reattribution finished\" to hang that cleanup off of. A reader can always\nfollow up with the existing Delete button once they see the row is\nactually empty.",
 		Body:     "{ name: string }",
 		Response: "QueuedResponse",
+	},
+	{
+		Method:   "POST",
+		Path:     "/api/books/{id}/speakers/restore",
+		Name:     "restoreSpeakers",
+		Doc:      "handleRestoreSpeakers serves POST /api/books/{id}/speakers/restore: sets\nlisted dialogue lines' speakers back to an earlier machine value - an\nundo for a pass that moved them (a retag run, listed by cmd/tageval\n-undo-from against a backup) - without recording a reader's edit, so\nthe lines stay the passes' to judge. A line is skipped unless it is\ndialogue, still has From, has no recorded edit, and To is Narrator,\nUnknown or a valid character of the book's roster. A restored line\nloses its speaker number.",
+		Body:     "{ lines: ({ chapterIdx: number; paragraphIdx: number; from: string; to: string })[] }",
+		Response: "RestoreSpeakersResponse",
+	},
+	{
+		Method:   "POST",
+		Path:     "/api/books/{id}/speakers/retag",
+		Name:     "retagSpeakers",
+		Doc:      "handleRetagSpeakers serves POST /api/books/{id}/speakers/retag: re-runs\nattribution's deterministic speech-tag rules (speakerattr.\nRefineWithSpeechTags - named tags, action beats, paragraph continuation)\nover every attributed chapter's stored speakers, with no model call, so\nattribution stored before a rule existed (or under a roster that has\nsince been cleaned up) gets what the rules say now. A line corrected by\nhand, a play's line, a chapter whose attribution is still queued, and\nevery chapter of the book's hand-corrected stretch (its first corrected\nchapter to its last) are left alone. Synchronous - it reads and writes only the database, a few\nseconds for a long book - and answers what it changed.",
+		Response: "RetagResponse",
 	},
 	{
 		Method:   "GET",
@@ -1081,9 +1103,17 @@ var apiRoutes = []apiRoute{
 	},
 	{
 		Method:   "POST",
+		Path:     "/api/library/generate",
+		Name:     "generateLibrary",
+		Doc:      "handleGenerateLibrary queues background narration for every book in the\nlibrary, one book at a time: ?scope=remaining (the default) is\nhandleGenerateRemaining for each - from its saved reading position to\nits end, so a book nobody has opened is generated whole - and scope=all\nis handleGenerateBook for each. Books go in the whole-library preprocess\norder (libraryPreprocessOrder): series by name, each in series order,\nthen the books in no series, oldest first. One job-queue row (a\njobs.BulkGroup, Kind \"pipeline_library_generate_remaining\" or\n\"pipeline_library_generate\", on the first book - see\njobs.Manager.EnqueueLibraryGenerate); asking again while one of either\nscope is queued or running joins it. Audio a book already has is left\nalone. 202 with the number of books, 0 for an empty library.",
+		Query:    "scope: 'remaining' | 'all'",
+		Response: "QueuedResponse",
+	},
+	{
+		Method:   "POST",
 		Path:     "/api/library/preprocess",
 		Name:     "preprocessLibrary",
-		Doc:      "handlePreprocessLibrary preprocesses every book in the library, up to\nlibraryPreprocessSeries series at once: each series' books one at a\ntime in series order (they share a roster, as in\nhandlePreprocessSeries), series started by name, then the books in no\nseries, oldest first, each taking a series' place. One job-queue row (a\njobs.BulkGroup, Kind \"pipeline_library_preprocess\", on the first book),\npromoted and cancelled like a series run's; asking again while one is\nqueued or running joins it. A book whose passes are all done costs one\nlook at its chapters. 202 with the number of books, 0 for an empty\nlibrary.",
+		Doc:      "handlePreprocessLibrary preprocesses every book in the library, up to\nlibraryPreprocessSeries series at once: each series' books one at a\ntime in series order (they share a roster, as in\nhandlePreprocessSeries), series started by name, then the books in no\nseries, oldest first, each taking a series' place. One job-queue row (a\njobs.BulkGroup, Kind \"pipeline_library_preprocess\", on the first book),\npromoted and cancelled like a series run's; asking again while one is\nqueued or running joins it. The run reads the library again whenever it\nruns out of books (libraryLaneFeed), so a book added since it started -\nand asked for by joining it - is taken in too. A book whose passes are\nall done costs one look at its chapters. 202 with the number of books, 0 for an empty\nlibrary.",
 		Response: "QueuedResponse",
 	},
 	{

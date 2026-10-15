@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"math"
 	"strconv"
 	"strings"
 )
@@ -41,21 +40,96 @@ type SpeakerVoice struct {
 // speakerattr.MaxRoleIndex) - how many numbered voices a role can need.
 const MaxSpeakerIndex = 6
 
-// speakerVoiceValues builds a `VALUES (?, ?), (?, ?), ...` fragment plus
-// its matching args, mirroring bookVoiceValues below but keyed by speaker
-// name instead of book id.
-func speakerVoiceValues(overrides []SpeakerVoice) (fragment string, args []any) {
-	rows := make([]string, len(overrides))
-	args = make([]any, 0, len(overrides)*5)
-	for i, ov := range overrides {
-		rows[i] = "(CAST(? AS TEXT), CAST(? AS INTEGER), CAST(? AS TEXT), CAST(? AS INTEGER), CAST(? AS INTEGER))"
-		to := ov.ToIdx
-		if to == 0 {
-			to = math.MaxInt32
-		}
-		args = append(args, ov.Speaker, ov.SpeakerIndex, ov.VoiceID, ov.FromIdx, to)
+// speakerVoices answers which voice a line is read in, from a book's
+// voice and its SpeakerVoice overrides - SpeakerVoice's rules, applied in
+// Go to rows grouped by speaker (readyByVoice) rather than as a join.
+// The join had the overrides in the statement: five bound values apiece
+// ran a series of a few thousand characters past SQLite's variable limit,
+// and passing them as one JSON value left the planner to choose between
+// an index and a scan of them all per paragraph.
+type speakerVoices struct {
+	bookVoice string
+	by        map[speakerKey][]SpeakerVoice
+}
+
+type speakerKey struct {
+	speaker string
+	index   int
+}
+
+func newSpeakerVoices(bookVoice string, overrides []SpeakerVoice) speakerVoices {
+	v := speakerVoices{bookVoice: bookVoice, by: make(map[speakerKey][]SpeakerVoice, len(overrides))}
+	for _, ov := range overrides {
+		k := speakerKey{ov.Speaker, ov.SpeakerIndex}
+		v.by[k] = append(v.by[k], ov)
 	}
-	return strings.Join(rows, ", "), args
+	return v
+}
+
+// reads reports whether voiceID is the voice of speaker's lines numbered
+// index in the chapter at chapterIdx.
+func (v speakerVoices) reads(speaker string, index, chapterIdx int, voiceID string) bool {
+	in := func(index int) (found, match bool) {
+		for _, ov := range v.by[speakerKey{speaker, index}] {
+			if chapterIdx < ov.FromIdx || (ov.ToIdx != 0 && chapterIdx >= ov.ToIdx) {
+				continue
+			}
+			found = true
+			match = match || ov.VoiceID == voiceID
+		}
+		return found, match
+	}
+	if index > 0 {
+		if found, match := in(index); found {
+			return match
+		}
+	}
+	if found, match := in(0); found {
+		return match
+	}
+	return voiceID == v.bookVoice
+}
+
+// readyGroup is the ready audio of one chapter's paragraphs that share a
+// speaker and were generated under one voice.
+type readyGroup struct {
+	chapterID    string
+	chapterIdx   int
+	speaker      string
+	speakerIndex int
+	voiceID      string
+	n            int
+	chars        int64
+	seconds      float64
+}
+
+// readyByVoice lists bookID's ready audio as readyGroups, of every voice -
+// the caller keeps the ones each speaker is read in (speakerVoices.reads).
+// only and onlyArgs are an optional further condition on chapters c. It
+// starts from paragraph_audio and looks each row's speaker up in
+// idx_paragraphs_stats, so a paragraph with no ready audio is never read.
+func (s *SQLiteStore) readyByVoice(bookID, only string, onlyArgs []any) ([]readyGroup, error) {
+	rows, err := s.db.Query(`
+		SELECT c.id, c.idx, p.speaker, p.speaker_index, pa.voice_id,
+			COUNT(*), COALESCE(SUM(LENGTH(p.content)), 0), COALESCE(SUM(pa.duration_seconds), 0)
+		FROM chapters c
+		JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.status = 'ready'
+		JOIN paragraphs p INDEXED BY idx_paragraphs_stats ON p.chapter_id = c.id AND p.id = pa.paragraph_id
+		WHERE c.book_id = ?`+only+`
+		GROUP BY c.id, p.speaker, p.speaker_index, pa.voice_id`, append([]any{bookID}, onlyArgs...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []readyGroup
+	for rows.Next() {
+		var g readyGroup
+		if err := rows.Scan(&g.chapterID, &g.chapterIdx, &g.speaker, &g.speakerIndex, &g.voiceID, &g.n, &g.chars, &g.seconds); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }
 
 // ListChapterSummaries reports, per chapter, how many of its paragraphs
@@ -65,33 +139,19 @@ func speakerVoiceValues(overrides []SpeakerVoice) (fragment string, args []any) 
 // shows as not-yet-generated when a different voice is selected, since
 // that voice's audio doesn't exist yet.
 func (s *SQLiteStore) ListChapterSummaries(bookID, voiceID string, overrides []SpeakerVoice) ([]ChapterSummary, error) {
-	var rows *sql.Rows
-	var err error
-	if len(overrides) == 0 {
-		rows, err = s.db.Query(`
-			SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
-				(SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id) AS total,
-				(SELECT COUNT(*) FROM paragraph_audio pa WHERE pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready') AS ready
-			FROM chapters c
-			WHERE c.book_id = ?
-			ORDER BY c.idx ASC`, voiceID, bookID)
-	} else {
-		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
-		args := append(append([]any{}, valuesArgs...), voiceID, bookID)
-		rows, err = s.db.Query(`
-			WITH speaker_voice(speaker, speaker_index, voice_id, from_idx, to_idx) AS (VALUES `+valuesFragment+`)
-			SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
-				COUNT(p.id) AS total,
-				COALESCE(SUM(CASE WHEN pa.status = 'ready' THEN 1 ELSE 0 END), 0) AS ready
-			FROM chapters c
-			LEFT JOIN paragraphs p ON p.chapter_id = c.id
-			LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0 AND c.idx >= sv.from_idx AND c.idx < sv.to_idx
-			LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0 AND c.idx >= svm.from_idx AND c.idx < svm.to_idx
-			LEFT JOIN paragraph_audio pa ON pa.paragraph_id = p.id AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
-			WHERE c.book_id = ?
-			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by
-			ORDER BY c.idx ASC`, args...)
+	// With overrides, the ready subquery counts nothing (no row has the
+	// empty voice) and the count comes from readyByVoice below.
+	countVoice := voiceID
+	if len(overrides) > 0 {
+		countVoice = ""
 	}
+	rows, err := s.db.Query(`
+		SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
+			(SELECT COUNT(*) FROM paragraphs p WHERE p.chapter_id = c.id) AS total,
+			(SELECT COUNT(*) FROM paragraph_audio pa WHERE pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready') AS ready
+		FROM chapters c
+		WHERE c.book_id = ?
+		ORDER BY c.idx ASC`, countVoice, bookID)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +165,24 @@ func (s *SQLiteStore) ListChapterSummaries(bookID, voiceID string, overrides []S
 		}
 		out = append(out, cs)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil || len(overrides) == 0 {
+		return out, err
+	}
+	groups, err := s.readyByVoice(bookID, "", nil)
+	if err != nil {
+		return nil, err
+	}
+	voices := newSpeakerVoices(voiceID, overrides)
+	ready := map[string]int{}
+	for _, g := range groups {
+		if voices.reads(g.speaker, g.speakerIndex, g.chapterIdx, g.voiceID) {
+			ready[g.chapterID] += g.n
+		}
+	}
+	for i := range out {
+		out[i].ReadyCount = ready[out[i].ID]
+	}
+	return out, nil
 }
 
 // ChapterNarration is one chapter's ChapterSummary plus its share of the
@@ -146,8 +223,8 @@ func SumNarration(chapters []ChapterNarration) ([]ChapterSummary, NarrationStats
 //
 // Neither form visits a paragraph that has no ready audio: a chapter's
 // text totals come from its chapter_text row (kept by triggers), and what's
-// ready is counted from paragraph_audio - with overrides, looking up each
-// ready row's speaker in idx_paragraphs_stats. Joining every paragraph to
+// ready is counted from paragraph_audio - with overrides, by readyByVoice,
+// which looks up each ready row's speaker in idx_paragraphs_stats. Joining every paragraph to
 // its audio instead took ~5s over a 2.5M-paragraph library that had 200k
 // ready clips.
 func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoice, chapterIDs []string) ([]ChapterNarration, error) {
@@ -160,50 +237,26 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 		}
 	}
 
-	var rows *sql.Rows
-	var err error
-	if len(overrides) == 0 {
-		// One voice for the whole book: ready audio is summed straight off
-		// paragraph_audio's own chapter_id/chars (idx_paragraph_audio_chapter).
-		args := append([]any{voiceID, bookID}, onlyArgs...)
-		rows, err = s.db.Query(`
-			SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
-				COALESCE(t.paragraphs, 0), COALESCE(t.chars, 0), COALESCE(t.words, 0),
-				COUNT(pa.paragraph_id),
-				COALESCE(SUM(pa.chars), 0),
-				COALESCE(SUM(pa.duration_seconds), 0)
-			FROM chapters c
-			LEFT JOIN chapter_text t ON t.chapter_id = c.id
-			LEFT JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready'
-			WHERE c.book_id = ?`+only+`
-			GROUP BY c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by
-			ORDER BY c.idx ASC`, args...)
-	} else {
-		valuesFragment, valuesArgs := speakerVoiceValues(overrides)
-		args := append(append([]any{}, valuesArgs...), bookID)
-		args = append(append(args, onlyArgs...), voiceID, bookID)
-		args = append(args, onlyArgs...)
-		rows, err = s.db.Query(`
-			WITH speaker_voice(speaker, speaker_index, voice_id, from_idx, to_idx) AS (VALUES `+valuesFragment+`),
-			ready(chapter_id, n, chars, seconds) AS (
-				SELECT c.id, COUNT(*), SUM(LENGTH(p.content)), SUM(pa.duration_seconds)
-				FROM chapters c
-				JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.status = 'ready'
-				JOIN paragraphs p INDEXED BY idx_paragraphs_stats ON p.chapter_id = c.id AND p.id = pa.paragraph_id
-				LEFT JOIN speaker_voice sv ON sv.speaker = p.speaker AND sv.speaker_index = 0 AND c.idx >= sv.from_idx AND c.idx < sv.to_idx
-				LEFT JOIN speaker_voice svm ON svm.speaker = p.speaker AND svm.speaker_index = p.speaker_index AND p.speaker_index > 0 AND c.idx >= svm.from_idx AND c.idx < svm.to_idx
-				WHERE c.book_id = ?`+only+` AND pa.voice_id = COALESCE(svm.voice_id, sv.voice_id, ?)
-				GROUP BY c.id
-			)
-			SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
-				COALESCE(t.paragraphs, 0), COALESCE(t.chars, 0), COALESCE(t.words, 0),
-				COALESCE(r.n, 0), COALESCE(r.chars, 0), COALESCE(r.seconds, 0)
-			FROM chapters c
-			LEFT JOIN chapter_text t ON t.chapter_id = c.id
-			LEFT JOIN ready r ON r.chapter_id = c.id
-			WHERE c.book_id = ?`+only+`
-			ORDER BY c.idx ASC`, args...)
+	// One voice for the whole book: ready audio is summed straight off
+	// paragraph_audio's own chapter_id/chars (idx_paragraph_audio_chapter).
+	// With overrides that join matches nothing (no row has the empty
+	// voice) and what's ready comes from readyByVoice below.
+	countVoice := voiceID
+	if len(overrides) > 0 {
+		countVoice = ""
 	}
+	rows, err := s.db.Query(`
+		SELECT c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by,
+			COALESCE(t.paragraphs, 0), COALESCE(t.chars, 0), COALESCE(t.words, 0),
+			COUNT(pa.paragraph_id),
+			COALESCE(SUM(pa.chars), 0),
+			COALESCE(SUM(pa.duration_seconds), 0)
+		FROM chapters c
+		LEFT JOIN chapter_text t ON t.chapter_id = c.id
+		LEFT JOIN paragraph_audio pa ON pa.chapter_id = c.id AND pa.voice_id = ? AND pa.status = 'ready'
+		WHERE c.book_id = ?`+only+`
+		GROUP BY c.id, c.book_id, c.idx, c.title, c.passes, c.matter, c.matter_by
+		ORDER BY c.idx ASC`, append([]any{countVoice, bookID}, onlyArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +271,28 @@ func (s *SQLiteStore) ChapterNarration(bookID, voiceID string, overrides []Speak
 		}
 		out = append(out, cn)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil || len(overrides) == 0 {
+		return out, err
+	}
+	groups, err := s.readyByVoice(bookID, only, onlyArgs)
+	if err != nil {
+		return nil, err
+	}
+	voices := newSpeakerVoices(voiceID, overrides)
+	byID := make(map[string]*ChapterNarration, len(out))
+	for i := range out {
+		byID[out[i].ID] = &out[i]
+	}
+	for _, g := range groups {
+		cn := byID[g.chapterID]
+		if cn == nil || !voices.reads(g.speaker, g.speakerIndex, g.chapterIdx, g.voiceID) {
+			continue
+		}
+		cn.ReadyCount += g.n
+		cn.ReadyChars += g.chars
+		cn.ReadySeconds += g.seconds
+	}
+	return out, nil
 }
 
 // ChapterFingerprints gives, for every chapter of bookID, an opaque string
@@ -330,7 +404,7 @@ func (s *SQLiteStore) GetChapterByIdx(bookID string, idx int) (*Chapter, error) 
 // applicable voice_id themselves and batch-fetch status via
 // ParagraphAudioStatuses.
 func (s *SQLiteStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
-	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, emotion, pronunciation, emphasis, source_speaker, label, table_pos FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
+	rows, err := s.db.Query(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, emotion, pronunciation, emphasis, source_speaker, label, table_pos, direction FROM paragraphs WHERE chapter_id = ? ORDER BY idx ASC`, chapterID)
 	if err != nil {
 		return nil, err
 	}
@@ -339,7 +413,7 @@ func (s *SQLiteStore) ListParagraphsRaw(chapterID string) ([]Paragraph, error) {
 	var out []Paragraph
 	for rows.Next() {
 		var p Paragraph
-		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.Emotion, &p.Pronunciation, &p.Emphasis, &p.SourceSpeaker, &p.Label, &p.Table); err != nil {
+		if err := rows.Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.Emotion, &p.Pronunciation, &p.Emphasis, &p.SourceSpeaker, &p.Label, &p.Table, &p.Direction); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -381,8 +455,8 @@ func (s *SQLiteStore) ListParagraphsRawForBook(bookID string) ([]Paragraph, erro
 // paragraph belongs to before it can even determine which voice applies.
 func (s *SQLiteStore) GetParagraph(id string) (*Paragraph, error) {
 	var p Paragraph
-	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, emotion, pronunciation, emphasis, source_speaker, label, table_pos FROM paragraphs WHERE id = ?`, id).
-		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.Emotion, &p.Pronunciation, &p.Emphasis, &p.SourceSpeaker, &p.Label, &p.Table)
+	err := s.db.QueryRow(`SELECT id, chapter_id, idx, position, content, speaker, speaker_index, inline, is_quote, scare_quote, emotion, pronunciation, emphasis, source_speaker, label, table_pos, direction FROM paragraphs WHERE id = ?`, id).
+		Scan(&p.ID, &p.ChapterID, &p.Idx, &p.Position, &p.Text, &p.Speaker, &p.SpeakerIndex, &p.Inline, &p.IsQuote, &p.ScareQuote, &p.Emotion, &p.Pronunciation, &p.Emphasis, &p.SourceSpeaker, &p.Label, &p.Table, &p.Direction)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

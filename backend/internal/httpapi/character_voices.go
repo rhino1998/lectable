@@ -1617,6 +1617,12 @@ func (s *Server) handleRegenerateVariant(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusNotFound, "book not found")
 		return
 	}
+	if req.Emotion != "" && bookDirected(book) {
+		// Its lines carry their emotion as direction in the text and clone
+		// from the base clip; a variant would never be used.
+		writeError(w, http.StatusBadRequest, "this book's clone model takes direction as text and uses no emotion variants")
+		return
+	}
 	speaker := req.Speaker
 	if speaker == "" {
 		speaker = "Narrator"

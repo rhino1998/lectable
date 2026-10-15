@@ -23,6 +23,7 @@ import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.RenameBookRequestDto
 import com.lectable.app.data.remote.dto.ReviewBookSourceRequestDto
 import com.lectable.app.data.remote.dto.SearchResultDto
+import com.lectable.app.data.remote.dto.SetParagraphDirectionRequestDto
 import com.lectable.app.data.remote.dto.SetParagraphEmotionRequestDto
 import com.lectable.app.data.remote.dto.SourceSettingsDto
 import com.lectable.app.data.remote.dto.SetParagraphScareQuoteRequestDto
@@ -332,6 +333,13 @@ class LibraryRepository @Inject constructor(
      *  on a non-2xx response so the caller can surface it. */
     suspend fun setParagraphEmotion(bookId: String, chapterIdx: Int, paragraphIdx: Int, emotion: String) {
         api.setParagraphEmotion(bookId, chapterIdx, paragraphIdx, SetParagraphEmotionRequestDto(emotion))
+    }
+
+    /** [LectableApi.setParagraphDirection] - overrides one dialogue line's free-form direction,
+     *  given as the line written back with it ("" clears); the backend refuses one that changes
+     *  the words, and regenerates the line under a clone model that takes direction as text. */
+    suspend fun setParagraphDirection(bookId: String, chapterIdx: Int, paragraphIdx: Int, direction: String) {
+        api.setParagraphDirection(bookId, chapterIdx, paragraphIdx, SetParagraphDirectionRequestDto(direction))
     }
 
     /** [LectableApi.getChapterMusic] - this chapter's own background-music regions. */

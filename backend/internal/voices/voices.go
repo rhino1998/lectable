@@ -179,6 +179,9 @@ const (
 	// vocabulary speech direction (httpapi's direction tagging,
 	// store.Book.SpeechDirection) targets.
 	HiggsCloneModel = "audiocpp-higgs-4b"
+	// Drama3CloneModel is Fish Audio Drama 3, which takes speech direction
+	// as text (DeliveryDirected) - see backend/docs/drama3-plan.md.
+	Drama3CloneModel = "audiocpp-drama3"
 )
 
 // FastCloneModel is what EnqueueLengthEstimate's throwaway sample clones

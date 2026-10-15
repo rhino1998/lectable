@@ -106,8 +106,13 @@ one reference-clip *variant* per emotion its lines actually use (rendered
 by BreezeTTS instructed cloning of the base clip), and an emotional line
 clones from that variant instead - so it works under every clone model.
 The only Higgs inline tag still used is `<|prosody:pause|>`, inserted by a
-plain Go pass before ellipses/em dashes. See "Emotions" in
-`backend/docs/speakerattr.md`.
+plain Go pass before ellipses/em dashes. A clone model that takes
+direction as text (Fish Audio Drama 3) skips the
+variants: a second stage of the emotion pass writes each emotional line a
+**free-form direction** - a short phrase of style, point tags like
+`[sighs]`, spans like `<whisper>` - which goes into the text it is given,
+and the reader can edit it per line. See "Emotions" and "Free-form
+direction" in `backend/docs/speakerattr.md`.
 
 A **play** (speaker labels before each speech, no quote marks) is
 detected at import and parsed deterministically: each speech is stored as
@@ -353,7 +358,7 @@ the `cmd/lectable-mcp` entry in `backend/CLAUDE.md`.
   restores the book into another library when uploaded there, see
   `backend/CLAUDE.md`'s `internal/bookexport`), `voice-refs/<presetID>.wav`,
   `voice-refs/variants/<presetID>/<emotion>.wav`,
-  `voice-refs/cache/refcodes/<hash>.lat` (cached Higgs/BreezeTTS/PocketTTS reference
+  `voice-refs/cache/refcodes/<hash>.lat` (cached Higgs/BreezeTTS/Drama 3/PocketTTS reference
   encodings). Nothing is stored
   in `ttsworker` or `frontend` - the worker is intentionally stateless
   aside from which model checkpoints happen to be loaded in VRAM.

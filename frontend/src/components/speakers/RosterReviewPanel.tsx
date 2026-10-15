@@ -26,6 +26,10 @@ function describe(p: RosterProposal): string {
       return `${p.subject} is a kind of person, not one character`
     case 'invalidate':
       return `${p.subject} (${lines(p.subjectLines)}) is nobody's name`
+    case 'rename_role':
+      return `${p.subject} (${lines(p.subjectLines)}) is one of a kind of person - rename it the role ${p.detail}`
+    case 'rename':
+      return `Rename ${p.subject} (${lines(p.subjectLines)}) to ${p.detail}`
   }
 }
 

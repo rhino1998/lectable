@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"github.com/rhino1998/lectable/backend/internal/voices"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -748,12 +749,21 @@ func TestCharacterVoiceAssignmentPerCloneModel(t *testing.T) {
 	if gotB != presetB.ID {
 		t.Fatalf("expected preset B for model B, got %q", gotB)
 	}
-	gotNone, err := s.CharacterVoiceForModel(char.ID, "some-unassigned-model")
+	// A model with no voice of its own borrows the default model's.
+	gotFallback, err := s.CharacterVoiceForModel(char.ID, "some-unassigned-model")
 	if err != nil {
 		t.Fatalf("CharacterVoiceForModel (unassigned): %v", err)
 	}
+	if gotFallback != presetA.ID {
+		t.Fatalf("expected the default model's voice for an unassigned model, got %q", gotFallback)
+	}
+	// Except the instructed model, whose unassigned characters read in the narrator's voice.
+	gotNone, err := s.CharacterVoiceForModel(char.ID, voices.InstructedCloneModel)
+	if err != nil {
+		t.Fatalf("CharacterVoiceForModel (instructed): %v", err)
+	}
 	if gotNone != "" {
-		t.Fatalf("expected no voice for an unassigned model, got %q", gotNone)
+		t.Fatalf("expected no voice for the instructed model, got %q", gotNone)
 	}
 
 	batch, err := s.CharacterVoicesForModel([]string{char.ID}, "audiocpp-higgs-4b")
@@ -762,6 +772,20 @@ func TestCharacterVoiceAssignmentPerCloneModel(t *testing.T) {
 	}
 	if batch[char.ID] != presetA.ID {
 		t.Fatalf("CharacterVoicesForModel mismatch: %v", batch)
+	}
+	batch, err = s.CharacterVoicesForModel([]string{char.ID}, "audiocpp-qwen3-0.6b")
+	if err != nil {
+		t.Fatalf("CharacterVoicesForModel B: %v", err)
+	}
+	if batch[char.ID] != presetB.ID {
+		t.Fatalf("CharacterVoicesForModel should prefer the model's own voice: %v", batch)
+	}
+	batch, err = s.CharacterVoicesForModel([]string{char.ID}, "some-unassigned-model")
+	if err != nil {
+		t.Fatalf("CharacterVoicesForModel (unassigned): %v", err)
+	}
+	if batch[char.ID] != presetA.ID {
+		t.Fatalf("CharacterVoicesForModel fallback mismatch: %v", batch)
 	}
 
 	byName, err := s.GetCharacterByName(scope, "Gandalf")
@@ -2001,5 +2025,43 @@ func TestWorldFactsSeriesSupersedesGlobal(t *testing.T) {
 	}
 	if ok, err := s.DeleteWorldFact(GlobalFactScope, dwarf.ID); err != nil || !ok {
 		t.Fatalf("delete: %v, %v", ok, err)
+	}
+}
+
+// A series with thousands of characters and aliases has more voice
+// overrides than SQLite binds variables at five apiece; the summaries
+// must still read.
+func TestChapterSummariesWithManyOverrides(t *testing.T) {
+	s := openTestStore(t)
+	bookID, chapterID := oneChapterBook(t, s, "", 0, "“Halt.”", "“Who goes there?”")
+	if err := s.SetParagraphSpeakersIndexed(chapterID, map[int]string{0: "Guard", 1: "Guard"}, nil); err != nil {
+		t.Fatalf("SetParagraphSpeakersIndexed: %v", err)
+	}
+	paragraphs, err := s.ListParagraphsRaw(chapterID)
+	if err != nil {
+		t.Fatalf("ListParagraphsRaw: %v", err)
+	}
+	for _, p := range paragraphs {
+		if err := s.SetParagraphReady(p.ID, "guard-voice", 1); err != nil {
+			t.Fatalf("SetParagraphReady: %v", err)
+		}
+	}
+	overrides := []SpeakerVoice{{Speaker: "Guard", VoiceID: "guard-voice"}}
+	for i := range 10000 {
+		overrides = append(overrides, SpeakerVoice{Speaker: fmt.Sprintf("Extra %d", i), VoiceID: "other-voice"})
+	}
+	got, err := s.ListChapterSummaries(bookID, "book-voice", overrides)
+	if err != nil {
+		t.Fatalf("ListChapterSummaries: %v", err)
+	}
+	if len(got) != 1 || got[0].ReadyCount != 2 {
+		t.Fatalf("got %+v, want both lines ready", got)
+	}
+	narration, err := s.ChapterNarration(bookID, "book-voice", overrides, nil)
+	if err != nil {
+		t.Fatalf("ChapterNarration: %v", err)
+	}
+	if len(narration) != 1 || narration[0].ReadyCount != 2 {
+		t.Fatalf("narration = %+v, want both lines ready", narration)
 	}
 }

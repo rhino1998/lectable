@@ -137,13 +137,13 @@ type speakerVoiceDTO struct {
 // voiceSamples fills a voice's counts and emotion list from lines (how
 // many are spoken in it) and counts (those carrying each emotion), for
 // lines generating under presetID.
-func (s *Server) voiceSamples(v *speakerVoiceDTO, presetID string, lines int, counts map[string]int) {
+func (s *Server) voiceSamples(v *speakerVoiceDTO, presetID, cloneModel string, lines int, counts map[string]int) {
 	v.ParagraphCount, v.NeutralCount = lines, lines
 	for _, n := range counts {
 		v.NeutralCount -= n
 	}
 	v.NeutralCount = max(v.NeutralCount, 0)
-	v.Emotions = s.speakerEmotions(presetID, counts)
+	v.Emotions = s.speakerEmotions(presetID, cloneModel, counts)
 }
 
 // numberedVoices lists the voice of each numbered member of the role char
@@ -162,7 +162,7 @@ func (s *Server) numberedVoices(resolved narration.ResolvedVoice, char store.Cha
 		}
 		member := narration.MemberVoice(resolved, char, n)
 		dto := speakerVoiceDTO{Number: n}
-		s.voiceSamples(&dto, member.PresetID, counts[n], emotionCounts[n])
+		s.voiceSamples(&dto, member.PresetID, member.CloneModel, counts[n], emotionCounts[n])
 		if path := audiopath.VoicePresetRefFile(s.DataDir, member.PresetID); member.PresetID != "" && fileExists(path) {
 			if member.PresetID == resolved.PresetID {
 				dto.RefAudioURL = s.versionedPresetAudioURL(member.PresetID)
@@ -188,18 +188,23 @@ type speakerEmotionDTO struct {
 	Count   int    `json:"count"`
 	// Status is "ready" (variant rendered - AudioURL plays it),
 	// "pending" (not rendered yet: it renders lazily the first time one of
-	// these lines generates), or "failed" (couldn't be rendered; these
-	// lines clone from the base clip instead).
-	Status   string `json:"status" tstype:"'ready' | 'pending' | 'failed'"`
+	// these lines generates), "failed" (couldn't be rendered; these
+	// lines clone from the base clip instead), or "directed" (the book's
+	// clone model takes direction as text - voices.DeliveryDirected - so no
+	// variant is used or rendered: these lines clone from the base clip
+	// with their direction in the text).
+	Status   string `json:"status" tstype:"'ready' | 'pending' | 'failed' | 'directed'"`
 	AudioURL string `json:"audioUrl,omitempty"`
 }
 
 // speakerEmotions builds a speakerDTO.Emotions list from counts
-// (emotion id -> line count) for lines generating under presetID.
-func (s *Server) speakerEmotions(presetID string, counts map[string]int) []speakerEmotionDTO {
+// (emotion id -> line count) for lines generating under presetID through
+// cloneModel.
+func (s *Server) speakerEmotions(presetID, cloneModel string, counts map[string]int) []speakerEmotionDTO {
 	if presetID == "" || len(counts) == 0 {
 		return nil
 	}
+	directed := voices.Directed(cloneModel)
 	var out []speakerEmotionDTO
 	for _, e := range emotions.All {
 		n := counts[e.ID]
@@ -208,6 +213,8 @@ func (s *Server) speakerEmotions(presetID string, counts map[string]int) []speak
 		}
 		dto := speakerEmotionDTO{Emotion: e.ID, Label: e.Label, Count: n, Status: "pending"}
 		switch {
+		case directed:
+			dto.Status = "directed"
 		case voicerefs.VariantExists(s.DataDir, presetID, e.ID):
 			dto.Status = "ready"
 			dto.AudioURL = withClipVersion("/api/voices/variants/"+presetID+"/"+e.ID+"/audio", audiopath.VoicePresetVariantFile(s.DataDir, presetID, e.ID))
@@ -535,7 +542,7 @@ func (s *Server) buildSpeakers(bookID string) ([]speakerDTO, error) {
 		for _, v := range staged {
 			ownLines -= v.ParagraphCount
 		}
-		s.voiceSamples(&own, resolved.PresetID, max(ownLines, 0), ownEmotions)
+		s.voiceSamples(&own, resolved.PresetID, resolved.CloneModel, max(ownLines, 0), ownEmotions)
 		row.Voices = append(append([]speakerVoiceDTO{own}, numbered...), staged...)
 		rows = append(rows, row)
 	}
@@ -796,7 +803,7 @@ func (s *Server) handleMergeCharacter(w http.ResponseWriter, r *http.Request) {
 		// split doesn't come back. Not for a junk name ("Fritz and
 		// Bert", "No one"), which was never anyone's name.
 		if clean, _ := speakerattr.SanitizeSpeaker(char.Name); clean == char.Name && !req.AsRole && !req.NoAlias {
-			if err := s.Store.AddCharacterAliases(target.ID, append([]string{char.Name}, char.Aliases...)...); err != nil {
+			if err := s.Store.AddCharacterAliases(target.ID, mergedAliases(*char, target)...); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
@@ -1068,24 +1075,33 @@ func (s *Server) handleRenameCharacter(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "character not found")
 		return
 	}
-	switch clean, _ := speakerattr.SanitizeSpeaker(name); {
-	case name == "" || len(name) > 100:
-		writeError(w, http.StatusBadRequest, "a name is 1-100 characters")
-		return
-	case strings.EqualFold(name, "Narrator") || strings.EqualFold(name, "Unknown"):
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is reserved", name))
-		return
-	case clean != name || speakerattr.IsGroupSpeaker(name):
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q isn't one person's name", name))
-		return
-	case name == char.Name:
-		writeNoContent(w)
-		return
-	}
 	roster, err := s.Store.ListCharacters(char.Scope)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
+	}
+	if err := s.renameCharacterChecked(book, *char, roster, name); err != nil {
+		writeBuildError(w, err)
+		return
+	}
+	writeNoContent(w)
+}
+
+// renameCharacterChecked is handleRenameCharacter's change, for any
+// caller (a roster-review rename_role too): the name must be one person's
+// and no other character's name or alias in roster (char's series) - an
+// httpError (400, 409) otherwise. The old name becomes an alias unless it
+// names no single person. Renaming to the name it has does nothing.
+func (s *Server) renameCharacterChecked(book *store.Book, char store.Character, roster []store.Character, name string) error {
+	switch clean, _ := speakerattr.SanitizeSpeaker(name); {
+	case name == "" || len(name) > 100:
+		return httpError(http.StatusBadRequest, "a name is 1-100 characters")
+	case strings.EqualFold(name, "Narrator") || strings.EqualFold(name, "Unknown"):
+		return httpError(http.StatusBadRequest, fmt.Sprintf("%q is reserved", name))
+	case clean != name || speakerattr.IsGroupSpeaker(name):
+		return httpError(http.StatusBadRequest, fmt.Sprintf("%q isn't one person's name", name))
+	case name == char.Name:
+		return nil
 	}
 	for _, c := range roster {
 		if c.ID == char.ID {
@@ -1093,31 +1109,21 @@ func (s *Server) handleRenameCharacter(w http.ResponseWriter, r *http.Request) {
 		}
 		if namekey.Equal(c.Name, name) {
 			if c.Invalid {
-				writeError(w, http.StatusConflict, fmt.Sprintf("%q is a character marked as not a speaker - delete it first", c.Name))
-			} else {
-				writeError(w, http.StatusConflict, fmt.Sprintf("%q is already a character - merge the two instead", c.Name))
+				return httpError(http.StatusConflict, fmt.Sprintf("%q is a character marked as not a speaker - delete it first", c.Name))
 			}
-			return
+			return httpError(http.StatusConflict, fmt.Sprintf("%q is already a character - merge the two instead", c.Name))
 		}
 		if !c.Invalid && slices.ContainsFunc(c.Aliases, func(a string) bool { return namekey.Equal(a, name) }) {
-			writeError(w, http.StatusConflict, fmt.Sprintf("%q is another name for %s - merge the two instead", name, c.Name))
-			return
+			return httpError(http.StatusConflict, fmt.Sprintf("%q is another name for %s - merge the two instead", name, c.Name))
 		}
 	}
-	if err := s.renameCharacter(book, *char, name); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+	if err := s.renameCharacter(book, char, name); err != nil {
+		return err
 	}
 	if clean, _ := speakerattr.SanitizeSpeaker(char.Name); clean == char.Name && !speakerattr.IsFirstPersonLabel(char.Name) {
-		if err := s.Store.AddCharacterAliases(char.ID, char.Name); err != nil {
-			writeError(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-	} else if err := s.Store.AddCharacterAliases(char.ID); err != nil { // drops the new name if it was an alias
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return s.Store.AddCharacterAliases(char.ID, char.Name)
 	}
-	writeNoContent(w)
+	return s.Store.AddCharacterAliases(char.ID) // drops the new name if it was an alias
 }
 
 // handleSetCharacterAliases replaces one character's aliases (store.

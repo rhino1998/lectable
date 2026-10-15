@@ -42,6 +42,80 @@ func TestRosterPairs(t *testing.T) {
 	}
 }
 
+func TestOneOfKind(t *testing.T) {
+	for in, want := range map[string]string{
+		"One of the [Knights]":                      "Knight",
+		"One of the Gnolls":                         "Gnoll",
+		"One of the Summer Knights":                 "Summer Knight",
+		"One of the [Witches]":                      "Witch",
+		"One of the half-Elves":                     "Half-Elf",
+		"One of the Rulers of Khelt":                "Ruler of Khelt",
+		"One of the Jecrassian [Soldiers]":          "Jecrassian Soldier",
+		"One of the other officers":                 "Officer",
+		"One of the two Tallguard accompanying Noa": "Tallguard",
+		"One of the Gladefolk":                      "Gladefolk",
+		"one of the men":                            "Man",
+	} {
+		if got, _, ok := OneOfKind(in); !ok || got != want {
+			t.Errorf("OneOfKind(%q) = %q, %v; want %q", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"One of the others", "One of the crowd", "One of the [Necromancers] 1", "One of Kanadith’s helpers", "One of his officers", "Gnoll", "The Crone"} {
+		if got, _, ok := OneOfKind(in); ok {
+			t.Errorf("OneOfKind(%q) = %q, want no kind", in, got)
+		}
+	}
+	if _, c, _ := OneOfKind("One of the [Mages]"); strings.Join(c, "|") != "Mage|[Mage]|Mages|[Mages]" {
+		t.Errorf("candidates for One of the [Mages] = %q", c)
+	}
+}
+
+// "One of the X" goes into the role X when there is one - a role first,
+// whichever spelling it has - and is otherwise renamed to it; a bracketed
+// name loses its brackets the same way.
+func TestRosterRuleFixesOneOfAndBrackets(t *testing.T) {
+	role := func(id, name string) RosterEntry {
+		e := entry(id, name, 10)
+		e.IsRole = true
+		return e
+	}
+	fixes := RosterRuleFixes([]RosterEntry{
+		role("oknights", "One of the [Knights]"), role("knight", "Knight"),
+		role("ognolls", "One of the Gnolls"), entry("gnolls", "Gnolls", 4), role("gnoll", "Gnoll"),
+		entry("ofrae", "One of the Fraerlings", 56),
+		role("obig", "One of the [Mages]"), role("bmage", "[Mage]"),
+		entry("bsoldier", "[soldier]", 3), role("soldier", "Soldier"),
+		role("bwitch", "[Witch]"),
+		entry("balch", "[alchemists]", 2), role("alch", "Alchemist"),
+		entry("others", "One of the others", 867),
+	}, nil, nil)
+	var got []string
+	for _, f := range fixes {
+		line := string(f.Kind) + " " + f.Subject.Name
+		if f.Detail != "" {
+			line += " [" + f.Detail + "]"
+		}
+		if f.Kind == RosterMerge {
+			line += " -> " + f.Target.Name
+		}
+		got = append(got, line)
+	}
+	want := []string{
+		"merge One of the [Knights] -> Knight",
+		"merge One of the Gnolls -> Gnoll",
+		"rename_role One of the Fraerlings [Fraerling]",
+		"merge One of the [Mages] -> [Mage]",
+		"rename [Mage] [Mage]",
+		"merge [soldier] -> Soldier",
+		"rename [Witch] [Witch]",
+		"merge [alchemists] -> Alchemist",
+		"mark_role One of the others",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("fixes:\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestRosterRuleFixes(t *testing.T) {
 	kinds := NewWordCaseCounts([]string{"Gnome", "Jack"})
 	for _, text := range []string{"The gnome bowed.", "A gnome, then another gnome.", "Gnome!", "Jack ran.", "Jack sat.", "a jack of all trades"} {

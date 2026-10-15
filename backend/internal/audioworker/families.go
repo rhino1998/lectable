@@ -300,10 +300,13 @@ var pocketClonePoolSize = envIntOr("LECTABLE_AUDIOCPP_POCKET_CLONE_POOL_SIZE", 4
 // change plain audiocpp-breeze-tts cloning with no instruction at all - an
 // existing, separate use case (any book/preset on this clone model, with
 // or without InstructCharacterVoices) this change has no reason to touch.
-// "4" matches the design engine's own value as a starting point - not yet
-// A/B'd live against a plain instructed clone the way that value was for
-// VoiceDesign specifically.
-var breezeCloneGuidanceScale = envOr("LECTABLE_AUDIOCPP_BREEZE_CLONE_GUIDANCE_SCALE", "4")
+// "1" (CFG off): it was "4", the design engine's value, until a listening
+// test on 2026-10-15 (emotion variants of three real character voices,
+// same seed, cfg 4 vs 1) found cfg 1 fine. At 1 the unconditioned branch
+// is skipped entirely, a clone RTF of ~0.61 against ~0.70 (patched
+// audio.cpp, Q8); excited lines come out a little slower without it.
+// Kept as an option so it can be raised again per environment.
+var breezeCloneGuidanceScale = envOr("LECTABLE_AUDIOCPP_BREEZE_CLONE_GUIDANCE_SCALE", "1")
 
 // designPoolSize is the most independent audiocpp sessions any one loaded
 // design engine (loadedDesign, worker.go) will ever create, lazily -
@@ -395,12 +398,21 @@ var cloneModelFamilies = map[string]string{
 	"audiocpp-firered":     "audiocpp-firered",
 	"audiocpp-auk":         "audiocpp-auk",
 	"audiocpp-auk-flash":   "audiocpp-auk-flash",
+	"audiocpp-drama3":      "audiocpp-drama3",
 	"audiocpp-moss-local":  "audiocpp-moss-local",
 	"audiocpp-moss-nano":   "audiocpp-moss-nano",
 	"audiocpp-voxcpm1":     "audiocpp-voxcpm1",
 	"audiocpp-voxcpm2":     "audiocpp-voxcpm2",
 	"audiocpp-zipvoice":    "audiocpp-zipvoice",
 }
+
+// drama3DecodeBatch is fish_drama3.decode_batch_size: how many paragraphs
+// its one session decodes together (continuous batching, like Higgs - see
+// sessionCallers). Measured 2026-10-15 on 40 paragraphs, IQ4_XS experts:
+// RTF 0.41 unbatched, 0.16 at 4, 0.14 at 8. The model alone is ~21 GB of
+// the 24.5 GB card; at 4 about 2 GB stay free for the aligner and
+// transcriber, which aren't gated, so 8 is left to the env var.
+var drama3DecodeBatch = envIntOr("LECTABLE_AUDIOCPP_DRAMA3_DECODE_BATCH", 4)
 
 // mossLocalPoolSize: not yet profiled under concurrent load on this box -
 // starts at 1, same reasoning as fireRedTTS3PoolSize above.
@@ -712,6 +724,29 @@ var cloneFamilies = map[string]cloneFamily{
 		wrapText:         aukCloneText,
 		estimateDuration: true,
 		poolSizeOverride: aukPoolSize,
+	},
+	// Fish Audio Drama 3 (Fish Audio Community License) - a 35B-A3B MoE
+	// over the Fish S2 codec, ported to audio.cpp locally
+	// (backend/docs/drama3-plan.md). Takes direction as text
+	// (voices.DeliveryDirected), so the text it is sent carries a style,
+	// point tags and spans. Experts IQ4_XS quantized with an importance
+	// matrix (plain IQ4_XS ran away on 8/80 test lines, this on 1-3/80);
+	// every other weight Q6_K, ~0.6 GB less VRAM than Q8_0.
+	// Splits long text itself, repeating a leading style on every chunk.
+	// It has no return_latents: its clips get no .lat sidecar.
+	"audiocpp-drama3": {
+		temperature: true,
+		family:      "fish_drama3",
+		modelPath: envOr(
+			"LECTABLE_AUDIOCPP_DRAMA3_MODEL_PATH",
+			modelPath("Fish-Drama-3-GGUF/fish-drama3-iq4xs-q6k.gguf"),
+		),
+		sessionOptions: map[string]string{
+			"fish_drama3.reference_cache_slots": cloneCacheSlots,
+			"fish_drama3.decode_batch_size":     strconv.Itoa(drama3DecodeBatch),
+		},
+		poolSizeOverride: 1,
+		sessionCallers:   drama3DecodeBatch,
 	},
 	// MOSS-TTS-Local v1.5 (OpenMOSS, Apache-2.0) - one self-contained GGUF
 	// (audio tokenizer included). Clones whenever a reference clip is

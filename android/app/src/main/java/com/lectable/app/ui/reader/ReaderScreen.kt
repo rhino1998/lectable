@@ -13,6 +13,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.outlined.Bedtime
 import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.material.icons.filled.FormatIndentIncrease
 import androidx.compose.material.icons.filled.GraphicEq
@@ -279,6 +280,13 @@ fun ReaderScreen(
                                     enabled = false,
                                     onClick = {},
                                 )
+                                // Stops the download (and the generation it asked the backend
+                                // for) as well as removing what has arrived so far.
+                                DropdownMenuItem(
+                                    text = { Text("Cancel download") },
+                                    leadingIcon = { Icon(Icons.Filled.Close, contentDescription = null) },
+                                    onClick = { confirmingDeleteLocal = true; showMenu = false },
+                                )
                             }
                             // Something's downloaded (or partially so) for this book already -
                             // offers to remove the local copy instead of re-downloading, which a
@@ -470,6 +478,8 @@ fun ReaderScreen(
                     },
                     onSetScareQuote = viewModel::setScareQuote,
                     onSetEmotion = viewModel::setEmotion,
+                    onSetDirection = viewModel::setDirection,
+                    directed = uiState.directed,
                     onRegenerateMusic = viewModel::regenerateMusicRegion,
                     onPreviewMusic = viewModel::previewMusicRegion,
                     resolveImageUrl = viewModel::resolveImageUrl,

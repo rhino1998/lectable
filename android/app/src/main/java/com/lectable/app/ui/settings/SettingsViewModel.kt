@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.lectable.app.data.discovery.DiscoveredServer
 import com.lectable.app.data.discovery.NsdDiscoveryRepository
 import com.lectable.app.data.live.LiveStore
+import com.lectable.app.data.download.BookDownloadRemover
 import com.lectable.app.data.repository.DownloadRepository
 import com.lectable.app.data.repository.LibraryRepository
 import com.lectable.app.data.settings.DEFAULT_FONT_SIZE_SP
@@ -70,6 +71,7 @@ class SettingsViewModel @Inject constructor(
     private val playbackSettingsRepository: PlaybackSettingsRepository,
     private val discoveryRepository: NsdDiscoveryRepository,
     private val downloadRepository: DownloadRepository,
+    private val bookDownloadRemover: BookDownloadRemover,
     private val lightingSettingsRepository: LightingSettingsRepository,
     private val libraryRepository: LibraryRepository,
     liveStore: LiveStore,
@@ -201,7 +203,7 @@ class SettingsViewModel @Inject constructor(
      *  current library at once. */
     fun deleteAllDownloads() {
         viewModelScope.launch {
-            downloadRepository.deleteAllDownloads()
+            bookDownloadRemover.removeAll()
             refreshDownloadsSummary()
         }
     }

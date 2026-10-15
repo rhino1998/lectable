@@ -8,6 +8,7 @@ import (
 	"unicode"
 
 	"github.com/rhino1998/lectable/backend/internal/deliverytags"
+	"github.com/rhino1998/lectable/backend/internal/direction"
 	"github.com/rhino1998/lectable/backend/internal/emotions"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 	"github.com/rhino1998/lectable/backend/internal/voices"
@@ -225,6 +226,14 @@ type Passes struct {
 	// struct (unlike the old single ChapterState enum it replaced)
 	// represents that combination just fine.
 	Direction bool `json:"direction"`
+	// Delivery is set once the direction pass's second stage - free-form
+	// directions for the lines its labels (or nearby delivery verbs) pick
+	// out, internal/speakerattr.Client.DirectLines - has covered the whole
+	// chapter. Only run under a clone model that takes direction as text
+	// (voices.DeliveryDirected); Direction's contract otherwise. A chapter
+	// labeled under another model has Direction without Delivery, so moving
+	// the book to a directed model runs just this stage.
+	Delivery bool `json:"delivery"`
 	// Pronunciation is set once pronunciation resolution
 	// (internal/speakerattr.Client.ResolvePronunciation, a
 	// jobs.KindPronunciation task via httpapi.pronounceChapter) has
@@ -626,6 +635,11 @@ type Paragraph struct {
 	// a grid; ResolveGenerationText reads a row as sentences, each cell
 	// introduced by its column heading.
 	Table TablePos
+	// Direction is this line's free-form speech direction
+	// (internal/direction) - written by the direction pass's second stage
+	// or a reader's override, read only under a clone model that takes
+	// direction as text (voices.DeliveryDirected). See EffectiveDirection.
+	Direction direction.Direction
 }
 
 // Unvoiced reports whether p is a beat of silence rather than something
@@ -664,6 +678,25 @@ func (p Paragraph) EffectiveEmotion() string {
 	return p.Emotion
 }
 
+// EffectiveDirection is the direction this paragraph generates with under
+// a directed clone model: Direction for real spoken dialogue when it was
+// written for the current text, else the effective emotion's style
+// (emotions.Emotion.Direction) - so a book labeled before it moved to a
+// directed model is still directed - else none. Like EffectiveEmotion,
+// narration always stays undirected.
+func (p Paragraph) EffectiveDirection() direction.Direction {
+	if !p.IsQuote || p.ScareQuote || p.Unvoiced() {
+		return direction.Direction{}
+	}
+	if p.Direction.Current(p.Text) {
+		return p.Direction
+	}
+	if e, ok := emotions.Get(p.EffectiveEmotion()); ok && e.Direction != "" {
+		return direction.Direction{Style: e.Direction, For: direction.TextHash(p.Text)}
+	}
+	return direction.Direction{}
+}
+
 // ResolveGenerationText returns p's actual generation-time text for
 // cloneModel: p.Text with every Pronunciation and Emphasis substitution
 // applied (pronounce.Compose - a fix inside an emphasized span is nested
@@ -683,12 +716,24 @@ func (p Paragraph) EffectiveEmotion() string {
 // describes.
 func (p Paragraph) ResolveGenerationText(cloneModel string, lexicon []pronounce.LexiconEntry) string {
 	var insertions []deliverytags.Insertion
-	if cloneModel == voices.HiggsCloneModel {
+	delivery := voices.CloneDelivery(cloneModel)
+	if delivery == voices.DeliveryHiggsPauses {
 		insertions = deliverytags.PauseInsertions(p.Text)
 	}
 	labels, cellBreaks := p.Table.spoken(p.Text)
 	insertions = append(insertions, labels...)
 	pron := pronounce.MergeLexicon(pronounce.MergeLexicon(p.EffectivePronunciation(lexicon), cellBreaks), pronounce.FormattingSubstitutions(p.Text))
+	if delivery == voices.DeliveryDirected {
+		// The book's own brackets would read as direction; the line's
+		// direction goes in around the substitutions, never inside one.
+		pron = pronounce.MergeLexicon(pron, direction.LiteralBracketSubs(p.Text))
+		subs := pronounce.Compose(p.Text, pron, p.Emphasis)
+		insertions = append(p.EffectiveDirection().Insertions(p.Text, subs), insertions...)
+		if len(insertions) == 0 && len(subs) == 0 {
+			return p.Text
+		}
+		return pronounce.Apply(p.Text, insertions, subs)
+	}
 	if len(insertions) == 0 && len(pron) == 0 && len(p.Emphasis) == 0 {
 		return p.Text
 	}

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 import { RiArrowDropUpLine } from 'react-icons/ri'
-import type { DirectionMark, PronunciationMark, WordTiming } from '../api/types'
+import type {
+  DirectionMark,
+  LineDirection,
+  LineDirectionSpan,
+  PronunciationMark,
+  WordTiming,
+} from '../api/types'
 import { hasActiveTextSelection } from '../utils/selection'
 import { directionTagCategory, formatDirectionTag } from '../utils/directionTags'
 
@@ -100,6 +106,50 @@ function DirectionCaret({ tag }: { tag: string }) {
   )
 }
 
+// A directed line's point tag ([sighs]) where it happens - a small muted
+// pill reading the tag, so the event can be read at a glance.
+function DeliveryPill({ tag }: { tag: string }) {
+  return (
+    <span className="delivery-pill" title={`Point tag: [${tag}]`}>
+      {tag}
+    </span>
+  )
+}
+
+const SPAN_TITLES: Record<string, string> = {
+  whisper: 'Whispered',
+  slow: 'Slowly',
+  emphasis: 'Emphasized',
+}
+
+// The words a directed line's scoped tag (<whisper>…</whisper>) covers -
+// styled per tag (see index.css's .delivery-span-* rules).
+function DeliverySpan({ tag, children }: { tag: string; children: ReactNode }) {
+  return (
+    <span
+      className={`delivery-span delivery-span-${tag}`}
+      title={`${SPAN_TITLES[tag] ?? tag} (<${tag}>)`}
+    >
+      {children}
+    </span>
+  )
+}
+
+// What a directed line adds to the annotations view (LineDirection, minus
+// its style, which ChapterSection draws before the line): point-tag pills
+// by offset, and the spans whose words are styled.
+interface DeliveryRender {
+  pillsByOffset: Map<number, string[]>
+  spans: LineDirectionSpan[]
+}
+
+const NO_DELIVERY: DeliveryRender = { pillsByOffset: new Map(), spans: [] }
+
+// The scoped tag covering [start, end) of the text, if any.
+function spanTagAt(spans: LineDirectionSpan[], start: number, end: number): string | undefined {
+  return spans.find((s) => start >= s.start && end <= s.end)?.tag
+}
+
 // An underline on the exact word a pronunciation fix applies to (it used to be a strikeout,
 // hence the name) - marks "this specific word is read differently than written" right on the word itself, in the same
 // --pronunciation-caret color as DirectionCaret's own before-word up-arrow (delivery-tag
@@ -141,26 +191,54 @@ function renderWithMarks(
   // token's index stays its place among every token either way.
   from = 0,
   to = text.length,
+  delivery: DeliveryRender = NO_DELIVERY,
 ): ReactNode[] {
   const nodes: ReactNode[] = []
   let cursor = from
   const emitMarksAt = (offset: number) => {
     const marks = marksByOffset.get(offset)
-    if (!marks) return
-    for (const m of marks)
-      nodes.push(<DirectionCaret key={`mark-${offset}-${m.tag}`} tag={m.tag} />)
+    if (marks)
+      for (const m of marks)
+        nodes.push(<DirectionCaret key={`mark-${offset}-${m.tag}`} tag={m.tag} />)
+    const pills = delivery.pillsByOffset.get(offset)
+    if (pills)
+      for (const tag of pills) nodes.push(<DeliveryPill key={`pill-${offset}-${tag}`} tag={tag} />)
   }
   tokens.forEach((t, i) => {
     if (t.start < from || t.end > to) return
-    if (t.start > cursor) nodes.push(text.slice(cursor, t.start))
+    if (t.start > cursor) {
+      // The gap between two words of one span is styled with them, so an
+      // underline runs unbroken.
+      const gap = text.slice(cursor, t.start)
+      const gapTag = cursor > from ? spanTagAt(delivery.spans, cursor, t.start) : undefined
+      nodes.push(
+        gapTag ? (
+          <DeliverySpan key={`gap-${cursor}`} tag={gapTag}>
+            {gap}
+          </DeliverySpan>
+        ) : (
+          gap
+        ),
+      )
+    }
     emitMarksAt(t.start)
-    const rendered = renderToken(t, i)
+    let rendered = renderToken(t, i)
     const pron = pronunciationByOffset.get(t.start)
-    nodes.push(
-      pron ? (
+    if (pron)
+      rendered = (
         <PronunciationStrike key={`pron-${t.start}`} mark={pron}>
           {rendered}
         </PronunciationStrike>
+      )
+    // A token's own trailing punctuation may run past a span's end
+    // ("her</whisper>." is the token "her."), so a token is in a span when
+    // its start is.
+    const tag = spanTagAt(delivery.spans, t.start, t.start + 1)
+    nodes.push(
+      tag ? (
+        <DeliverySpan key={`span-${t.start}`} tag={tag}>
+          {rendered}
+        </DeliverySpan>
       ) : (
         rendered
       ),
@@ -182,6 +260,7 @@ function renderWithHighlight(
   pronunciationByOffset: Map<number, PronunciationMark>,
   from?: number,
   to?: number,
+  delivery?: DeliveryRender,
 ): ReactNode[] {
   const renderToken = (t: WordToken, i: number) => (
     <span
@@ -196,7 +275,16 @@ function renderWithHighlight(
       {t.word}
     </span>
   )
-  return renderWithMarks(text, tokens, marksByOffset, pronunciationByOffset, renderToken, from, to)
+  return renderWithMarks(
+    text,
+    tokens,
+    marksByOffset,
+    pronunciationByOffset,
+    renderToken,
+    from,
+    to,
+    delivery,
+  )
 }
 
 function renderPlainWithMarks(
@@ -206,6 +294,7 @@ function renderPlainWithMarks(
   pronunciationByOffset: Map<number, PronunciationMark>,
   from?: number,
   to?: number,
+  delivery?: DeliveryRender,
 ): ReactNode[] {
   return renderWithMarks(
     text,
@@ -215,6 +304,7 @@ function renderPlainWithMarks(
     (t) => t.word,
     from,
     to,
+    delivery,
   )
 }
 
@@ -228,6 +318,7 @@ export function ParagraphText({
   marks = [],
   pronunciationMarks = [],
   cells,
+  delivery,
 }: {
   text: string
   active: boolean
@@ -256,6 +347,10 @@ export function ParagraphText({
   // Set for a table row: each cell's span of text is rendered in an
   // element of its own, and the " | " between them isn't rendered at all.
   cells?: TextCell[]
+  // A directed line's point tags and spans (Paragraph.delivery) - pills
+  // and styled words. Gated on the annotations view like marks; its style
+  // is drawn by the caller.
+  delivery?: LineDirection
 }) {
   const tokens = useMemo(() => tokenize(text, cells), [text, cells])
   const times = useMemo(
@@ -271,6 +366,16 @@ export function ParagraphText({
     }
     return map
   }, [marks])
+  const deliveryRender = useMemo((): DeliveryRender => {
+    if (!delivery) return NO_DELIVERY
+    const pillsByOffset = new Map<number, string[]>()
+    for (const m of delivery.marks ?? []) {
+      const list = pillsByOffset.get(m.offset)
+      if (list) list.push(m.tag)
+      else pillsByOffset.set(m.offset, [m.tag])
+    }
+    return { pillsByOffset, spans: delivery.spans ?? [] }
+  }, [delivery])
   const pronunciationByOffset = useMemo(() => {
     const map = new Map<number, PronunciationMark>()
     for (const m of pronunciationMarks) map.set(m.offset, m)
@@ -313,10 +418,24 @@ export function ParagraphText({
         pronunciationByOffset,
         from,
         to,
+        deliveryRender,
       )
     }
-    if (marksByOffset.size === 0 && pronunciationByOffset.size === 0) return text.slice(from, to)
-    return renderPlainWithMarks(text, tokens, marksByOffset, pronunciationByOffset, from, to)
+    if (
+      marksByOffset.size === 0 &&
+      pronunciationByOffset.size === 0 &&
+      deliveryRender === NO_DELIVERY
+    )
+      return text.slice(from, to)
+    return renderPlainWithMarks(
+      text,
+      tokens,
+      marksByOffset,
+      pronunciationByOffset,
+      from,
+      to,
+      deliveryRender,
+    )
   }
 
   if (cells) {

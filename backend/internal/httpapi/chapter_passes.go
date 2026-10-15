@@ -824,6 +824,12 @@ func (s *Server) directChapterRange(ctx context.Context, book *store.Book, ch *s
 	if err != nil {
 		return 0, nil, err
 	}
+	if onlyIdx == nil && !partial && ch.Passes.Direction && !ch.Passes.Delivery && bookDirected(book) {
+		// Labeled under another clone model: only the second stage is
+		// missing.
+		n, err := s.deliverChapter(ctx, book, ch, all)
+		return n, nil, err
+	}
 	paragraphs := all
 	if onlyIdx != nil {
 		paragraphs = make([]store.Paragraph, 0, len(onlyIdx))
@@ -839,6 +845,7 @@ func (s *Server) directChapterRange(ctx context.Context, book *store.Book, ch *s
 			if serr := s.Store.SetChapterDirected(ch.ID); serr != nil {
 				log.Printf("directChapter: could not advance chapter %s passes: %v", ch.ID, serr)
 			}
+			s.deliverAfterLabels(ctx, book, ch)
 		}
 		return 0, nil, nil
 	}
@@ -938,6 +945,7 @@ func (s *Server) directChapterRange(ctx context.Context, book *store.Book, ch *s
 	if serr := s.Store.SetChapterDirected(ch.ID); serr != nil {
 		log.Printf("directChapter: could not advance chapter %s passes: %v", ch.ID, serr)
 	}
+	s.deliverAfterLabels(ctx, book, ch)
 	return len(labels), nil, nil
 }
 

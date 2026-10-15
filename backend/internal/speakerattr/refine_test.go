@@ -197,3 +197,28 @@ func TestFirstPersonTags(t *testing.T) {
 		t.Fatal("firstPersonAnswer")
 	}
 }
+
+func TestCountFirstPersonTags(t *testing.T) {
+	first := para(0, "“Fine,”", "I said.", "“Go,”", "she said.", "“Now,”", "I muttered.", "“Yes,”", "I told her.")
+	third := para(0, "“Fine,”", "he said.", "“Go,”", "she said.", "“Now,”", "Jason said.")
+	if f, th := FirstPersonTags(first); f != 3 || th != 1 || !TaggedInFirstPerson(f, th) {
+		t.Errorf("first-person paragraph: %d first, %d third", f, th)
+	}
+	if f, th := FirstPersonTags(third); f != 0 || th != 2 || TaggedInFirstPerson(f, th) {
+		t.Errorf("third-person paragraph: %d first, %d third", f, th)
+	}
+}
+
+// A sentence break inside the beat's own name ("Mr. Dale") once sliced
+// past the sentence's end.
+func TestBeatTagNameWithPeriod(t *testing.T) {
+	r := NewSpeakerNameResolver([]string{"Mr. Dale", "Bert"}, nil)
+	ps := para(0, "“Fine,”", "Mr. Dale nodded. Then he left.")
+	if got := BeatTag(nil, &ps[1], r); got != "Mr. Dale" {
+		t.Errorf("BeatTag = %q, want Mr. Dale", got)
+	}
+	ps = para(0, "“Fine,”", "Bert nodded, but Mr. Dale frowned.")
+	if got := BeatTag(nil, &ps[1], r); got != "" {
+		t.Errorf("two characters in the beat: BeatTag = %q, want none", got)
+	}
+}

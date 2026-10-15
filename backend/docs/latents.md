@@ -47,8 +47,10 @@ Latents}`):
     after 20 s of worker idleness (`Manager.Idle`), since loading the codec
     evicts generation models.
 - **Reference-encoding cache** (`Config.RefCodesDir` =
-  `voice-refs/cache/refcodes/`): Higgs and BreezeTTS codes, PocketTTS
-  latents (`audioworker.referenceArtifactID`). Per reference, as `.lat`:
+  `voice-refs/cache/refcodes/`): Higgs, BreezeTTS and Drama 3 codes,
+  PocketTTS latents (`audioworker.referenceArtifactID`). Drama 3's
+  generated clips have no `.lat` sidecar - its session has no
+  `return_latents`. Per reference, as `.lat`:
   Higgs `u10` ~250 B/s, BreezeTTS packed codes ~290 B/s, PocketTTS f32
   ~1.6 KB/s (a 12.5 s reference: 3.6 KB Breeze, 20 KB PocketTTS, vs
   600 KB WAV). Only paragraph generation

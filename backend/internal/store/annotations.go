@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rhino1998/lectable/backend/internal/direction"
 	"github.com/rhino1998/lectable/backend/internal/pronounce"
 )
 
@@ -382,7 +383,7 @@ func (s *SQLiteStore) SetParagraphScareQuotes(chapterID string, byIdx map[int]bo
 // line the parser got wrong (a multi-paragraph speech's unclosed “ reads as
 // narration), without re-importing the chapter. Either way the line starts
 // over: marked dialogue is "Unknown" until attributed, marked narration has
-// no speaker; both drop the scare-quote flag and emotion,
+// no speaker; both drop the scare-quote flag, emotion and direction,
 // which only fit the other kind. Reports whether anything changed.
 func (s *SQLiteStore) SetParagraphQuote(chapterID string, idx int, quote bool) (bool, error) {
 	book := s.chapterBook(chapterID)
@@ -391,7 +392,7 @@ func (s *SQLiteStore) SetParagraphQuote(chapterID string, idx int, quote bool) (
 		speaker = "Unknown"
 	}
 	res, err := s.db.execScoped(book, `UPDATE paragraphs SET is_quote = ?, speaker = ?, source_speaker = '', speaker_index = 0, scare_quote = false,
-		emotion = ''
+		emotion = '', direction = '{}'
 		WHERE chapter_id = ? AND idx = ? AND is_quote <> ?`, quote, speaker, chapterID, idx, quote)
 	if err != nil {
 		return false, fmt.Errorf("set is_quote for paragraph idx %d: %w", idx, err)
@@ -458,6 +459,32 @@ func (s *SQLiteStore) SetParagraphEmotions(chapterID string, byIdx map[int]strin
 	return tx.Commit()
 }
 
+// SetParagraphDirections records, for a chapter's paragraphs keyed by Idx,
+// each one's speech direction (internal/direction; the zero value clears
+// it) - SetParagraphEmotions' counterpart for the direction pass's second
+// stage. A paragraph absent from byIdx is left untouched.
+func (s *SQLiteStore) SetParagraphDirections(chapterID string, byIdx map[int]direction.Direction) error {
+	if len(byIdx) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	tx.scope = s.chapterBook(chapterID)
+	for idx, d := range byIdx {
+		encoded, err := d.Value()
+		if err != nil {
+			return fmt.Errorf("encode direction for paragraph idx %d: %w", idx, err)
+		}
+		if _, err := tx.Exec(`UPDATE paragraphs SET direction = ? WHERE chapter_id = ? AND idx = ?`, encoded, chapterID, idx); err != nil {
+			return fmt.Errorf("set direction for paragraph idx %d: %w", idx, err)
+		}
+	}
+	return tx.Commit()
+}
+
 // SetParagraphPronunciation records, for a chapter's paragraphs, the
 // pronunciation substitutions resolved by
 // internal/speakerattr.Client.ResolvePronunciation (see the
@@ -504,8 +531,15 @@ func (s *SQLiteStore) SetParagraphPronunciation(chapterID string, byIdx map[int]
 // that happens to share the same (wrong) speaker. The line's speaker
 // number (Paragraph.SpeakerIndex) is cleared: it belonged to the old value.
 func (s *SQLiteStore) SetParagraphSpeaker(paragraphID, speaker string) error {
+	return s.SetParagraphSpeakerIndexed(paragraphID, speaker, 0)
+}
+
+// SetParagraphSpeakerIndexed is SetParagraphSpeaker with the line's
+// speaker number (Paragraph.SpeakerIndex) set to index - a reader telling
+// apart two unnamed people of one role ("Guard 2"). 0 is no number.
+func (s *SQLiteStore) SetParagraphSpeakerIndexed(paragraphID, speaker string, index int) error {
 	book := s.paragraphBook(paragraphID)
-	_, err := s.db.execScoped(book, `UPDATE paragraphs SET speaker = ?, speaker_index = 0 WHERE id = ?`, speaker, paragraphID)
+	_, err := s.db.execScoped(book, `UPDATE paragraphs SET speaker = ?, speaker_index = ? WHERE id = ?`, speaker, index, paragraphID)
 	return err
 }
 

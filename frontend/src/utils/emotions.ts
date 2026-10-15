@@ -42,13 +42,15 @@ const EMOTION_ICONS: Record<Emotion, IconType> = {
   pained: RiFirstAidKitLine,
 }
 
-export const EMOTIONS: { id: Emotion; label: string; icon: IconType }[] = GENERATED_EMOTIONS.map(
-  (e) => ({
+// direction is the label as a style for a clone model that takes
+// direction as text - the direction editor's presets.
+export const EMOTIONS: { id: Emotion; label: string; icon: IconType; direction: string }[] =
+  GENERATED_EMOTIONS.map((e) => ({
     id: e.id,
     label: e.label,
     icon: EMOTION_ICONS[e.id],
-  }),
-)
+    direction: e.direction,
+  }))
 
 const LABELS = new Map<string, string>(EMOTIONS.map((e) => [e.id, e.label]))
 const ICONS = new Map<string, IconType>(EMOTIONS.map((e) => [e.id, e.icon]))

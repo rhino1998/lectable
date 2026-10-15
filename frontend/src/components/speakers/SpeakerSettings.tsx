@@ -1,5 +1,6 @@
 import { useUpdateVoice, useVoice } from '../../api/queries'
 import {
+  CLONE_MODELS,
   CHARACTER_VOICE_MODE_DESCRIPTIONS,
   CHARACTER_VOICE_MODE_LABELS,
   CHARACTER_VOICE_MODES,
@@ -10,17 +11,58 @@ import {
 } from '../../api/types'
 
 // The Book settings page's book-wide switches, bound to one book's voice
-// settings (PUT .../voice).
+// settings (PUT .../voice): its clone model (also in the player bar's
+// VoicePanel), then BookSettingsFields.
 export function SpeakerSettings({ bookId, cloneModel }: { bookId: string; cloneModel: string }) {
   const voiceQuery = useVoice(bookId)
   const updateVoice = useUpdateVoice(bookId)
+  const settings = voiceQuery.data
+
+  const changeCloneModel = (next: string) => {
+    // Switching clone model deletes the book's generated audio server-side
+    // (it isn't part of any voice's cache key) - confirm first.
+    if (
+      !settings ||
+      next === cloneModel ||
+      !confirm('Changing the cloning model deletes all generated audio for this book. Continue?')
+    ) {
+      return
+    }
+    updateVoice.mutate({ ...settings, cloneModel: next })
+  }
+
   return (
-    <BookSettingsFields
-      settings={voiceQuery.data}
-      pending={updateVoice.isPending}
-      cloneModel={cloneModel}
-      onChange={(next) => updateVoice.mutate(next)}
-    />
+    <>
+      <section className="speakers-multivoice">
+        <label>
+          Cloning model
+          <select
+            value={cloneModel}
+            disabled={!settings || updateVoice.isPending}
+            onChange={(e) => changeCloneModel(e.target.value)}
+          >
+            {!CLONE_MODELS.some((m) => m.id === cloneModel) && (
+              <option value={cloneModel}>{cloneModel}</option>
+            )}
+            {CLONE_MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="muted">
+          The model every voice in this book is cloned through. Changing it deletes the book&apos;s
+          generated audio.
+        </p>
+      </section>
+      <BookSettingsFields
+        settings={settings}
+        pending={updateVoice.isPending}
+        cloneModel={cloneModel}
+        onChange={(next) => updateVoice.mutate(next)}
+      />
+    </>
   )
 }
 

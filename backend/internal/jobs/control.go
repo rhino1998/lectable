@@ -83,7 +83,7 @@ func taskEmotion(t *task) string {
 	if t.presetID == "" || len(t.mergeParagraphs) > 1 {
 		return ""
 	}
-	if e := t.paragraph.EffectiveEmotion(); e != emotions.Neutral {
+	if e := t.variantEmotion(); e != emotions.Neutral {
 		return e
 	}
 	return ""

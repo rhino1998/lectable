@@ -238,5 +238,7 @@ fun kindLabel(kind: String): String = when (kind) {
     "pipeline_series_preprocess" -> "Preprocess Series"
     "pipeline_library_preprocess" -> "Preprocess Library"
     "pipeline_library_embedding" -> "Embed Library"
+    "pipeline_library_generate" -> "Generate Library: All"
+    "pipeline_library_generate_remaining" -> "Generate Library: Remaining"
     else -> kind
 }

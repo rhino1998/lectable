@@ -288,3 +288,75 @@ func TestSetParagraphSpeakerNew(t *testing.T) {
 		}
 	}
 }
+
+// The speaker PUT numbers a role's line ("Guard 2"), keeps the number when
+// only the name is re-sent, drops it with a new speaker, refuses one on a
+// named character or out of range, and records a number-only change as an
+// edit in attribution's answer form.
+func TestSetParagraphSpeakerIndex(t *testing.T) {
+	_, s, _, ts := newTestServer(t)
+	bookID, _, err := s.CreateBook("Test Book", "A", "en", "", "", 0, []store.ChapterInput{{
+		Title: "One",
+		Blocks: []store.BlockInput{
+			{Kind: store.BlockText, Text: "“Halt!”", IsQuote: true},
+			{Kind: store.BlockText, Text: "“Who goes there?”", IsQuote: true},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, _ := s.GetBook(bookID)
+	guard, _, err := s.UpsertCharacter(store.SeriesScope(book), "Guard", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCharacterRole(guard.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	ch, _ := s.GetChapterByIdx(bookID, 0)
+	if err := s.SetParagraphSpeakersIndexed(ch.ID, map[int]string{0: "Guard", 1: "Guard"}, map[int]int{0: 1, 1: 1}); err != nil {
+		t.Fatal(err)
+	}
+	base := ts.URL + "/api/books/" + bookID + "/chapters/0/paragraphs/"
+	put := func(pidx int, body any, want int) {
+		t.Helper()
+		resp := doJSON(t, http.MethodPut, fmt.Sprintf("%s%d/speaker", base, pidx), body, nil)
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Fatalf("PUT %d %v: %d, want %d", pidx, body, resp.StatusCode, want)
+		}
+	}
+	index := func(pidx int) (string, int) {
+		t.Helper()
+		ps, _ := s.ListParagraphsRaw(ch.ID)
+		return ps[pidx].Speaker, ps[pidx].SpeakerIndex
+	}
+
+	put(1, map[string]any{"speaker": "Guard", "index": 2}, http.StatusNoContent)
+	if sp, n := index(1); sp != "Guard" || n != 2 {
+		t.Fatalf("after index 2: %q %d", sp, n)
+	}
+	put(1, map[string]any{"speaker": "Guard"}, http.StatusNoContent) // number left out: kept
+	if _, n := index(1); n != 2 {
+		t.Fatalf("re-sent name dropped the number: %d", n)
+	}
+	put(1, map[string]any{"speaker": "Guard", "index": 7}, http.StatusBadRequest)
+	put(0, map[string]any{"speaker": "Mira", "index": 1}, http.StatusBadRequest)
+	put(0, map[string]any{"speaker": "Mira"}, http.StatusNoContent) // a new speaker loses the number
+	if sp, n := index(0); sp != "Mira" || n != 0 {
+		t.Fatalf("after Mira: %q %d", sp, n)
+	}
+
+	edits, err := s.ParagraphEdits(bookID, store.EditSpeaker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int][2]string{}
+	for _, e := range edits {
+		got[e.ParagraphIdx] = [2]string{e.Original, e.Value}
+	}
+	want := map[int][2]string{0: {"Guard 1", "Mira"}, 1: {"Guard 1", "Guard 2"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("edits = %v, want %v", got, want)
+	}
+}

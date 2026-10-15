@@ -42,15 +42,19 @@ type directionMarkDTO struct {
 }
 
 // directionMarksFor returns every delivery tag cloneModel's generation
-// text for p will carry - today just the Higgs-only pause pass
-// (deliverytags.PauseInsertions, applied by
-// store.Paragraph.ResolveGenerationText) - each pinned to its byte offset
-// converted to a rune offset (see directionMarkDTO.Offset).
+// text for p will carry - Higgs's pauses (deliverytags.PauseInsertions),
+// or a directed model's style, point tags and span tags
+// (store.Paragraph.EffectiveDirection; the style is a mark at offset 0),
+// both applied by store.Paragraph.ResolveGenerationText - each pinned to
+// its byte offset converted to a rune offset (see directionMarkDTO.Offset).
 func directionMarksFor(p store.Paragraph, cloneModel string) []directionMarkDTO {
-	if cloneModel != voices.HiggsCloneModel {
-		return nil
+	var ins []deliverytags.Insertion
+	switch voices.CloneDelivery(cloneModel) {
+	case voices.DeliveryHiggsPauses:
+		ins = deliverytags.PauseInsertions(p.Text)
+	case voices.DeliveryDirected:
+		ins = p.EffectiveDirection().Insertions(p.Text, nil)
 	}
-	ins := deliverytags.PauseInsertions(p.Text)
 	if len(ins) == 0 {
 		return nil
 	}
@@ -59,6 +63,56 @@ func directionMarksFor(p store.Paragraph, cloneModel string) []directionMarkDTO 
 		out[i] = directionMarkDTO{Offset: utf8.RuneCountInString(p.Text[:in.Offset]), Tag: in.Tag}
 	}
 	return out
+}
+
+// lineDirectionDTO is one line's direction as the annotations view draws it:
+// the style as a parenthetical before the line, point tags as pills at
+// their place, spans as styling on their words. Offsets are runes into
+// Text, like directionMarkDTO.Offset.
+type lineDirectionDTO struct {
+	// Style is the phrase for the whole line, "" for none.
+	Style string `json:"style,omitempty"`
+	// StyleFromLabel marks a style that is the emotion label's
+	// (emotions.Emotion.Direction) because the line has no direction of
+	// its own.
+	StyleFromLabel bool `json:"styleFromLabel,omitempty"`
+	// Marks are point tags ("sighs"), each before rune Offset.
+	Marks []directionMarkDTO `json:"marks,omitempty"`
+	// Spans are scoped tags ("whisper") over runes [Start, End).
+	Spans []lineDirectionSpanDTO `json:"spans,omitempty"`
+}
+
+type lineDirectionSpanDTO struct {
+	Start int    `json:"start"`
+	End   int    `json:"end"`
+	Tag   string `json:"tag"`
+}
+
+// deliveryFor is paragraphDTO.Delivery for p under cloneModel.
+func deliveryFor(p store.Paragraph, cloneModel string) *lineDirectionDTO {
+	if !voices.Directed(cloneModel) {
+		return nil
+	}
+	d := p.EffectiveDirection()
+	if d.Empty() {
+		return nil
+	}
+	out := &lineDirectionDTO{Style: d.Style, StyleFromLabel: !p.Direction.Current(p.Text)}
+	for _, m := range d.Marks {
+		out.Marks = append(out.Marks, directionMarkDTO{Offset: m.At, Tag: m.Tag})
+	}
+	for _, sp := range d.Spans {
+		out.Spans = append(out.Spans, lineDirectionSpanDTO{Start: sp.Start, End: sp.End, Tag: sp.Tag})
+	}
+	return out
+}
+
+// ownDirection is paragraphDTO.Direction for p.
+func ownDirection(p store.Paragraph) string {
+	if !p.IsQuote || p.ScareQuote || !p.Direction.Current(p.Text) {
+		return ""
+	}
+	return p.Direction.Annotate(p.Text)
 }
 
 // pronunciationMarkDTO is one resolved pronunciation substitution pinned
@@ -232,6 +286,17 @@ type paragraphDTO struct {
 	// so the frontend can render an inline caret there. Empty for the
 	// common case.
 	DirectionMarks []directionMarkDTO `json:"directionMarks,omitempty"`
+	// Delivery is how the line is directed under a clone model that takes
+	// direction as text (store.Paragraph.EffectiveDirection), structured for
+	// the annotations view to draw - omitted under any other model and for
+	// an undirected line. DirectionMarks carries the same as the inserts the
+	// generation text gets.
+	Delivery *lineDirectionDTO `json:"delivery,omitempty"`
+	// Direction is the line's own speech direction written into its text
+	// ("[tired] Fine. [sighs] Go.", internal/direction.Direction.Annotate) -
+	// what the reader's direction editor starts from. Omitted when the
+	// line has none of its own (a label's fallback style isn't one).
+	Direction string `json:"direction,omitempty"`
 	// PronunciationMarks is every resolved pronunciation substitution
 	// active on this paragraph (e.g. "Dr." -> "Doctor"), each pinned to
 	// the word it replaces (see pronunciationMarkDTO.Offset) so the
@@ -521,6 +586,8 @@ func (s *Server) buildChapter(bookID string, idx int) (chapterDetailDTO, error) 
 			ScareQuote:         p.ScareQuote,
 			Emotion:            p.EffectiveEmotion(),
 			DirectionMarks:     directionMarksFor(p, cloneModelByParagraph[p.ID]),
+			Direction:          ownDirection(p),
+			Delivery:           deliveryFor(p, cloneModelByParagraph[p.ID]),
 			PronunciationMarks: pronunciationMarksFor(p, lexicon),
 			Table:              tableFor(p),
 			AudioStatus:        audioStatus(state.Status),
@@ -886,6 +953,13 @@ type setParagraphSpeakerRequest struct {
 	// the name: it is not resolved through anyone's aliases, and is taken
 	// off whoever holds it as one.
 	New bool `json:"new,omitempty"`
+	// Index is the line's speaker number (store.Paragraph.SpeakerIndex),
+	// telling apart unnamed people of one role in a scene: "Guard" with
+	// Index 2 is "Guard 2", read in the role's second voice. 0 is no
+	// number; above 0 only a role's line takes one (1 to
+	// store.MaxSpeakerIndex). Left out, a line keeping its speaker keeps
+	// its number and a line changing speaker loses it.
+	Index *int `json:"index,omitempty"`
 }
 
 // handleSetParagraphSpeaker corrects one paragraph's speaker attribution
@@ -915,6 +989,11 @@ type setParagraphSpeakerRequest struct {
 // character's aliases, so later attribution stops folding it back; a
 // character of that name marked invalid is made valid again. 400 without
 // a name ("", Narrator, Unknown).
+//
+// "index" numbers a role's line ("Guard 2" - see setParagraphSpeakerRequest.
+// Index); 400 for a number out of range or on a speaker that isn't a role.
+// A numbered line's edit is recorded in attribution's own answer form
+// ("Guard 2"), so changing only the number is a correction too.
 func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Request) {
 	bookID := r.PathValue("id")
 	chapterIdx, err := strconv.Atoi(r.PathValue("idx"))
@@ -1009,6 +1088,7 @@ func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Reques
 			speaker = rosterResolver(roster).Canonical(speaker)
 		}
 	}
+	isRole := false
 	if speaker != "" {
 		char, _, err := s.Store.UpsertCharacter(store.SeriesScope(book), speaker, false)
 		if err != nil {
@@ -1022,15 +1102,32 @@ func (s *Server) handleSetParagraphSpeaker(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		speaker = char.Name // the row's own spelling (the lookup ignores case)
+		isRole = char.IsRole
 	}
 
-	if err := s.Store.SetParagraphSpeaker(paragraphID, speaker); err != nil {
+	index := 0
+	switch {
+	case req.Index != nil:
+		index = *req.Index
+	case speaker == p.Speaker:
+		index = p.SpeakerIndex
+	}
+	if index < 0 || index > store.MaxSpeakerIndex {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("a speaker number is 0 to %d", store.MaxSpeakerIndex))
+		return
+	}
+	if index > 0 && !isRole {
+		writeError(w, http.StatusBadRequest, "only a role's lines are numbered - mark "+strconv.Quote(speaker)+" as a role first")
+		return
+	}
+
+	if err := s.Store.SetParagraphSpeakerIndexed(paragraphID, speaker, index); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// Kept with the machine's original, so a later attribution run can be
 	// scored against it and leaves the line alone (store.ParagraphEdit).
-	if err := s.Store.RecordParagraphEdit(paragraphID, store.EditSpeaker, p.Speaker, speaker); err != nil {
+	if err := s.Store.RecordParagraphEdit(paragraphID, store.EditSpeaker, numberedSpeaker(p.Speaker, p.SpeakerIndex), numberedSpeaker(speaker, index)); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1413,4 +1510,14 @@ func (s *Server) handleGetImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.ServeFile(w, r, audiopath.ImageFile(s.DataDir, ch.BookID, ch.ID, img.ID, img.Ext))
+}
+
+// numberedSpeaker is a stored speaker with its number (store.Paragraph.
+// SpeakerIndex) as attribution answers it - "Guard 2" - or the name alone
+// for an unnumbered line.
+func numberedSpeaker(speaker string, index int) string {
+	if index <= 0 || speaker == "" {
+		return speaker
+	}
+	return fmt.Sprintf("%s %d", speaker, index)
 }

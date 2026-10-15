@@ -5,6 +5,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -19,15 +21,20 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FormatQuote
 import androidx.compose.material.icons.filled.Mood
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -57,7 +64,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.font.FontFamily
@@ -75,6 +84,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Row
 import androidx.compose.ui.unit.sp
 import com.lectable.app.data.remote.dto.AudioStatuses
+import com.lectable.app.data.remote.dto.ApiCatalog
 import com.lectable.app.data.remote.dto.ParagraphDto
 import kotlinx.coroutines.isActive
 
@@ -101,6 +111,10 @@ internal fun ParagraphRow(
     // Set for a paragraph inside a table from the book (see TableBlock in ReaderTable.kt): the
     // table's column shares, for laying a row's cells out in their columns.
     tableColumns: List<Float>? = null,
+    // Whether the book's clone model takes direction as text (Fish Drama 3) - then a dialogue
+    // line's long-press menu offers "Set direction" (DirectionDialog).
+    directed: Boolean = false,
+    onSetDirection: (paragraphIdx: Int, direction: String) -> Unit = { _, _ -> },
 ) {
     val isActive = activeSegmentIdx >= 0
     // A table row of several cells (ParagraphDto.table): each cell's text goes in its own
@@ -171,6 +185,9 @@ internal fun ParagraphRow(
     val emotionSegments = quoteTargets.filter { !it.scareQuote }
     val currentEmotion = emotionSegments.firstOrNull()?.emotion.orEmpty()
     var showEmotionMenu by remember { mutableStateOf(false) }
+    // "Set direction" acts on one line: the long-pressed one, or the block's only dialogue.
+    val directionTarget = if (directed) emotionSegments.singleOrNull() else null
+    var showDirectionDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = if (tableColumns != null) {
@@ -302,6 +319,13 @@ internal fun ParagraphRow(
                             onClick = { showMenu = false; showEmotionMenu = true },
                         )
                     }
+                    if (directionTarget != null) {
+                        DropdownMenuItem(
+                            text = { QuoteActionLabel("Set direction", namedQuote) },
+                            leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                            onClick = { showMenu = false; showDirectionDialog = true },
+                        )
+                    }
                 }
                 DropdownMenuItem(
                     text = { Text(if (isBookmarked) "Remove bookmark" else "Bookmark this paragraph") },
@@ -337,6 +361,16 @@ internal fun ParagraphRow(
                     )
                 }
             }
+        }
+        if (showDirectionDialog && directionTarget != null) {
+            DirectionDialog(
+                line = directionTarget,
+                onDismiss = { showDirectionDialog = false },
+                onSave = { direction ->
+                    onSetDirection(directionTarget.idx, direction)
+                    showDirectionDialog = false
+                },
+            )
         }
         segments.forEach { segment ->
             if (segment.audioStatus == AudioStatuses.ERROR) {
@@ -406,7 +440,43 @@ private data class SegmentSpan(
     // voice has left doesn't keep its last word lit.
     val rowStartTimes: List<Double>? = null,
     val firstWord: Int = 0,
-)
+    // A directed line's point tags, drawn into [text] in annotations mode (see pillInserts) -
+    // [tokens] are already shifted past them; mapStart/mapEnd shift any other offset into the
+    // segment's own text the same way.
+    val inserts: List<PillInsert> = emptyList(),
+) {
+    fun mapStart(offset: Int): Int = offset + inserts.filter { it.at <= offset }.sumOf { it.text.length }
+    fun mapEnd(offset: Int): Int = offset + inserts.filter { it.at < offset }.sumOf { it.text.length }
+}
+
+/** One point tag of a directed line ("sighs", LineDirectionDto.marks) drawn into its text before
+ *  original offset [at]: [text] is what is inserted, the pill being [pillStart] until [pillEnd]
+ *  of it (the rest is the space beside it). Mirrors frontend ParagraphText's DeliveryPill. */
+internal data class PillInsert(val at: Int, val text: String, val pillStart: Int, val pillEnd: Int)
+
+/** The pills [seg]'s point tags insert into its text in annotations mode, in text order. */
+private fun pillInserts(seg: ParagraphDto, annotationsMode: Boolean): List<PillInsert> {
+    if (!annotationsMode) return emptyList()
+    return seg.delivery?.marks.orEmpty().map { m ->
+        val at = m.offset.coerceIn(0, seg.text.length)
+        val label = "\u2009${m.tag}\u2009"
+        if (at >= seg.text.length) PillInsert(at, " $label", 1, 1 + label.length) else PillInsert(at, "$label ", 0, label.length)
+    }.sortedBy { it.at }
+}
+
+/** [text] with [inserts] put in. */
+private fun withInserts(text: String, inserts: List<PillInsert>): String {
+    if (inserts.isEmpty()) return text
+    val b = StringBuilder()
+    var pos = 0
+    for (ins in inserts) {
+        b.append(text, pos, ins.at)
+        b.append(ins.text)
+        pos = ins.at
+    }
+    b.append(text, pos, text.length)
+    return b.toString()
+}
 
 /** One cell of a table row, for rendering just that cell's span of the row's text: every cell
  *  of the row ([slices], see cellSlices) and which one this is. */
@@ -463,13 +533,16 @@ internal fun ParagraphBodyText(
     // ChapterSection's EmotionIcon). Each icon is one placeholder char in the joined text, so
     // every span's textOffset below already accounts for it.
     val segmentEmotions = remember(segments, annotationsMode) {
-        segments.map { seg -> seg.emotion?.takeIf { annotationsMode && it.isNotEmpty() } }
+        segments.map { seg ->
+            seg.emotion?.takeIf { annotationsMode && it.isNotEmpty() && (seg.delivery == null || seg.delivery.styleFromLabel == true) }
+        }
     }
-    val spans = remember(segments, segmentEmotions, cell) {
+    val spans = remember(segments, segmentEmotions, cell, annotationsMode) {
         val list = mutableListOf<SegmentSpan>()
         var offset = 0
         segments.forEachIndexed { i, seg ->
             if (segmentEmotions[i] != null) offset += 1 // the emotion icon's placeholder char
+            deliveryStyleText(seg, annotationsMode)?.let { offset += it.length }
             seg.label?.takeIf { it.isNotEmpty() }?.let { offset += it.length + 1 } // the label and its space
             if (cell != null && slice != null) {
                 val rowWords = rowTokens(seg.text, cell.slices)
@@ -490,28 +563,41 @@ internal fun ParagraphBodyText(
             } else {
                 val tokens = tokenizeWords(seg.text)
                 val startTimes = wordStartTimes(tokens, seg.words, seg.text.length, seg.durationSeconds ?: 0.0, seg.audioPointerSeconds)
-                list.add(SegmentSpan(seg.idx, offset, tokens, startTimes, seg.text))
+                val inserts = pillInserts(seg, annotationsMode)
+                val base = SegmentSpan(seg.idx, offset, tokens, startTimes, withInserts(seg.text, inserts), inserts = inserts)
+                list.add(base.copy(tokens = tokens.map { it.copy(start = base.mapStart(it.start), end = base.mapEnd(it.end)) }))
             }
             offset += list.last().text.length + 1 // +1 for the joining space below
         }
         list
     }
-    val baseText = remember(segments, segmentEmotions, spans, bold, slice) {
+    val deliveryColor = emotionColor(MaterialTheme.colorScheme.background.luminance() < 0.5f)
+    val baseText = remember(segments, segmentEmotions, spans, bold, slice, deliveryColor, annotationsMode) {
         buildAnnotatedString {
             segments.forEachIndexed { i, seg ->
                 if (i > 0) append(" ")
                 segmentEmotions[i]?.let { appendInlineContent(emotionInlineId(it)) }
+                // A directed line's style, as a script's parenthetical - dimmer when it is only
+                // the emotion label's (mirrors frontend's .delivery-style).
+                deliveryStyleText(seg, annotationsMode)?.let { styleText ->
+                    val alpha = if (seg.delivery?.styleFromLabel == true) 0.55f else 1f
+                    withStyle(SpanStyle(fontStyle = FontStyle.Italic, fontSize = 0.9.em, color = deliveryColor.copy(alpha = alpha))) {
+                        append(styleText)
+                    }
+                }
                 // A play's speaker label ("THESEUS."), with any direction on how the line is
                 // delivered: shown, never spoken - so outside every span's word offsets.
                 seg.label?.takeIf { it.isNotEmpty() }?.let { label ->
                     withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(label) }
                     append(" ")
                 }
+                val textStart = length
                 if (bold || slice?.header == true) {
                     withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append(spans[i].text) }
                 } else {
                     append(spans[i].text)
                 }
+                if (annotationsMode) addDeliveryStyles(seg, spans[i], textStart, deliveryColor)
             }
         }
     }
@@ -679,7 +765,8 @@ internal fun ParagraphBodyText(
                         // A mark's offset is into the segment's whole text; a table cell shows
                         // only its own span of it.
                         val shown = segSpan.sliceStart until segSpan.sliceStart + segSpan.text.length
-                        for (mark in segment.directionMarks) {
+                        // A directed line shows its tags as pills and styled words instead.
+                        for (mark in if (segment.delivery != null) emptyList() else segment.directionMarks) {
                             if (mark.offset !in shown) continue
                             val charIndex = (segSpan.textOffset + mark.offset - segSpan.sliceStart)
                                 .coerceIn(segSpan.textOffset, segSpan.textOffset + segSpan.text.length)
@@ -689,9 +776,10 @@ internal fun ParagraphBodyText(
                         }
                         for (mark in segment.pronunciationMarks) {
                             if (mark.offset !in shown) continue
-                            val start = (segSpan.textOffset + mark.offset - segSpan.sliceStart)
+                            val start = (segSpan.textOffset + segSpan.mapStart(mark.offset) - segSpan.sliceStart)
                                 .coerceIn(segSpan.textOffset, segSpan.textOffset + segSpan.text.length)
-                            val end = (start + mark.length).coerceIn(start, segSpan.textOffset + segSpan.text.length)
+                            val end = (segSpan.textOffset + segSpan.mapEnd(mark.offset + mark.length) - segSpan.sliceStart)
+                                .coerceIn(start, segSpan.textOffset + segSpan.text.length)
                             val token = WordToken(mark.original, start, end)
                             for (bounds in wordLineBounds(layout, token)) {
                                 drawPronunciationUnderline(bounds, pronunciationCaretColor)
@@ -877,5 +965,84 @@ private fun wordLineBounds(layout: TextLayoutResult, token: WordToken): List<Rec
             right = right,
             bottom = layout.getLineBottom(line),
         )
+    }
+}
+
+/** The long-press "Set direction" editor, for a book whose clone model takes direction as text:
+ *  [line] written back with its direction ("[tired] Fine. [sighs] Go."), starting from its own
+ *  direction or its plain text, with the emotion labels' styles as presets. Saving the plain
+ *  text, or Clear, removes the direction; the backend refuses an edit that changes the words. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun DirectionDialog(line: ParagraphDto, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var draft by remember(line.idx) { mutableStateOf(line.direction ?: line.text) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Direction") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    minLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                    supportingText = { Text("[a short phrase for the delivery] the line, with [sighs] or <whisper>…</whisper>") },
+                )
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    ApiCatalog.EMOTIONS.forEach { e ->
+                        AssistChip(
+                            onClick = { draft = "[${e.direction}] " + draft.replace(LEADING_STYLE, "") },
+                            label = { Text(e.label) },
+                            leadingIcon = { Icon(emotionIcon(e.id), contentDescription = null) },
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(if (draft.trim() == line.text.trim()) "" else draft) }) { Text("Save") }
+        },
+        dismissButton = {
+            Row {
+                if (line.direction != null) TextButton(onClick = { onSave("") }) { Text("Clear") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
+}
+
+/** A style prefix at the start of a direction draft, which a preset replaces. */
+private val LEADING_STYLE = Regex("""^\s*\[[^\]]*\]\s*""")
+
+/** [seg]'s style as the parenthetical shown before it in annotations mode ("(tired) "), or null. */
+private fun deliveryStyleText(seg: ParagraphDto, annotationsMode: Boolean): String? =
+    seg.delivery?.style?.takeIf { annotationsMode && it.isNotEmpty() }?.let { "($it) " }
+
+/** Styles a directed line's pills and spans in the text being built, [span]'s text starting at
+ *  [textStart]: pills small, italic and tinted on a faint ground; whispered words faded and
+ *  italic, slow ones letter-spaced, emphasized ones underlined (mirrors frontend's
+ *  .delivery-pill/.delivery-span-* rules). */
+private fun AnnotatedString.Builder.addDeliveryStyles(seg: ParagraphDto, span: SegmentSpan, textStart: Int, color: Color) {
+    var shift = 0
+    for (ins in span.inserts) {
+        val at = textStart + ins.at + shift
+        addStyle(
+            SpanStyle(fontSize = 0.72.em, fontStyle = FontStyle.Italic, color = color, background = color.copy(alpha = 0.12f)),
+            at + ins.pillStart,
+            at + ins.pillEnd,
+        )
+        shift += ins.text.length
+    }
+    for (sp in seg.delivery?.spans.orEmpty()) {
+        val start = textStart + span.mapStart(sp.start)
+        val end = textStart + span.mapEnd(sp.end)
+        if (end <= start) continue
+        val style = when (sp.tag) {
+            "whisper" -> SpanStyle(fontStyle = FontStyle.Italic, color = color.copy(alpha = 0.75f))
+            "slow" -> SpanStyle(letterSpacing = 0.08.em)
+            "emphasis" -> SpanStyle(textDecoration = TextDecoration.Underline, fontWeight = FontWeight.Medium)
+            else -> continue
+        }
+        addStyle(style, start, end)
     }
 }

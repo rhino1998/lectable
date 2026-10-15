@@ -444,7 +444,9 @@ func (s *Server) usedVoicesBulkRun(book *store.Book) (int, jobs.PipelinePhaseFun
 			emotionsBySpeaker[sp] = map[string]bool{}
 			speakers = append(speakers, sp)
 		}
-		if e := p.EffectiveEmotion(); e != emotions.Neutral {
+		// A clone model that takes direction as text uses no variants
+		// (jobs' task.variantEmotion), so none are rendered for it.
+		if e := p.EffectiveEmotion(); e != emotions.Neutral && !voices.Directed(cloneModel) {
 			emotionsBySpeaker[sp][e] = true
 		}
 	}

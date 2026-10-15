@@ -97,6 +97,9 @@ const KIND_LABELS: Record<QueueTask['kind'], string> = {
   // Every book in the library, a few series at a time (the library header's button).
   pipeline_library_preprocess: 'Preprocess Library',
   pipeline_library_embedding: 'Embed Library',
+  // Every book's narration, one book at a time (the library header's menu).
+  pipeline_library_generate: 'Generate Library: All',
+  pipeline_library_generate_remaining: 'Generate Library: Remaining',
   sfx_generation: 'SFX',
   sfx_preview: 'SFX/Music Preview',
   llm_preview: 'LLM Preview',

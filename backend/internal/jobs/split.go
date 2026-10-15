@@ -9,10 +9,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rhino1998/lectable/backend/internal/direction"
 	"github.com/rhino1998/lectable/backend/internal/latents"
 	"github.com/rhino1998/lectable/backend/internal/textsplit"
 	"github.com/rhino1998/lectable/backend/internal/ttsproto"
 	"github.com/rhino1998/lectable/backend/internal/ttsworker"
+	"github.com/rhino1998/lectable/backend/internal/voicerefs"
+	"github.com/rhino1998/lectable/backend/internal/voices"
 	"github.com/rhino1998/lectable/backend/internal/wav"
 )
 
@@ -191,29 +194,37 @@ func (m *Manager) generateCloneChecked(ctx context.Context, cloneModel string, r
 		completenessResults.WithLabelValues("unchecked").Inc()
 		return audio, nil, nil
 	}
-	extra := m.extraWordsIn(ctx, audio.WAV, alignText, text)
+	directed := voices.Directed(cloneModel)
+	extra := m.extraWordsIn(ctx, audio.WAV, alignText, text, directed)
 	retried := false
-	for _, chunkSize := range retryChunkSizes(text) {
+	for _, try := range retryAttempts(text, directed) {
 		if missing < minMissingWords && extra < minExtraWords {
 			break
 		}
 		retried = true
 		completenessRetries.WithLabelValues(incompleteReason(missing, extra)).Inc()
-		log.Printf(
-			"jobs: generated audio is missing %d of %d words (aligned past the clip's end) and speaks %d extra; regenerating with text_chunk_size=%d",
-			missing, len(words), extra, chunkSize,
-		)
-		retryAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, text, cloneInstruct, chunkSize, maxGenerationSplitDepth)
+		if try.text != text {
+			log.Printf(
+				"jobs: generated audio is missing %d of %d words and speaks %d extra; regenerating without its direction's %s",
+				missing, len(words), extra, try.dropped,
+			)
+		} else {
+			log.Printf(
+				"jobs: generated audio is missing %d of %d words (aligned past the clip's end) and speaks %d extra; regenerating with text_chunk_size=%d",
+				missing, len(words), extra, try.chunkSize,
+			)
+		}
+		retryAudio, err := m.generateCloneSplit(ctx, cloneModel, refAudio, refText, language, try.text, cloneInstruct, try.chunkSize, maxGenerationSplitDepth)
 		if err != nil {
-			log.Printf("jobs: text_chunk_size=%d retry failed: %v", chunkSize, err)
+			log.Printf("jobs: text_chunk_size=%d retry failed: %v", try.chunkSize, err)
 			continue
 		}
 		retryWords, retryMissing, err := m.alignForCompleteness(ctx, alignText, retryAudio.WAV, language)
 		if err != nil {
-			log.Printf("jobs: text_chunk_size=%d retry alignment failed: %v", chunkSize, err)
+			log.Printf("jobs: text_chunk_size=%d retry alignment failed: %v", try.chunkSize, err)
 			continue
 		}
-		retryExtra := m.extraWordsIn(ctx, retryAudio.WAV, alignText, text)
+		retryExtra := m.extraWordsIn(ctx, retryAudio.WAV, alignText, text, directed)
 		if retryMissing+retryExtra < missing+extra {
 			audio, words, missing, extra = retryAudio, retryWords, retryMissing, retryExtra
 		}
@@ -264,11 +275,22 @@ func (m *Manager) alignForCompleteness(ctx context.Context, text string, audioWa
 // any extra speech before or between them rather than leaving a gap.
 // Returns 0 when transcription fails - the missing-words half of the
 // check still stands on its own.
-func (m *Manager) extraWordsIn(ctx context.Context, audioWav []byte, alignText, generationText string) int {
+//
+// Under a directed clone model (directed), generationText's direction is
+// stripped first: comparing against the tags would let a tag read aloud
+// ("sighs") pass as expected, and a tag read aloud is exactly what the
+// check has to catch. A laugh or sigh the direction asked for transcribes
+// as "ha ha" or "ugh", so vocalizations are dropped from the transcript
+// too (dropVocalizations).
+func (m *Manager) extraWordsIn(ctx context.Context, audioWav []byte, alignText, generationText string, directed bool) int {
 	transcript, err := m.tts.Transcribe(ctx, audioWav)
 	if err != nil {
 		log.Printf("jobs: completeness check transcription failed, skipping extra-words check: %v", err)
 		return 0
+	}
+	if directed {
+		generationText = direction.Strip(generationText)
+		transcript = dropVocalizations(transcript)
 	}
 	extra := extraWordRun(alignText, transcript)
 	if generationText != alignText {
@@ -314,6 +336,39 @@ func retryChunkSizes(text string) []int {
 	return sizes
 }
 
+// retryAttempt is one of generateCloneChecked's regenerations: text
+// (the generation text, or it with some of its direction dropped -
+// dropped names what) at a text_chunk_size override.
+type retryAttempt struct {
+	chunkSize int
+	text      string
+	dropped   string
+}
+
+// retryAttempts is generateCloneChecked's escalation ladder: the
+// retryChunkSizes, then - under a directed clone model, for a line that
+// carries direction - the line without its point and span tags, then
+// without any direction at all. A tag the model reads aloud, or a style it
+// can't hold the words through, then degrades to plain cloning instead of
+// failing the check every time.
+func retryAttempts(text string, directed bool) []retryAttempt {
+	var out []retryAttempt
+	for _, size := range retryChunkSizes(text) {
+		out = append(out, retryAttempt{chunkSize: size, text: text})
+	}
+	if !directed {
+		return out
+	}
+	if t := direction.StripTags(text); t != text {
+		out = append(out, retryAttempt{text: t, dropped: "tags"})
+		text = t
+	}
+	if t := direction.Strip(text); t != text {
+		out = append(out, retryAttempt{text: t, dropped: "style"})
+	}
+	return out
+}
+
 // generateCloneSplit is generateClone's implementation. textChunkSize > 0
 // overrides the clone family's own internal text chunk budget (see
 // ttsworker.Manager.GenerateChunked) for this call and every split half
@@ -323,9 +378,15 @@ func (m *Manager) generateCloneSplit(ctx context.Context, cloneModel string, ref
 	durationAttempt := 0
 	for {
 		audio, err := m.tts.GenerateChunkedAudio(ctx, text, cloneModel, refAudio, refText, language, cloneInstruct, textChunkSize)
+		if err == nil {
+			audio = normalizeGenerated(audio)
+		}
 		if err != nil {
 			if isMaxTokensExceeded(err) && splitBudget > 0 {
 				if leftText, rightText, ok := bisectForGeneration(text); ok {
+					if voices.Directed(cloneModel) {
+						leftText, rightText = direction.CarryAcross(leftText, rightText)
+					}
 					log.Printf(
 						"jobs: generation ran out of tokens for a %d-word text; splitting into %d + %d words",
 						len(strings.Fields(text)), len(strings.Fields(leftText)), len(strings.Fields(rightText)),
@@ -423,6 +484,30 @@ func bisectClauses(text string) (left, right string, ok bool) {
 		return "", "", false
 	}
 	return strings.TrimSpace(text[:best]), strings.TrimSpace(text[best:]), true
+}
+
+// normalizeGenerated levels a single just-generated clone chunk to
+// voicerefs.TargetLUFS (the same target every reference clip is normalized
+// to - see its own doc comment) before it's ever aligned, retried on, or
+// saved: audio.cpp's own output level tracks its reference clip only
+// loosely, so without this an otherwise-identical paragraph can land
+// noticeably louder or quieter than its neighbors depending on which voice
+// (or which emotion variant) cloned it. Applied per chunk, before
+// concatCloneAudio joins split halves back together, so both halves of a
+// bisected generation land at the same level rather than being normalized
+// (and so potentially gained differently) as one joined clip. Changing
+// samples invalidates Latents (ttsworker.Audio's own doc comment), so
+// they're dropped here exactly as concatCloneAudio already drops them for
+// the same reason. Logged and left unchanged on failure (a malformed clip
+// downstream will surface its own, clearer error) rather than failing the
+// whole generation over a loudness pass.
+func normalizeGenerated(audio ttsworker.Audio) ttsworker.Audio {
+	data, err := voicerefs.NormalizeWAV(audio.WAV)
+	if err != nil {
+		log.Printf("jobs: normalize generated clip loudness: %v", err)
+		return audio
+	}
+	return ttsworker.Audio{WAV: data}
 }
 
 // concatCloneAudio joins two independently-generated clone clips into one

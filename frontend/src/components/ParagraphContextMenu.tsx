@@ -9,12 +9,15 @@ import {
 } from 'react'
 import { RiEmotionNormalLine } from 'react-icons/ri'
 import {
+  useSetParagraphDirection,
   useSetParagraphEmotion,
   useSetParagraphQuote,
   useSetParagraphScareQuote,
   useSetParagraphSpeaker,
+  useVoice,
 } from '../api/queries'
 import { ApiError } from '../api/client'
+import { CLONE_MODELS, type CloneModelInfo } from '../api/types'
 import type { ChapterDetail, Paragraph, Speaker } from '../api/types'
 import { EMOTIONS } from '../utils/emotions'
 import { useClickOutside } from '../hooks/useClickOutside'
@@ -47,6 +50,15 @@ export const ParagraphContextMenu = forwardRef<
   const setParagraphScareQuote = useSetParagraphScareQuote(bookId)
   const setParagraphQuote = useSetParagraphQuote(bookId)
   const setParagraphEmotion = useSetParagraphEmotion(bookId)
+  const setParagraphDirection = useSetParagraphDirection(bookId)
+  // A clone model that takes direction as text (Fish Drama 3) gets the
+  // free-form direction editor beside the emotion labels.
+  const voice = useVoice(bookId)
+  const directed =
+    (CLONE_MODELS as readonly CloneModelInfo[]).find((m) => m.id === voice.data?.cloneModel)
+      ?.delivery === 'directed'
+  // The direction being edited: the line written back with its direction.
+  const [directionDraft, setDirectionDraft] = useState('')
   const [contextMenu, setContextMenu] = useState<{
     chapterIdx: number
     paragraphIdx: number
@@ -54,6 +66,8 @@ export const ParagraphContextMenu = forwardRef<
     currentSpeaker: string
     scareQuote: boolean
     emotion: string
+    text: string
+    direction: string
     x: number
     y: number
   } | null>(null)
@@ -81,9 +95,12 @@ export const ParagraphContextMenu = forwardRef<
           currentSpeaker: p.speaker ?? '',
           scareQuote: !!p.scareQuote,
           emotion: p.emotion ?? '',
+          text: p.text,
+          direction: p.direction ?? '',
           x,
           y,
         })
+        setDirectionDraft(p.direction ?? p.text)
       },
     }),
     [],
@@ -206,6 +223,25 @@ export const ParagraphContextMenu = forwardRef<
     [contextMenu, setParagraphEmotion, onError],
   )
 
+  // Manual direction override ('' clears) - the backend reads it with the
+  // same parser as the direction pass and regenerates the line when its
+  // effective direction changes.
+  const saveDirection = useCallback(
+    (direction: string) => {
+      if (!contextMenu) return
+      onError(null)
+      setParagraphDirection.mutate(
+        { chapterIdx: contextMenu.chapterIdx, paragraphIdx: contextMenu.paragraphIdx, direction },
+        {
+          onError: (err) =>
+            onError(err instanceof ApiError ? err.message : "Could not set this line's direction"),
+        },
+      )
+      setContextMenu(null)
+    },
+    [contextMenu, setParagraphDirection, onError],
+  )
+
   // Everyone who speaks in the clicked paragraph's own chapter - listed
   // first, since a misattributed line usually belongs to someone already
   // in the scene. Mirrors android's SpeakerPickerSheet.
@@ -307,6 +343,53 @@ export const ParagraphContextMenu = forwardRef<
                   </button>
                 ))}
               </div>
+            </>
+          )}
+          {directed && !contextMenu.scareQuote && (
+            <>
+              <div className="speaker-context-menu-section">Direction</div>
+              <form
+                className="speaker-context-menu-direction"
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  saveDirection(
+                    directionDraft.trim() === contextMenu.text.trim() ? '' : directionDraft,
+                  )
+                }}
+              >
+                <textarea
+                  value={directionDraft}
+                  rows={3}
+                  aria-label="The line with its direction"
+                  placeholder="[dry, barely holding back a laugh] the line, with [sighs] or <whisper>…</whisper>"
+                  onChange={(e) => setDirectionDraft(e.target.value)}
+                />
+                <div className="speaker-context-menu-chips">
+                  {EMOTIONS.map((e) => (
+                    <button
+                      key={e.id}
+                      type="button"
+                      className="speaker-context-menu-chip"
+                      title={e.direction}
+                      onClick={() =>
+                        setDirectionDraft(
+                          `[${e.direction}] ` + directionDraft.replace(/^\s*\[[^\]]*\]\s*/, ''),
+                        )
+                      }
+                    >
+                      <e.icon /> {e.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="speaker-context-menu-direction-actions">
+                  <button type="submit">Save</button>
+                  {contextMenu.direction && (
+                    <button type="button" onClick={() => saveDirection('')}>
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </form>
             </>
           )}
           <TargetSections

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -50,6 +51,13 @@ const (
 	// RosterInvalidate marks Subject as no one's name, so attribution
 	// stops using it.
 	RosterInvalidate RosterFixKind = "invalidate"
+	// RosterRenameRole renames Subject to Detail and marks it a role:
+	// "One of the Gnolls" made the role "Gnoll", when the roster has no
+	// such role to merge it into.
+	RosterRenameRole RosterFixKind = "rename_role"
+	// RosterRename renames Subject to Detail: "[Mage]" spelled "Mage",
+	// the brackets some books put round a class left off.
+	RosterRename RosterFixKind = "rename"
 )
 
 // RosterFix is one proposed change.
@@ -60,7 +68,7 @@ type RosterFix struct {
 	// owner of the name an alias collides with (RosterRemoveAlias, when
 	// there is one).
 	Target RosterEntry
-	// Detail is the alias to remove.
+	// Detail is the alias to remove, or the role's name (RosterRenameRole).
 	Detail string
 	Reason string
 	// Evidence is the passage that shows it, when one does.
@@ -449,6 +457,39 @@ func RosterRuleFixes(entries []RosterEntry, kinds WordCaseCounts, titles WorldWo
 				continue
 			}
 		}
+		// "One of the Gnolls": one of a kind of person, a name attribution
+		// kept from before it made role labels of such answers (RoleLabel)
+		// - so every line of it is the role's.
+		if label, candidates, ok := OneOfKind(name); ok {
+			if other, found := oneOfTarget(byName, e, candidates); found {
+				out = append(out, RosterFix{Kind: RosterMerge, Subject: e, Target: other, Reason: fmt.Sprintf("one of a kind of person, which %s already is", other.Name)})
+			} else {
+				out = append(out, RosterFix{Kind: RosterRenameRole, Subject: e, Detail: label, Reason: fmt.Sprintf("one of a kind of person - the role %s", label)})
+			}
+			continue
+		}
+		// "[Mage]": a class as some books write it, brackets and all. The
+		// name is the word without them, like every other role's.
+		if plain := Unbracketed(name); plain != name && plain != "" {
+			// "[alchemists]" is the role "Alchemist" when there is one.
+			words := strings.Fields(plain)
+			last := len(words) - 1
+			singularOf := func(f func(string) string) string {
+				w := slices.Clone(words)
+				w[last] = capitalizeFirst(f(strings.ToLower(w[last])))
+				if !startsUpper(words[last]) && last > 0 {
+					w[last] = strings.ToLower(w[last])
+				}
+				return strings.Join(w, " ")
+			}
+			candidates := []string{plain, singularOf(singular), singularOf(func(w string) string { return strings.TrimSuffix(w, "s") })}
+			if other, ok := oneOfTarget(byName, e, candidates); ok {
+				out = append(out, RosterFix{Kind: RosterMerge, Subject: e, Target: other, Reason: fmt.Sprintf("%s, written with the book's brackets", other.Name)})
+			} else {
+				out = append(out, RosterFix{Kind: RosterRename, Subject: e, Detail: plain, Reason: "the name without the book's brackets round it"})
+			}
+			continue
+		}
 		bucket := false
 		if !e.IsRole {
 			switch {
@@ -489,6 +530,116 @@ func RosterRuleFixes(entries []RosterEntry, kinds WordCaseCounts, titles WorldWo
 		}
 	}
 	return out
+}
+
+// oneOfLead opens a speaker name that is one of a kind of person: "One of
+// the Gnolls", "One of the other [Knights]".
+var oneOfLead = regexp.MustCompile(`^(?i:one\s+of\s+the\s+(?:other\s+)?)`)
+
+// OneOfKind reads a name like "One of the [Knights]" as the kind of person
+// it is one of. label is the role it should be - the kind singular, its
+// qualifiers kept, brackets dropped ("Knight", "Summer Knight", "Ruler of
+// Khelt", "Witch"); candidates are the spellings an existing entry for
+// that kind may have, best first ("Knight", "[Knight]", "Knights",
+// "[Knights]"). ok is false for any other name, and for one naming no kind
+// ("One of the others", "One of the crowd") or a numbered or possessive
+// one.
+func OneOfKind(name string) (label string, candidates []string, ok bool) {
+	lead := oneOfLead.FindString(name)
+	if lead == "" {
+		return "", nil, false
+	}
+	rest := strings.TrimSpace(descriptorCut.ReplaceAllString(name[len(lead):], ""))
+	if strings.ContainsAny(rest, "0123456789") || strings.Contains(rest, "'s") || strings.Contains(rest, "’s") {
+		return "", nil, false
+	}
+	words := strings.Fields(rest)
+	// "One of the two Tallguard": the count isn't part of the kind.
+	for len(words) > 1 && roleGroupWords[strings.ToLower(words[0])] {
+		words = words[1:]
+	}
+	if len(words) == 0 {
+		return "", nil, false
+	}
+	// The kind's own word: the last, or the one before "of" ("Rulers of
+	// Khelt").
+	hi := len(words) - 1
+	for i, w := range words {
+		if i > 0 && strings.EqualFold(w, "of") {
+			hi = i - 1
+			break
+		}
+	}
+	head := strings.ToLower(strings.Trim(words[hi], "[]"))
+	if head == "" || notHeadNouns[singular(head)] || roleGroupWords[head] {
+		return "", nil, false
+	}
+	// with the kind's word replaced by f of its plain, lower-case form,
+	// brackets kept or dropped.
+	spell := func(f func(string) string, brackets bool) string {
+		out := slices.Clone(words)
+		for i, w := range out {
+			plain := strings.Trim(w, "[]")
+			if i == hi {
+				// The word's own capitals kept as far as the change leaves
+				// it ("half-Elves" -> "half-Elf").
+				lower := strings.ToLower(plain)
+				changed := f(lower)
+				k := 0
+				for k < len(changed) && k < len(lower) && changed[k] == lower[k] {
+					k++
+				}
+				changed = plain[:k] + changed[k:]
+				if brackets && plain != w {
+					changed = strings.Replace(w, plain, changed, 1)
+				}
+				out[i] = changed
+			} else if !brackets {
+				out[i] = strings.NewReplacer("[", "", "]", "").Replace(w)
+			}
+		}
+		return strings.Join(out, " ")
+	}
+	same := func(w string) string { return w }
+	trimS := func(w string) string { return strings.TrimSuffix(w, "s") }
+	label = capitalizeFirst(spell(singular, false))
+	for _, c := range []string{label, spell(singular, true), spell(same, false), spell(same, true), capitalizeFirst(spell(trimS, false))} {
+		if !slices.Contains(candidates, c) {
+			candidates = append(candidates, c)
+		}
+	}
+	return label, candidates, true
+}
+
+// Unbracketed is name without the square brackets some books write a
+// class in ("[Mage]" -> "Mage", "Jecrassian [Soldiers]" -> "Jecrassian
+// Soldiers"), its first letter capitalized; name itself when it has none.
+// "[role]", the attribution prompt's own markup, is left to the rule for it.
+func Unbracketed(name string) string {
+	if !strings.ContainsAny(name, "[]") || strings.Contains(strings.ToLower(name), "[role]") {
+		return name
+	}
+	return capitalizeFirst(strings.Join(strings.Fields(strings.NewReplacer("[", " ", "]", " ").Replace(name)), " "))
+}
+
+// oneOfTarget is the entry of byName a "One of the ..." entry e belongs
+// to: a role spelled as one of candidates, the first such, or failing that
+// any entry spelled so.
+func oneOfTarget(byName map[string]RosterEntry, e RosterEntry, candidates []string) (RosterEntry, bool) {
+	var fallback RosterEntry
+	for _, c := range candidates {
+		other, ok := byName[strings.ToLower(c)]
+		if !ok || other.ID == e.ID {
+			continue
+		}
+		if other.IsRole {
+			return other, true
+		}
+		if fallback.ID == "" {
+			fallback = other
+		}
+	}
+	return fallback, fallback.ID != ""
 }
 
 const (

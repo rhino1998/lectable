@@ -345,6 +345,12 @@ label {
 .library-add-menu-panel button:hover {
   background: var(--border);
 }
+/* The header's "Generate library audio" button and its All/Remaining
+   popover; the wrapper is what the popover anchors against. */
+.library-generate-menu {
+  position: relative;
+  display: flex;
+}
 /* The "Import from a link" field, shown under the header. */
 .library-import {
   display: flex;
@@ -2526,6 +2532,54 @@ label {
    ("read differently than written"), in --pronunciation-caret. It was a strikeout, which read as
    the word being deleted. Sits a little lower than the dashed scare-quote underline, so a word
    carrying both shows both. Plain text-decoration, no wrapper/positioning tricks. */
+/* A directed line (Paragraph.delivery, annotations view): its style as a
+   script's parenthetical before the line - dimmer when it is only the
+   emotion label's - its point tags as small pills where they happen, and
+   its scoped tags as styling on the words they cover. Tinted with
+   --direction-emotion, the color the emotion icons already use. */
+.delivery-style {
+  font-style: italic;
+  font-size: 0.9em;
+  color: var(--direction-emotion);
+  cursor: pointer;
+}
+.delivery-style-label {
+  opacity: 0.55;
+}
+.delivery-pill {
+  display: inline-block;
+  margin: 0 0.25em 0 0;
+  padding: 0 0.35em;
+  font-size: 0.72em;
+  font-style: italic;
+  line-height: 1.5;
+  vertical-align: 0.1em;
+  color: var(--direction-emotion);
+  border: 1px solid currentColor;
+  border-radius: 0.7em;
+  opacity: 0.8;
+  cursor: help;
+  user-select: none;
+}
+.delivery-span {
+  cursor: help;
+}
+.delivery-span-whisper {
+  opacity: 0.7;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--direction-emotion);
+  text-underline-offset: 0.3em;
+}
+.delivery-span-slow {
+  letter-spacing: 0.08em;
+}
+.delivery-span-emphasis {
+  text-decoration: underline;
+  text-decoration-color: var(--direction-emotion);
+  text-decoration-thickness: 0.12em;
+  text-underline-offset: 0.3em;
+}
+
 .pronunciation-strike {
   text-decoration: underline;
   text-decoration-color: var(--pronunciation-caret);
@@ -2972,6 +3026,40 @@ label {
 .speaker-context-menu-new button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+/* Direction editor (a directed clone model only): the line written back
+   with its direction, preset styles as chips, Save/Clear. */
+.speaker-context-menu-direction {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.25rem 0.4rem;
+}
+.speaker-context-menu-direction textarea {
+  width: 100%;
+  min-width: 16rem;
+  box-sizing: border-box;
+  padding: 0.3rem 0.45rem;
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--text);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  resize: vertical;
+}
+.speaker-context-menu-direction-actions {
+  display: flex;
+  gap: 0.3rem;
+  justify-content: flex-end;
+}
+.speaker-context-menu-direction-actions button {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--text);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 5px;
 }
 /* Emotion picker in the dialogue context menu (ReaderPage's setEmotion) -
    a wrapping row of small chips rather than one full-width item per

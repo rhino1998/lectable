@@ -123,7 +123,9 @@ export function SpeakerVoiceLine({
               ? `${e.label}: ${e.count} line(s), variant ready`
               : e.status === 'failed'
                 ? `${e.label}: ${e.count} line(s) - the variant couldn't be rendered, so these lines use the base voice`
-                : `${e.label}: ${e.count} line(s) - the variant renders the first time one of these lines generates`
+                : e.status === 'directed'
+                  ? `${e.label}: ${e.count} line(s) - this book's clone model reads each line's direction from its text, so no variant is used`
+                  : `${e.label}: ${e.count} line(s) - the variant renders the first time one of these lines generates`
           }
         >
           {e.status === 'ready' && (
@@ -138,15 +140,17 @@ export function SpeakerVoiceLine({
             </button>
           )}
           {e.label} <span className="muted">{e.count}</span>
-          <button
-            className="speaker-emotion-button"
-            onClick={() => runRegenerate(e.emotion)}
-            disabled={regenerate.isPending}
-            aria-label={`Regenerate ${e.label} variant`}
-            title={`Regenerate the ${e.label} variant (and re-voice these lines)`}
-          >
-            <RiRefreshLine />
-          </button>
+          {e.status !== 'directed' && (
+            <button
+              className="speaker-emotion-button"
+              onClick={() => runRegenerate(e.emotion)}
+              disabled={regenerate.isPending}
+              aria-label={`Regenerate ${e.label} variant`}
+              title={`Regenerate the ${e.label} variant (and re-voice these lines)`}
+            >
+              <RiRefreshLine />
+            </button>
+          )}
         </span>
       ))}
       {children}

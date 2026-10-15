@@ -352,7 +352,7 @@ func (m *Manager) generateClean(ctx context.Context, t *task) (ttsworker.Audio, 
 // scare-quote merge group, or a variant that failed to render (the base
 // clip is used then).
 func (m *Manager) emotionVariant(t *task) (emotion, path, refLine string, ok bool) {
-	if t.presetID == "" || len(t.mergeParagraphs) > 1 {
+	if t.presetID == "" || len(t.mergeParagraphs) > 1 || voices.Directed(t.cloneModel) {
 		return "", "", "", false
 	}
 	p, err := m.store.GetParagraph(t.paragraph.ID)

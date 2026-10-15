@@ -81,6 +81,19 @@ func (s *SQLiteStore) SetChapterDirected(chapterID string) error {
 	return err
 }
 
+// SetChapterDelivered marks chapterID's passes.delivery true - set by
+// httpapi.directChapter once the direction pass's second stage (free-form
+// directions, under a directed clone model) has covered the whole chapter.
+// SetChapterDirected's shape.
+func (s *SQLiteStore) SetChapterDelivered(chapterID string) error {
+	book := s.chapterBook(chapterID)
+	_, err := s.db.execScoped(book,
+		`UPDATE chapters SET passes = json_patch(passes, '{"delivery": true}') WHERE id = ?`,
+		chapterID,
+	)
+	return err
+}
+
 // SetChapterPronounced marks chapterID's own passes.pronunciation true -
 // set by httpapi.pronounceChapter once a pronunciation resolution run
 // finishes covering the whole chapter. SetChapterDirected's shape.
@@ -100,10 +113,13 @@ func (s *SQLiteStore) SetChapterPronounced(chapterID string) error {
 // already-generated audio was rendered with the old value (and so is stale
 // once it's cleared) - "" when the pass never changes generated audio.
 type PassReset struct {
-	Flag     string
-	Set      string
-	Where    string
-	Affected string
+	Flag string
+	// AlsoFlags are further chapters.passes keys the reset unsets - a
+	// pass whose output another pass builds on.
+	AlsoFlags []string
+	Set       string
+	Where     string
+	Affected  string
 }
 
 // PassResets are the per-chapter passes ResetBookPass knows how to clear,
@@ -130,12 +146,15 @@ var PassResets = map[string]PassReset{
 		Affected: "scare_quote",
 	},
 	// Only a real dialogue line's emotion is ever applied (see
-	// Paragraph.EffectiveEmotion).
+	// Paragraph.EffectiveEmotion). Its second stage's directions (the
+	// "delivery" flag, under a directed clone model) are written from the
+	// labels, so they go too.
 	"direction": {
-		Flag:     "direction",
-		Set:      "emotion = ''",
-		Where:    "emotion <> ''",
-		Affected: "emotion <> '' AND is_quote AND NOT scare_quote",
+		Flag:      "direction",
+		AlsoFlags: []string{"delivery"},
+		Set:       "emotion = '', direction = '{}'",
+		Where:     "emotion <> '' OR direction <> '{}'",
+		Affected:  "(emotion <> '' OR direction <> '{}') AND is_quote AND NOT scare_quote",
 	},
 	"pronunciation": {
 		Flag:     "pronunciation",
@@ -188,8 +207,10 @@ func (s *SQLiteStore) ResetBookPass(bookID, pass string, fromIdx int) (map[strin
 		WHERE chapter_id IN (SELECT id FROM chapters WHERE book_id = ? AND idx >= ?) AND (`+pr.Where+`)`, bookID, fromIdx); err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(`UPDATE chapters SET passes = json_patch(passes, json_object(?, NULL)) WHERE book_id = ? AND idx >= ?`, pr.Flag, bookID, fromIdx); err != nil {
-		return nil, err
+	for _, flag := range append([]string{pr.Flag}, pr.AlsoFlags...) {
+		if _, err := tx.Exec(`UPDATE chapters SET passes = json_patch(passes, json_object(?, NULL)) WHERE book_id = ? AND idx >= ?`, flag, bookID, fromIdx); err != nil {
+			return nil, err
+		}
 	}
 	return affected, tx.Commit()
 }

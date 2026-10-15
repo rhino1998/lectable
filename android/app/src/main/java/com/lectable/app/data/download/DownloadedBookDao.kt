@@ -18,7 +18,7 @@ interface DownloadedBookDao {
     suspend fun get(libraryId: String, bookId: String): DownloadedBook?
 
     /** Every book with at least one download for this library - see
-     *  DownloadRepository.deleteAllDownloads/downloadedBookCount. */
+     *  BookDownloadRemover.removeAll/DownloadRepository.downloadedBookCount. */
     @Query("SELECT bookId FROM downloaded_books WHERE libraryId = :libraryId")
     suspend fun bookIdsForLibrary(libraryId: String): List<String>
 

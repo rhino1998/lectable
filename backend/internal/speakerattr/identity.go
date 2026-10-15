@@ -73,7 +73,9 @@ func RoleLabel(answer string) (label string, isTitle, ok bool) {
 		// Cold") or already a role label ("Guard").
 		return "", false, false
 	}
-	head := strings.ToLower(strings.Trim(words[len(words)-1], `.,'’"“”!?`))
+	// Brackets mark a class in some books ("One of the [Knights]"); the
+	// label is the plain word.
+	head := strings.ToLower(strings.Trim(words[len(words)-1], `.,'’"“”!?[]`))
 	if head == "" || notHeadNouns[head] || roleGroupWords[head] || slices.Contains(speechVerbs, head) || strings.HasSuffix(head, "ed") {
 		return "", false, false
 	}
@@ -156,6 +158,12 @@ func singular(w string) string {
 		return strings.TrimSuffix(w, "ies") + "y"
 	case strings.HasSuffix(w, "ss"), strings.HasSuffix(w, "us"):
 		return w
+	// "elves", "dwarves", "wolves" - but "slaves", "knaves" just lose the s.
+	case strings.HasSuffix(w, "lves"), strings.HasSuffix(w, "rves"):
+		return strings.TrimSuffix(w, "ves") + "f"
+	// "witches", "bushes", "boxes", "masses".
+	case strings.HasSuffix(w, "ches"), strings.HasSuffix(w, "shes"), strings.HasSuffix(w, "xes"), strings.HasSuffix(w, "sses"):
+		return strings.TrimSuffix(w, "es")
 	case strings.HasSuffix(w, "s") && len(w) > 3:
 		return strings.TrimSuffix(w, "s")
 	}

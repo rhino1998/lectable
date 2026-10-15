@@ -74,9 +74,11 @@ type Config struct {
 }
 
 // minSlotNCtx is the least per-slot KV budget SlotNCtx ever returns -
-// room for the largest prompt any pass sends (a 40-paragraph batch plus
-// its known-characters list, or a widened Auto Split window capped by
-// maxWidenWindowChars, ~5K tokens) together with its reply.
+// room for the largest prompt any pass sends together with its reply: a
+// summary window, held to it by summaryPromptChars (~10K tokens of prompt
+// beside a 2048-token reply). A pass whose prompt can grow with the book -
+// a roster, carried-over notes - has to hold itself to the slot the same
+// way: the worker fails a call that runs out of it (llamacpp.ErrContextFull).
 const minSlotNCtx = 12288
 
 // SlotNCtx is cmd/ttsworker's default for llmworker.Config.NCtx
@@ -2214,6 +2216,7 @@ func SystemPrompts() []string {
 		characterizeSystemPrompt,
 		accentSystemPrompt,
 		emotionDenseSystemPrompt,
+		directionSystemPrompt,
 		pronunciationSystemPrompt,
 		scareQuoteSystemPrompt,
 		musicDescribeSystemPrompt,

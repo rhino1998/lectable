@@ -9,6 +9,7 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.lectable.app.data.discovery.NsdDiscoveryRepository
+import com.lectable.app.data.download.BookDownloadRemover
 import com.lectable.app.data.download.DownloadedBook
 import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.MediaUrlResolver
@@ -80,6 +81,7 @@ class LibraryViewModel @Inject constructor(
     private val repository: LibraryRepository,
     private val mediaUrlResolver: MediaUrlResolver,
     private val downloadRepository: DownloadRepository,
+    private val bookDownloadRemover: BookDownloadRemover,
     private val serverSettingsRepository: ServerSettingsRepository,
     private val discoveryRepository: NsdDiscoveryRepository,
     private val voiceRepository: VoiceRepository,
@@ -346,7 +348,7 @@ class LibraryViewModel @Inject constructor(
                     // per-book download controls. Best-effort: the book itself is already gone
                     // either way, so a failure here just leaves local files to be caught by
                     // Settings' "Delete all downloads" instead of blocking the deletion.
-                    runCatching { downloadRepository.deleteBookDownloads(id) }
+                    runCatching { bookDownloadRemover.remove(id) }
                 }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
@@ -464,7 +466,7 @@ class LibraryViewModel @Inject constructor(
      *  whether this menu item even shows - reflects the removal reactively. */
     fun deleteLocalCopy(bookId: String) {
         viewModelScope.launch {
-            runCatching { downloadRepository.deleteBookDownloads(bookId) }
+            runCatching { bookDownloadRemover.remove(bookId) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }

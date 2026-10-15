@@ -239,7 +239,7 @@ func clampGain(factor float64) float64 {
 // save normalizes data to TargetLUFS (normalizeLoudness) and writes it as
 // presetID's reference clip.
 func save(dataDir, presetID string, data []byte) (string, error) {
-	data, err := normalizeWAV(data)
+	data, err := NormalizeWAV(data)
 	if err != nil {
 		return "", err
 	}

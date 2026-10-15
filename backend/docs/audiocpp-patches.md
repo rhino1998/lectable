@@ -129,6 +129,16 @@ enough) and its `libaudiocpp.so.0.1.0` copied over the one in
 `build-rocm7/bin/` by rename, so the live path never holds a half-built
 library.
 
+**2026-10-15 live library (Fish Drama 3).** Built from a copy of the tree,
+`~/audio.cpp-live` (full model set, `build/`), with the uncommitted
+BreezeTTS depth speedups (`lectable-breeze-depth.diff`, not yet cleared
+for live) reversed there; everything else is the working tree, which now
+adds the `fish_drama3` family and its framework pieces (Qwen3.5-MoE
+decoder runtime, Fish DAC chunked decode, expert quantization in the GGUF
+converter). Swapped into `build-rocm7/bin` by rename; the previous
+library is `libaudiocpp.so.0.1.0.prev`, the one before it `.prev-20261011`.
+Every `audiocpp-go` test passed on HIP against it first.
+
 What the 2026-10-11 rebase changed in the patch:
 - Upstream added `WakeWord` and `AudioClassification` tasks; `Codec` now
   follows them in the enum and vocabulary. Tasks cross the C API by name,
@@ -324,3 +334,41 @@ existing artifact API.
   short init/inpaint request, or a short codec encode, hit it.
 - **Status (2026-09-26):** the live `libaudiocpp.so` is rebuilt with this
   patch; the pre-patch build is kept as `bin/libaudiocpp.so.0.1.0.prev`.
+
+## BreezeTTS depth-decoder patches (2026-10-15)
+
+Also only in the local checkout, uncommitted; saved alone as
+`/home/rhino/audio.cpp/lectable-breeze-depth.diff` (not yet in
+`lectable-local-patches.diff`). Touches `src/models/breeze_tts/generator.cpp`
+and the shared `modules/transformers/causal_decoder_runtime.{h,cpp}`. Each
+frame used to cost ~48 separate GPU round trips, ~45 of them in the 4-layer
+depth decoder that samples codebooks 2-16:
+- **Precomputed depth inputs**: a code's depth-decoder input is the depth
+  projector applied to its audio-embedding row, so the projector runs once
+  over the whole table at load (16 x 2051 rows, ~134 MB host RAM per
+  session) instead of once per code per frame.
+- **Codebook heads inside the depth step**: `CausalDecoderRuntimeWeights::
+  selectable_heads` (new, generic - off unless set) adds `logits =
+  heads[head] x hidden` to the batched prefill/decode graphs, the head picked
+  per call with `set_selectable_head()` (one `ggml_mul_mat_id`, a vector
+  kernel on HIP, no host sync). Breeze's 15 per-codebook head graphs are gone.
+- **Text-encoding cache**: the reference transcript is its own prompt segment,
+  the same in both CFG branches and every call for one voice; the last four
+  segment encodings are kept (`encode_text_segment`).
+
+Not bit-identical to before (the projector runs batched, so float rounding
+differs, and sampled takes diverge); not yet checked by ear, and no
+`audiocpp-go` test has run against it. Measured with `audiocpp_cli` on a
+Breeze-only build of the same source (four *Spire's Spite* paragraphs, 5-33
+s, Fritz reference clip, seed 7, warm pass, RTF = generation time / audio):
+instructed clone (cfg 4) 0.81 -> 0.70, design (cfg 4) 0.79 -> 0.68, clone
+at cfg 1 0.70 -> 0.61; the depth decoder's share of the loop 40 s -> 31 s.
+
+What's left, measured with temporary timers (since removed): a depth step
+is ~1.8 ms of graph compute for one position of a ~60M-parameter decoder -
+launch-bound, not copies (uploads 0.21 ms, readback 0.09 ms, sampling
+negligible) - and the depth prefill ~6 ms a frame. Next to try: whether
+ggml's HIP graphs actually replay for these graphs (likely the biggest win,
+backbone included), replacing the 2-position depth prefill with two decode
+steps (~2.5 ms a frame), and fewer bf16 rounding points (changes numerics;
+upstream reports pure fp32 drifts).

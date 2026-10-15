@@ -725,6 +725,7 @@ class DownloadRepository @Inject constructor(
                         label = p.label,
                         table = p.table,
                         directionMarks = p.directionMarks,
+                        delivery = p.delivery,
                         pronunciationMarks = p.pronunciationMarks,
                         isQuote = p.isQuote,
                         scareQuote = p.scareQuote,
@@ -835,8 +836,8 @@ class DownloadRepository @Inject constructor(
     }
 
     /** Removes every downloaded chapter (and cached metadata) for a book regardless of pinned
-     *  state - used when the user deletes the book itself, or explicitly removes its offline
-     *  download. */
+     *  state. Only the local files and rows - a user removing a book's download goes through
+     *  BookDownloadRemover, which also stops the work that would download it again. */
     suspend fun deleteBookDownloads(bookId: String) = withContext(Dispatchers.IO) {
         val libraryId = backendIdentity.currentLibraryId()
         dao.forBook(libraryId, bookId).forEach { File(it.localDir).deleteRecursively() }
@@ -865,14 +866,6 @@ class DownloadRepository @Inject constructor(
         bookDao.bookIdsForLibrary(libraryId).size
     }
 
-    /** Removes every downloaded book for the current library in one action - Settings' "Delete
-     *  all downloads" button, for reclaiming space across the whole library at once rather than
-     *  one book at a time. Reuses [deleteBookDownloads] per book rather than a bespoke bulk
-     *  query, so it can't drift from what a single-book delete actually cleans up. */
-    suspend fun deleteAllDownloads() = withContext(Dispatchers.IO) {
-        val libraryId = backendIdentity.currentLibraryId()
-        bookDao.bookIdsForLibrary(libraryId).forEach { bookId -> deleteBookDownloads(bookId) }
-    }
 
     private fun chapterDir(libraryId: String, bookId: String, chapterIdx: Int, voiceKey: String): File =
         File(bookDir(libraryId, bookId), "$chapterIdx/${downloadDirName(voiceKey)}")

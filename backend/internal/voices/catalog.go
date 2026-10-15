@@ -15,7 +15,42 @@ type CloneModelInfo struct {
 	// model whose session reads a "temperature" option at all (nil: no
 	// such knob - flow/diffusion models, OmniVoice).
 	DefaultTemperature *float64 `json:"defaultTemperature,omitempty"`
+	// Delivery is what the model reads of a line's delivery beyond its
+	// words ("" is DeliveryPlain) - see CloneDelivery.
+	Delivery Delivery `json:"delivery,omitempty"`
 }
+
+// Delivery is how a clone model takes a line's delivery as text.
+type Delivery string
+
+const (
+	// DeliveryPlain models read words only; emotion reaches them through
+	// the reference clip (internal/emotions' variants).
+	DeliveryPlain Delivery = "plain"
+	// DeliveryHiggsPauses is Higgs: words plus <|prosody:pause|> before
+	// ellipses and dashes (internal/deliverytags).
+	DeliveryHiggsPauses Delivery = "higgs-pauses"
+	// DeliveryDirected models take free-form direction in the text - a
+	// style prefix, point tags, scoped tags (internal/direction) - in
+	// place of emotion variants: every line clones from the base clip.
+	DeliveryDirected Delivery = "directed"
+)
+
+// CloneDelivery is cloneModel's Delivery.
+func CloneDelivery(cloneModel string) Delivery {
+	for _, m := range CloneModels {
+		if m.ID == cloneModel {
+			if m.Delivery == "" {
+				return DeliveryPlain
+			}
+			return m.Delivery
+		}
+	}
+	return DeliveryPlain
+}
+
+// Directed reports whether cloneModel takes direction as text.
+func Directed(cloneModel string) bool { return CloneDelivery(cloneModel) == DeliveryDirected }
 
 // DesignModelInfo describes one VoiceDesign engine (Preset.DesignModel).
 type DesignModelInfo struct {
@@ -34,10 +69,11 @@ func f64(v float64) *float64 { return &v }
 // CloneModels is every user-selectable clone model, in display order.
 var CloneModels = []CloneModelInfo{
 	{ID: "audiocpp-qwen3-0.6b", Label: "Qwen3-TTS (audio.cpp)", DefaultTemperature: f64(0.9)},
-	{ID: HiggsCloneModel, Label: "Higgs Audio v3 TTS 4B (audio.cpp)", DefaultTemperature: f64(0.8)},
+	{ID: HiggsCloneModel, Label: "Higgs Audio v3 TTS 4B (audio.cpp)", DefaultTemperature: f64(0.8), Delivery: DeliveryHiggsPauses},
 	{ID: InstructedCloneModel, Label: "BreezeTTS 2 (audio.cpp)", DefaultTemperature: f64(0.9)},
 	{ID: "audiocpp-omnivoice", Label: "OmniVoice (audio.cpp)"},
 	{ID: PocketCloneModel, Label: "PocketTTS 100M, English (audio.cpp)", DefaultTemperature: f64(0.7)},
+	{ID: Drama3CloneModel, Label: "Fish Audio Drama 3 (audio.cpp)", DefaultTemperature: f64(0.7), Delivery: DeliveryDirected},
 	{ID: "audiocpp-moss-local", Label: "MOSS-TTS-Local v1.5 (audio.cpp)", DefaultTemperature: f64(1.7)},
 	{ID: "audiocpp-moss-nano", Label: "MOSS-TTS-Nano 100M (audio.cpp)", DefaultTemperature: f64(1.7)},
 	{ID: "audiocpp-zipvoice", Label: "ZipVoice-Distill, English/Chinese (audio.cpp)"},

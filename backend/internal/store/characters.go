@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/rhino1998/lectable/backend/internal/voices"
 	"sort"
 	"strings"
 	"time"
@@ -169,25 +170,35 @@ func (s *SQLiteStore) UpsertCharacter(scope, name string, isRole bool) (characte
 	return c, true, nil
 }
 
-// CharacterVoiceForModel returns id's assigned voice preset for cloneModel
-// specifically, or "" if none has been assigned for that model yet (either
-// never auto-assigned, or explicitly cleared - see SetCharacterVoice). A
-// character can be assigned a different preset per clone model (a preset
-// clones through one specific model and isn't portable to another - see
-// store.Character's doc comment) - callers resolving a single paragraph's
-// voice pass the *book's own* resolved clone model
+// CharacterVoiceForModel returns id's voice preset for cloneModel: the
+// one assigned for that model, else - so switching a book to another clone
+// model keeps every character's voice instead of rendering new ones - the
+// one assigned for another model (voices.DefaultCloneModel's first, then
+// the newest). A preset is a reference clip, which any clone model clones
+// from. Not for voices.InstructedCloneModel, where a character with no
+// preset of its own deliberately reads in the narrator's voice
+// (narration.Resolver's instructed modes). "" if there is none. Callers
+// resolving a paragraph's voice pass the book's own clone model
 // (internal/narration.Resolver.ForParagraph).
 func (s *SQLiteStore) CharacterVoiceForModel(characterID, cloneModel string) (string, error) {
 	var presetID string
-	err := s.db.QueryRow(`SELECT voice_preset_id FROM character_voices WHERE character_id = ? AND clone_model = ?`, characterID, cloneModel).Scan(&presetID)
+	err := s.db.QueryRow(
+		`SELECT voice_preset_id FROM character_voices WHERE character_id = ? AND (clone_model = ? OR ?)
+		 ORDER BY clone_model = ? DESC, clone_model = ? DESC, rowid DESC LIMIT 1`,
+		characterID, cloneModel, voiceFallback(cloneModel), cloneModel, voices.DefaultCloneModel,
+	).Scan(&presetID)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
 	return presetID, err
 }
 
-// CharacterVoicesForModel batch-looks-up cloneModel's assigned voice
-// preset for each of characterIDs - the multi-character counterpart of
+// voiceFallback reports whether cloneModel borrows another model's voice
+// for a character with none of its own - see CharacterVoiceForModel.
+func voiceFallback(cloneModel string) bool { return cloneModel != voices.InstructedCloneModel }
+
+// CharacterVoicesForModel batch-looks-up cloneModel's voice preset (with
+// CharacterVoiceForModel's fallback) for each of characterIDs - the multi-character counterpart of
 // CharacterVoiceForModel, for callers resolving a whole chapter/book's
 // worth of characters at once (httpapi's handleGetChapter/
 // handleListSpeakers) rather than one at a time. A character id absent
@@ -204,8 +215,12 @@ func (s *SQLiteStore) CharacterVoicesForModel(characterIDs []string, cloneModel 
 	}
 	args = append(args, cloneModel)
 
+	args = append(args, voiceFallback(cloneModel), cloneModel, voices.DefaultCloneModel)
+
+	// Best row first per character, as in CharacterVoiceForModel.
 	rows, err := s.db.Query(
-		`SELECT character_id, voice_preset_id FROM character_voices WHERE character_id IN (`+placeholders+`) AND clone_model = ?`,
+		`SELECT character_id, voice_preset_id FROM character_voices WHERE character_id IN (`+placeholders+`) AND (clone_model = ? OR ?)
+		 ORDER BY character_id, clone_model = ? DESC, clone_model = ? DESC, rowid DESC`,
 		args...,
 	)
 	if err != nil {
@@ -218,7 +233,9 @@ func (s *SQLiteStore) CharacterVoicesForModel(characterIDs []string, cloneModel 
 		if err := rows.Scan(&id, &presetID); err != nil {
 			return nil, err
 		}
-		out[id] = presetID
+		if _, ok := out[id]; !ok {
+			out[id] = presetID
+		}
 	}
 	return out, rows.Err()
 }

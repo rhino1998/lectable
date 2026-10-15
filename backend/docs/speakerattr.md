@@ -256,7 +256,37 @@ LLM-prompted attribution, and recent literary-NLP research agrees
      narration between them ("Bert rounded on Fritz.") says otherwise;
      (3) an untagged quote opening a paragraph right after one whose last
      quote never closed continues that speech and keeps its speaker (the
-     model took each paragraph of a multi-paragraph speech as a new line).
+     model took each paragraph of a multi-paragraph speech as a new line);
+     (1b, after (1)) an untagged quote whose paragraph has an action beat
+     right next to it with a named subject ("“Let’s get it done.” Elijah
+     nodded.", "Staavo nodded, then offered up a loop of cable. “Tie
+     it…”") is that character's (`BeatTag`, `beattags.go`) - not with a
+     pronoun tag of its own, a possessive subject ("Jason’s companion
+     said"), a perception verb ("Jake heard Minaga yell"), or, before the
+     quote, a verb of speaking (that's the previous quote's own tag). Nor
+     in a first-person book (the narrator's untagged lines outnumber
+     anyone's; a beat there is as often the listener), on a common
+     sentence-opening word or a "The …" epithet ("One thing was certain"
+     is not "Old One"'s, "The Feather" is no one Feather), when the
+     sentence also has "I"/"me"/"my" or another character in it, or on a
+     state, thought or beat that didn't happen ("was", "knew", "didn't").
+     Those were added after an audit: the first retag run over the library
+     (`POST .../speakers/retag`, with the looser rule) changed 6.4k named
+     lines in books nobody had corrected, and of 200 sampled 83 were right,
+     64 broke a right line, 42 only moved between two entries of one
+     person, 9 stayed wrong - far below what the corrected books promised.
+     Replayed on those 200 the tightened rule still makes 29 of the 83 and
+     4 of the 64; the other changes were restored
+     (`POST .../speakers/restore`, listed by `cmd/tageval -undo-from`).
+     `cmd/tageval` measures these rules against readers' corrections:
+     on 96k dialogue lines of 20 fully corrected books (2026-10-15, the
+     stored attribution wrong on 9.3%) the whole rule set run over the
+     stored answers changes 1,788 lines for +1,077 net with the first,
+     looser beat rule - beat +352 (tightened: +325 of 498 changes, 88%),
+     named tag +462, continuation +268, continued speech -5 - so those
+     books' stored attribution predates or missed the older rules too. A
+     lowercase role-noun subject ("the operator said" -> Operator) was
+     tried and rejected there: right 45% of the time.
      Measured on Spire's Spite before adding it: of 624 quotes with an
      explicit named trailing tag the model credited 42 to someone else,
      and 25% of multi-quote paragraphs had mixed speakers. Tuned against
@@ -592,8 +622,14 @@ character could each create a duplicate preset.
 voice* is tracked separately, one `voice_preset_id` per `(character,
 clone_model)` pair (`Store.CharacterVoiceForModel`/`CharacterVoicesForModel`/
 `SetCharacterVoice`, backed by `character_voices`), so a character can
-end up with a different auto-assigned preset under `audiocpp-qwen3-0.6b`
-than under `audiocpp-higgs-4b`. Every lookup/provisioning call is keyed
+be given a different preset under `audiocpp-qwen3-0.6b` than under
+`audiocpp-higgs-4b`. A model with no preset of its own for a character
+borrows the one they have under another model (the default clone
+model's first): a preset is a reference clip any model clones from, and
+switching a book to Drama 3 used to render every character a new voice
+from the same casting, which sounded like someone else (2026-10-15).
+`voices.InstructedCloneModel` doesn't borrow - its unassigned characters
+read in the narrator's voice by design. Every lookup/provisioning call is keyed
 by the book's own clone model (`store.Book.CloneModel`, via
 `narration.BookCloneModel`/`EffectiveCloneModel`); `provisionMissingCharacterVoices` checks any character it
 touches - new or recurring - who doesn't yet have a voice for that
@@ -638,6 +674,29 @@ so pairs need the text read.
   test counts uses: with a plain "does the book ever write it lower case"
   (`LowercaseWords`), Underverse's protagonist Jack (27,200 lines; the
   book has a "jack" somewhere) was proposed as a role.
+- *One of a kind* (2026-10-14, `OneOfKind`): "One of the [Knights]",
+  "One of the Gnolls" - names attribution kept from before `RoleLabel`
+  turned such answers into role labels, so they never went away (TWI had
+  ~300, "One of the [Knights]" 123 lines). Each is proposed merged into
+  the role it is one of - a role first, singular spelling first, brackets
+  or not ("Knight", "[Knight]", "Knights") - or, with none, renamed to it
+  and marked a role (`rename_role`, "One of the Fraerlings" ->
+  "Fraerling"; qualifiers kept: "Summer Knight", "Ruler of Khelt").
+  "One of the others"/"the crowd" name no kind and are left alone.
+- *Brackets* (`Unbracketed`): LitRPGs write classes in brackets, and
+  attribution sometimes kept them ("[Mage]", "Gnoll [Druid]"). A
+  bracketed name is proposed merged into the entry spelled without them
+  (or its singular - "[alchemists]" into "Alchemist"), else renamed
+  (`rename`, role flag unchanged).
+- *Aliases the summary pass records* (`httpapi.recordCastAliases`, from
+  `ResolveCastIdentities`'s check of a chapter's cast against the
+  roster) are written straight onto the roster, not proposed - and on
+  TWI overnight (2026-10-14) about half of 73 were wrong, many a named
+  person filed under a kind ("Poinr" under "Gnolls", "Miihey" under
+  "Elf"). So nothing is recorded onto a role or a name for a kind of
+  person, and an alias a roster review took off (an accepted
+  `remove_alias`/`split_alias`) is never put back - "Sprigaena" had
+  returned to "Elf" that way.
 - *First names* (`shortNameTarget`, dedupe's rule 4) are proposed, not
   merged - except a rank ("Baron" into "Baron Sanguis") or a name inside
   "X of Y" ("Issa" into "Priest of Issa", a god and his priest).
@@ -1269,6 +1328,82 @@ shows up without a DB write), previews a variant via
 one via `POST .../speakers/variants/regenerate`, which resets that
 speaker's lines in that emotion (this book only) and queues the render
 right away (`jobs.Manager.EnqueueEmotionVariant`).
+
+**Free-form direction** (2026-10-14, for Fish Drama 3; `internal/direction`,
+`speakerattr/direction.go`, `httpapi/delivery.go`; design and open questions
+in `drama3-direction-plan.md`). A clone model whose catalog entry says
+`voices.DeliveryDirected` reads delivery as text - a style prefix
+(`[too bright, covering the hurt]`), point tags (`[sighs]`), spans
+(`<whisper>…</whisper>`) - so for it the emotion pass gets a **second
+stage** (`Passes.Delivery`): after the labels, `httpapi.deliverChapter` picks
+each dialogue line that has a label or narration beside it saying how it is
+delivered (`speakerattr.DeliveryCue` - laughed, sighed, "voice breaking",
+under his breath), and `Client.DirectLines` asks for each one alone (4 at a
+time, `directionSystemPrompt`, primed) with its speaker and casting summary,
+the 3 paragraphs before and 1 after, its scene and the book's setting, and
+the label as a hint. The model writes the line back with direction in it;
+`direction.Parse` keeps it only if the words are unchanged, and a one-word
+style (`[weary]`) is sent back once for a phrase. Every other dialogue line's
+direction is cleared, and lines the reader directed (`store.EditDirection`)
+are left alone. Stored in `paragraphs.direction` (JSON, rune offsets plus a
+hash of the text they were written for - a changed text drops it). The
+labels stay: every other clone model renders from them, and under a
+directed model a labeled line with no direction of its own is read with the
+label's style (`emotions.Emotion.Direction`, via
+`Paragraph.EffectiveDirection`), so a book moved to the model is directed
+before stage 2 runs; a chapter labeled earlier runs just stage 2
+(`speechDirectionDependency`, `directChapterRange`). Generation under a
+directed model: no emotion variants are rendered or used anywhere. That
+covers the lazy dependency and the clip a line clones from
+(`task.variantEmotion`, `emotionVariant`), the "used_voices" bulk action, and
+the Speakers tab, whose emotion chips show `directed` with no play or
+regenerate and whose regenerate route answers 400 for an emotion. the book's own
+brackets removed from the text (`direction.LiteralBracketSubs`), the
+direction written in around substitutions (`Direction.Insertions`), a bisect
+retry repeats the style and closes/reopens a cut span (`CarryAcross`), and
+the extra-words check compares against the text with the direction stripped
+and the transcript without "ha ha"/"ugh" (`dropVocalizations`), so a tag
+read aloud is caught; after the chunk-size retries, the line is retried
+without its tags, then without its style (`retryAttempts`). The annotations
+view draws a directed line from `paragraphDTO.delivery` (structured; only
+under a directed model): the style as a script's parenthetical before the
+line (dimmer when it is only the label's - `styleFromLabel`; clicking it opens
+the editor), point tags as small pills where they happen, and spans as
+styling on their words (whisper faded and dotted, slow letter-spaced,
+emphasis underlined) - web `ParagraphText`/`ChapterSection`, Android
+`ReaderParagraph` (pills are inserted into the shown text, with word offsets
+shifted past them), and Android's offline copies keep it. **Tuned 2026-10-15** (`cmd/directprobe`, Qwen3.6-35B-A3B, 174 labeled or
+cued lines from 9 chapters of 7 books; text only, nothing listened to yet).
+Every variant directed 98-100% of the picked lines, and changed a line's
+words at most once.
+
+- *Rules only* (the first prompt): the label hint, which then showed the
+  label's LLM description, was pasted in as a style ("exhausted, weak,
+  drained, sleepy, worn out" ×8). Without the hint, the prompt's own
+  examples came back instead ("dry, barely holding back a laugh" ×7).
+- *Concrete voice words* ("clipped, breathy, hoarse"): reused its own
+  example phrases ×8-10.
+- *Worked examples* (four passage → reply pairs): styles were 97-99%
+  distinct and none were copied from the prompt; emphasis on 25-36% of
+  lines. Some styles described gestures ("leaning in").
+- *Worked examples plus "only what can be heard"*, with a note on the feeling
+  under the line and a point tag never inside the style: gestures were
+  gone, emphasis was on 67-77% of lines and mostly on the word that carries
+  the line ("Are you heading back to your <emphasis>Hive</emphasis>?"), and
+  point tags were on 15-21% of lines, mostly backed by the passage ("He
+  sighed," → `[sighs]`; a few unearned). This is the shipped prompt.
+  Telling it to avoid "sharp" didn't work (~30 lines).
+
+Other choices from the same runs:
+
+- The label hint is now just the label's name, marked as a rough guess.
+  With or without it, results were similar.
+- The first attempt runs at temperature 0.4, which gave 174 distinct styles
+  out of 174, against 169-170 greedy.
+- Seen once in ~1,400 calls: a reply of `[sharp Pisces.”`, the tail of a
+  *different* line being generated at the same time. That suggests bleed
+  between sequences in the batched LLM. The retry recovered it; it hasn't
+  been investigated.
 
 **Pauses** are the one Higgs inline tag kept: `deliverytags.
 PauseInsertions` places `<|prosody:pause|>` before each ellipsis/em dash

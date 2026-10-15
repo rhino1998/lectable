@@ -21,6 +21,27 @@ const summaryMaxTokens = 2048
 // SummarizeChapter).
 const summaryWindowChars = 24000
 
+// summaryPromptChars caps a summary call's whole user prompt - the window
+// plus the known-characters list, the setting notes and a later window's
+// carry-over and lead-in - so prompt and reply fit one generation slot
+// (SlotNCtx). The Wandering Inn: Volume 7 has chapters whose windows
+// mention enough of the series' roster that the list alone is ~8K
+// characters: their prompts ran 34-38K characters (10-11K tokens), the
+// reply ran out of slot, and the failed decode took the three calls sharing
+// its batch with it - four chapters failing together on every retry. A
+// window over the cap is cut shorter (summaryWindowFor). 3.3 characters a
+// token is a tenth under what those prompts measured (3.6-3.7).
+var summaryPromptChars = (SlotNCtx()-summaryMaxTokens)*33/10 - len(summarySystemPrompt) - summaryPromptSlack
+
+// summaryPromptSlack is left for the chat template and a retry's note
+// (narratorMissedNote).
+const summaryPromptSlack = 600
+
+// summaryMinWindowChars is the least chapter text a window is cut down to
+// for summaryPromptChars: under it the calls are mostly roster, and a
+// prompt that still doesn't fit is refused by the worker on its own.
+const summaryMinWindowChars = 6000
+
 // summaryMinChars is the chapter text under which an empty summary is an
 // answer rather than a failure: a converter's one-line "Converted Ebook"
 // page or a bare half-title has no story to tell, the model says so, and
@@ -138,8 +159,12 @@ func (c *Client) SummarizeChapter(ctx context.Context, bookTitle, chapterTitle s
 	var out ChapterSummary
 	castIndex := map[string]int{}
 	var prev []ParagraphInput
-	for _, window := range summaryWindows(paragraphs) {
+	for rest := paragraphs; len(rest) > 0; {
 		carry := carryOver(out) + leadIn(prev)
+		window := summaryWindowFor(rest, func(w []ParagraphInput) int {
+			return len(c.summaryPrompt(bookTitle, chapterTitle, setting, roster, w, carry, ""))
+		})
+		rest = rest[len(window):]
 		raw, err := c.summarizeWindow(ctx, bookTitle, chapterTitle, setting, roster, window, carry, "")
 		prev = window
 		if errors.Is(err, errEmptySummary) && nothingToTell(paragraphs) {
@@ -262,20 +287,41 @@ func nothingToTell(paragraphs []ParagraphInput) bool {
 	return true
 }
 
-func summaryWindows(paragraphs []ParagraphInput) [][]ParagraphInput {
-	var out [][]ParagraphInput
-	start, size := 0, 0
+// summaryWindow is the next summary window of paragraphs: as many as fit
+// in limit characters of text, at least one, never ending inside a printed
+// paragraph (before an Inline segment).
+func summaryWindow(paragraphs []ParagraphInput, limit int) []ParagraphInput {
+	size := 0
 	for i, p := range paragraphs {
-		if size > 0 && size+len(p.Text) > summaryWindowChars && !p.Inline {
-			out = append(out, paragraphs[start:i])
-			start, size = i, 0
+		if size > 0 && size+len(p.Text) > limit && !p.Inline {
+			return paragraphs[:i]
 		}
 		size += len(p.Text) + 1
 	}
-	if start < len(paragraphs) {
-		out = append(out, paragraphs[start:])
+	return paragraphs
+}
+
+// summaryWindowFor is the next summary window of paragraphs, cut shorter
+// than summaryWindowChars when its prompt (promptLen) would run over
+// summaryPromptChars - but not under summaryMinWindowChars of text. A
+// shorter window also mentions fewer characters, so each cut is measured
+// again.
+func summaryWindowFor(paragraphs []ParagraphInput, promptLen func([]ParagraphInput) int) []ParagraphInput {
+	limit := summaryWindowChars
+	window := summaryWindow(paragraphs, limit)
+	for limit > summaryMinWindowChars {
+		over := promptLen(window) - summaryPromptChars
+		if over <= 0 {
+			break
+		}
+		limit = max(min(limit, len(windowText(window)))-over, summaryMinWindowChars)
+		shorter := summaryWindow(paragraphs, limit)
+		if len(shorter) == len(window) {
+			break // one paragraph too long to cut
+		}
+		window = shorter
 	}
-	return out
+	return window
 }
 
 // carryOver tells a later summary window what the earlier ones found: the
@@ -405,6 +451,12 @@ func paragraphsNaming(window []ParagraphInput, name string, aliases []string) in
 // summarizeWindow asks for one window's notes. note, when set, goes after
 // the paragraphs - a correction for a retry (narratorMissedNote).
 func (c *Client) summarizeWindow(ctx context.Context, bookTitle, chapterTitle string, setting *BookSetting, roster Roster, window []ParagraphInput, carry, note string) (summaryRaw, error) {
+	user := c.summaryPrompt(bookTitle, chapterTitle, setting, roster, window, carry, note)
+	return generateAndParse(ctx, c, summarySystemPrompt, user, 0, summaryMaxTokens, parseSummary)
+}
+
+// summaryPrompt is summarizeWindow's user prompt.
+func (c *Client) summaryPrompt(bookTitle, chapterTitle string, setting *BookSetting, roster Roster, window []ParagraphInput, carry, note string) string {
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
 	if lines := setting.promptLines(); lines != "" {
@@ -453,7 +505,7 @@ func (c *Client) summarizeWindow(ctx context.Context, bookTitle, chapterTitle st
 	if c.cfg.NoThink {
 		user.WriteString("\n/no_think")
 	}
-	return generateAndParse(ctx, c, summarySystemPrompt, user.String(), 0, summaryMaxTokens, parseSummary)
+	return user.String()
 }
 
 type summaryRaw struct {

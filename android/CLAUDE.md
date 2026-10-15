@@ -389,6 +389,12 @@ compiled-in default in place if nothing answers in time.
   while `BookSummaryDto.preprocessing` is set (live, via the `books`
   topic). Download book enqueues every chapter via
   `ChapterDownloadWorker` (pinned, `ExistingWorkPolicy.KEEP`), fire-and-forget.
+  Removing a copy (here, the reader's menu - "Cancel download" while one
+  runs - and Settings' "Delete all downloads") goes through
+  `data/download/BookDownloadRemover`: it cancels the book's chapter and
+  ambience workers (one still queued would write the chapter back) and the
+  backend `pipeline_generate_chapter` jobs for chapters this device was
+  still downloading, then deletes the files.
 - `ui/reader/` - `ReaderScreen`: an infinite-scroll reader like the web
   frontend's `ReaderPage.tsx` (a `{range}` chapter-index window grown via
   `LazyListState.layoutInfo` instead of `IntersectionObserver`), plus a

@@ -61,7 +61,7 @@ func (s *Server) stageVoices(book *store.Book, books []store.Book, bookVoice, re
 		}
 		dto := speakerVoiceDTO{Stage: &stage}
 		v := narration.StageVoice(resolved, bookVoice, char, &st)
-		s.voiceSamples(&dto, v.PresetID, lines[st.ID], emotionCounts[st.ID])
+		s.voiceSamples(&dto, v.PresetID, v.CloneModel, lines[st.ID], emotionCounts[st.ID])
 		if v.PresetID != resolved.PresetID {
 			dto.CanRegenerate = true
 			if path := audiopath.VoicePresetRefFile(s.DataDir, v.PresetID); fileExists(path) {

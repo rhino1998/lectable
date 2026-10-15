@@ -739,6 +739,14 @@ func logTaskTiming(t *task, err error) {
 		t.kind, t.dedupKey(), t.tier, t.attempt, waited.Round(time.Millisecond), ran.Round(time.Millisecond), status)
 }
 
+// HasAttribution reports whether chapterID's speaker attribution task is
+// queued or running - a caller writing the chapter's speakers itself
+// (httpapi's retag) leaves it to that run.
+func (m *Manager) HasAttribution(chapterID string) bool {
+	_, ok := m.sched.Priority("attr:" + chapterID)
+	return ok
+}
+
 func (m *Manager) IsGenerating(chapterID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()

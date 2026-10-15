@@ -54,6 +54,12 @@ export const CHARACTER_VOICE_MODES = ['narrator', 'assigned', 'instruct_unassign
 export type CharacterVoiceMode = (typeof CHARACTER_VOICE_MODES)[number]
 
 /**
+ * Delivery is how a clone model takes a line's delivery as text.
+ */
+export const DELIVERIES = ['plain', 'higgs-pauses', 'directed'] as const
+export type Delivery = (typeof DELIVERIES)[number]
+
+/**
  * errorCode is a machine-readable error reason a client can branch on
  * (errorResponse.Code).
  */
@@ -78,6 +84,14 @@ export type ImportChapterSource = (typeof IMPORT_CHAPTER_SOURCES)[number]
  */
 export const JOB_TIERS = ['urgent', 'lookahead', 'normal', 'background'] as const
 export type JobTier = (typeof JOB_TIERS)[number]
+
+/**
+ * libraryGenerateScope is the ?scope= query param of POST
+ * /api/library/generate: "remaining" covers each book from its saved
+ * reading position on, "all" each book from its beginning.
+ */
+export const LIBRARY_GENERATE_SCOPES = ['remaining', 'all'] as const
+export type LibraryGenerateScope = (typeof LIBRARY_GENERATE_SCOPES)[number]
 
 /**
  * LightEffect is Lighting.Effect's own type. Clients animate these
@@ -112,7 +126,7 @@ export type ResetPass = (typeof RESET_PASSES)[number]
 /**
  * RosterFixKind is a change to a roster a review can propose.
  */
-export const ROSTER_FIX_KINDS = ['merge', 'remove_alias', 'split_alias', 'mark_role', 'invalidate'] as const
+export const ROSTER_FIX_KINDS = ['merge', 'remove_alias', 'split_alias', 'mark_role', 'invalidate', 'rename_role', 'rename'] as const
 export type RosterFixKind = (typeof ROSTER_FIX_KINDS)[number]
 
 /**
@@ -167,10 +181,11 @@ export type WordClass = (typeof WORD_CLASSES)[number]
  */
 export const CLONE_MODELS = [
   { id: 'audiocpp-qwen3-0.6b', label: 'Qwen3-TTS (audio.cpp)', defaultTemperature: 0.9 },
-  { id: 'audiocpp-higgs-4b', label: 'Higgs Audio v3 TTS 4B (audio.cpp)', defaultTemperature: 0.8 },
+  { id: 'audiocpp-higgs-4b', label: 'Higgs Audio v3 TTS 4B (audio.cpp)', defaultTemperature: 0.8, delivery: 'higgs-pauses' },
   { id: 'audiocpp-breeze-tts', label: 'BreezeTTS 2 (audio.cpp)', defaultTemperature: 0.9 },
   { id: 'audiocpp-omnivoice', label: 'OmniVoice (audio.cpp)' },
   { id: 'audiocpp-pocket-100m', label: 'PocketTTS 100M, English (audio.cpp)', defaultTemperature: 0.7 },
+  { id: 'audiocpp-drama3', label: 'Fish Audio Drama 3 (audio.cpp)', defaultTemperature: 0.7, delivery: 'directed' },
   { id: 'audiocpp-moss-local', label: 'MOSS-TTS-Local v1.5 (audio.cpp)', defaultTemperature: 1.7 },
   { id: 'audiocpp-moss-nano', label: 'MOSS-TTS-Nano 100M (audio.cpp)', defaultTemperature: 1.7 },
   { id: 'audiocpp-zipvoice', label: 'ZipVoice-Distill, English/Chinese (audio.cpp)' },
@@ -202,19 +217,19 @@ export type DesignModel = (typeof DESIGN_MODELS)[number]['id']
  * The fixed emotion set a dialogue line can carry (Paragraph.emotion; "" is neutral), in display order - backend emotions.All.
  */
 export const EMOTIONS = [
-  { id: 'warm', label: 'Warm' },
-  { id: 'excited', label: 'Excited' },
-  { id: 'teasing', label: 'Teasing' },
-  { id: 'sad', label: 'Sad' },
-  { id: 'pleading', label: 'Pleading' },
-  { id: 'angry', label: 'Angry' },
-  { id: 'afraid', label: 'Afraid' },
-  { id: 'nervous', label: 'Nervous' },
-  { id: 'cold', label: 'Cold' },
-  { id: 'whisper', label: 'Whisper' },
-  { id: 'shout', label: 'Shout' },
-  { id: 'weary', label: 'Weary' },
-  { id: 'pained', label: 'Pained' },
+  { id: 'warm', label: 'Warm', direction: 'warm and fond, a smile in the voice' },
+  { id: 'excited', label: 'Excited', direction: 'excited and breathless, voice lifting' },
+  { id: 'teasing', label: 'Teasing', direction: 'playful and teasing, a little smug' },
+  { id: 'sad', label: 'Sad', direction: 'sad and quiet, close to tears' },
+  { id: 'pleading', label: 'Pleading', direction: 'pleading, desperate and urgent' },
+  { id: 'angry', label: 'Angry', direction: 'angry, voice raised and tight' },
+  { id: 'afraid', label: 'Afraid', direction: 'frightened, voice trembling' },
+  { id: 'nervous', label: 'Nervous', direction: 'nervous and hesitant' },
+  { id: 'cold', label: 'Cold', direction: 'cold and contemptuous, flat and controlled' },
+  { id: 'whisper', label: 'Whisper', direction: 'whispering, hushed' },
+  { id: 'shout', label: 'Shout', direction: 'shouting, at full volume' },
+  { id: 'weary', label: 'Weary', direction: 'weary and exhausted, slow' },
+  { id: 'pained', label: 'Pained', direction: 'in pain, strained, through gritted teeth' },
 ] as const satisfies readonly EmotionInfo[]
 export type Emotion = (typeof EMOTIONS)[number]['id']
 
@@ -954,6 +969,11 @@ export interface CloneModelInfo {
    * such knob - flow/diffusion models, OmniVoice).
    */
   defaultTemperature?: number | null
+  /**
+   * Delivery is what the model reads of a line's delivery beyond its
+   * words ("" is DeliveryPlain) - see CloneDelivery.
+   */
+  delivery?: Delivery
 }
 
 export interface CreateBookmarkRequest {
@@ -1017,7 +1037,8 @@ export interface CreateRosterProposalRequest {
   target?: string
   /**
    * Detail is the alias to remove or split off (remove_alias and
-   * split_alias only).
+   * split_alias), or the new name (rename, and rename_role - renamed and
+   * marked a role).
    */
   detail?: string
   reason?: string
@@ -1136,6 +1157,13 @@ export interface EmotionInfo {
    * Label is the human-readable name shown in the UI.
    */
   label: string
+  /**
+   * Direction is the label as a style for a clone model that takes
+   * direction as text (internal/direction, voices.DeliveryDirected): what
+   * a labeled line without a direction of its own is read with, and the
+   * preset the reader's direction editor offers.
+   */
+  direction: string
 }
 
 export interface EpubChapter {
@@ -1586,6 +1614,39 @@ export interface Lighting {
   effect: LightEffect
 }
 
+/**
+ * lineDirectionDTO is one line's direction as the annotations view draws it:
+ * the style as a parenthetical before the line, point tags as pills at
+ * their place, spans as styling on their words. Offsets are runes into
+ * Text, like directionMarkDTO.Offset.
+ */
+export interface LineDirection {
+  /**
+   * Style is the phrase for the whole line, "" for none.
+   */
+  style?: string
+  /**
+   * StyleFromLabel marks a style that is the emotion label's
+   * (emotions.Emotion.Direction) because the line has no direction of
+   * its own.
+   */
+  styleFromLabel?: boolean
+  /**
+   * Marks are point tags ("sighs"), each before rune Offset.
+   */
+  marks?: DirectionMark[]
+  /**
+   * Spans are scoped tags ("whisper") over runes [Start, End).
+   */
+  spans?: LineDirectionSpan[]
+}
+
+export interface LineDirectionSpan {
+  start: number
+  end: number
+  tag: string
+}
+
 export interface ListenRequest {
   /**
    * PresetID is the voice whose reference clip is asked about: a preset,
@@ -1782,6 +1843,21 @@ export interface Paragraph {
    */
   directionMarks?: DirectionMark[]
   /**
+   * Delivery is how the line is directed under a clone model that takes
+   * direction as text (store.Paragraph.EffectiveDirection), structured for
+   * the annotations view to draw - omitted under any other model and for
+   * an undirected line. DirectionMarks carries the same as the inserts the
+   * generation text gets.
+   */
+  delivery?: LineDirection | null
+  /**
+   * Direction is the line's own speech direction written into its text
+   * ("[tired] Fine. [sighs] Go.", internal/direction.Direction.Annotate) -
+   * what the reader's direction editor starts from. Omitted when the
+   * line has none of its own (a label's fallback style isn't one).
+   */
+  direction?: string
+  /**
    * PronunciationMarks is every resolved pronunciation substitution
    * active on this paragraph (e.g. "Dr." -> "Doctor"), each pinned to
    * the word it replaces (see pronunciationMarkDTO.Offset) so the
@@ -1894,6 +1970,16 @@ export interface Passes {
    * represents that combination just fine.
    */
   direction: boolean
+  /**
+   * Delivery is set once the direction pass's second stage - free-form
+   * directions for the lines its labels (or nearby delivery verbs) pick
+   * out, internal/speakerattr.Client.DirectLines - has covered the whole
+   * chapter. Only run under a clone model that takes direction as text
+   * (voices.DeliveryDirected); Direction's contract otherwise. A chapter
+   * labeled under another model has Direction without Delivery, so moving
+   * the book to a directed model runs just this stage.
+   */
+  delivery: boolean
   /**
    * Pronunciation is set once pronunciation resolution
    * (internal/speakerattr.Client.ResolvePronunciation, a
@@ -2230,6 +2316,58 @@ export interface ResetFactsResponse {
   removed: number
 }
 
+export interface RestoreSpeakerLine {
+  chapterIdx: number
+  paragraphIdx: number
+  from: string
+  to: string
+}
+
+/**
+ * restoreSpeakersRequest lists lines to set back, each only if it still has
+ * From (a later change since, by a reader or a pass, wins).
+ */
+export interface RestoreSpeakersRequest {
+  lines: RestoreSpeakerLine[]
+}
+
+/**
+ * restoreSpeakersResponse counts what POST .../speakers/restore did.
+ */
+export interface RestoreSpeakersResponse {
+  restored: number
+  skipped: number
+}
+
+/**
+ * retagResponse is what POST .../speakers/retag changed: how many
+ * attributed chapters it looked at, how many it left to an attribution run
+ * still queued for them, and how many lines moved, by the rule that moved
+ * them (speakerattr.TagChange.Reason).
+ */
+export interface RetagResponse {
+  chapters: number
+  skipped: number
+  /**
+   * Reviewed counts chapters left alone as part of a hand-corrected
+   * stretch.
+   */
+  reviewed: number
+  changed: number
+  /**
+   * Tag is a named speech tag ("…,” Bert said"), Beat an action beat
+   * ("“…” Elijah nodded."), Continuation an untagged quote continuing its
+   * paragraph's speaker, ContinuedSpeech a paragraph continuing the last
+   * one's unclosed speech, ThirdPerson a first-person narrator's "he said"
+   * line made Unknown.
+   */
+  tag: number
+  beat: number
+  continuation: number
+  continuedSpeech: number
+  thirdPerson: number
+}
+
 export interface ReviewBookSourceRequest {
   /**
    * Import and Skip are ids of entries waiting for review
@@ -2263,7 +2401,7 @@ export interface RosterProposal {
   targetLines: number
   /**
    * Detail is the alias to remove (remove_alias) or split off
-   * (split_alias).
+   * (split_alias), or the subject's new name (rename, rename_role).
    */
   detail: string
   reason: string
@@ -2413,6 +2551,15 @@ export interface SetKindAccentRequest {
   accent: string
 }
 
+export interface SetParagraphDirectionRequest {
+  /**
+   * Direction is the line with its direction written into it, as
+   * paragraphDTO.Direction shows it ("[tired] Fine. [sighs] Go."); ""
+   * clears it.
+   */
+  direction: string
+}
+
 export interface SetParagraphEmotionRequest {
   emotion: string
 }
@@ -2446,6 +2593,15 @@ export interface SetParagraphSpeakerRequest {
    * off whoever holds it as one.
    */
   new?: boolean
+  /**
+   * Index is the line's speaker number (store.Paragraph.SpeakerIndex),
+   * telling apart unnamed people of one role in a scene: "Guard" with
+   * Index 2 is "Guard 2", read in the role's second voice. 0 is no
+   * number; above 0 only a role's line takes one (1 to
+   * store.MaxSpeakerIndex). Left out, a line keeping its speaker keeps
+   * its number and a line changing speaker loses it.
+   */
+  index?: number | null
 }
 
 /**
@@ -2658,10 +2814,13 @@ export interface SpeakerEmotion {
   /**
    * Status is "ready" (variant rendered - AudioURL plays it),
    * "pending" (not rendered yet: it renders lazily the first time one of
-   * these lines generates), or "failed" (couldn't be rendered; these
-   * lines clone from the base clip instead).
+   * these lines generates), "failed" (couldn't be rendered; these
+   * lines clone from the base clip instead), or "directed" (the book's
+   * clone model takes direction as text - voices.DeliveryDirected - so no
+   * variant is used or rendered: these lines clone from the base clip
+   * with their direction in the text).
    */
-  status: 'ready' | 'pending' | 'failed'
+  status: 'ready' | 'pending' | 'failed' | 'directed'
   audioUrl?: string
 }
 
@@ -3843,6 +4002,23 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleSetParagraphDirection is a reader's override of one dialogue
+   * line's free-form direction - handleSetParagraphEmotion's counterpart for
+   * a clone model that takes direction as text. The body is the line with
+   * direction written in, read by the same parser the pass uses
+   * (direction.Parse): 400 when it changes the line's words or breaks a
+   * tag. Recorded as a store.EditDirection, so the pass leaves the line
+   * alone after. Invalidates and re-enqueues the line's audio when its
+   * effective direction changed under the book's clone model.
+   */
+  'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/direction': {
+    path: { id: string; idx: number; pidx: number }
+    query: Record<never, never>
+    body: SetParagraphDirectionRequest
+    response: void
+    errorCode: never
+  }
+  /**
    * handleSetParagraphEmotion is a reader's manual override of one dialogue
    * line's emotion (an internal/emotions id, or "" for neutral) - the
    * annotations view's right-click menu. Like handleSetParagraphScareQuote,
@@ -4003,6 +4179,11 @@ export interface Routes {
    * character's aliases, so later attribution stops folding it back; a
    * character of that name marked invalid is made valid again. 400 without
    * a name ("", Narrator, Unknown).
+   *
+   * "index" numbers a role's line ("Guard 2" - see setParagraphSpeakerRequest.
+   * Index); 400 for a number out of range or on a speaker that isn't a role.
+   * A numbered line's edit is recorded in attribution's own answer form
+   * ("Guard 2"), so changing only the number is a correction too.
    */
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker': {
     path: { id: string; idx: number; pidx: number }
@@ -5265,7 +5446,9 @@ export interface Routes {
   /**
    * handleSyncBookSource checks a book's source for chapters it doesn't have
    * and appends them, as a job-queue task (joining a check already queued or
-   * running - see startSourceSync).
+   * running - see startSourceSync), and checks with it every other book
+   * listed on the same page (samePageBooks). 202 with how many checks it
+   * queued.
    * 409 for a book that wasn't imported from a website.
    */
   'POST /api/books/{id}/source/sync': {
@@ -5393,6 +5576,42 @@ export interface Routes {
     query: Record<never, never>
     body: ReattributeSpeakerRequest
     response: QueuedResponse
+    errorCode: never
+  }
+  /**
+   * handleRestoreSpeakers serves POST /api/books/{id}/speakers/restore: sets
+   * listed dialogue lines' speakers back to an earlier machine value - an
+   * undo for a pass that moved them (a retag run, listed by cmd/tageval
+   * -undo-from against a backup) - without recording a reader's edit, so
+   * the lines stay the passes' to judge. A line is skipped unless it is
+   * dialogue, still has From, has no recorded edit, and To is Narrator,
+   * Unknown or a valid character of the book's roster. A restored line
+   * loses its speaker number.
+   */
+  'POST /api/books/{id}/speakers/restore': {
+    path: { id: string }
+    query: Record<never, never>
+    body: RestoreSpeakersRequest
+    response: RestoreSpeakersResponse
+    errorCode: never
+  }
+  /**
+   * handleRetagSpeakers serves POST /api/books/{id}/speakers/retag: re-runs
+   * attribution's deterministic speech-tag rules (speakerattr.
+   * RefineWithSpeechTags - named tags, action beats, paragraph continuation)
+   * over every attributed chapter's stored speakers, with no model call, so
+   * attribution stored before a rule existed (or under a roster that has
+   * since been cleaned up) gets what the rules say now. A line corrected by
+   * hand, a play's line, a chapter whose attribution is still queued, and
+   * every chapter of the book's hand-corrected stretch (its first corrected
+   * chapter to its last) are left alone. Synchronous - it reads and writes only the database, a few
+   * seconds for a long book - and answers what it changed.
+   */
+  'POST /api/books/{id}/speakers/retag': {
+    path: { id: string }
+    query: Record<never, never>
+    body: never
+    response: RetagResponse
     errorCode: never
   }
   /**
@@ -5773,6 +5992,27 @@ export interface Routes {
     errorCode: never
   }
   /**
+   * handleGenerateLibrary queues background narration for every book in the
+   * library, one book at a time: ?scope=remaining (the default) is
+   * handleGenerateRemaining for each - from its saved reading position to
+   * its end, so a book nobody has opened is generated whole - and scope=all
+   * is handleGenerateBook for each. Books go in the whole-library preprocess
+   * order (libraryPreprocessOrder): series by name, each in series order,
+   * then the books in no series, oldest first. One job-queue row (a
+   * jobs.BulkGroup, Kind "pipeline_library_generate_remaining" or
+   * "pipeline_library_generate", on the first book - see
+   * jobs.Manager.EnqueueLibraryGenerate); asking again while one of either
+   * scope is queued or running joins it. Audio a book already has is left
+   * alone. 202 with the number of books, 0 for an empty library.
+   */
+  'POST /api/library/generate': {
+    path: Record<never, never>
+    query: { scope?: LibraryGenerateScope }
+    body: never
+    response: QueuedResponse
+    errorCode: never
+  }
+  /**
    * handlePreprocessLibrary preprocesses every book in the library, up to
    * libraryPreprocessSeries series at once: each series' books one at a
    * time in series order (they share a roster, as in
@@ -5780,8 +6020,10 @@ export interface Routes {
    * series, oldest first, each taking a series' place. One job-queue row (a
    * jobs.BulkGroup, Kind "pipeline_library_preprocess", on the first book),
    * promoted and cancelled like a series run's; asking again while one is
-   * queued or running joins it. A book whose passes are all done costs one
-   * look at its chapters. 202 with the number of books, 0 for an empty
+   * queued or running joins it. The run reads the library again whenever it
+   * runs out of books (libraryLaneFeed), so a book added since it started -
+   * and asked for by joining it - is taken in too. A book whose passes are
+   * all done costs one look at its chapters. 202 with the number of books, 0 for an empty
    * library.
    */
   'POST /api/library/preprocess': {
@@ -6280,6 +6522,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/chapters/{idx}/music': 'json',
   'GET /api/books/{id}/chapters/{idx}/notes': 'json',
   'PUT /api/books/{id}/chapters/{idx}/notes': 'none',
+  'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/direction': 'none',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/emotion': 'none',
   'POST /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/generate-sfx': 'json',
   'PUT /api/books/{id}/chapters/{idx}/paragraphs/{pidx}/quote': 'none',
@@ -6375,6 +6618,8 @@ export const ROUTE_RESPONSE_KINDS = {
   'GET /api/books/{id}/speakers': 'json',
   'DELETE /api/books/{id}/speakers': 'none',
   'POST /api/books/{id}/speakers/reattribute': 'json',
+  'POST /api/books/{id}/speakers/restore': 'json',
+  'POST /api/books/{id}/speakers/retag': 'json',
   'GET /api/books/{id}/speakers/series-lines': 'json',
   'POST /api/books/{id}/speakers/variants/regenerate': 'json',
   'GET /api/books/{id}/time-jumps': 'json',
@@ -6406,6 +6651,7 @@ export const ROUTE_RESPONSE_KINDS = {
   'PUT /api/lexicon': 'json',
   'DELETE /api/lexicon/{entryId}': 'none',
   'POST /api/library/embed': 'json',
+  'POST /api/library/generate': 'json',
   'POST /api/library/preprocess': 'json',
   'POST /api/llm/test': 'json',
   'GET /api/music-regions/{id}/audio': 'binary',

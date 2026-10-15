@@ -39,6 +39,30 @@ func comparisonWords(text string) []string {
 	return out
 }
 
+// vocalizations are what ASR writes for a laugh, sigh or hesitation - the
+// events a directed line's point tags ask for ([laughs], [sighs]) - which
+// dropVocalizations removes from a transcript before it is compared.
+var vocalizations = map[string]bool{
+	"ha": true, "hah": true, "haha": true, "hahaha": true, "heh": true, "hehe": true,
+	"hm": true, "hmm": true, "mm": true, "mhm": true, "uh": true, "um": true, "er": true,
+	"ah": true, "aah": true, "ahh": true, "ugh": true, "huh": true, "pfft": true, "tsk": true,
+	"oh": true, "ooh": true, "argh": true, "ow": true,
+}
+
+// dropVocalizations removes vocalizations from transcript. A word of the
+// line itself ("oh") then reads as missing, which extraWordRun doesn't
+// count.
+func dropVocalizations(transcript string) string {
+	words := comparisonWords(transcript)
+	out := words[:0]
+	for _, w := range words {
+		if !vocalizations[w] {
+			out = append(out, w)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
 // extraWordRun returns the longest run of consecutive transcript words
 // that a minimum word-level edit alignment against expected has to insert
 // - words the audio contains that the input text doesn't. A substitution

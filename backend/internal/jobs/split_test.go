@@ -373,9 +373,14 @@ func TestRetryChunkSizes(t *testing.T) {
 	}
 }
 
-// TestGenerateCloneSplitConcatenatesLatents: a paragraph generated in two
-// halves carries both halves' latents, as separate chunks, in order.
-func TestGenerateCloneSplitConcatenatesLatents(t *testing.T) {
+// TestGenerateCloneSplitDropsLatentsAfterLoudnessNormalization: each split
+// half comes back with real latents from the worker, but normalizeGenerated
+// (every leaf's loudness pass to voicerefs.TargetLUFS) rescales its samples
+// and so must drop them (ttsworker.Audio's own doc comment) before
+// concatCloneAudio ever sees them - the concatenated result carries no
+// latents either, rather than quietly joining ones that no longer describe
+// the audio they're attached to.
+func TestGenerateCloneSplitDropsLatentsAfterLoudnessNormalization(t *testing.T) {
 	fake := ttsworkertest.New(t)
 	fake.OnGenerate = func(req ttsproto.GenerateRequest) ([]byte, error) {
 		if len(strings.Fields(req.Text)) > 40 {
@@ -395,9 +400,7 @@ func TestGenerateCloneSplitConcatenatesLatents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The whole-paragraph call overflowed before returning anything; the
-	// halves got 1 and 2 frames.
-	if audio.Latents == nil || audio.Latents.Frames != 3 || audio.Latents.Meta["chunk_frames"] != "1,2" {
-		t.Fatalf("latents = %+v", audio.Latents)
+	if audio.Latents != nil {
+		t.Fatalf("latents = %+v, want nil (dropped on loudness normalization)", audio.Latents)
 	}
 }

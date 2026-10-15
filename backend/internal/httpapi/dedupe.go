@@ -47,7 +47,7 @@ func (s *Server) mergeCharacterInto(book *store.Book, from, to store.Character, 
 	}
 	if alias {
 		if clean, _ := speakerattr.SanitizeSpeaker(from.Name); clean == from.Name {
-			if err := s.Store.AddCharacterAliases(to.ID, append([]string{from.Name}, from.Aliases...)...); err != nil {
+			if err := s.Store.AddCharacterAliases(to.ID, mergedAliases(from, to)...); err != nil {
 				return err
 			}
 		}
@@ -350,4 +350,16 @@ func (s *Server) handleDedupeCharacters(w http.ResponseWriter, r *http.Request) 
 		merges = []characterMergeDTO{}
 	}
 	writeJSON(w, http.StatusOK, dedupeResponse{Merges: merges})
+}
+
+// mergedAliases is what a merge of from into to adds to to's aliases: the
+// merged-away name and everything it was called - but only its name when
+// to is a role. A role is a kind of person, so the names a mislabeled entry
+// collected ("[shaman]", also called "Fituna" and "Pulsg") are other
+// people's, and on a role attribution would fold their lines into it.
+func mergedAliases(from, to store.Character) []string {
+	if to.IsRole {
+		return []string{from.Name}
+	}
+	return append([]string{from.Name}, from.Aliases...)
 }

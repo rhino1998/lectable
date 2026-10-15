@@ -28,6 +28,7 @@ import {
   useCancelBookJobs,
   useDeleteBook,
   useGenerateBook,
+  useGenerateLibrary,
   useGenerateRemaining,
   useMarkRead,
   useImportBookUrl,
@@ -49,7 +50,7 @@ import { NO_TITLE_RULE, titleRuleBody } from '../utils/titleRule'
 import { ApiError } from '../api/client'
 import { formatDurationLong } from '../utils/time'
 import { formatEta, narrationRate as measuredNarrationRate } from '../utils/narrationEta'
-import type { BookSummary, ImportPreviewResponse } from '../api/types'
+import type { BookSummary, ImportPreviewResponse, LibraryGenerateScope } from '../api/types'
 
 // One library grid entry: either a run of consecutive standalone books (no
 // series, or a series with only one book present - not worth its own
@@ -642,6 +643,29 @@ export function LibraryPage() {
     })
   }
 
+  const generateLibrary = useGenerateLibrary()
+  const [generateMenuOpen, setGenerateMenuOpen] = useState(false)
+  const generateMenuRef = useRef<HTMLDivElement>(null)
+  useClickOutside([generateMenuRef], () => setGenerateMenuOpen(false), generateMenuOpen)
+  const runGenerateLibrary = (scope: LibraryGenerateScope) => {
+    setGenerateMenuOpen(false)
+    const count = booksQuery.data?.length ?? 0
+    const what =
+      scope === 'all'
+        ? `Generate audio for all ${count} books, each from its beginning?`
+        : `Generate audio for the rest of all ${count} books, each from where you are in it? A book you haven't opened is generated whole.`
+    if (
+      !confirm(
+        `${what} Books are done one at a time. This can take a very long time; it shows as one row on the Jobs page, where it can be cancelled.`,
+      )
+    )
+      return
+    generateLibrary.mutate(scope, {
+      onError: (err) =>
+        alert(err instanceof ApiError ? err.message : 'Could not start generating the library'),
+    })
+  }
+
   const confirmDelete = (book: BookSummary) => {
     if (confirm(`Delete "${book.title}"? This cannot be undone.`)) {
       deleteBook.mutate(book.id)
@@ -735,6 +759,39 @@ export function LibraryPage() {
           >
             <RiMagicLine className={preprocessLibrary.isPending ? 'spin' : undefined} />
           </button>
+          <div className="library-generate-menu" ref={generateMenuRef}>
+            <button
+              className="icon-action-button"
+              title="Generate audio for the whole library in the background, one book at a time"
+              aria-label="Generate library audio"
+              aria-haspopup="menu"
+              aria-expanded={generateMenuOpen}
+              onClick={() => setGenerateMenuOpen((v) => !v)}
+              disabled={generateLibrary.isPending || !booksQuery.data?.length}
+            >
+              <RiHeadphoneLine className={generateLibrary.isPending ? 'spin' : undefined} />
+            </button>
+            {generateMenuOpen && (
+              <div className="popover-panel book-generate-menu-panel" role="menu">
+                <button
+                  className="option-chip"
+                  role="menuitem"
+                  title="Generate every book from the beginning"
+                  onClick={() => runGenerateLibrary('all')}
+                >
+                  All
+                </button>
+                <button
+                  className="option-chip"
+                  role="menuitem"
+                  title="Generate every book from your reading position in it to the end"
+                  onClick={() => runGenerateLibrary('remaining')}
+                >
+                  Remaining
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         <div className="library-add-menu" ref={addMenuRef}>
           <button

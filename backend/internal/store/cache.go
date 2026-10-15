@@ -199,6 +199,8 @@ func cloneParagraph(p Paragraph) Paragraph {
 	p.Pronunciation = slices.Clone(p.Pronunciation)
 	p.Emphasis = slices.Clone(p.Emphasis)
 	p.Table.Cells = slices.Clone(p.Table.Cells)
+	p.Direction.Marks = slices.Clone(p.Direction.Marks)
+	p.Direction.Spans = slices.Clone(p.Direction.Spans)
 	return p
 }
 
@@ -417,7 +419,7 @@ func (c *Cached) ChapterNarration(bookID, voiceID string, overrides []SpeakerVoi
 	var key strings.Builder
 	key.WriteString(voiceID)
 	for _, ov := range overrides {
-		fmt.Fprintf(&key, "\x00%s\x00%d\x00%s", ov.Speaker, ov.SpeakerIndex, ov.VoiceID)
+		fmt.Fprintf(&key, "\x00%s\x00%d\x00%s\x00%d\x00%d", ov.Speaker, ov.SpeakerIndex, ov.VoiceID, ov.FromIdx, ov.ToIdx)
 	}
 
 	c.mu.Lock()

@@ -37,6 +37,11 @@ A proposal is one of:
 - `mark_role` - `subject` is a kind of person several people in the book
   are ("Guard", "Gnome"), not one individual.
 - `invalidate` - `subject` names nobody ("Someone else", a group, markup).
+- `rename_role` - `subject` is one of a kind of person ("One of the
+  Fraerlings") and no role of that kind exists: `detail` is the role's
+  name ("Fraerling"). When the role exists, file a `merge` into it.
+- `rename` - `subject` should just be spelled `detail` ("[Wizard]" as
+  "Wizard").
 
 File one with:
 

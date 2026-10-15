@@ -14,6 +14,7 @@ import androidx.work.WorkManager
 import com.lectable.app.data.live.LiveStore
 import com.lectable.app.data.remote.LiveResult
 import com.lectable.app.data.remote.MediaUrlResolver
+import com.lectable.app.data.remote.dto.ApiCatalog
 import com.lectable.app.data.remote.dto.AudioStatuses
 import com.lectable.app.data.remote.dto.BookDetailDto
 import com.lectable.app.data.remote.dto.BookRecapDto
@@ -25,10 +26,12 @@ import com.lectable.app.data.remote.dto.CharacterVoiceModes
 import com.lectable.app.data.remote.dto.ChapterDetailDto
 import com.lectable.app.data.remote.dto.ChapterMusicDto
 import com.lectable.app.data.remote.dto.CustomVoicePresetDto
+import com.lectable.app.data.remote.dto.Deliveries
 import com.lectable.app.data.remote.dto.PositionDto
 import com.lectable.app.data.remote.dto.SearchResultDto
 import com.lectable.app.data.remote.dto.VoicePresetDto
 import com.lectable.app.data.remote.dto.VoiceSettingsDto
+import com.lectable.app.data.download.BookDownloadRemover
 import com.lectable.app.data.download.DownloadStatus
 import com.lectable.app.data.repository.ChapterDownloadState
 import com.lectable.app.data.repository.DownloadRepository
@@ -97,6 +100,9 @@ data class ReaderUiState(
     // Reader-facing background-music toggle (see backend store.Book.MusicEnabled) - book-wide,
     // toggled from VoicePickerSheet alongside multiVoice above. See [BackgroundMusicPlayer].
     val musicEnabled: Boolean = false,
+    // Whether the book's clone model takes direction as text (backend voices.DeliveryDirected,
+    // Fish Drama 3) - then dialogue's long-press menu offers "Set direction".
+    val directed: Boolean = false,
     // This book's own loaded chapters' background-music regions, keyed by chapterIdx - backs
     // annotations mode's boundary markers (mirrors frontend's ReaderPage.tsx chapterMusicRegions)
     // and is also what feeds [BackgroundMusicPlayer] itself (see onChapterMusic). Populated
@@ -203,6 +209,7 @@ class ReaderViewModel @Inject constructor(
     private val lightingSettingsRepository: LightingSettingsRepository,
     private val liveStore: LiveStore,
     private val downloadRepository: DownloadRepository,
+    private val bookDownloadRemover: BookDownloadRemover,
     private val workManager: WorkManager,
     private val mediaUrlResolver: MediaUrlResolver,
     @ApplicationContext private val appContext: Context,
@@ -442,7 +449,7 @@ class ReaderViewModel @Inject constructor(
      *  these rows are gone. */
     fun deleteLocalCopy() {
         viewModelScope.launch {
-            runCatching { downloadRepository.deleteBookDownloads(bookId) }
+            runCatching { bookDownloadRemover.remove(bookId) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }
@@ -644,6 +651,7 @@ class ReaderViewModel @Inject constructor(
             it.copy(
                 multiVoice = voice.characterVoiceMode != CharacterVoiceModes.NARRATOR,
                 musicEnabled = voice.musicEnabled,
+                directed = ApiCatalog.CLONE_MODELS.find { m -> m.id == voice.cloneModel }?.delivery == Deliveries.DIRECTED,
                 voiceLanguage = voice.language.takeIf { lang -> lang.isNotBlank() } ?: "Auto",
             )
         }
@@ -917,6 +925,15 @@ class ReaderViewModel @Inject constructor(
             runCatching {
                 paragraphIndices.forEach { idx -> libraryRepository.setParagraphEmotion(bookId, chapterIdx, idx, emotion) }
             }
+                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+        }
+    }
+
+    /** The long-press "Set direction" action - one dialogue line's free-form direction, written
+     *  back into its text ("" clears), for a book whose clone model takes direction as text. */
+    fun setDirection(chapterIdx: Int, paragraphIdx: Int, direction: String) {
+        viewModelScope.launch {
+            runCatching { libraryRepository.setParagraphDirection(bookId, chapterIdx, paragraphIdx, direction) }
                 .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
         }
     }

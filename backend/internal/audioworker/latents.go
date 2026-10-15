@@ -103,11 +103,11 @@ func codesFromWire(l *ttsproto.Latents) (*audiocpp.Codes, error) {
 
 // referenceArtifactID names the artifact a family returns its cloning
 // reference's encoding as (with return_<id>=true) and takes it back as,
-// skipping the reference encode: Higgs/BreezeTTS codes, PocketTTS
+// skipping the reference encode: Higgs/BreezeTTS/Drama 3 codes, PocketTTS
 // normalized Mimi latents. "" for a family without one.
 func referenceArtifactID(family string) string {
 	switch family {
-	case "higgs_audio_tts", "breeze_tts":
+	case "higgs_audio_tts", "breeze_tts", "fish_drama3":
 		return "reference_codes"
 	case "pocket_tts":
 		return "reference_latents"

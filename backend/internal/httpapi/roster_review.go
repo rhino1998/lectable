@@ -44,7 +44,7 @@ type rosterProposalDTO struct {
 	SubjectLines int `json:"subjectLines"`
 	TargetLines  int `json:"targetLines"`
 	// Detail is the alias to remove (remove_alias) or split off
-	// (split_alias).
+	// (split_alias), or the subject's new name (rename, rename_role).
 	Detail string `json:"detail"`
 	Reason string `json:"reason"`
 	// Evidence is the passages from the book that show it.
@@ -68,7 +68,8 @@ type createRosterProposalRequest struct {
 	// Target is the character to merge Subject into (merge only).
 	Target string `json:"target,omitempty"`
 	// Detail is the alias to remove or split off (remove_alias and
-	// split_alias only).
+	// split_alias), or the new name (rename, and rename_role - renamed and
+	// marked a role).
 	Detail   string   `json:"detail,omitempty"`
 	Reason   string   `json:"reason,omitempty"`
 	Evidence []string `json:"evidence,omitempty"`
@@ -97,6 +98,8 @@ func rosterFixKey(kind rosterFixKind, subjectID, targetID, detail string) string
 		return "alias:" + subjectID + ":" + strings.ToLower(strings.TrimSpace(detail))
 	case speakerattr.RosterMarkRole:
 		return "role:" + subjectID
+	case speakerattr.RosterRename, speakerattr.RosterRenameRole:
+		return "rename:" + subjectID
 	default:
 		return "invalid:" + subjectID
 	}
@@ -350,6 +353,18 @@ func rosterProposalApplies(p store.RosterProposal, byID map[string]store.Charact
 		return !subject.IsRole
 	case speakerattr.RosterInvalidate:
 		return true
+	case speakerattr.RosterRename, speakerattr.RosterRenameRole:
+		if p.Kind == string(speakerattr.RosterRename) && subject.Name == p.Detail ||
+			p.Kind == string(speakerattr.RosterRenameRole) && subject.Name == p.Detail && subject.IsRole {
+			return false
+		}
+		// Someone else has the name by now: that is a merge, not this.
+		for _, c := range byID {
+			if c.ID != subject.ID && !c.Invalid && namekey.Equal(c.Name, p.Detail) {
+				return false
+			}
+		}
+		return p.Detail != ""
 	}
 	return false
 }
@@ -501,8 +516,8 @@ func (s *Server) handleCreateRosterProposal(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		p.TargetID, p.Target = target.ID, target.Name
-	case speakerattr.RosterRemoveAlias, speakerattr.RosterSplitAlias:
-		p.Detail = strings.TrimSpace(req.Detail)
+	case speakerattr.RosterRemoveAlias, speakerattr.RosterSplitAlias, speakerattr.RosterRename, speakerattr.RosterRenameRole:
+		p.Detail = strings.Join(strings.Fields(req.Detail), " ")
 	case speakerattr.RosterMarkRole, speakerattr.RosterInvalidate:
 	default:
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown kind %q", req.Kind))
@@ -571,6 +586,18 @@ func (s *Server) applyRosterProposal(book *store.Book, p store.RosterProposal, b
 		return s.Store.SetCharacterRole(subject.ID, true)
 	case speakerattr.RosterInvalidate:
 		return s.Store.SetCharacterInvalid(subject.ID, true)
+	case speakerattr.RosterRename, speakerattr.RosterRenameRole:
+		roster := make([]store.Character, 0, len(byID))
+		for _, c := range byID {
+			roster = append(roster, c)
+		}
+		if err := s.renameCharacterChecked(book, subject, roster, p.Detail); err != nil {
+			return err
+		}
+		if speakerattr.RosterFixKind(p.Kind) == speakerattr.RosterRenameRole {
+			return s.Store.SetCharacterRole(subject.ID, true)
+		}
+		return nil
 	}
 	return fmt.Errorf("unknown proposal kind %q", p.Kind)
 }

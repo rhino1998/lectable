@@ -10,6 +10,7 @@ import type {
   BookExport,
   BookSummary,
   BulkAction,
+  LibraryGenerateScope,
   BulkScope,
   ResetPass,
   ChapterDetail,
@@ -364,6 +365,20 @@ export function useSetParagraphEmotion(bookId: string) {
   })
 }
 
+export function useSetParagraphDirection(bookId: string) {
+  return useMutation({
+    mutationFn: ({
+      chapterIdx,
+      paragraphIdx,
+      direction,
+    }: {
+      chapterIdx: number
+      paragraphIdx: number
+      direction: string
+    }) => api.setParagraphDirection(bookId, chapterIdx, paragraphIdx, direction),
+  })
+}
+
 // Re-renders one speaker's emotion variant - see api.regenerateVariant.
 export function useRegenerateVariant(bookId: string) {
   return useMutation({
@@ -518,6 +533,13 @@ export function useGenerateBook() {
 // sits in - see api.generateRemaining.
 export function useGenerateRemaining() {
   return useMutation({ mutationFn: (bookId: string) => api.generateRemaining(bookId) })
+}
+
+// The library header's "Generate library audio" menu: every book's
+// narration, one book at a time (api.generateLibrary). One row on the Jobs
+// page.
+export function useGenerateLibrary() {
+  return useMutation({ mutationFn: (scope: LibraryGenerateScope) => api.generateLibrary(scope) })
 }
 
 // A Speakers-page whole-book action (see api.bulkAction) - fire-and-forget;

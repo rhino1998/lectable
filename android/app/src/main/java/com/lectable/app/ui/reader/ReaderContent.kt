@@ -183,6 +183,8 @@ internal fun InfiniteChapterContent(
     onOpenSpeakerPicker: (chapterIdx: Int, paragraphIndices: List<Int>, currentSpeaker: String) -> Unit,
     onSetScareQuote: (chapterIdx: Int, paragraphIndices: List<Int>, scareQuote: Boolean) -> Unit,
     onSetEmotion: (chapterIdx: Int, paragraphIndices: List<Int>, emotion: String) -> Unit,
+    onSetDirection: (chapterIdx: Int, paragraphIdx: Int, direction: String) -> Unit,
+    directed: Boolean,
     onRegenerateMusic: (chapterIdx: Int, regionId: String) -> Unit,
     onPreviewMusic: (regionId: String, audioUrl: String) -> Unit,
     resolveImageUrl: (String) -> Any?,
@@ -302,6 +304,8 @@ internal fun InfiniteChapterContent(
             onSetEmotion = { paragraphIndices, emotion ->
                 onSetEmotion(chapterIdx, paragraphIndices, emotion)
             },
+            directed = directed,
+            onSetDirection = { paragraphIdx, direction -> onSetDirection(chapterIdx, paragraphIdx, direction) },
         )
         }
 

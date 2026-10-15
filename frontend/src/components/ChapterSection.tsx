@@ -307,8 +307,26 @@ const ParagraphGroup = memo(function ParagraphGroup({
                   paragraph with several dialogue segments can carry a
                   different emotion on each, and the chip sits right on the
                   line it applies to. */}
-              {annotationsView && p.emotion && (
+              {annotationsView && p.emotion && (!p.delivery || p.delivery.styleFromLabel) && (
                 <EmotionIcon emotion={p.emotion} onShowTooltip={onShowTooltip} />
+              )}
+              {/* A directed line's style, as a script's parenthetical -
+                  dimmer when it is only the emotion label's. Clicking it
+                  opens the menu with the direction editor. */}
+              {annotationsView && p.delivery?.style && (
+                <span
+                  className={
+                    'delivery-style' + (p.delivery.styleFromLabel ? ' delivery-style-label' : '')
+                  }
+                  title={
+                    p.delivery.styleFromLabel
+                      ? "Direction from the emotion label - click to write the line's own"
+                      : 'Direction - click to edit'
+                  }
+                  onClick={(e) => onOpenSpeakerMenu(e, chapterIdx, p)}
+                >
+                  ({p.delivery.style}){' '}
+                </span>
               )}
               {/* A play's speaker label ("THESEUS."), with any direction on
                   how the line is delivered: shown, never spoken. */}
@@ -320,9 +338,10 @@ const ParagraphGroup = memo(function ParagraphGroup({
                 duration={p.durationSeconds ?? 0}
                 words={p.words}
                 onSeek={onSeek}
-                marks={annotationsView ? (p.directionMarks ?? []) : []}
+                marks={annotationsView && !p.delivery ? (p.directionMarks ?? []) : []}
                 pronunciationMarks={annotationsView ? (p.pronunciationMarks ?? []) : []}
                 cells={tableCells}
+                delivery={annotationsView ? (p.delivery ?? undefined) : undefined}
               />
               {p.audioStatus === 'error' && (
                 <span className="error-text"> (audio failed: {p.audioError})</span>

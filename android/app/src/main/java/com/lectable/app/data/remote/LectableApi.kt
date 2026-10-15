@@ -372,6 +372,24 @@ interface LectableApi {
     ): Unit
 
     /**
+     * handleSetParagraphDirection is a reader's override of one dialogue
+     * line's free-form direction - handleSetParagraphEmotion's counterpart for
+     * a clone model that takes direction as text. The body is the line with
+     * direction written in, read by the same parser the pass uses
+     * (direction.Parse): 400 when it changes the line's words or breaks a
+     * tag. Recorded as a store.EditDirection, so the pass leaves the line
+     * alone after. Invalidates and re-enqueues the line's audio when its
+     * effective direction changed under the book's clone model.
+     */
+    @PUT("api/books/{id}/chapters/{idx}/paragraphs/{pidx}/direction")
+    suspend fun setParagraphDirection(
+        @Path("id") id: String,
+        @Path("idx") idx: Int,
+        @Path("pidx") pidx: Int,
+        @Body body: SetParagraphDirectionRequestDto,
+    ): Unit
+
+    /**
      * handleSetParagraphEmotion is a reader's manual override of one dialogue
      * line's emotion (an internal/emotions id, or "" for neutral) - the
      * annotations view's right-click menu. Like handleSetParagraphScareQuote,
@@ -537,6 +555,11 @@ interface LectableApi {
      * character's aliases, so later attribution stops folding it back; a
      * character of that name marked invalid is made valid again. 400 without
      * a name ("", Narrator, Unknown).
+     *
+     * "index" numbers a role's line ("Guard 2" - see setParagraphSpeakerRequest.
+     * Index); 400 for a number out of range or on a speaker that isn't a role.
+     * A numbered line's edit is recorded in attribution's own answer form
+     * ("Guard 2"), so changing only the number is a correction too.
      */
     @PUT("api/books/{id}/chapters/{idx}/paragraphs/{pidx}/speaker")
     suspend fun setParagraphSpeaker(
@@ -1727,7 +1750,9 @@ interface LectableApi {
     /**
      * handleSyncBookSource checks a book's source for chapters it doesn't have
      * and appends them, as a job-queue task (joining a check already queued or
-     * running - see startSourceSync).
+     * running - see startSourceSync), and checks with it every other book
+     * listed on the same page (samePageBooks). 202 with how many checks it
+     * queued.
      * 409 for a book that wasn't imported from a website.
      */
     @POST("api/books/{id}/source/sync")
@@ -1847,6 +1872,39 @@ interface LectableApi {
         @Path("id") id: String,
         @Body body: ReattributeSpeakerRequestDto,
     ): QueuedResponseDto
+
+    /**
+     * handleRestoreSpeakers serves POST /api/books/{id}/speakers/restore: sets
+     * listed dialogue lines' speakers back to an earlier machine value - an
+     * undo for a pass that moved them (a retag run, listed by cmd/tageval
+     * -undo-from against a backup) - without recording a reader's edit, so
+     * the lines stay the passes' to judge. A line is skipped unless it is
+     * dialogue, still has From, has no recorded edit, and To is Narrator,
+     * Unknown or a valid character of the book's roster. A restored line
+     * loses its speaker number.
+     */
+    @POST("api/books/{id}/speakers/restore")
+    suspend fun restoreSpeakers(
+        @Path("id") id: String,
+        @Body body: RestoreSpeakersRequestDto,
+    ): RestoreSpeakersResponseDto
+
+    /**
+     * handleRetagSpeakers serves POST /api/books/{id}/speakers/retag: re-runs
+     * attribution's deterministic speech-tag rules (speakerattr.
+     * RefineWithSpeechTags - named tags, action beats, paragraph continuation)
+     * over every attributed chapter's stored speakers, with no model call, so
+     * attribution stored before a rule existed (or under a roster that has
+     * since been cleaned up) gets what the rules say now. A line corrected by
+     * hand, a play's line, a chapter whose attribution is still queued, and
+     * every chapter of the book's hand-corrected stretch (its first corrected
+     * chapter to its last) are left alone. Synchronous - it reads and writes only the database, a few
+     * seconds for a long book - and answers what it changed.
+     */
+    @POST("api/books/{id}/speakers/retag")
+    suspend fun retagSpeakers(
+        @Path("id") id: String,
+    ): RetagResponseDto
 
     /**
      * handleSeriesSpeakerLines serves GET /api/books/{id}/speakers/series-lines:
@@ -2166,6 +2224,25 @@ interface LectableApi {
     suspend fun embedLibrary(): QueuedResponseDto
 
     /**
+     * handleGenerateLibrary queues background narration for every book in the
+     * library, one book at a time: ?scope=remaining (the default) is
+     * handleGenerateRemaining for each - from its saved reading position to
+     * its end, so a book nobody has opened is generated whole - and scope=all
+     * is handleGenerateBook for each. Books go in the whole-library preprocess
+     * order (libraryPreprocessOrder): series by name, each in series order,
+     * then the books in no series, oldest first. One job-queue row (a
+     * jobs.BulkGroup, Kind "pipeline_library_generate_remaining" or
+     * "pipeline_library_generate", on the first book - see
+     * jobs.Manager.EnqueueLibraryGenerate); asking again while one of either
+     * scope is queued or running joins it. Audio a book already has is left
+     * alone. 202 with the number of books, 0 for an empty library.
+     */
+    @POST("api/library/generate")
+    suspend fun generateLibrary(
+        @Query("scope") scope: LibraryGenerateScope? = null,
+    ): QueuedResponseDto
+
+    /**
      * handlePreprocessLibrary preprocesses every book in the library, up to
      * libraryPreprocessSeries series at once: each series' books one at a
      * time in series order (they share a roster, as in
@@ -2173,8 +2250,10 @@ interface LectableApi {
      * series, oldest first, each taking a series' place. One job-queue row (a
      * jobs.BulkGroup, Kind "pipeline_library_preprocess", on the first book),
      * promoted and cancelled like a series run's; asking again while one is
-     * queued or running joins it. A book whose passes are all done costs one
-     * look at its chapters. 202 with the number of books, 0 for an empty
+     * queued or running joins it. The run reads the library again whenever it
+     * runs out of books (libraryLaneFeed), so a book added since it started -
+     * and asked for by joining it - is taken in too. A book whose passes are
+     * all done costs one look at its chapters. 202 with the number of books, 0 for an empty
      * library.
      */
     @POST("api/library/preprocess")

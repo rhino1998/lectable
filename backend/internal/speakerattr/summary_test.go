@@ -422,3 +422,39 @@ func TestWithCastDropsRefsNamingSomeoneElse(t *testing.T) {
 		t.Fatalf("ResolveCastRefs = %v", got)
 	}
 }
+
+func TestSummaryWindow(t *testing.T) {
+	paras := []ParagraphInput{{Idx: 0, Text: "aaaa"}, {Idx: 1, Text: "bbbb"}, {Idx: 2, Text: "cccc", Inline: true}, {Idx: 3, Text: "dddd"}}
+	// The cut would land on the Inline segment: it stays with its paragraph.
+	if got := summaryWindow(paras, 9); len(got) != 3 {
+		t.Fatalf("window = %d paragraphs, want 3", len(got))
+	}
+	if got := summaryWindow(paras, 1); len(got) != 1 {
+		t.Fatalf("window = %d paragraphs, want the one that never fits", len(got))
+	}
+	if got := summaryWindow(paras, 100); len(got) != 4 {
+		t.Fatalf("window = %d paragraphs, want all 4", len(got))
+	}
+}
+
+// A window whose prompt would outgrow its generation slot is cut shorter
+// (The Wandering Inn: Volume 7's long rosters), down to a floor.
+func TestSummaryWindowForFitsPrompt(t *testing.T) {
+	var paras []ParagraphInput
+	for i := 0; i < 400; i++ {
+		paras = append(paras, ParagraphInput{Idx: i, Text: strings.Repeat("x", 199)})
+	}
+	text := func(w []ParagraphInput) int { return len(windowText(w)) }
+	if got := summaryWindowFor(paras, text); len(got) != summaryWindowChars/200 {
+		t.Fatalf("window = %d paragraphs, want the usual %d", len(got), summaryWindowChars/200)
+	}
+	overhead := summaryPromptChars - 10000
+	got := summaryWindowFor(paras, func(w []ParagraphInput) int { return overhead + text(w) })
+	if n := text(got); n > 10000 || n < 9000 {
+		t.Fatalf("window = %d characters, want just under the 10000 the prompt has room for", n)
+	}
+	got = summaryWindowFor(paras, func(w []ParagraphInput) int { return summaryPromptChars + text(w) })
+	if n := text(got); n > summaryMinWindowChars || n < summaryMinWindowChars-200 {
+		t.Fatalf("window = %d characters, want the floor %d", n, summaryMinWindowChars)
+	}
+}

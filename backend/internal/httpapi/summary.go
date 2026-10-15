@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rhino1998/lectable/backend/internal/namekey"
 	"github.com/rhino1998/lectable/backend/internal/speakerattr"
 	"github.com/rhino1998/lectable/backend/internal/store"
 )
@@ -169,16 +170,43 @@ func (s *Server) summaryRoster(book *store.Book, ch *store.Chapter) (speakerattr
 	return s.withFirstPerson(r, book), nil
 }
 
+// taggedInFirstPerson reports whether bookID's speech tags are told in the
+// first person (speakerattr.TaggedInFirstPerson), read once per book per
+// process: a book's person doesn't change, and a long book's paragraphs
+// take a second to read. A book that can't be read counts as first person,
+// leaving its setting's say as it was.
+func (s *Server) taggedInFirstPerson(bookID string) bool {
+	if v, ok := s.firstPersonBooks.Load(bookID); ok {
+		return v.(bool)
+	}
+	all, err := s.Store.ListParagraphsRawForBook(bookID)
+	if err != nil {
+		log.Printf("taggedInFirstPerson: book %s: %v", bookID, err)
+		return true
+	}
+	inputs := make([]speakerattr.ParagraphInput, len(all))
+	for i, p := range all {
+		inputs[i] = speakerattr.ParagraphInput{Idx: p.Idx, Text: p.Text, Inline: p.Inline, IsQuote: p.IsQuote && !p.ScareQuote}
+	}
+	first, third := speakerattr.FirstPersonTags(inputs)
+	ok := speakerattr.TaggedInFirstPerson(first, third)
+	s.firstPersonBooks.Store(bookID, ok)
+	return ok
+}
+
 // withFirstPerson sets r.FirstPerson from book's setting (its first-person
 // narrator), resolved onto r's names so "Steve" matches an existing Steve,
 // and makes sure every batch lists them - FirstPerson is left empty for a
 // third-person book or one with no setting yet. Every roster a pass reads
 // comes through here, so it is also where r gets the world's own titles
-// (s.titles).
+// (s.titles). A narrator the book's own speech tags don't bear out - no
+// "I said" (taggedInFirstPerson) - is ignored: the setting pass has named
+// one for third-person books, and every "he said" line of theirs then
+// became Unknown.
 func (s *Server) withFirstPerson(r speakerattr.Roster, book *store.Book) speakerattr.Roster {
 	r.World = s.titles(book)
 	st, err := s.Store.GetBookSetting(book.ID)
-	if err != nil || st == nil || st.Setting.Narrator == "" {
+	if err != nil || st == nil || st.Setting.Narrator == "" || !s.taggedInFirstPerson(book.ID) {
 		return r
 	}
 	name := st.Setting.Narrator
@@ -499,8 +527,26 @@ func (s *Server) realRoles(book *store.Book, roleNames map[string]bool) map[stri
 // another name for a known character as that character's alias, so
 // attribution folds it back in from now on. Best-effort; a name that
 // already belongs to another character is skipped (it's already known).
+// So is a name for a kind of person - a role, or a name made of the
+// world's roles, races and nationalities or reading as a description
+// ("Gnolls", "One of the Drakes"): a named person is never one of those
+// (the check filed "Poinr" under "Gnolls", "Miihey" under "Elf"). And an
+// alias the reader took off that character in a roster review stays off.
 func (s *Server) recordCastAliases(book *store.Book, aliases []speakerattr.CastAlias) {
+	if len(aliases) == 0 {
+		return
+	}
 	scope := store.SeriesScope(book)
+	titles := s.titles(book)
+	removed := map[string]bool{} // character id + folded alias
+	if proposals, err := s.Store.ListRosterProposals(scope); err == nil {
+		for _, p := range proposals {
+			kind := speakerattr.RosterFixKind(p.Kind)
+			if p.Status == store.RosterAccepted && (kind == speakerattr.RosterRemoveAlias || kind == speakerattr.RosterSplitAlias) {
+				removed[p.SubjectID+"\x00"+namekey.Fold(p.Detail)] = true
+			}
+		}
+	}
 	for _, a := range aliases {
 		if clean, _ := speakerattr.SanitizeSpeaker(a.Alias); clean != a.Alias {
 			continue
@@ -510,6 +556,16 @@ func (s *Server) recordCastAliases(book *store.Book, aliases []speakerattr.CastA
 		}
 		char, err := s.Store.GetCharacterByName(scope, a.Character)
 		if err != nil || char == nil {
+			continue
+		}
+		if char.IsRole || titles.IsPeopleDescription(char.Name) || speakerattr.DescriptorWithoutArticle(char.Name) {
+			log.Printf("httpapi: identity: %q is %s - a kind of person, not recorded as an alias", a.Alias, char.Name)
+			continue
+		}
+		if _, _, oneOf := speakerattr.OneOfKind(char.Name); oneOf {
+			continue
+		}
+		if removed[char.ID+"\x00"+namekey.Fold(a.Alias)] {
 			continue
 		}
 		if err := s.Store.AddCharacterAliases(char.ID, a.Alias); err != nil {

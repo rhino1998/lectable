@@ -647,6 +647,47 @@ func (m *Manager) enqueueRemaining(ctx context.Context, bookID string) {
 	}
 }
 
+// LibraryGenerateKey is the BulkGroup.Key of a whole-library "generate
+// audio" run (EnqueueLibraryGenerate), queued on its first book.
+const LibraryGenerateKey = "library_generate"
+
+// EnqueueLibraryGenerate is EnqueueBookGenerate (or, with remaining,
+// EnqueueRemaining) for the books bookIDs, one at a time in that order, as
+// one bulk group on the first of them (Kind "pipeline_library_generate" or
+// "pipeline_library_generate_remaining"): a book's paragraphs are queued
+// only once the book before it has finished generating, so the queue never
+// holds the whole library's. Each book is read when its turn comes; one
+// deleted since is skipped. Canceling the row removes the current book's
+// still-queued audio and stops before the next; asking again while a run
+// of either kind is queued or running joins it.
+func (m *Manager) EnqueueLibraryGenerate(bookIDs []string, remaining bool) {
+	if len(bookIDs) == 0 {
+		return
+	}
+	kind := Kind("pipeline_library_generate")
+	if remaining {
+		kind = "pipeline_library_generate_remaining"
+	}
+	m.EnqueueBulk(bookIDs[0], BulkGroup{
+		Kind:  kind,
+		Key:   LibraryGenerateKey,
+		Label: fmt.Sprintf("Library (%d books)", len(bookIDs)),
+		Tier:  TierBackground,
+	}, func(ctx context.Context, _ func() int) error {
+		for _, id := range bookIDs {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if remaining {
+				m.enqueueRemaining(ctx, id)
+			} else {
+				m.enqueueBookGenerate(ctx, id)
+			}
+		}
+		return ctx.Err()
+	})
+}
+
 // waitForChapterAudio blocks a "generate audio" meta-task (EnqueueChapter/
 // EnqueueBookGenerate/EnqueueRemaining) until no paragraph-audio task
 // (KindVoiceClone/KindVoiceDesign) for any of chapterIDs is queued or in

@@ -476,6 +476,10 @@ type TagChange struct {
 //     ("…,” Bert said / said Bert), else a lead-in right before it in the
 //     same paragraph (Bert said, “…” / Bert stood, saying, “…”) - is that
 //     character's, when the name resolves to exactly one known character.
+//     1b. A quote with no named tag whose paragraph has an action beat
+//     right next to it with a named subject ("“…” Elijah nodded.") is
+//     that character's (BeatTag) - unless a pronoun tag ("she replied")
+//     says the line is someone else's.
 //  2. A quote with no tag of its own continues the speaker of the
 //     previous quote in the same paragraph ("“Maybe,” Sid hedged. “But if
 //     I…”" stays Sid) - the convention systemPrompt already states. A
@@ -533,6 +537,8 @@ func RefineWithSpeechTags(paras []ParagraphInput, speakers map[int]string, resol
 				set(p.Idx, name, "tag")
 			case i == 0 && openSpeaker != "" && strings.ContainsAny(firstRune(p.Text), quoteOpeners):
 				set(p.Idx, openSpeaker, "continued speech")
+			case !pronoun && BeatTag(prev, next, resolver) != "":
+				set(p.Idx, BeatTag(prev, next, resolver), "beat")
 			case !pronoun && prevSpeaker != "" && !otherActorBetween(group[lastQuote+1:i], prevSpeaker, resolver):
 				set(p.Idx, prevSpeaker, "continuation")
 			case pronoun && next != nil && resolver.narrator() != "" && out[p.Idx] == resolver.narrator() &&
@@ -705,4 +711,33 @@ func capitalizeFirst(s string) string {
 		return s
 	}
 	return string(unicode.ToUpper(r)) + s[size:]
+}
+
+// FirstPersonTags counts paras' speech tags told in the first person
+// ("…,” I said) and in the third ("…,” she said): the narration segment
+// right after a quote, in the same printed paragraph.
+func FirstPersonTags(paras []ParagraphInput) (first, third int) {
+	for i, p := range paras {
+		if !p.IsQuote || i+1 >= len(paras) || !paras[i+1].Inline || paras[i+1].IsQuote {
+			continue
+		}
+		text := strings.TrimLeft(paras[i+1].Text, " ,.;:-—–")
+		switch {
+		case trailingFirstPerson.MatchString(text):
+			first++
+		case trailingThirdPerson.MatchString(text):
+			third++
+		}
+	}
+	return first, third
+}
+
+// TaggedInFirstPerson reports whether speech tags counted by
+// FirstPersonTags show a first-person book: at least 3 "I said" tags, and
+// a tenth of its pronoun tags. On the library (2026-10-15) the books told
+// in the first person had 40-67% ("I said" 42-1947 times), while four
+// third-person books whose setting had wrongly named a narrator had none -
+// and "he said" lines given to that narrator became Unknown.
+func TaggedInFirstPerson(first, third int) bool {
+	return first >= 3 && first*10 >= first+third
 }

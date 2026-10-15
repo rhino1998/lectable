@@ -15,13 +15,14 @@ import (
 )
 
 // TargetLUFS is the integrated loudness (internal/loudness) every base
-// reference clip is normalized to when it's saved. Voice cloning carries a
-// reference clip's level into every paragraph cloned from it (paragraph
-// audio isn't normalized), so a fixed target keeps every voice - narrator,
-// custom preset or auto-provisioned character - at one level. -20 LUFS sat
-// just above the median of the library's clips when this was introduced
-// (-21.8), in the range audiobook specs (ACX) ask for, and leaves room
-// under peakCeiling for most clips without limiting.
+// reference clip is normalized to when it's saved, and (via NormalizeWAV,
+// internal/jobs' own call site) every freshly-cloned paragraph clip too -
+// voice cloning only roughly carries a reference clip's level into what it
+// generates, not exactly, so a fixed target on both ends is what actually
+// keeps every voice - narrator, custom preset or auto-provisioned character
+// - at one level. -20 LUFS sat just above the median of the library's clips
+// when this was introduced (-21.8), in the range audiobook specs (ACX) ask
+// for, and leaves room under peakCeiling for most clips without limiting.
 const TargetLUFS = -20.0
 
 // peakCeiling is the highest sample magnitude a normalized clip (or a
@@ -67,9 +68,12 @@ func normalizeLoudness(samples []float32, sampleRate int) (before, after float64
 	return before, after, true
 }
 
-// normalizeWAV is normalizeLoudness over encoded WAV bytes, returning data
-// unchanged if the clip is effectively silent.
-func normalizeWAV(data []byte) ([]byte, error) {
+// NormalizeWAV is normalizeLoudness over encoded WAV bytes, returning data
+// unchanged if the clip is effectively silent. Exported for internal/jobs
+// to level freshly-generated (cloned) paragraph clips to the same
+// TargetLUFS every reference clip already sits at - see generateClone's own
+// call site for why that carried-over level can't be trusted on its own.
+func NormalizeWAV(data []byte) ([]byte, error) {
 	clip, err := wav.Decode(data)
 	if err != nil {
 		return nil, fmt.Errorf("decode wav: %w", err)

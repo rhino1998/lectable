@@ -823,6 +823,58 @@ func TestAttributionOrderDependencyBlocksThenClearsOncePreviousChapterAttributed
 	}
 }
 
+// TestAttributionOrderDependencySkipsMatter: a chapter's attribution waits
+// on the story chapter before it, not on front or back matter between
+// them - matter is never attributed, and waiting on it queued attribution
+// (and the summaries that waits on) for every title page and copyright
+// notice in the book.
+func TestAttributionOrderDependencySkipsMatter(t *testing.T) {
+	s := openTestStore(t)
+	one := func(text string) []store.BlockInput { return []store.BlockInput{{Kind: store.BlockText, Text: text}} }
+	bookID, _, err := s.CreateBook("Book", "Author", "en", "", "", 0, []store.ChapterInput{
+		{Title: "Chapter One", Blocks: one("Alice said hello.")},
+		{Title: "Interlude Advert", Blocks: one("Buy my other book.")},
+		{Title: "Chapter Two", Blocks: one("Bob said hi.")},
+	})
+	if err != nil {
+		t.Fatalf("CreateBook: %v", err)
+	}
+	chapters, err := s.ListChapterSummaries(bookID, "", nil)
+	if err != nil || len(chapters) != 3 {
+		t.Fatalf("chapters: %v, %v", chapters, err)
+	}
+	if err := s.SetBookMatter(bookID, []string{chapters[1].ID}); err != nil {
+		t.Fatalf("SetBookMatter: %v", err)
+	}
+
+	mgr := newTestManagerWithStore(s)
+	mgr.attribute = func(ctx context.Context, book *store.Book, ch *store.Chapter) (int, func(), error) {
+		return 0, nil, s.SetChapterAttributed(ch.ID)
+	}
+	mgr.pushTask(&task{kind: KindSpeakerAttribution, bookID: bookID, chapterID: chapters[2].ID, chapterIdx: 2, tier: TierBackground, llmKey: chapters[2].ID})
+
+	got, ok := mgr.sched.Pop()
+	if !ok {
+		t.Fatalf("expected the lazily-created chapter-0 attribution task to dispatch")
+	}
+	blocker := got.(*task)
+	if blocker.kind != KindSpeakerAttribution || blocker.chapterID != chapters[0].ID {
+		t.Fatalf("expected chapter 0's attribution ahead of chapter 2's, got kind=%v chapter %d", blocker.kind, blocker.chapterIdx)
+	}
+	if _, _, err := blocker.runLLM(t.Context()); err != nil {
+		t.Fatalf("runLLM: %v", err)
+	}
+	mgr.sched.Finish(blocker.dedupKey(), nil)
+
+	got, ok = mgr.sched.Pop()
+	if !ok {
+		t.Fatalf("expected chapter 2's attribution to dispatch once chapter 0's finished")
+	}
+	if next := got.(*task); next.chapterID != chapters[2].ID {
+		t.Fatalf("expected chapter 2's attribution next, got chapter %d's - the matter chapter was attributed", next.chapterIdx)
+	}
+}
+
 // TestScareQuoteDependencyBlocksAttribution covers scareQuoteDependency: a
 // chapter's attribution task waits on a lazily-created KindScareQuote task
 // for that chapter, a failed run gets recreated rather than letting it
