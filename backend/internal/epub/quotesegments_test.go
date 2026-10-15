@@ -36,6 +36,33 @@ func TestSplitQuoteSegments(t *testing.T) {
 			},
 		},
 		{
+			name: "right quotes as openers",
+			text: "”Indeed,” Arnold confirmed. ”From initial tests, yes.”",
+			want: []quoteSegment{
+				{Text: "”Indeed,”", IsQuote: true},
+				{Text: "Arnold confirmed."},
+				{Text: "”From initial tests, yes.”", IsQuote: true},
+			},
+		},
+		{
+			name: "right-quote opener mid-paragraph",
+			text: "Arnold nodded. ”I estimated the merits.”",
+			want: []quoteSegment{
+				{Text: "Arnold nodded."},
+				{Text: "”I estimated the merits.”", IsQuote: true},
+			},
+		},
+		{
+			name: "right-quote opener left open runs to the end",
+			text: "”They knew, and they didn’t care.",
+			want: []quoteSegment{{Text: "”They knew, and they didn’t care.", IsQuote: true}},
+		},
+		{
+			name: "a stray closer after a word stays narration",
+			text: "the speech ended.” Then silence.",
+			want: []quoteSegment{{Text: "the speech ended.” Then silence."}},
+		},
+		{
 			name: "html-escaped angle brackets decode to literal < >",
 			// golang.org/x/net/html decodes &lt;/&gt; entities into literal
 			// '<'/'>' runes before this function ever sees the text - see

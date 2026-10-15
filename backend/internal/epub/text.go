@@ -77,6 +77,22 @@ const (
 	quoteClosers = "\"”»>"
 )
 
+// rightQuoteOpens reports whether the ” at runes[i] opens a quote rather
+// than closing one: some books (The Primal Hunter's later chapters, 5,687
+// paragraphs) set every quote mark as ”, ”Indeed,” Arnold said. A ” at the
+// start of the text or after whitespace, with a word right after it, can
+// only be an opener - a closing ” follows the quoted words, not a space.
+func rightQuoteOpens(runes []rune, i int) bool {
+	if runes[i] != '”' || i+1 >= len(runes) {
+		return false
+	}
+	if i > 0 && !unicode.IsSpace(runes[i-1]) {
+		return false
+	}
+	next := runes[i+1]
+	return unicode.IsLetter(next) || unicode.IsDigit(next) || strings.ContainsRune("‘’'…-—*([", next)
+}
+
 // quoteSegment is one piece of splitQuoteSegments' output - its text plus
 // whether it's an actual quoted-dialogue span (IsQuote) as opposed to a
 // narration/description segment. See Block.IsQuote for why this
@@ -115,7 +131,7 @@ func splitQuoteSegments(text string) []quoteSegment {
 	quoteStart := 0
 	for i, ch := range runes {
 		switch {
-		case !inQuote && strings.ContainsRune(quoteOpeners, ch):
+		case !inQuote && (strings.ContainsRune(quoteOpeners, ch) || rightQuoteOpens(runes, i)):
 			inQuote = true
 			quoteStart = i
 		case inQuote && strings.ContainsRune(quoteClosers, ch):
@@ -129,7 +145,7 @@ func splitQuoteSegments(text string) []quoteSegment {
 	// paragraph. Not a straight " (an odd one is as likely an inch mark as
 	// a speech) or <, nor a word closed by an apostrophe (“ghosts’ - a
 	// mismatched mark in narration, from Arise: Reclaimer).
-	if inQuote && strings.ContainsRune("“«", runes[quoteStart]) && !mismatchedCloser.MatchString(string(runes[quoteStart:])) {
+	if inQuote && strings.ContainsRune("“”«", runes[quoteStart]) && !mismatchedCloser.MatchString(string(runes[quoteStart:])) {
 		spans = append(spans, span{quoteStart, len(runes)})
 	}
 	if len(spans) == 0 {

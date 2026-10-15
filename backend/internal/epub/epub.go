@@ -267,6 +267,18 @@ func ParseAs(r io.ReaderAt, size int64, play PlayMode) (*Book, error) {
 				last.Blocks = append(last.Blocks, blocks...)
 				continue
 			}
+			// A chapter's TOC entry can point at a file holding only its
+			// title decoration (calibre splits one off at a page break),
+			// the heading and text following in a file the TOC doesn't
+			// list. That file is the chapter, not a second one of the
+			// same name.
+			if titleFromHeading && len(book.Chapters) > 0 {
+				last := &book.Chapters[len(book.Chapters)-1]
+				if last.Title == title && onlyTitle(last.Blocks, title) {
+					last.Blocks = append(withoutText(last.Blocks), blocks...)
+					continue
+				}
+			}
 			appendChapter(title, blocks)
 
 		case len(entries) == 1 && entries[0].Anchor == "":
@@ -381,6 +393,27 @@ func startsWithTitle(blocks []Block, title string) bool {
 		return b.Text == title
 	}
 	return false
+}
+
+// onlyTitle reports whether blocks say nothing but the chapter title.
+func onlyTitle(blocks []Block, title string) bool {
+	for _, b := range blocks {
+		if b.Kind == BlockText && b.Text != title {
+			return false
+		}
+	}
+	return true
+}
+
+// withoutText returns blocks with the text ones left out.
+func withoutText(blocks []Block) []Block {
+	var kept []Block
+	for _, b := range blocks {
+		if b.Kind != BlockText {
+			kept = append(kept, b)
+		}
+	}
+	return kept
 }
 
 // maxEntrySize caps how much of one archive entry readZipFile will
