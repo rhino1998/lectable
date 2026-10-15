@@ -247,6 +247,12 @@ func (c *Context) NCtx() uint32 {
 	return uint32(C.llama_n_ctx(c.handle))
 }
 
+// NCtxSeq returns how many tokens one sequence can hold: NCtx divided
+// among NSeqMax sequences, or all of NCtx - shared - when KVUnified.
+func (c *Context) NCtxSeq() uint32 {
+	return uint32(C.llama_n_ctx_seq(c.handle))
+}
+
 // NBatch returns the context's actual max batch size.
 func (c *Context) NBatch() uint32 {
 	return uint32(C.llama_n_batch(c.handle))

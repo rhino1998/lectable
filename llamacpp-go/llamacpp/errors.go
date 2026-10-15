@@ -1,6 +1,14 @@
 package llamacpp
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrContextFull is a Scheduler request's error when its own sequence has
+// no room for it: the prompt alone doesn't fit, or the reply reached the
+// end of the sequence before MaxTokens or an end-of-generation token.
+var ErrContextFull = errors.New("llamacpp: context full")
 
 // Error is returned by calls that fail without libllama giving back a
 // dedicated status code -- Detail carries the most recent WARN/ERROR line

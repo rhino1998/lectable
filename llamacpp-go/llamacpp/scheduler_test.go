@@ -10,7 +10,9 @@ package llamacpp_test
 // deterministic (temp 0, greedy) sampling.
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -209,27 +211,18 @@ func TestSchedulerMoreRequestsThanSlots(t *testing.T) {
 	}
 }
 
-// TestSchedulerReclaimsSlotAfterDecodeFailure is a regression test for a
-// real bug: run's own Decode-failure branch used to call slot.finish
-// (delivering the error, marking the Go-side slot free again) without
-// also calling Context.TrimSequence the way every other completion path
-// already does - so a request that failed mid-generation left its own
-// already-decoded tokens permanently resident under that slot's sequence
-// id. The next request placed into that same slot then decoded on top of
-// stale, never-cleared KV cells, corrupting or failing outright - observed
-// in production as "failed to find a memory slot" cascading across
-// hundreds of otherwise-unrelated later calls, since every one of those
-// failures leaked another slot the same way.
+// TestSchedulerReclaimsSlotAfterOverflow: a request whose reply outgrows
+// its sequence fails alone with ErrContextFull, and the slot it held is
+// clean for the next one. Before admitInto held each request to its own
+// sequence, the overflow failed the round's Decode instead ("failed to find
+// a memory slot") - for every slot in the batch - and that path once left
+// the failed request's tokens resident under its sequence id, so later
+// requests in the slot failed the same way, hundreds in a row.
 //
 // nSlots=1 forces the second request to reuse the exact slot id the first,
-// deliberately overflowed one just occupied. NCtx is sized so a short
-// prompt plus a generous MaxTokens is guaranteed to exhaust the sequence's
-// own context space partway through generation, forcing a real Decode
-// failure (not a contrived one) - then the second, ordinary request must
-// still come out byte-identical to a fresh single-sequence Context given
-// the same prompt, proving the slot was actually reclaimed rather than
-// just marked free.
-func TestSchedulerReclaimsSlotAfterDecodeFailure(t *testing.T) {
+// deliberately overflowed one just occupied; it must come out
+// byte-identical to a fresh single-sequence Context given the same prompt.
+func TestSchedulerReclaimsSlotAfterOverflow(t *testing.T) {
 	initBackend()
 	modelPath := testModelPath(t)
 
@@ -263,17 +256,21 @@ func TestSchedulerReclaimsSlotAfterDecodeFailure(t *testing.T) {
 	overflowSampler := llamacpp.NewSampler(llamacpp.SamplerParams{})
 	defer overflowSampler.Close()
 	// MaxTokens (1000) comfortably exceeds nCtx (256) minus this prompt's
-	// own token count, so generation is guaranteed to hit the sequence's
-	// own context limit and fail (confirmed live: "llama_decode failed:
-	// decode: failed to find a memory slot for batch of size 1", the
-	// exact production error this test guards against) before MaxTokens
-	// ever would.
+	// own token count, so the reply reaches the end of the sequence before
+	// MaxTokens ever would.
 	if _, err := sched.Generate(t.Context(), llamacpp.GenRequest{
 		Prompt:    "Tell me a very long, detailed story about a dragon, at least 500 words.",
 		Sampler:   overflowSampler,
 		MaxTokens: 1000,
-	}); err == nil {
-		t.Fatal("expected the deliberately-overflowed request to fail, got no error")
+	}); !errors.Is(err, llamacpp.ErrContextFull) {
+		t.Fatalf("the deliberately-overflowed request: err = %v, want ErrContextFull", err)
+	}
+	if _, err := sched.Generate(t.Context(), llamacpp.GenRequest{
+		Prompt:    strings.Repeat("Tell me a very long, detailed story about a dragon. ", 100),
+		Sampler:   overflowSampler,
+		MaxTokens: 8,
+	}); !errors.Is(err, llamacpp.ErrContextFull) {
+		t.Fatalf("a prompt longer than the sequence: err = %v, want ErrContextFull", err)
 	}
 
 	const followUp = "Reply with exactly the word: hello"
@@ -287,7 +284,7 @@ func TestSchedulerReclaimsSlotAfterDecodeFailure(t *testing.T) {
 		MaxTokens: 8,
 	})
 	if err != nil {
-		t.Fatalf("follow-up request after a decode failure: %v", err)
+		t.Fatalf("follow-up request after a decode overflow: %v", err)
 	}
 	if got != want {
 		t.Errorf("follow-up request reused a leaked slot: got %q, want %q (fresh Generate)", got, want)

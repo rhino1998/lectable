@@ -372,6 +372,7 @@ type slot struct {
 	nextTok   Token   // sampled token waiting to be decoded next round
 	haveNext  bool    // whether nextTok is actually set yet (false on a slot's very first round)
 	left      int     // generation tokens still allowed before MaxTokens is hit
+	ctxFull   bool    // left was cut to what the sequence has room for (admitInto)
 
 	decisions []Decision // a Decide request's answers so far
 
@@ -732,6 +733,11 @@ func (s *Scheduler) run() {
 			if verifying[i] && len(sl.draft) > 0 {
 				s.recordDraft(len(sl.draft), accepted)
 			}
+			if done && sl.left <= 0 && sl.ctxFull {
+				s.release(int32(i), sl)
+				sl.finish(schedResult{err: fmt.Errorf("%w: a prompt of %d tokens left room for %d of the %d asked for", ErrContextFull, sl.stats.ReusedTokens+sl.stats.PromptTokens, sl.stats.GenTokens, sl.req.req.MaxTokens)})
+				continue
+			}
 			if done {
 				s.release(int32(i), sl)
 				sl.finish(schedResult{text: string(sl.generated)})
@@ -847,6 +853,21 @@ func (s *Scheduler) admitInto(slotID int32, sl *slot, sr *schedRequest, vocab *V
 		return fmt.Errorf("llamacpp: startPos %d exceeds prompt token count %d", startPos, len(tokens))
 	}
 
+	// A sequence that runs out of cells fails the whole round's Decode, and
+	// with it every other slot's request ("failed to find a memory slot"),
+	// so a request is held to its own sequence here: one whose prompt
+	// doesn't fit is refused, and one whose reply could outgrow the room
+	// left fails alone when it does (ErrContextFull).
+	room := int(s.ctx.NCtxSeq()) - len(tokens)
+	if room <= 0 {
+		return fmt.Errorf("%w: a prompt of %d tokens in a sequence of %d", ErrContextFull, len(tokens), s.ctx.NCtxSeq())
+	}
+	left := sr.req.MaxTokens
+	ctxFull := len(sr.req.Steps) == 0 && left > room
+	if ctxFull {
+		left = room
+	}
+
 	kept := s.kept[slotID]
 	s.kept[slotID] = keptPrefix{}
 	switch {
@@ -881,7 +902,8 @@ func (s *Scheduler) admitInto(slotID int32, sl *slot, sr *schedRequest, vocab *V
 		req:       sr,
 		pos:       startPos,
 		remaining: tokens[startPos:],
-		left:      sr.req.MaxTokens,
+		left:      left,
+		ctxFull:   ctxFull,
 		admitted:  time.Now(),
 		stats: GenStats{
 			ReusedTokens: int(startPos),

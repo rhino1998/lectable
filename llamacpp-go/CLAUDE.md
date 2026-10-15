@@ -168,6 +168,17 @@ Two real bugs surfaced building this, both now covered by
   `KVUnified: true` (see `NewScheduler`'s and `ContextParams.KVUnified`'s
   doc comments).
 
+- **One full sequence fails everyone's round.** `llama_decode` takes the
+  round's whole batch or none of it, so a slot whose prompt plus reply
+  outgrew its sequence (`Context.NCtxSeq`) failed every other slot's
+  request too ("failed to find a memory slot for batch of size N") - four
+  chapter summaries failing together on each retry. `admitInto` now holds
+  a request to its own sequence: a prompt that doesn't fit is refused, and
+  a reply that reaches the end of the sequence before `MaxTokens` fails
+  that request alone, both with `ErrContextFull`
+  (`TestSchedulerReclaimsSlotAfterOverflow`). In a `KVUnified` context
+  `NCtxSeq` is the whole shared pool, so the check is loose there.
+
 `TestSchedulerMatchesFreshGenerateConcurrently`/`TestSchedulerWithPrimedPrefix`
 hold `Scheduler` to the same bar `prefixcache_test.go` set for
 single-sequence reuse: every result, however many requests ran
