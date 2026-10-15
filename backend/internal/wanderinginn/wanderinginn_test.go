@@ -3,10 +3,14 @@ package wanderinginn_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/rhino1998/lectable/backend/internal/wanderinginn"
 	"github.com/rhino1998/lectable/backend/internal/wanderinginn/wanderinginntest"
 	"github.com/rhino1998/lectable/backend/internal/websource"
 )
@@ -115,4 +119,25 @@ func mustParse(t *testing.T, raw string) *url.URL {
 		t.Fatal(err)
 	}
 	return u
+}
+
+// TestTableOfContentsFailureIsShared: a table of contents that can't be
+// fetched is asked for once by the volumes checked together, not once a
+// volume.
+func TestTableOfContentsFailureIsShared(t *testing.T) {
+	var asked atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		asked.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+	src := &wanderinginn.Source{Client: websource.Client{HTTP: srv.Client(), MinInterval: -1}, BaseURL: srv.URL}
+	for _, vol := range []string{"vol-1", "vol-2", "vol-3"} {
+		if _, err := src.Work(context.Background(), src.Fetch(), vol); err == nil || !strings.Contains(err.Error(), "403") {
+			t.Fatalf("%s: err = %v", vol, err)
+		}
+	}
+	if n := asked.Load(); n != 1 {
+		t.Errorf("the table of contents was asked for %d times, want once", n)
+	}
 }

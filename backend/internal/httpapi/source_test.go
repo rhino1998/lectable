@@ -307,6 +307,36 @@ func TestImportWanderingInnVolume(t *testing.T) {
 	}
 }
 
+// TestSyncChecksBooksOnTheSamePage: checking one volume checks the other
+// volumes listed on the same table of contents with it.
+func TestSyncChecksBooksOnTheSamePage(t *testing.T) {
+	srv, _, _, ts := newTestServer(t)
+	inn := wanderinginntest.New(t)
+	srv.Sources = []websource.Source{inn.Source()}
+	inn.AddChapter(1, "rw1-00", "1.00", `<p>The inn was dark.</p>`)
+	inn.AddChapter(2, "2-00", "2.00", `<p>Volume two.</p>`)
+	var one, two sourceTestBook
+	for _, into := range []*sourceTestBook{&one, &two} {
+		if resp := doJSON(t, http.MethodPost, ts.URL+"/api/books/import-url", importBookURLRequest{URL: "wanderinginn.com"}, into); resp.StatusCode != http.StatusCreated {
+			t.Fatalf("import: %d", resp.StatusCode)
+		}
+		waitSourceSynced(t, ts.URL, into.ID)
+	}
+	inn.AddChapter(2, "2-01", "2.01", `<p>More of volume two.</p>`)
+	// A source that hasn't just read the table of contents.
+	srv.Sources = []websource.Source{inn.Source()}
+
+	var queued queuedResponse
+	doJSON(t, http.MethodPost, ts.URL+"/api/books/"+one.ID+"/source/sync", nil, &queued)
+	if queued.Queued != 2 {
+		t.Errorf("queued = %d, want both volumes", queued.Queued)
+	}
+	waitSourceSynced(t, ts.URL, one.ID)
+	if book := waitSourceSynced(t, ts.URL, two.ID); reviewLine(book) != "2.01" {
+		t.Errorf("volume two after checking volume one: review %q, source %+v", reviewLine(book), book.Source)
+	}
+}
+
 // TestImportHoldsNotices: an import that didn't choose its chapters takes
 // what reads as chapters and stops at an entry that reads like a notice,
 // for the reader to say.

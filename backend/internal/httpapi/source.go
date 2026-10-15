@@ -638,7 +638,9 @@ func (s *Server) archivedChapter(ctx context.Context, r sourceReader, ref websou
 
 // handleSyncBookSource checks a book's source for chapters it doesn't have
 // and appends them, as a job-queue task (joining a check already queued or
-// running - see startSourceSync).
+// running - see startSourceSync), and checks with it every other book
+// listed on the same page (samePageBooks). 202 with how many checks it
+// queued.
 // 409 for a book that wasn't imported from a website.
 func (s *Server) handleSyncBookSource(w http.ResponseWriter, r *http.Request) {
 	bookID := r.PathValue("id")
@@ -665,7 +667,57 @@ func (s *Server) handleSyncBookSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.startSourceSync(bookID, nil)
-	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: 1})
+	// The books listed on the same page are checked with it: the page is
+	// fetched for this one anyway.
+	queued := 1
+	for _, other := range s.samePageBooks(bookID, sources) {
+		if s.startSourceSync(other, nil) {
+			queued++
+		}
+	}
+	writeJSON(w, http.StatusAccepted, queuedResponse{Queued: queued})
+}
+
+// sourcePage is the page a source's chapters are listed on: its address
+// without the fragment that picks the work out of it ("#vol-4"). "" for a
+// source with no address.
+func sourcePage(src *store.BookSource) string {
+	u, err := url.Parse(src.URL)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	u.Fragment = ""
+	return src.Kind + " " + u.String()
+}
+
+// samePageBooks returns the other books with a source listed on the same
+// page as one of sources (bookID's) - the volumes of a serial with one
+// table of contents - which one fetch of that page checks as well.
+func (s *Server) samePageBooks(bookID string, sources []store.BookSource) []string {
+	pages := map[string]bool{}
+	for i := range sources {
+		if page := sourcePage(&sources[i]); page != "" {
+			pages[page] = true
+		}
+	}
+	books, err := s.Store.SourcedBooks()
+	if err != nil || len(pages) == 0 {
+		return nil
+	}
+	var same []string
+	for _, b := range books {
+		if b.BookID == bookID {
+			continue
+		}
+		theirs, err := s.Store.BookSources(b.BookID)
+		if err != nil {
+			continue
+		}
+		if slices.ContainsFunc(theirs, func(src store.BookSource) bool { return pages[sourcePage(&src)] }) && s.anyReadable(theirs) {
+			same = append(same, b.BookID)
+		}
+	}
+	return same
 }
 
 // writeSourceError answers for a failed read from site; status is what a

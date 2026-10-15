@@ -291,6 +291,11 @@ var publicOnly = &http.Client{
 				return nil
 			},
 		}).DialContext,
+		// No Accept-Encoding: Cloudflare, in front of The Wandering Inn,
+		// answers this client's requests that carry one with a challenge
+		// page (403, "cf-mitigated: challenge") - 2026-10-13. Pages come
+		// uncompressed, which at one request at a time costs nothing.
+		DisableCompression:    true,
 		TLSHandshakeTimeout:   15 * time.Second,
 		ResponseHeaderTimeout: 30 * time.Second,
 		MaxIdleConns:          4,

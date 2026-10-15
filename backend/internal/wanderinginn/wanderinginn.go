@@ -32,6 +32,9 @@ const (
 	// tocTTL is how long a fetched table of contents is reused: an import
 	// resolves the link and then reads the volume, one page fetch for both.
 	tocTTL = time.Minute
+	// tocErrTTL is how long a failed fetch of it answers for the next: a
+	// check of every volume in the library asks once, not once a volume.
+	tocErrTTL = 20 * time.Second
 )
 
 // Source is wanderinginn.com as a websource.Source. The zero value works.
@@ -57,6 +60,7 @@ type Source struct {
 
 	mu       sync.Mutex
 	toc      []volume
+	tocErr   error // the last fetch's failure, instead of toc
 	tocAt    time.Time
 	tocClock func() time.Time // tests; nil means time.Now
 }
@@ -95,7 +99,8 @@ func (s *Source) base() string {
 }
 
 // volumes returns the table of contents as f serves it. The live site's
-// is reused for a minute; an archive's is fetched each time.
+// is reused for a minute, by every volume's book alike - and a failure to
+// fetch it for a shorter while; an archive's is fetched each time.
 func (s *Source) volumes(ctx context.Context, f websource.Fetcher) ([]volume, error) {
 	live := f == websource.Fetcher(&s.Client)
 	now := time.Now
@@ -105,22 +110,25 @@ func (s *Source) volumes(ctx context.Context, f websource.Fetcher) ([]volume, er
 	if live {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if s.toc != nil && now().Sub(s.tocAt) < tocTTL {
+		switch age := now().Sub(s.tocAt); {
+		case s.toc != nil && age < tocTTL:
 			return s.toc, nil
+		case s.tocErr != nil && age < tocErrTTL:
+			return nil, s.tocErr
 		}
 	}
-	page, finalURL, _, err := f.Get(ctx, s.base()+tocPath, websource.MaxPageSize)
-	if err != nil {
-		return nil, fmt.Errorf("fetch table of contents: %w", err)
+	vols, err := func() ([]volume, error) {
+		page, finalURL, _, err := f.Get(ctx, s.base()+tocPath, websource.MaxPageSize)
+		if err != nil {
+			return nil, fmt.Errorf("fetch table of contents: %w", err)
+		}
+		return parseTOC(page, finalURL)
+	}()
+	// A check that was cancelled says nothing about the site.
+	if live && ctx.Err() == nil {
+		s.toc, s.tocErr, s.tocAt = vols, err, now()
 	}
-	vols, err := parseTOC(page, finalURL)
-	if err != nil {
-		return nil, err
-	}
-	if live {
-		s.toc, s.tocAt = vols, now()
-	}
-	return vols, nil
+	return vols, err
 }
 
 var (
