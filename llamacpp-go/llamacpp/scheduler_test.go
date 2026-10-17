@@ -461,8 +461,26 @@ func TestSchedulerDecideMatchesGreedy(t *testing.T) {
 		}
 	}
 
+	// Options sharing their first token are told apart by the next one.
+	shared, err := sched.Decide(t.Context(), llamacpp.GenRequest{
+		Prompt: prompt,
+		Steps: []llamacpp.DecideStep{{Options: [][]llamacpp.Token{
+			{first, other(second)}, {other(first)}, {first, second},
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := shared[0]; d.Choice != 2 || d.Probs[2] <= d.Probs[0] {
+		t.Fatalf("shared-prefix decision = %+v, want option 2 ahead of option 0", d)
+	} else if sum := d.Probs[0] + d.Probs[1] + d.Probs[2]; sum < 0.999 || sum > 1.001 {
+		t.Errorf("shared-prefix probabilities sum to %v", sum)
+	}
+
 	// Malformed steps are refused before anything is decoded.
-	if _, err := sched.Decide(t.Context(), llamacpp.GenRequest{Prompt: prompt, Steps: []llamacpp.DecideStep{{Options: [][]llamacpp.Token{{first}, {first}}}}}); err == nil {
-		t.Error("options sharing a first token were accepted")
+	for _, opts := range [][][]llamacpp.Token{{{first}, {first}}, {{first}, {first, second}}} {
+		if _, err := sched.Decide(t.Context(), llamacpp.GenRequest{Prompt: prompt, Steps: []llamacpp.DecideStep{{Options: opts}}}); err == nil {
+			t.Errorf("options %v were accepted", opts)
+		}
 	}
 }

@@ -155,3 +155,67 @@ func TestPutChapterNotes(t *testing.T) {
 		t.Fatalf("overwriting summary pass kept edited notes: %+v", got)
 	}
 }
+
+// chainLLM records which pass asked about which chapter, in order: "S One"
+// for a summary of chapter "One", "A One" for its attribution.
+type chainLLM struct {
+	summaryLLM
+	order        []string
+	secondPrompt string // chapter Two's summary prompt
+}
+
+func (l *chainLLM) LLMGenerate(ctx context.Context, sys, user string, temp float32, n int) (string, error) {
+	chapter := ""
+	for _, line := range strings.Split(user, "\n") {
+		if t, ok := strings.CutPrefix(line, "Chapter: "); ok {
+			chapter = t
+			break
+		}
+	}
+	l.mu.Lock()
+	switch {
+	case strings.Contains(sys, "notes on one chapter"):
+		l.order = append(l.order, "S "+chapter)
+		if chapter == "Two" {
+			l.secondPrompt = user
+		}
+	case strings.Contains(sys, "identify who speaks"):
+		l.order = append(l.order, "A "+chapter)
+	}
+	l.mu.Unlock()
+	return l.summaryLLM.LLMGenerate(ctx, sys, user, temp, n)
+}
+
+// TestPreprocessChain: with LECTABLE_PREPROCESS_CHAIN, each chapter is
+// summarized then attributed before the next is summarized, so chapter
+// Two's summary is shown the speaker chapter One's attribution found.
+func TestPreprocessChain(t *testing.T) {
+	srv, s, _, _ := newTestServer(t)
+	llm := &chainLLM{}
+	srv.Speaker = speakerattr.NewClient(speakerattr.Config{}, llm)
+	chapter := func(title string) store.ChapterInput {
+		return store.ChapterInput{Title: title, Blocks: []store.BlockInput{
+			{Kind: store.BlockText, Text: "The old sailor squinted at the dawn."},
+			{Kind: store.BlockText, Text: "“Weigh anchor,”", IsQuote: true},
+			{Kind: store.BlockText, Text: "he growled.", Inline: true},
+		}}
+	}
+	bookID, _, err := s.CreateBook("Test Book", "A", "en", "", "", 0, []store.ChapterInput{chapter("One"), chapter("Two")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	book, _ := s.GetBook(bookID)
+	chapters, err := s.ListChapterSummaries(bookID, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.preprocessChainPhase(book, chapters)(context.Background(), func() int { return 0 }); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"S One", "A One", "S Two", "A Two"}; !reflect.DeepEqual(llm.order, want) {
+		t.Fatalf("order = %v, want %v", llm.order, want)
+	}
+	if !strings.Contains(llm.secondPrompt, "Mocar") {
+		t.Fatalf("chapter Two's summary wasn't shown chapter One's speaker:\n%s", llm.secondPrompt)
+	}
+}

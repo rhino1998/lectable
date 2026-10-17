@@ -337,8 +337,10 @@ type LLMDecideResponse struct {
 // conditioned on it the way generated text would be.
 type LLMDecideStep struct {
 	Prefix string `json:"prefix"`
-	// Options must each begin with a different token (the worker refuses
-	// the call otherwise).
+	// Options may share leading tokens - the model is asked again where
+	// they part - but none may equal or begin another, token for token
+	// (the worker refuses the call otherwise): end each with the same
+	// terminator ("Sid\n" beside "Sidney\n") when one could.
 	Options []string `json:"options"`
 }
 

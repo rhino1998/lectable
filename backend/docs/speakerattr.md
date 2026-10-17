@@ -339,6 +339,85 @@ LLM-prompted attribution, and recent literary-NLP research agrees
      "Does anything still need the description pass?" below for what
      removing it cost.
 
+**Attribution experiments** (2026-10-15; `attribute_decide.go`; since
+2026-10-17 the app runs seed + decide, see below): `Client.
+AttributeChapterWith` takes `AttributeOptions`, reached through the
+preview's query parameters (`attreval.py --seed --decide` etc.) or, for
+the real pass, `LECTABLE_SPEAKER_ATTR_DECIDE`/`LECTABLE_SPEAKER_ATTR_SEED`
+(both on in `run.sh`).
+- **Decide**: each asked line is read off the model's logits over a short
+  list - its scene's present cast (`scenePresent`), names mentioned within
+  4 paragraphs before and 2 after, settled speakers there, `Unknown` -
+  written in the reply's own form (`12: Sid | she`), so the model sees its
+  earlier picks. A line whose list holds under half the model's
+  distribution (`decideMinMass`) would be generated instead; it never
+  happened (3,282 picks). Needed options sharing leading tokens ("Lord
+  Gresper", "Lord Whiteship"), which `llamacpp.Scheduler.Decide` now
+  reads on until they part. Doesn't number roles ("Guard 2").
+- **Seed**: the speech-tag rules (`RefineWithSpeechTags` over blank
+  answers) settle their lines before the model sees the chapter, shown
+  like a reader's correction.
+- Measured on the preview (attreval, Qwen3.6-35B-A3B, Spire's Spite
+  reimported, idx 39-57 as gold): default Arise 1074/1152, Spire
+  1292/1302, hand-corrected 22/78, 326s; seed 1062, 1276, 24, 236s;
+  decide 1094, 1287, 39, 392s; both 1091, 1278, 43, 281s. Seed settles
+  ~90% of lines and the model does worse on the few left (Spire ch50
+  ¶93, Bert's right after "Bert said. Fritz snapped…", went to Sid).
+  On 24 UnderVerse chapters (two a book; the series' speakers corrected
+  by an agent, frozen as gold): default 2568 and 2573 of 2786 on two
+  runs, decide 2548 - no better, and slower (594s vs 508/456s).
+- Those previews run against the library as it is now - reviewed roster,
+  corrections, summaries from an earlier pass - which a first
+  preprocessing never has. UnderVerse book 1's lowest chapters are
+  summary mistakes (ch15's cast names the Baron "Baron Hannimish", a
+  name the chapter never uses, so the Sanguis lines go to him) made with
+  an empty roster: preprocessing writes every summary before any
+  attribution. `LECTABLE_PREPROCESS_CHAIN` instead summarizes and
+  attributes one chapter at a time (`httpapi.preprocessChainPhase`), so
+  chapter N's summary sees chapters 1..N-1's speakers and how often each
+  spoke; a book's chapters then run one at a time. `attreval/firstpass.py`
+  measures a first pass: it uploads a copy of a book as a series of its
+  own, preprocesses it (phases that don't feed attribution cancelled) and
+  scores it against the original. Not run yet.
+- **Seed in reply** (2026-10-17, what the app runs): seeding as above
+  never gets a tagged line wrong - all 1,611 of the eval set's seeded
+  lines match the gold (`?seed=only`, no model call) and plain decide
+  gets them all right too - but it took the untagged lines around them
+  from 8.2% wrong under decide to 10.9%, mostly turns thrown out of step
+  by one (a first-person narrator's lines given to whoever he answers).
+  Plain decide's reply is a transcript of every line, so the previous
+  turn is right above each answer; seeded lines, shown as context, left
+  gaps in it. `SeedInReply` keeps them in the prompt as `(who?)` and
+  writes their answers into the reply ahead of the next question
+  (`ParagraphInput.Forced`, folded into the next decide step's prefix -
+  no decode step). The configured seed (`Config.Seed`) under decide is
+  this. Same build, full set: decide 97.2% / 42 of 78 hand-corrected in
+  328s, seed + decide 96.3% / 40 in 223s, seed in reply 97.4% / 44 in
+  216s (63 untagged lines wrong of 843).
+- **What didn't help** (same eval, each within or below the ~5-line
+  run-to-run noise, often slower): sampling instead of greedy (temp
+  0.3-1.0, top-p 0.8-0.95, top-k 20/40 - `LECTABLE_LLM_SAMPLE` in the
+  worker overrides every call's sampling, for evals): best 96.5%, worst
+  95.6%; a majority vote of seven runs (96.4%) - their errors are shared,
+  a conversation off by one in every run alike; never offering "Unknown"
+  (`?unknown=0` - Qwen3.6 answered it 7 times in 2,453 lines); thinking
+  on every batch (96.7%, 3x the time), or only on lines decide and
+  generation disagree on (1.7% of lines) or on decide picks below 0.9
+  confidence; deciding the low-confidence lines again with the confident
+  ones settled (`?redecideBelow=p&redecideRounds=n`: 96.6-97.2%); a short
+  prompt written for choosing with lettered candidates (95.2% - letters
+  alone 94.9%; the model reads names far better than letters for them);
+  prev/next-speaker notes under each line (`?prevNext=1`, 96.8%); seeds
+  labelled as tags (`?taggedSeeds=1`, noise). Decide's own confidence
+  does find its errors - lines below 0.9 were 20% of the decided and held
+  64% of decide's errors - but nothing re-asked them better than decide's
+  first pick. A small first-pass model (Yoshino 0.8B, a Qwen3.5 0.8B
+  tune) was no faster: replies 400-2048 tokens against Qwen3.6's ~150,
+  and per-token decode on this box is round-overhead bound (~140 tok/s
+  per call against Qwen3.6+MTP's ~100). MTP off makes seed-in-reply
+  decide 7% faster (201s vs 216s), not the 3x the decide note in
+  `llamacpp-go/CLAUDE.md` suggests: prompt reading dominates.
+
 **Scare-quote tagging** (`Client.ScareQuoteChapter`) marks each candidate
 "(?)" in the batch and asks for a "spoken"/"not spoken" verdict on every
 one (`parseScareQuoteVerdicts`; a verdict with a miscopied line number is

@@ -23,6 +23,14 @@ export LECTABLE_SPEAKER_LLM_PRIME_STATE="${LECTABLE_SPEAKER_LLM_PRIME_STATE:-tru
 # read this. Each slot reserves ~0.9 GB of VRAM (12,288 tokens of context);
 # 4 is ~3.5 GB beside the 18 GB model on a 24.5 GB card.
 export LECTABLE_SPEAKER_LLM_MAX_CONCURRENT="${LECTABLE_SPEAKER_LLM_MAX_CONCURRENT:-4}"
+# Attribution as seed + decide (speakerattr.Config): the speech-tag rules
+# settle the lines they can (no errors against the eval gold), their
+# answers are written into decide's reply (AttributeOptions.SeedInReply),
+# and the rest are chosen by decide instead of generated. Measured
+# 2026-10-17 on the attreval full set: 97.4% in 216s against generation's
+# 96.5% in 365s, 44/78 hand-corrected lines against 23.
+export LECTABLE_SPEAKER_ATTR_SEED="${LECTABLE_SPEAKER_ATTR_SEED:-true}"
+export LECTABLE_SPEAKER_ATTR_DECIDE="${LECTABLE_SPEAKER_ATTR_DECIDE:-true}"
 
 BUILD=0
 FOREGROUND=0

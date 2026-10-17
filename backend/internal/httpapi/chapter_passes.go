@@ -79,6 +79,9 @@ type attributionOptions struct {
 	// not asked about (speakerattr.ParagraphInput.ContextOnly) -
 	// attributeAroundEdits' surrounding context.
 	contextOnly func(paragraphIdx int) bool
+	// ask is how the lines are asked - the preview's experiments; the zero
+	// value everywhere else.
+	ask speakerattr.AttributeOptions
 }
 
 // allCorrections is attributeChapter's attributionOptions: every correction
@@ -187,7 +190,7 @@ func (s *Server) runAttribution(ctx context.Context, book *store.Book, ch *store
 	// "the smith" or "he" still sees who's in the scene.
 	attrRoster = s.withChapterCast(attrRoster, ch, invalid, all)
 	attrRoster.Corrections = corrections
-	speakers, indexes, roleNames, pronouns, remaining, attrErr := s.Speaker.AttributeChapter(ctx, book.Title, ch.Title, attrRoster, inputs, nil)
+	speakers, indexes, roleNames, pronouns, remaining, attrErr := s.Speaker.AttributeChapterWith(ctx, book.Title, ch.Title, attrRoster, inputs, nil, opts.ask)
 	return attributionRun{speakers: speakers, indexes: indexes, roleNames: roleNames, pronouns: pronouns, remaining: remaining, err: attrErr, scope: scope, invalid: invalid}, nil
 }
 

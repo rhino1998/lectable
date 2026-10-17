@@ -235,7 +235,14 @@ interface LectableApi {
      * about, not shown, unless ?given=half (lines at even paragraph idx shown
      * with the reader's speaker, the odd ones held out to score) or
      * ?given=all. ?corrections=0 leaves out earlier chapters' corrections, for
-     * an A/B against them in one build.
+     * an A/B against them in one build. The other parameters are the ways of
+     * asking (speakerattr.AttributeOptions): ?decide=1; ?seed=1 settles the
+     * lines the speech-tag rules decide as context, ?seed=reply writes them
+     * into decide's reply (what the app runs), ?seed=only returns just those
+     * lines, asking the model nothing; ?unknown=0 never offers "Unknown";
+     * ?prevNext=1 and ?taggedSeeds=1 add prompt notes; ?redecideBelow=p
+     * decides the chapter again with the lines decided at p or more settled
+     * (?redecideRounds=n times).
      */
     @POST("api/books/{id}/chapters/{idx}/attribute-speakers/preview")
     suspend fun previewAttribution(
@@ -243,6 +250,13 @@ interface LectableApi {
         @Path("idx") idx: Int,
         @Query("given") given: String? = null,
         @Query("corrections") corrections: String? = null,
+        @Query("seed") seed: String? = null,
+        @Query("decide") decide: String? = null,
+        @Query("prevNext") prevNext: String? = null,
+        @Query("taggedSeeds") taggedSeeds: String? = null,
+        @Query("unknown") unknown: String? = null,
+        @Query("redecideBelow") redecideBelow: String? = null,
+        @Query("redecideRounds") redecideRounds: String? = null,
     ): AttributionPreviewResponseDto
 
     /**

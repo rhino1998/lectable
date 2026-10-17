@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -158,7 +160,49 @@ func (s *Server) enqueuePreprocess(book *store.Book) error {
 		jobs.PhaseSummary:          s.storyPhase(book, chapters, s.preprocessSummaryPhase),
 		jobs.PhaseEmbedding:        s.preprocessEmbeddingPhase(book, chapters),
 	}
+	if chained, _ := strconv.ParseBool(os.Getenv("LECTABLE_PREPROCESS_CHAIN")); chained {
+		// An experiment: the summary phase summarizes and attributes each
+		// chapter in turn (preprocessChainPhase), and the attribution phase,
+		// left nothing to do, finishes at once.
+		phases[jobs.PhaseSummary] = s.storyPhase(book, chapters, s.preprocessChainPhase)
+		phases[jobs.PhaseAttribution] = func(context.Context, func() int) error { return nil }
+	}
 	return s.Jobs.EnqueuePipeline(book.ID, phases)
+}
+
+// preprocessChainPhase summarizes and attributes the chapters one at a
+// time, in order - chapter N's summary is written with chapters 1..N-1
+// attributed, so the roster it is shown (summaryRoster) has their names
+// and how often each spoke, and chapter N's attribution sees every earlier
+// chapter's speakers. The default runs every summary first, against the
+// roster the book started with (empty for a series' first book), then
+// every attribution at once. Turned on by LECTABLE_PREPROCESS_CHAIN, for
+// comparing the two.
+func (s *Server) preprocessChainPhase(book *store.Book, chapters []store.ChapterSummary) jobs.PipelinePhaseFunc {
+	return func(ctx context.Context, tier func() int) error {
+		for _, cs := range chapters {
+			if ctx.Err() != nil {
+				log.Printf("httpapi: preprocess book %s: canceled during summary+attribution", book.ID)
+				return nil
+			}
+			ch := cs.Chapter
+			if !cs.Passes.Summary {
+				if _, err := s.Jobs.RunSummary(ctx, book.ID, ch.ID, ch.Idx, tier(), func(ctx context.Context) (int, func(), error) {
+					return s.summarizeChapter(ctx, book, &ch)
+				}); err != nil {
+					log.Printf("httpapi: preprocess book %s: summary for chapter %d: %v", book.ID, ch.Idx, err)
+				}
+			}
+			if !cs.Passes.Attribution {
+				if _, err := s.Jobs.RunAttribution(ctx, book.ID, ch.ID, ch.Idx, tier(), func(ctx context.Context) (int, func(), error) {
+					return s.attributeChapter(ctx, book, &ch, attributeFull)
+				}); err != nil {
+					log.Printf("httpapi: preprocess book %s: attribute chapter %d: %v", book.ID, ch.Idx, err)
+				}
+			}
+		}
+		return nil
+	}
 }
 
 // seriesPreprocessJobKey is the jobs.BulkGroup.Key of a series' in-order

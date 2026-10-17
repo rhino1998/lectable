@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"sync"
 	"time"
 )
@@ -84,23 +85,29 @@ type GenRequest struct {
 
 // DecideStep is one closed-set decision in a Decide request: Prefix is
 // decoded after whatever came before it, and the model's next-token logits
-// there are read over each option's first token.
+// there are read over each option's first token. Options may share leading
+// tokens ("Lord Gresper", "Lord Whiteship"): the shared ones are decoded
+// and the logits read again where they part, as many times as it takes.
 type DecideStep struct {
 	Prefix  []Token
-	Options [][]Token // each non-empty, with a first token no other option shares
+	Options [][]Token // each non-empty, none equal to or a prefix of another
 }
 
 // Decision is the outcome of one DecideStep.
 type Decision struct {
-	// Choice indexes the step's Options: the one whose first token scored
-	// highest.
+	// Choice indexes the step's Options: the one whose tokens scored
+	// highest at each point where the options still in the running part.
 	Choice int
-	// Probs is the softmax over the options' first-token logits alone, in
-	// Options order.
+	// Probs is each option's probability, in Options order, normalized over
+	// the options alone. Where options share leading tokens it is the chain
+	// of those partings: the winner's is the product of its token's share
+	// at each one, and an option dropped at one gets its branch's share
+	// there (split evenly among the options dropped with it), so they still
+	// sum to one.
 	Probs []float64
-	// Mass is how much of the model's whole next-token distribution those
-	// first tokens hold - low when the model wanted to say something that
-	// isn't an option.
+	// Mass is how much of the model's whole next-token distribution the
+	// options' first tokens hold - low when the model wanted to say
+	// something that isn't an option.
 	Mass float64
 }
 
@@ -307,12 +314,15 @@ func (s *Scheduler) Decide(ctx context.Context, req GenRequest) ([]Decision, err
 		if len(st.Options) < 2 {
 			return nil, fmt.Errorf("llamacpp: decide: step %d has fewer than two options", i)
 		}
-		first := make(map[Token]bool, len(st.Options))
-		for _, o := range st.Options {
-			if len(o) == 0 || first[o[0]] {
-				return nil, fmt.Errorf("llamacpp: decide: step %d's options must each start with a distinct token", i)
+		for a, o := range st.Options {
+			if len(o) == 0 {
+				return nil, fmt.Errorf("llamacpp: decide: step %d has an empty option", i)
 			}
-			first[o[0]] = true
+			for b, other := range st.Options {
+				if a != b && len(o) <= len(other) && slices.Equal(o, other[:len(o)]) {
+					return nil, fmt.Errorf("llamacpp: decide: step %d's option %d is the same as or a prefix of option %d", i, a, b)
+				}
+			}
 		}
 	}
 	req.Sampler = nil
@@ -335,29 +345,98 @@ func (s *Scheduler) Decide(ctx context.Context, req GenRequest) ([]Decision, err
 	}
 }
 
-// decide reads logits (one decoded row) over step's options.
-func decide(logits []float32, step DecideStep) Decision {
-	d := Decision{Probs: make([]float64, len(step.Options))}
+// decideState is a Decide slot's progress through its current step: which
+// options are still in the running, how many of their (shared) tokens are
+// decoded, and the probabilities settled so far.
+type decideState struct {
+	started bool
+	alive   []int
+	depth   int
+	pathP   float64
+	probs   []float64
+	mass    float64
+}
+
+// read takes one decoded row's logits at the point the options still in
+// the running next differ (their token at st.depth) and narrows them to
+// the best-scoring token's options. With one left it returns the step's
+// Decision and the rest of the winner's tokens; otherwise it returns the
+// tokens to decode before reading again - the chosen one and any more the
+// survivors all share - and done false.
+func (st *decideState) read(logits []float32, step DecideStep) (d Decision, next []Token, done bool) {
+	if !st.started {
+		*st = decideState{started: true, pathP: 1, probs: make([]float64, len(step.Options))}
+		for i := range step.Options {
+			st.alive = append(st.alive, i)
+		}
+	}
 	maxAll := float64(logits[0])
 	for _, l := range logits {
 		maxAll = math.Max(maxAll, float64(l))
 	}
-	var sumAll, sumOpts float64
-	for _, l := range logits {
-		sumAll += math.Exp(float64(l) - maxAll)
+	groups := map[Token][]int{}
+	var order []Token
+	for _, o := range st.alive {
+		tok := step.Options[o][st.depth]
+		if groups[tok] == nil {
+			order = append(order, tok)
+		}
+		groups[tok] = append(groups[tok], o)
 	}
-	for i, o := range step.Options {
-		d.Probs[i] = math.Exp(float64(logits[o[0]]) - maxAll)
-		sumOpts += d.Probs[i]
-		if d.Probs[i] > d.Probs[d.Choice] {
-			d.Choice = i
+	var sumOpts float64
+	weight := make(map[Token]float64, len(order))
+	best := order[0]
+	for _, tok := range order {
+		weight[tok] = math.Exp(float64(logits[tok]) - maxAll)
+		sumOpts += weight[tok]
+		if weight[tok] > weight[best] {
+			best = tok
 		}
 	}
-	for i := range d.Probs {
-		d.Probs[i] /= sumOpts
+	if st.depth == 0 {
+		var sumAll float64
+		for _, l := range logits {
+			sumAll += math.Exp(float64(l) - maxAll)
+		}
+		st.mass = sumOpts / sumAll
 	}
-	d.Mass = sumOpts / sumAll
-	return d
+	for _, tok := range order {
+		if tok == best {
+			continue
+		}
+		share := st.pathP * weight[tok] / sumOpts / float64(len(groups[tok]))
+		for _, o := range groups[tok] {
+			st.probs[o] = share
+		}
+	}
+	st.pathP *= weight[best] / sumOpts
+	st.alive = groups[best]
+	if len(st.alive) == 1 {
+		w := st.alive[0]
+		st.probs[w] = st.pathP
+		d = Decision{Choice: w, Probs: st.probs, Mass: st.mass}
+		next = step.Options[w][st.depth:]
+		*st = decideState{}
+		return d, next, true
+	}
+	// The survivors share best; decode it, plus every further token they
+	// all still share, and read again where they part. None is a prefix of
+	// another (Decide checks), so they part before any of them ends.
+	next = []Token{best}
+	st.depth++
+	for {
+		tok := step.Options[st.alive[0]][st.depth]
+		shared := true
+		for _, o := range st.alive[1:] {
+			shared = shared && step.Options[o][st.depth] == tok
+		}
+		if !shared {
+			break
+		}
+		next = append(next, tok)
+		st.depth++
+	}
+	return Decision{}, next, false
 }
 
 // slot is one of the Scheduler's nSlots rotating sequence ids and whatever
@@ -374,7 +453,8 @@ type slot struct {
 	left      int     // generation tokens still allowed before MaxTokens is hit
 	ctxFull   bool    // left was cut to what the sequence has room for (admitInto)
 
-	decisions []Decision // a Decide request's answers so far
+	decisions []Decision  // a Decide request's answers so far
+	decide    decideState // and its progress through the current step
 
 	// MTP only: draft is this round's drafted continuation of nextTok,
 	// decoded right after it; posBase is nextTok's own position.
@@ -680,14 +760,21 @@ func (s *Scheduler) run() {
 					sl.finish(schedResult{err: errors.New("llamacpp: decide: no logits for the step's last token")})
 					continue
 				}
-				d := decide(logits, step)
+				d, next, done := sl.decide.read(logits, step)
+				if !done {
+					// Options still share this token: decode it and read
+					// again where they part.
+					sl.remaining = next
+					sl.stats.PromptTokens += len(sl.remaining)
+					continue
+				}
 				sl.decisions = append(sl.decisions, d)
 				if len(sl.decisions) == len(steps) {
 					s.release(int32(i), sl)
 					sl.finish(schedResult{decisions: sl.decisions})
 					continue
 				}
-				sl.remaining = append(append([]Token{}, step.Options[d.Choice]...), steps[len(sl.decisions)].Prefix...)
+				sl.remaining = append(append([]Token{}, next...), steps[len(sl.decisions)].Prefix...)
 				sl.stats.PromptTokens += len(sl.remaining)
 				continue
 			}

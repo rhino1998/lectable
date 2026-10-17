@@ -71,6 +71,14 @@ type Config struct {
 	// variant (see llmworker.Config.SystemPrompts, keyed on the exact
 	// system-prompt string). Off by default - see ConfigFromEnv.
 	NoThink bool
+	// Decide asks every attribution by choice (AttributeOptions.Decide)
+	// - LECTABLE_SPEAKER_ATTR_DECIDE, off by default (run.sh turns it on).
+	Decide bool
+	// Seed settles the lines the speech-tag rules decide before the model
+	// sees the chapter - LECTABLE_SPEAKER_ATTR_SEED, off by default
+	// (run.sh turns it on). Under Decide it is AttributeOptions.
+	// SeedInReply, otherwise AttributeOptions.Seed.
+	Seed bool
 }
 
 // minSlotNCtx is the least per-slot KV budget SlotNCtx ever returns -
@@ -132,6 +140,12 @@ func ConfigFromEnv() Config {
 		if b, err := strconv.ParseBool(v); err == nil {
 			cfg.NoThink = b
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("LECTABLE_SPEAKER_ATTR_DECIDE")); v != "" {
+		cfg.Decide, _ = strconv.ParseBool(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("LECTABLE_SPEAKER_ATTR_SEED")); v != "" {
+		cfg.Seed, _ = strconv.ParseBool(v)
 	}
 	return cfg
 }
@@ -387,6 +401,14 @@ type ParagraphInput struct {
 	// that only re-asks some of a chapter's lines (httpapi's
 	// attributeAroundEdits).
 	ContextOnly bool
+	// Seeded marks a Known set by the speech-tag rules (seedFromTags)
+	// rather than by a reader - shown as a tag under AttributeOptions.
+	// TaggedSeeds.
+	Seeded bool
+	// Forced is a seeded speaker under AttributeOptions.SeedInReply: the
+	// line is shown and answered like any other, but decide writes this
+	// answer into the reply instead of asking.
+	Forced string
 }
 
 // maxBatchParagraphs caps how many paragraphs go into one completion
@@ -505,6 +527,40 @@ const jsonPassMaxTokens = 4096
 // Once every batch is done, RefineWithSpeechTags corrects the result
 // against explicit speech tags in the chapter text - see refine.go.
 func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle string, roster Roster, paragraphs []ParagraphInput, shouldPause func() bool) (out map[int]string, indexes map[int]int, roleNames map[string]bool, pronouns map[string]string, remaining []ParagraphInput, err error) {
+	return c.AttributeChapterWith(ctx, bookTitle, chapterTitle, roster, paragraphs, shouldPause, AttributeOptions{})
+}
+
+// AttributeChapterWith is AttributeChapter with opts - see
+// AttributeOptions, the experimental ways of asking that the attribution
+// preview benches against the default.
+func (c *Client) AttributeChapterWith(ctx context.Context, bookTitle, chapterTitle string, roster Roster, paragraphs []ParagraphInput, shouldPause func() bool, opts AttributeOptions) (out map[int]string, indexes map[int]int, roleNames map[string]bool, pronouns map[string]string, remaining []ParagraphInput, err error) {
+	if opts.RedecideBelow > 0 {
+		return c.attributeRedecided(ctx, bookTitle, chapterTitle, roster, paragraphs, shouldPause, opts)
+	}
+	ask := c.attributeBatch
+	if opts.Decide || c.cfg.Decide {
+		ask = c.attributeBatchDecide
+	}
+	if opts.SeedOnly {
+		out := map[int]string{}
+		for i, p := range seedFromTags(paragraphs, roster) {
+			if p.Known != paragraphs[i].Known {
+				out[p.Idx] = p.Known
+			}
+		}
+		return out, map[int]int{}, map[string]bool{}, map[string]string{}, nil, nil
+	}
+	decide := opts.Decide || c.cfg.Decide
+	switch {
+	// The configured seed (live) is always written into decide's reply;
+	// opts.Seed under decide is the old way, kept for the eval.
+	case decide && (opts.SeedInReply || c.cfg.Seed && !opts.Seed):
+		paragraphs = forcedFromSeeds(seedFromTags(paragraphs, roster))
+	case opts.Seed || opts.SeedInReply || c.cfg.Seed:
+		paragraphs = seedFromTags(paragraphs, roster)
+	}
+	roster.noUnknown = opts.NoUnknown
+	roster.prevNext, roster.taggedSeeds = opts.PrevNext, opts.TaggedSeeds
 	knownCharacters := roster.Names
 	out = make(map[int]string, len(paragraphs))
 	numberByIdx := make(map[int]int) // the model's own speaker number per line, see roleNumber
@@ -664,6 +720,10 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 			Scenes:      roster.Scenes,
 			FirstPerson: roster.FirstPerson,
 			Corrections: roster.Corrections,
+			noUnknown:   roster.noUnknown,
+			confidence:  roster.confidence,
+			prevNext:    roster.prevNext,
+			taggedSeeds: roster.taggedSeeds,
 		}
 	}
 	batchAnswer := func(start, end int) map[int]bool {
@@ -699,7 +759,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			result, batchErr := c.attributeBatch(ctx, bookTitle, chapterTitle, batchRoster, lines, answer)
+			result, batchErr := ask(ctx, bookTitle, chapterTitle, batchRoster, lines, answer)
 			mu.Lock()
 			defer mu.Unlock()
 			if batchErr != nil {
@@ -744,7 +804,7 @@ func (c *Client) AttributeChapter(ctx context.Context, bookTitle, chapterTitle s
 		if !continues {
 			continue
 		}
-		result, seamErr := c.attributeBatch(ctx, bookTitle, chapterTitle, batchRoster(), append(tail, paragraphs[start:end]...), batchAnswer(start, end))
+		result, seamErr := ask(ctx, bookTitle, chapterTitle, batchRoster(), append(tail, paragraphs[start:end]...), batchAnswer(start, end))
 		if seamErr != nil {
 			continue
 		}
@@ -1100,6 +1160,16 @@ type Roster struct {
 	// chapters of the book, in reading order. Each batch lists the few that
 	// involve the characters its own lines are about (relevantCorrections).
 	Corrections []Correction
+	// noUnknown is AttributeOptions.NoUnknown, carried to every batch:
+	// the prompt (attributionSystemPrompt) and the decide candidates offer
+	// no "Unknown".
+	noUnknown bool
+	// confidence, when set, collects every decided line's confidence
+	// (attributeRedecided).
+	confidence *confidenceSink
+	// prevNext and taggedSeeds are AttributeOptions.PrevNext and
+	// TaggedSeeds, carried to every batch.
+	prevNext, taggedSeeds bool
 }
 
 // Correction is one dialogue line whose speaker a reader corrected by
@@ -1385,6 +1455,15 @@ func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle
 	if len(answer) == 0 {
 		return map[int]Attributed{}, nil
 	}
+	return generateAndParse(ctx, c, roster.attributionSystemPrompt(), c.attributionUserPrompt(bookTitle, chapterTitle, roster, lines, answer), 0, attributeMaxTokens, func(content string) (map[int]Attributed, error) {
+		return parseAttributionLines(content, answer)
+	})
+}
+
+// attributionUserPrompt is an attribution batch's user prompt: the known
+// characters relevant to lines, earlier corrections, and the numbered
+// lines, those in answer marked "(who?)".
+func (c *Client) attributionUserPrompt(bookTitle, chapterTitle string, roster Roster, lines []ParagraphInput, answer map[int]bool) string {
 	knownCharacters, knownDescriptions, knownRoles := relevantNames(roster, lines), roster.Descriptions, roster.Roles
 	var user strings.Builder
 	fmt.Fprintf(&user, "Book: %s\nChapter: %s\n", bookTitle, chapterTitle)
@@ -1441,10 +1520,13 @@ func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle
 		switch {
 		case answer[p.Idx]:
 			fmt.Fprintf(&user, "%d (who?): %s\n", p.Idx, oneLine(p.Text))
+			if roster.prevNext {
+				user.WriteString(prevNextNote(lines, i))
+			}
 		case p.Known != "" && p.IsQuote:
-			known := p.Known
-			if p.KnownIndex > 0 {
-				known = fmt.Sprintf("%s %d", p.Known, p.KnownIndex)
+			known := knownLabel(p)
+			if roster.taggedSeeds && p.Seeded {
+				known = "tagged: " + known
 			}
 			fmt.Fprintf(&user, "%d (%s): %s\n", p.Idx, known, oneLine(p.Text))
 		default:
@@ -1454,10 +1536,7 @@ func (c *Client) attributeBatchOnce(ctx context.Context, bookTitle, chapterTitle
 	if c.cfg.NoThink {
 		user.WriteString("\n/no_think")
 	}
-
-	return generateAndParse(ctx, c, systemPrompt, user.String(), 0, attributeMaxTokens, func(content string) (map[int]Attributed, error) {
-		return parseAttributionLines(content, answer)
-	})
+	return user.String()
 }
 
 type attribution struct {

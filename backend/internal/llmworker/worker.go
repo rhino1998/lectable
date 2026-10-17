@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -270,6 +271,68 @@ type Worker struct {
 // text - see LLMGenerate. Read by ttsworker, which inherits the server's
 // environment.
 var logPrompts = os.Getenv("LECTABLE_LLM_LOG_PROMPTS") == "1"
+
+// sampleOverride (LECTABLE_LLM_SAMPLE, e.g. "temp=0.3,top_p=0.95,top_k=20,
+// min_p=0.05") replaces the sampling settings of every generation - for
+// evals of a model's sampling on an eval instance, not for the live
+// library. Unset fields keep each call's own; a call's retry temperature
+// (speakerattr's retryTempBump) is kept when above the override's temp.
+// Decide calls read logits and are unaffected.
+var sampleOverride = parseSampleOverride(os.Getenv("LECTABLE_LLM_SAMPLE"))
+
+type samplerOverride struct {
+	temp, topP, minP *float32
+	topK             *int32
+}
+
+func parseSampleOverride(spec string) samplerOverride {
+	var o samplerOverride
+	for _, kv := range strings.Split(spec, ",") {
+		k, v, ok := strings.Cut(strings.TrimSpace(kv), "=")
+		if !ok {
+			continue
+		}
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 32)
+		if err != nil {
+			log.Printf("llmworker: LECTABLE_LLM_SAMPLE %q: %v", kv, err)
+			continue
+		}
+		x := float32(f)
+		switch strings.TrimSpace(k) {
+		case "temp":
+			o.temp = &x
+		case "top_p":
+			o.topP = &x
+		case "min_p":
+			o.minP = &x
+		case "top_k":
+			n := int32(f)
+			o.topK = &n
+		default:
+			log.Printf("llmworker: LECTABLE_LLM_SAMPLE: unknown key %q", k)
+		}
+	}
+	if spec != "" {
+		log.Printf("llmworker: sampling override %q", spec)
+	}
+	return o
+}
+
+func (o samplerOverride) apply(p llamacpp.SamplerParams) llamacpp.SamplerParams {
+	if o.temp != nil && (p.Temp <= 0 || *o.temp > p.Temp) {
+		p.Temp = *o.temp
+	}
+	if o.topP != nil {
+		p.TopP = *o.topP
+	}
+	if o.topK != nil {
+		p.TopK = *o.topK
+	}
+	if o.minP != nil {
+		p.MinP = *o.minP
+	}
+	return p
+}
 
 var backendInitOnce sync.Once
 
@@ -675,7 +738,7 @@ func (w *Worker) LLMGenerate(ctx context.Context, systemPrompt, userPrompt strin
 	// goroutine calling Sample() on this exact same, now-freed sampler, a
 	// real segfault (llama_sampler_sample on a freed/nil handle) confirmed
 	// live via ttsworker crash dumps. The Scheduler now owns closing it.
-	sampler := llamacpp.NewSampler(llamacpp.SamplerParams{Temp: temp, TopK: 40, TopP: 0.9})
+	sampler := llamacpp.NewSampler(sampleOverride.apply(llamacpp.SamplerParams{Temp: temp, TopK: 40, TopP: 0.9}))
 
 	req := llamacpp.GenRequest{Prompt: fullPrompt, Sampler: sampler, MaxTokens: maxTokens, Stats: &stats}
 	if startPos, primedSeq, state, ok := w.tryPrimed(model, systemPrompt, fullPrompt); ok {

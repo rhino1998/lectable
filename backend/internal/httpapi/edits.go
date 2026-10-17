@@ -118,7 +118,14 @@ type attributionPreviewResponse struct {
 // about, not shown, unless ?given=half (lines at even paragraph idx shown
 // with the reader's speaker, the odd ones held out to score) or
 // ?given=all. ?corrections=0 leaves out earlier chapters' corrections, for
-// an A/B against them in one build.
+// an A/B against them in one build. The other parameters are the ways of
+// asking (speakerattr.AttributeOptions): ?decide=1; ?seed=1 settles the
+// lines the speech-tag rules decide as context, ?seed=reply writes them
+// into decide's reply (what the app runs), ?seed=only returns just those
+// lines, asking the model nothing; ?unknown=0 never offers "Unknown";
+// ?prevNext=1 and ?taggedSeeds=1 add prompt notes; ?redecideBelow=p
+// decides the chapter again with the lines decided at p or more settled
+// (?redecideRounds=n times).
 func (s *Server) handlePreviewAttribution(w http.ResponseWriter, r *http.Request) {
 	var opts attributionOptions
 	switch given := r.URL.Query().Get("given"); given {
@@ -132,6 +139,29 @@ func (s *Server) handlePreviewAttribution(w http.ResponseWriter, r *http.Request
 		return
 	}
 	opts.noCorrections = r.URL.Query().Get("corrections") == "0"
+	opts.ask.Seed = r.URL.Query().Get("seed") == "1"
+	opts.ask.SeedOnly = r.URL.Query().Get("seed") == "only"
+	opts.ask.SeedInReply = r.URL.Query().Get("seed") == "reply"
+	opts.ask.Decide = r.URL.Query().Get("decide") == "1"
+	opts.ask.PrevNext = r.URL.Query().Get("prevNext") == "1"
+	opts.ask.TaggedSeeds = r.URL.Query().Get("taggedSeeds") == "1"
+	opts.ask.NoUnknown = r.URL.Query().Get("unknown") == "0"
+	if v := r.URL.Query().Get("redecideBelow"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f < 0 || f > 1 {
+			writeError(w, http.StatusBadRequest, "redecideBelow must be a probability, not "+strconv.Quote(v))
+			return
+		}
+		opts.ask.RedecideBelow = f
+	}
+	if v := r.URL.Query().Get("redecideRounds"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 5 {
+			writeError(w, http.StatusBadRequest, "redecideRounds must be 1-5, not "+strconv.Quote(v))
+			return
+		}
+		opts.ask.RedecideRounds = n
+	}
 	book, ch, ok := s.chapterLLMTarget(w, r)
 	if !ok {
 		return

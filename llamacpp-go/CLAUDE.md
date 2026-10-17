@@ -135,7 +135,10 @@ probabilities over the options, and `Mass` - how much of the whole
 distribution they hold). The winning option's tokens are then decoded as
 if generated, so a reply of several answers costs one decode round each
 and later answers are conditioned on earlier ones, as greedy generation
-would be. Options in a step must start with distinct tokens. MTP never
+would be. Options in a step may share leading tokens: those are decoded
+and the logits read again where the options part, so "Lord Gresper" and
+"Lord Whiteship" cost two reads, not one; none may equal or be a prefix of
+another (`decideState.read`). MTP never
 drafts for such a slot, and generations that follow one in the same slot
 draft as before (`TestSchedulerMTPAfterDecide`). With MTP on, a decide
 step measured ~3x the cost it has with MTP off on Qwen3.6-35B-A3B (see
